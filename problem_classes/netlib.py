@@ -1,0 +1,149 @@
+import cvxpy
+from pysmps import smps_loader as mps
+import numpy as np
+import scipy.sparse
+
+class NETLIB(object):
+    '''
+    NETLIB 
+    '''
+    def __init__(self, file_name, create_cvxpy_problem=False):
+        '''
+        Generate Maros problem in QP format and CVXPY format
+
+        NB. By default, the CVXPY problem is not created
+        '''
+        # Load problem from file
+        self._load_netlib_problem(file_name)
+
+        self.qp_problem = self._generate_qp_problem()
+
+        if create_cvxpy_problem:
+            self.cvxpy_problem = self._generate_cvxpy_problem()
+
+
+    # min  q'x
+    # s.t. l <= Ax <= u
+    def _load_netlib_problem(self, filename, verbose=False):
+      data = mps.load_mps(filename)
+
+      if len(data["rhs_names"]) > 1:
+        raise ValueError("more than one rhs")
+      if len(data["bnd_names"]) > 1:
+        raise ValueError("more than one bnd") 
+    
+      A_mps = data["A"]
+      c = data["c"]
+      (m, n) = A_mps.shape
+      types = np.array(data["types"])
+      if not data["rhs"]: # if RHS totally missing, assume zeros
+        b_mps = np.zeros(m)
+      else:
+        b_mps = data["rhs"][data["rhs_names"][0]]
+      if not data["bnd_names"]: # if BOUNDS totally missing don't set them
+        bounds = None
+      else:
+        bounds = data["bnd"][data["bnd_names"][0]]
+      
+      A_l = A_mps[types == "G",:]
+      A_u = A_mps[types == "L",:]
+      
+      # check if A_l and A_u are equal
+      if A_l.shape == A_u.shape and len((A_l != A_u).data) == 0:
+        A_box = -A_u
+        l = b_mps[types == "G"]
+        u = b_mps[types == "L"]
+      else:
+        A_box = scipy.sparse.vstack((A_l, A_u))
+        l = np.hstack((b_mps[types == "G"], -np.inf*np.ones(sum(types == "L"))))
+        u = np.hstack((np.inf*np.ones(sum(types == "G")), b_mps[types == "L"]))
+      
+      # variable bounds vl <= x <= vu
+      if bounds:
+        vl = bounds['LO']
+        vu = bounds['UP']
+      
+        u_idxs = np.where(~np.isinf(vu))[0]
+        l_idxs = np.where(~np.isinf(-vl))[0]
+        idxs = np.hstack((l_idxs, u_idxs))
+        idxs = np.unique(np.sort(idxs))
+      
+        l = np.hstack((vl[idxs], l))
+        u = np.hstack((vu[idxs], u))
+      else:
+        idxs = []
+
+      # OSQP box cone format
+      A = scipy.sparse.vstack((scipy.sparse.eye(n, format='dok')[idxs, :], A_box))
+
+      # OSQP stack Ax = b on top
+      A = scipy.sparse.vstack((A_mps[types == "E", :],
+                               A))
+      # OSQP stack equality b on top
+      l = np.hstack((b_mps[types == "E"], l))
+      u = np.hstack((b_mps[types == "E"], u))
+
+      # Assign final values to problem
+      self.m, self.n = A.shape 
+      self.l = l
+      self.u = u
+      self.A = scipy.sparse.csc_matrix(A)
+      self.P = scipy.sparse.csc_matrix((self.n, self.n))
+      self.q = c
+      self.r = 0.
+      self.obj_type = 'min' 
+      #if self.obj_type == 'max':
+      #    self.P *= -1
+      #    self.q *= -1
+      #    self.r *= -1
+
+    @staticmethod
+    def name():
+        return 'NETLIB'
+
+    def _generate_qp_problem(self):
+        '''
+        Generate QP problem
+        '''
+        problem = {}
+        problem['P'] = self.P
+        problem['q'] = self.q
+        problem['r'] = self.r
+        problem['A'] = self.A
+        problem['l'] = self.l
+        problem['u'] = self.u
+        problem['n'] = self.n
+        problem['m'] = self.m
+
+        return problem
+
+
+    # XXX this method might be wrong:
+    def _generate_cvxpy_problem(self):
+        '''
+        Generate QP problem
+        '''
+        x_var = cvxpy.Variable(self.n)
+        objective = .5 * cvxpy.quad_form(x_var, self.P) + self.q * x_var + \
+            self.r
+        constraints = [self.A * x_var <= self.u, self.A * x_var >= self.l]
+        problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
+
+        return problem
+
+    # XXX this method might be wrong:
+    def revert_cvxpy_solution(self):
+        '''
+        Get QP primal and duar variables from cvxpy solution
+        '''
+
+        variables = self.cvxpy_problem.variables()
+        constraints = self.cvxpy_problem.constraints
+
+        # primal solution
+        x = variables[0].value
+
+        # dual solution
+        y = constraints[0].dual_value - constraints[1].dual_value
+
+        return x, y
