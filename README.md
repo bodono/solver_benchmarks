@@ -1,3 +1,7 @@
+# Benchmarking tools for solvers
+
+This is forked from `osqp_benchmarks`, original README below:
+
 # Benchmark examples for the OSQP solver
 
 These are the scripts to compare the following Quadratic Program (QP) solvers

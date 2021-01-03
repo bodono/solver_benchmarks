@@ -1,9 +1,12 @@
+from solvers.scs import SCSSolver
 from solvers.ecos import ECOSSolver
-from solvers.gurobi import GUROBISolver
-from solvers.mosek import MOSEKSolver
+#from solvers.gurobi import GUROBISolver
+#from solvers.mosek import MOSEKSolver
 from solvers.osqp import OSQPSolver
-from solvers.qpoases import qpOASESSolver
+#from solvers.qpoases import qpOASESSolver
 
+SCS = 'SCS'
+SCS_high = SCS + "_high"
 ECOS = 'ECOS'
 ECOS_high = ECOS + "_high"
 GUROBI = 'GUROBI'
@@ -23,13 +26,16 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               OSQP_high: OSQPSolver,
               OSQP_polish: OSQPSolver,
               OSQP_polish_high: OSQPSolver,
-              GUROBI: GUROBISolver,
-              GUROBI_high: GUROBISolver,
-              MOSEK: MOSEKSolver,
-              MOSEK_high: MOSEKSolver,
+              #GUROBI: GUROBISolver,
+              #GUROBI_high: GUROBISolver,
+              #MOSEK: MOSEKSolver,
+              #MOSEK_high: MOSEKSolver,
               ECOS: ECOSSolver,
               ECOS_high: ECOSSolver,
-              qpOASES: qpOASESSolver}
+              SCS: SCSSolver,
+              SCS_high: SCSSolver,
+              #qpOASES: qpOASESSolver
+              }
 
 time_limit = 1000. # Seconds
 eps_low = 1e-03
@@ -38,11 +44,21 @@ eps_high = 1e-05
 # Solver settings
 settings = {
     OSQP: {'eps_abs': eps_low,
-           'eps_rel': eps_low,
+           'eps_rel': 0.,
            'polish': False,
-           'max_iter': int(1e09),
+           'max_iter': int(1e05),
            'eps_prim_inf': 1e-15,  # Disable infeas check
            'eps_dual_inf': 1e-15,
+    },
+    SCS: {'eps_abs': eps_low,
+          'eps_rel': 0.,
+          'eps_infeas': 1e-15,
+          'max_iters': int(1e05),
+          'scale': 1.0,
+    },
+    SCS_high: {'eps': eps_high,
+                'max_iters': int(1e09),
+                'acceleration_lookback': 20,
     },
     OSQP_high: {'eps_abs': eps_high,
                 'eps_rel': eps_high,
@@ -90,4 +106,4 @@ settings = {
 
 for key in settings:
     settings[key]['verbose'] = False
-    settings[key]['time_limit'] = time_limit
+    #settings[key]['time_limit'] = time_limit

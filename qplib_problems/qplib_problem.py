@@ -30,6 +30,7 @@ class QPLIBRunner(object):
         lst_probs = [f for f in os.listdir(problems_dir) if \
             f.endswith('.qplib')]
         self.problems = [f[6:-6] for f in lst_probs]   # List of problem names
+        print(self.problems)
 
     def solve(self, parallel=True, cores=32):
         '''

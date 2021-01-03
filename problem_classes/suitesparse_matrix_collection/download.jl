@@ -13,12 +13,12 @@ list = mdlist("*/*")
 prob_count = 0
 md_info = 0
 for problem in list
-    global md_kind = mdinfo(problem).content[4].items[end][1].content[1]  # Nasty
+    #global md_kind = mdinfo(problem).content[4].items[end][1].content[1]  # Nasty
 
     # Check if type is correct
-    if split(md_kind)[1] == "kind:"  # Got the right kind
-        kind = join(split(md_kind)[2:end], " ")
-        if kind in accepted_problems
+    if true #or split(md_kind)[1] == "kind:"  # Got the right kind
+        #kind = join(split(md_kind)[2:end], " ")
+        if true #or kind in accepted_problems
             md = mdopen(problem)
             MatrixDepot.addmetadata!(md.data)
             print("Name = $(md.data.name)\n")
@@ -28,7 +28,7 @@ for problem in list
                 A = SparseMatrixCSC(A)
             end
             global prob_count += 1
-            print("Found $(kind) n = $(prob_count)\n")
+            #print("Found $(kind) n = $(prob_count)\n")
             (m, n) = size(A)
             new_problem =  Dict("A" => A, "name" => md.data.name)
             try
