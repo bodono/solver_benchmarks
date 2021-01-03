@@ -45,15 +45,13 @@ netlib_runner = NETLIBRunner(solvers,
                              OUTPUT_FOLDER)
 
 # debug
-netlib_runner.problems = [
-"woodinfe",
-"bgdbg1",
-"bgetam",
-"bgprtr",
-"box1"]
+#netlib_runner.problems = ["woodinfe", "bgetam"]
 
 netlib_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics
+
+# XXX TODO update for infeasible!
 compute_stats_info(solvers, OUTPUT_FOLDER,
-                   high_accuracy=high_accuracy)
+                   high_accuracy=high_accuracy,
+                  infeasible_test=True)
