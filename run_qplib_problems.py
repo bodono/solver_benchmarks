@@ -17,7 +17,7 @@ import argparse
 parser = argparse.ArgumentParser(description='QPLIB Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
-parser.add_argument('--verbose', help='Verbose solvers', default=False,
+parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
@@ -40,6 +40,8 @@ else:
     solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
     OUTPUT_FOLDER = 'qplib_problems'
 
+solvers=[s.SCS, s.OSQP]
+
 # Shut up solvers
 if verbose:
     for key in s.settings:
@@ -51,7 +53,7 @@ qplib_runner = QPLIBRunner(solvers,
                            OUTPUT_FOLDER)
 
 # DEBUG only: Choose only 2 problems
-qplib_runner.problems = ["9008"] # , "10038"]
+#qplib_runner.problems = ["8906"]
 
 qplib_runner.solve(parallel=parallel, cores=12)
 

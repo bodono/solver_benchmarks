@@ -17,7 +17,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Maros Meszaros Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
-parser.add_argument('--verbose', help='Verbose solvers', default=False,
+parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
@@ -39,6 +39,9 @@ if high_accuracy:
 else:
     solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
     OUTPUT_FOLDER = 'maros_meszaros_problems'
+
+solvers = [s.SCS, s.OSQP]
+#solvers = [s.OSQP]
 
 # Shut up solvers
 if verbose:

@@ -60,6 +60,7 @@ class MarosMeszarosRunner(object):
 
         # Iterate over all solvers
         for solver in self.solvers:
+            print(solver)
             settings = self.settings[solver]
 
             #  # Initialize solver results

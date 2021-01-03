@@ -20,7 +20,7 @@ import argparse
 parser = argparse.ArgumentParser(description='Benchmark Problems Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
-parser.add_argument('--verbose', help='Verbose solvers', default=False,
+parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
@@ -51,6 +51,8 @@ if verbose:
     for key in s.settings:
         s.settings[key]['verbose'] = True
 
+solvers = [s.SCS, s.OSQP]
+
 
 # Number of instances per different dimension
 n_instances = 10
@@ -59,8 +61,8 @@ n_dim = 20
 
 # Run benchmark problems
 problems = [
-            'Random QP',
             'Eq QP',
+            'Random QP',
             'Portfolio',
             'Lasso',
             'SVM',

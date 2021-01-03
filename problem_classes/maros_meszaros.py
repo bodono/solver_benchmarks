@@ -74,7 +74,7 @@ class MarosMeszaros(object):
 
     def revert_cvxpy_solution(self):
         '''
-        Get QP primal and duar variables from cvxpy solution
+        Get QP primal and dual variables from cvxpy solution
         '''
 
         variables = self.cvxpy_problem.variables()
