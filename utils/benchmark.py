@@ -58,7 +58,7 @@ def get_cumulative_data(solvers, problems, output_folder):
         df.to_csv(solver_file_name, index=False)
 
 
-def compute_performance_profiles(solvers, problems_type):
+def compute_performance_profiles(solvers, problems_type, infeasible_test=False):
     t = {}
     status = {}
 
@@ -75,9 +75,13 @@ def compute_performance_profiles(solvers, problems_type):
         status[solver] = df['status'].values
 
         # Set maximum time for solvers that did not succeed
-        #for idx in range(n_problems):
-        #    if status[solver][idx] not in statuses.SOLUTION_PRESENT:
-        #        t[solver][idx] = MAX_TIMING
+        for idx in range(n_problems):
+            if infeasible_test:
+              if status[solver][idx] not in statuses.ANY_INFEASIBLE:
+                t[solver][idx] = MAX_TIMING
+            else:            
+              if status[solver][idx] not in statuses.SOLUTION_PRESENT:
+                t[solver][idx] = MAX_TIMING
 
     r = {}  # Dictionary of relative times for each solver/problem
     for s in solvers:
@@ -160,7 +164,11 @@ def compute_shifted_geometric_means(solvers, problems_type):
 
         # Set maximum time for solvers that did not succeed
         for idx in range(n_problems):
-            if status[solver][idx] not in statuses.SOLUTION_PRESENT:
+            if infeasible_test:
+              if status[solver][idx] not in statuses.ANY_INFEASIBLE:
+                t[solver][idx] = MAX_TIMING
+            else:            
+              if status[solver][idx] not in statuses.SOLUTION_PRESENT:
                 t[solver][idx] = MAX_TIMING
 
         g_mean[solver] = geom_mean(t[solver])
@@ -214,7 +222,7 @@ def compute_shifted_geometric_means(solvers, problems_type):
     # df_performance_profiles.to_csv(performance_profiles_file, index=False)
 
 
-def compute_failure_rates(solvers, problems_type):
+def compute_failure_rates(solvers, problems_type, infeasible_test=False):
     """
     Compute and show failure rates
     """
@@ -234,9 +242,13 @@ def compute_failure_rates(solvers, problems_type):
         df = pd.read_csv(results_file)
 
         n_problems = len(df)
+        if infeasible_test:
+          itr = [df['status'].values != s for s in statuses.ANY_INFEASIBLE]
+          failed_statuses = np.logical_and.reduce(itr)
+        else:
+          itr = [df['status'].values != s for s in statuses.SOLUTION_PRESENT]
+          failed_statuses = np.logical_and(*itr)
 
-        failed_statuses = np.logical_and(*[df['status'].values != s
-                                           for s in statuses.SOLUTION_PRESENT])
         n_failed_problems = np.sum(failed_statuses)
         failure_rates[solver] = 100 * (n_failed_problems / n_problems)
 
@@ -351,7 +363,8 @@ def compute_rho_updates(problems_type, high_accuracy=False):
 def compute_stats_info(solvers, benchmark_type,
                        problems=None,
                        high_accuracy=False,
-                       performance_profiles=True):
+                       performance_profiles=True,
+                       infeasible_test=False):
 
     if problems is not None:
         # Collect cumulative data for each solver
@@ -359,10 +372,10 @@ def compute_stats_info(solvers, benchmark_type,
         get_cumulative_data(solvers, problems, benchmark_type)
 
     # Compute failure rates
-    compute_failure_rates(solvers, benchmark_type)
+    compute_failure_rates(solvers, benchmark_type, infeasible_test)
 
     # Compute performance profiles
-    compute_performance_profiles(solvers, benchmark_type)
+    compute_performance_profiles(solvers, benchmark_type, infeasible_test)
 
     # Compute performance profiles
     compute_shifted_geometric_means(solvers, benchmark_type)

@@ -5,7 +5,7 @@ import scipy.sparse
 
 class NETLIB(object):
     '''
-    NETLIB 
+    NETLIB
     '''
     def __init__(self, file_name, create_cvxpy_problem=False):
         '''
@@ -30,8 +30,8 @@ class NETLIB(object):
       if len(data["rhs_names"]) > 1:
         raise ValueError("more than one rhs")
       if len(data["bnd_names"]) > 1:
-        raise ValueError("more than one bnd") 
-    
+        raise ValueError("more than one bnd")
+
       A_mps = data["A"]
       c = data["c"]
       (m, n) = A_mps.shape
@@ -44,10 +44,10 @@ class NETLIB(object):
         bounds = None
       else:
         bounds = data["bnd"][data["bnd_names"][0]]
-      
+
       A_l = A_mps[types == "G",:]
       A_u = A_mps[types == "L",:]
-      
+
       # check if A_l and A_u are equal
       if A_l.shape == A_u.shape and len((A_l != A_u).data) == 0:
         A_box = -A_u
@@ -57,17 +57,17 @@ class NETLIB(object):
         A_box = scipy.sparse.vstack((A_l, A_u))
         l = np.hstack((b_mps[types == "G"], -np.inf*np.ones(sum(types == "L"))))
         u = np.hstack((np.inf*np.ones(sum(types == "G")), b_mps[types == "L"]))
-      
+
       # variable bounds vl <= x <= vu
       if bounds:
         vl = bounds['LO']
         vu = bounds['UP']
-      
+
         u_idxs = np.where(~np.isinf(vu))[0]
         l_idxs = np.where(~np.isinf(-vl))[0]
         idxs = np.hstack((l_idxs, u_idxs))
         idxs = np.unique(np.sort(idxs))
-      
+
         l = np.hstack((vl[idxs], l))
         u = np.hstack((vu[idxs], u))
       else:
@@ -84,14 +84,14 @@ class NETLIB(object):
       u = np.hstack((b_mps[types == "E"], u))
 
       # Assign final values to problem
-      self.m, self.n = A.shape 
+      self.m, self.n = A.shape
       self.l = l
       self.u = u
       self.A = scipy.sparse.csc_matrix(A)
       self.P = scipy.sparse.csc_matrix((self.n, self.n))
       self.q = c
       self.r = 0.
-      self.obj_type = 'min' 
+      self.obj_type = 'min'
       #if self.obj_type == 'max':
       #    self.P *= -1
       #    self.q *= -1
