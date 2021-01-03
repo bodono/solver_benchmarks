@@ -75,9 +75,9 @@ def compute_performance_profiles(solvers, problems_type):
         status[solver] = df['status'].values
 
         # Set maximum time for solvers that did not succeed
-        for idx in range(n_problems):
-            if status[solver][idx] not in statuses.SOLUTION_PRESENT:
-                t[solver][idx] = MAX_TIMING
+        #for idx in range(n_problems):
+        #    if status[solver][idx] not in statuses.SOLUTION_PRESENT:
+        #        t[solver][idx] = MAX_TIMING
 
     r = {}  # Dictionary of relative times for each solver/problem
     for s in solvers:
@@ -369,9 +369,10 @@ def compute_stats_info(solvers, benchmark_type,
 
     # Compute polish statistics
     if any(s.startswith('OSQP') for s in solvers):
-        compute_polish_statistics(benchmark_type, high_accuracy=high_accuracy)
-        compute_ratio_setup_solve(benchmark_type, high_accuracy=high_accuracy)
-        compute_rho_updates(benchmark_type, high_accuracy=high_accuracy)
+      pass      
+        #compute_polish_statistics(benchmark_type, high_accuracy=high_accuracy)
+        #compute_ratio_setup_solve(benchmark_type, high_accuracy=high_accuracy)
+        #compute_rho_updates(benchmark_type, high_accuracy=high_accuracy)
 
     # Plot performance profiles
     if performance_profiles:

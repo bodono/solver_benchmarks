@@ -63,15 +63,15 @@ class SCSSolver(object):
         if settings.get('time_limit') is not None:
             if results.info.run_time > settings.get('time_limit'):
                 status = s.TIME_LIMIT
-        run_time = (results['info']['solveTime']
-                    + results['info']['setupTime'])
+        run_time = 1e-3 * (results['info']['solveTime']
+                           + results['info']['setupTime'])
         return_results = Results(status,
                                  results['info']['pobj'],
                                  results['x'],
                                  -results['y'][1:],
                                  run_time,
                                  results['info']['iter'])
-        
+
         #return_results.status_polish = results.info.status_polish
         #return_results.setup_time = results.info.setup_time
         #return_results.solve_time = results.info.solve_time

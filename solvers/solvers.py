@@ -44,28 +44,32 @@ eps_high = 1e-05
 # Solver settings
 settings = {
     OSQP: {'eps_abs': eps_low,
-           'eps_rel': 0.,
+           'eps_rel': eps_low,
            'polish': False,
            'max_iter': int(1e05),
-           'eps_prim_inf': 1e-15,  # Disable infeas check
-           'eps_dual_inf': 1e-15,
+           'eps_prim_inf': 1e-6,  # Disable infeas check
+           'eps_dual_inf': 1e-6,
+           'rho': 1.0,
     },
     SCS: {'eps_abs': eps_low,
-          'eps_rel': 0.,
-          'eps_infeas': 1e-15,
+          'eps_rel': eps_low,
+          'eps_infeas': 1e-6,
           'max_iters': int(1e05),
+          'acceleration_lookback': 0,
           'scale': 1.0,
     },
-    SCS_high: {'eps': eps_high,
-                'max_iters': int(1e09),
-                'acceleration_lookback': 20,
+    SCS_high: {'eps_abs': eps_high,
+               'eps_rel': eps_high,
+               'eps_infeas': 1e-6,
+               'max_iters': int(1e09),
+               'acceleration_lookback': 0,
     },
     OSQP_high: {'eps_abs': eps_high,
                 'eps_rel': eps_high,
                 'polish': False,
                 'max_iter': int(1e09),
-                'eps_prim_inf': 1e-15,  # Disable infeas check
-                'eps_dual_inf': 1e-15
+                'eps_prim_inf': 1e-6,  # Disable infeas check
+                'eps_dual_inf': 1e-6
     },
     OSQP_polish: {'eps_abs': eps_low,
                   'eps_rel': eps_low,
