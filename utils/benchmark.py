@@ -138,7 +138,7 @@ def geom_mean(t, shift=10.):
     return np.exp(np.sum(np.log(np.maximum(1, t + shift))/len(t))) - shift
 
 
-def compute_shifted_geometric_means(solvers, problems_type):
+def compute_shifted_geometric_means(solvers, problems_type, infeasible_test):
     t = {}
     status = {}
     g_mean = {}
@@ -378,7 +378,7 @@ def compute_stats_info(solvers, benchmark_type,
     compute_performance_profiles(solvers, benchmark_type, infeasible_test)
 
     # Compute performance profiles
-    compute_shifted_geometric_means(solvers, benchmark_type)
+    compute_shifted_geometric_means(solvers, benchmark_type, infeasible_test)
 
     # Compute polish statistics
     if any(s.startswith('OSQP') for s in solvers):

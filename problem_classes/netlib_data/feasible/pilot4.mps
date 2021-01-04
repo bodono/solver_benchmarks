@@ -3270,7 +3270,6 @@ RHS
     RHSIDE    WRKF04      170.791641   ECAP04           15.17
     RHSIDE    NRGP04            5.48
 BOUNDS
- PL BOUND     CONS01
  FX BOUND     WLWR01              0.
  FX BOUND     WLWP01              0.
  FX BOUND     WFBR01              0.
@@ -3367,7 +3366,6 @@ BOUNDS
  UP BOUND     PODR01            400.
  UP BOUND     PGDR01            300.
  UP BOUND     POSE01          .00001
- PL BOUND     CONS02
  FX BOUND     ICOL02              0.
  UP BOUND     IROP02              7.
  UP BOUND     IGAS02              5.
