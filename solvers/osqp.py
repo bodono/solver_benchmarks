@@ -2,6 +2,7 @@ import osqp
 from . import statuses as s
 from .results import Results
 from utils.general import is_qp_solution_optimal
+import time
 
 
 class OSQPSolver(object):
@@ -38,13 +39,15 @@ class OSQPSolver(object):
         high_accuracy = settings.pop('high_accuracy', None)
 
         # Setup OSQP
+        start = time.time()
         m = osqp.OSQP()
         m.setup(problem['P'], problem['q'], problem['A'], problem['l'],
                 problem['u'],
                 **settings)
-
         # Solve
         results = m.solve()
+        end = time.time()
+
         status = self.STATUS_MAP.get(results.info.status_val, s.SOLVER_ERROR)
 
         if status in s.SOLUTION_PRESENT:
@@ -63,7 +66,8 @@ class OSQPSolver(object):
                                  results.info.obj_val,
                                  results.x,
                                  results.y,
-                                 results.info.run_time,
+                                 end - start,
+                                 #results.info.run_time,
                                  results.info.iter)
 
         return_results.status_polish = results.info.status_polish

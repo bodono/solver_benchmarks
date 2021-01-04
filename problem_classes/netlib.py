@@ -26,7 +26,6 @@ class NETLIB(object):
     # s.t. l <= Ax <= u
     def _load_netlib_problem(self, filename, verbose=False):
       data = mps.load_mps(filename)
-
       if len(data["rhs_names"]) > 1:
         raise ValueError("more than one rhs")
       if len(data["bnd_names"]) > 1:
@@ -62,21 +61,19 @@ class NETLIB(object):
       if bounds:
         vl = bounds['LO']
         vu = bounds['UP']
-
-        u_idxs = np.where(~np.isinf(vu))[0]
-        l_idxs = np.where(~np.isinf(-vl))[0]
-        idxs = np.hstack((l_idxs, u_idxs))
-        idxs = np.unique(np.sort(idxs))
-
-        l = np.hstack((vl[idxs], l))
-        u = np.hstack((vu[idxs], u))
+      
+        assert np.squeeze(vl).shape[0] == n
+        assert np.squeeze(vu).shape[0] == n
+      
       else:
-        idxs = []
-
-      # OSQP box cone format
-      A = scipy.sparse.vstack((scipy.sparse.eye(n, format='dok')[idxs, :], A_box))
-
-      # OSQP stack Ax = b on top
+        #idxs = []
+        vl = np.zeros(n)
+        vu = np.inf * np.ones(n)
+      
+      l = np.hstack((vl, l))
+      u = np.hstack((vu, u))
+    
+      A = scipy.sparse.vstack((scipy.sparse.eye(n, format='dok'), A_box)) 
       A = scipy.sparse.vstack((A_mps[types == "E", :],
                                A))
       # OSQP stack equality b on top

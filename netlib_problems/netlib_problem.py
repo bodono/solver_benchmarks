@@ -9,7 +9,7 @@ from utils.general import make_sure_path_exists
 
 import numpy as np
 
-PROBLEMS_FOLDER = "netlib_data"
+BASE_PROBLEMS_FOLDER = "netlib_data"
 
 
 class NETLIBRunner(object):
@@ -19,13 +19,24 @@ class NETLIBRunner(object):
     def __init__(self,
                  solvers,
                  settings,
-                 output_folder):
+                 output_folder,
+                 infeasible):
         self.solvers = solvers
         self.settings = settings
         self.output_folder = output_folder
+        self.infeasible = infeasible
 
         # Get maros problems list
-        problems_dir = os.path.join(".", "problem_classes", PROBLEMS_FOLDER)
+        problems_dir = os.path.join(".", "problem_classes", BASE_PROBLEMS_FOLDER)
+        if self.infeasible:
+          self.problems_folder = os.path.join(BASE_PROBLEMS_FOLDER,
+                                              'infeasible')
+          problems_dir = os.path.join(problems_dir, 'infeasible')
+        else:
+          self.problems_folder = os.path.join(BASE_PROBLEMS_FOLDER,
+                                              'feasible')
+          problems_dir = os.path.join(problems_dir, 'feasible')
+
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(problems_dir) if
                             f.endswith('.mps')])
@@ -122,7 +133,7 @@ class NETLIBRunner(object):
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
-                                 PROBLEMS_FOLDER, "%s.mps" % problem)
+                                 self.problems_folder, "%s.mps" % problem)
         instance = NETLIB(full_name)
 
 

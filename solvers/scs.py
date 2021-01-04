@@ -3,7 +3,7 @@ import scipy.sparse
 from . import statuses as s
 from .results import Results
 from utils.general import is_qp_solution_optimal
-import osqp
+import time 
 import numpy as np
 
 class SCSSolver(object):
@@ -46,10 +46,13 @@ class SCSSolver(object):
         b_scs = np.hstack((1, b))
         A_scs = scipy.sparse.vstack((np.zeros((1, n)), -problem["A"]))
 
-        data = dict(P=problem['P'], c=problem['q'], A=A_scs, b=b_scs)
+        data = dict(P=scipy.sparse.csc_matrix(problem['P']), c=problem['q'],
+                    A=scipy.sparse.csc_matrix(A_scs), b=b_scs)
         cone = dict(bl=problem['l'].tolist(), bu=problem['u'].tolist())
         settings["verbose"]=True
+        start = time.time()
         results = scs.solve(data, cone, **settings)
+        end = time.time()
         status = self.STATUS_MAP.get(results['info']['statusVal'], s.SOLVER_ERROR)
 
         if status in s.SOLUTION_PRESENT:
@@ -63,8 +66,10 @@ class SCSSolver(object):
         if settings.get('time_limit') is not None:
             if results.info.run_time > settings.get('time_limit'):
                 status = s.TIME_LIMIT
-        run_time = 1e-3 * (results['info']['solveTime']
-                           + results['info']['setupTime'])
+
+        #run_time = 1e-3 * (results['info']['solveTime']
+        #                  + results['info']['setupTime'])
+        run_time = end - start
         return_results = Results(status,
                                  results['info']['pobj'],
                                  results['x'],

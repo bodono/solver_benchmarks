@@ -21,10 +21,14 @@ parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
+parser.add_argument('--infeasible', help='Run of infeasible', default=False,
+                    action='store_true')
+
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
 verbose = args.verbose
 parallel = args.parallel
+infeasible = args.infeasible
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
@@ -37,21 +41,26 @@ if verbose:
     for key in s.settings:
         s.settings[key]['verbose'] = True
 
-OUTPUT_FOLDER = 'netlib_problems'
+if infeasible:
+  OUTPUT_FOLDER = 'netlib_infeasible'
+else:
+  OUTPUT_FOLDER = 'netlib_feasible'
 
 # Run all examples
 netlib_runner = NETLIBRunner(solvers,
                              s.settings,
-                             OUTPUT_FOLDER)
+                             OUTPUT_FOLDER,
+                             infeasible)
 
 # debug
-#netlib_runner.problems = ["woodinfe", "bgetam"]
+#netlib_runner.problems = ["e226"]
+#netlib_runner.problems = \
+#  netlib_runner.problems[netlib_runner.problems.index("pilot4"):]
 
 netlib_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics
 
-# XXX TODO update for infeasible!
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy,
-                  infeasible_test=True)
+                   infeasible_test=infeasible)
