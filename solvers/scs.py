@@ -3,7 +3,7 @@ import scipy.sparse
 from . import statuses as s
 from .results import Results
 from utils.general import is_qp_solution_optimal
-import time 
+import time
 import numpy as np
 
 class SCSSolver(object):
@@ -41,18 +41,29 @@ class SCSSolver(object):
         high_accuracy = settings.pop('high_accuracy', None)
 
         # Solve
-        (m,n) = problem["A"].shape
-        b = np.zeros((m,))
-        b_scs = np.hstack((1, b))
-        A_scs = scipy.sparse.vstack((np.zeros((1, n)), -problem["A"]))
+        (m,n) = problem['A'].shape
+
+        # Hack out the equality constraints
+        idxs = (problem['u'] - problem['l'] < 1e-5)
+        A_scs = scipy.sparse.vstack((problem['A'][idxs, :],
+                                    np.zeros((1, n)),
+                                    -problem['A'][~idxs, :]))
+
+        b_scs = np.hstack((problem['u'][idxs],
+                          1,
+                          np.zeros(m - np.sum(idxs))))
 
         data = dict(P=scipy.sparse.csc_matrix(problem['P']), c=problem['q'],
                     A=scipy.sparse.csc_matrix(A_scs), b=b_scs)
-        cone = dict(bl=problem['l'].tolist(), bu=problem['u'].tolist())
+        cone = dict(f=np.int(np.sum(idxs)), bl=problem['l'][~idxs].tolist(),
+                    bu=problem['u'][~idxs].tolist())
         settings["verbose"]=True
         start = time.time()
         results = scs.solve(data, cone, **settings)
         end = time.time()
+
+        # XXX TODO invert HACK above (on s and y)
+
         status = self.STATUS_MAP.get(results['info']['statusVal'], s.SOLVER_ERROR)
 
         if status in s.SOLUTION_PRESENT:

@@ -12,6 +12,7 @@ import solvers.solvers as s
 from utils.benchmark import compute_stats_info
 import os
 import argparse
+import shutil
 
 
 parser = argparse.ArgumentParser(description='NETLIB Runner')
@@ -53,14 +54,23 @@ netlib_runner = NETLIBRunner(solvers,
                              infeasible)
 
 # debug
-#netlib_runner.problems = ["e226"]
+#netlib_runner.problems = ["czprob"]
 #netlib_runner.problems = \
 #  netlib_runner.problems[netlib_runner.problems.index("pilot4"):]
 
+probs = netlib_runner.problems
+for prob in probs:
+  netlib_runner = NETLIBRunner(solvers,
+                             s.settings,
+                             OUTPUT_FOLDER,
+                             infeasible)
+  netlib_runner.problems = [prob]
+  netlib_runner.solve(parallel=parallel, cores=12)
+  shutil.rmtree("./results/netlib_feasible")
+
+
 netlib_runner.solve(parallel=parallel, cores=12)
-
 # Compute results statistics
-
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy,
                    infeasible_test=infeasible)
