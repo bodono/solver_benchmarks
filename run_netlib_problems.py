@@ -56,17 +56,20 @@ netlib_runner = NETLIBRunner(solvers,
 # debug
 #netlib_runner.problems = ["czprob"]
 #netlib_runner.problems = \
-#  netlib_runner.problems[netlib_runner.problems.index("pilot4"):]
-
-probs = netlib_runner.problems
-for prob in probs:
-  netlib_runner = NETLIBRunner(solvers,
-                             s.settings,
-                             OUTPUT_FOLDER,
-                             infeasible)
-  netlib_runner.problems = [prob]
-  netlib_runner.solve(parallel=parallel, cores=12)
-  shutil.rmtree("./results/netlib_feasible")
+#  netlib_runner.problems[netlib_runner.problems.index("pilot4i"):]
+#
+#probs = netlib_runner.problems
+#for prob in probs:
+#  netlib_runner = NETLIBRunner(solvers,
+#                             s.settings,
+#                             OUTPUT_FOLDER,
+#                             infeasible)
+#  netlib_runner.problems = [prob]
+#  netlib_runner.solve(parallel=parallel, cores=12)
+#  if infeasible:
+#    shutil.rmtree("./results/netlib_infeasible")
+#  else:
+#    shutil.rmtree("./results/netlib_feasible")
 
 
 netlib_runner.solve(parallel=parallel, cores=12)
