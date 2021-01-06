@@ -3,7 +3,7 @@ from solvers.ecos import ECOSSolver
 #from solvers.gurobi import GUROBISolver
 #from solvers.mosek import MOSEKSolver
 from solvers.osqp import OSQPSolver
-#from solvers.qpoases import qpOASESSolver
+from solvers.qpoases import qpOASESSolver
 
 SCS = 'SCS'
 SCS_high = SCS + "_high"
@@ -34,7 +34,7 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               ECOS_high: ECOSSolver,
               SCS: SCSSolver,
               SCS_high: SCSSolver,
-              #qpOASES: qpOASESSolver
+              qpOASES: qpOASESSolver
               }
 
 time_limit = 1000. # Seconds
