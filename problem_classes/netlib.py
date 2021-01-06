@@ -78,8 +78,7 @@ class NETLIB(object):
       u = np.hstack((vu, u))
 
       A = scipy.sparse.vstack((scipy.sparse.eye(n, format='dok'), A_box))
-      A = scipy.sparse.vstack((A_mps[types == "E", :],
-                               A))
+      A = scipy.sparse.vstack((A_mps[types == "E", :], A))
       # OSQP stack equality b on top
       l = np.hstack((b_mps[types == "E"], l))
       u = np.hstack((b_mps[types == "E"], u))
