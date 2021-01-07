@@ -32,7 +32,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.qpOASES, s.ECOS]
+solvers=[s.COSMO, s.SCS, s.OSQP, s.qpOASES, s.ECOS]
 
 # Shut up solvers
 if verbose:
@@ -47,7 +47,7 @@ miplib_runner = MIPLIBRunner(solvers,
                              OUTPUT_FOLDER)
 
 # debug
-#miplib_runner.problems = ["air05"]
+#miplib_runner.problems = ["gen-ip054"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("pilot4i"):]
 #

@@ -34,6 +34,10 @@ def scs_2_cosmo(A, b, cone):
   return scipy.sparse.csc_matrix(A_cosmo), b_cosmo
 
 class COSMOSolver(object):
+    STATUS_MAP = {'Solved': s.OPTIMAL,
+                  'Max_iter_reached' : s.MAX_ITER_REACHED,
+                  'Primal_infeasible': s.PRIMAL_INFEASIBLE,
+                  'Dual_infeasible': s.DUAL_INFEASIBLE}
 
     def __init__(self, settings={}):
         '''
@@ -72,7 +76,7 @@ class COSMOSolver(object):
           q = problem['q']
           l = problem['l']
           u = problem['u']
-          cone = dict(b=1)
+          cone = dict(b=l.shape[0])
 
         elif hasattr(example, 'sdp_problem'):
           problem = example.sdp_problem
@@ -101,9 +105,12 @@ class COSMOSolver(object):
         model.setup(P=P, q=q, A=A, b=b, u=u, l=l, cone=cone, **settings)
         model.optimize()
         end = time.time()
+        status = self.STATUS_MAP.get(model.get_status(), s.SOLVER_ERROR)
 
-        run_time = end - start
-        return_results = Results(model.get_status(),
+        run_time = end - start # this is poor due to python/julia overhead
+        # will have to trust cosmo itself unforunately
+        run_time = model.get_times()['solver_time']
+        return_results = Results(status,
                                  model.get_objective_value(),
                                  model.get_x(),
                                  model.get_y(),
