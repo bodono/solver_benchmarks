@@ -4,7 +4,7 @@ from itertools import repeat
 import pandas as pd
 
 from solvers.solvers import SOLVER_MAP
-from problem_classes.sdplib import SDPLIB 
+from problem_classes.sdplib import SDPLIB
 from utils.general import make_sure_path_exists
 
 import numpy as np
@@ -132,14 +132,14 @@ class SDPLIBRunner(object):
         results = s.solve(instance)
 
         # Create solution as pandas table
-        P = instance.qp_problem['P']
-        A = instance.qp_problem['A']
-        N = P.nnz + A.nnz
+        P = instance.sdp_problem['P']
+        A = instance.sdp_problem['A']
+        N = A.nnz + (P.nnz if P is not None else 0)
 
         # Add constant part to objective value
         obj = results.obj_val
         if results.obj_val is not None:
-            obj += instance.qp_problem["r"]
+            obj += instance.sdp_problem["r"]
 
         # Change sign of objective if maximization problem
         if instance.obj_type == 'max':
@@ -162,17 +162,9 @@ class SDPLIBRunner(object):
                          'run_time': [results.run_time],
                          'iter': [results.niter],
                          'obj_val': [obj],
-                         'n': [instance.qp_problem["n"]],
-                         'm': [instance.qp_problem["m"]],
+                         'n': [instance.sdp_problem["n"]],
+                         'm': [instance.sdp_problem["m"]],
                          'N': [N]}
-
-        # Add status polish if OSQP
-        if solver[:4] == 'OSQP':
-            solution_dict['status_polish'] = results.status_polish
-            solution_dict['setup_time'] = results.setup_time
-            solution_dict['solve_time'] = results.solve_time
-            solution_dict['update_time'] = results.update_time
-            solution_dict['rho_updates'] = results.rho_updates
 
         print(" - Solved %s with solver %s" % (problem, solver))
 

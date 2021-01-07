@@ -47,7 +47,7 @@ miplib_runner = MIPLIBRunner(solvers,
                              OUTPUT_FOLDER)
 
 # debug
-miplib_runner.problems = ["air05"]
+#miplib_runner.problems = ["air05"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("pilot4i"):]
 #
