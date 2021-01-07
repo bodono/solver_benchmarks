@@ -32,7 +32,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.qpOASES, s.ECOS]
+solvers=[s.SCS, s.COSMO]
 
 # Shut up solvers
 if verbose:
@@ -47,7 +47,7 @@ sdplib_runner = SDPLIBRunner(solvers,
                              OUTPUT_FOLDER)
 
 # debug
-sdplib_runner.problems = ["gpp100"]
+#sdplib_runner.problems = ["mcp124-1", "hinf1"]
 #sdplib_runner.problems = \
 #  sdplib_runner.problems[sdplib_runner.problems.index("pilot4i"):]
 #

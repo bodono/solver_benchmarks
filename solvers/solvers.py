@@ -4,8 +4,10 @@ from solvers.ecos import ECOSSolver
 #from solvers.mosek import MOSEKSolver
 from solvers.osqp import OSQPSolver
 from solvers.qpoases import qpOASESSolver
+from solvers.cosmo import COSMOSolver 
 
 SCS = 'SCS'
+COSMO = 'COSMO'
 SCS_high = SCS + "_high"
 ECOS = 'ECOS'
 ECOS_high = ECOS + "_high"
@@ -32,6 +34,7 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               #MOSEK_high: MOSEKSolver,
               ECOS: ECOSSolver,
               ECOS_high: ECOSSolver,
+              COSMO: COSMOSolver,
               SCS: SCSSolver,
               SCS_high: SCSSolver,
               qpOASES: qpOASESSolver
@@ -71,6 +74,17 @@ settings = {
                'eps_infeas': 1e-6,
                'max_iters': int(1e09),
                'acceleration_lookback': 0,
+    },
+    COSMO: {'eps_abs': eps_low,
+            'eps_rel': 1e-4,
+            'eps_prim_inf': 1e-6,
+            'eps_dual_inf': 1e-6,
+            'max_iter': int(1e05),
+            'rho': 0.1,
+            'alpha': 1.5,
+            'check_infeasibility' : 50,
+            'check_termination' : 50,
+            'decompose': False,
     },
     OSQP_high: {'eps_abs': eps_high,
                 'eps_rel': eps_high,
