@@ -22,11 +22,14 @@ parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
+parser.add_argument('--infeasible', help='Run of infeasible', default=False,
+                    action='store_true')
 
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
 verbose = args.verbose
 parallel = args.parallel
+infeasible = args.infeasible
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
@@ -39,17 +42,30 @@ if verbose:
     for key in s.settings:
         s.settings[key]['verbose'] = True
 
-OUTPUT_FOLDER = 'sdplib_problems'
+if infeasible:
+  OUTPUT_FOLDER = 'sdplib_infeasible'
+else:
+  OUTPUT_FOLDER = 'sdplib_feasible'
+
 
 # Run all examples
 sdplib_runner = SDPLIBRunner(solvers,
                              s.settings,
                              OUTPUT_FOLDER)
 
+INFEASIBLE_PROBLEMS = ["infd1", "infd2", "infp1", "infp2"]
+
+if infeasible:
+  sdplib_runner.problems = [p for p in sdplib_runner.problems if p in
+                              INFEASIBLE_PROBLEMS]
+else:
+  sdplib_runner.problems = [p for p in sdplib_runner.problems if p not in
+                              INFEASIBLE_PROBLEMS]
+
 # debug
-#sdplib_runner.problems = ["mcp124-1", "hinf1"]
+#sdplib_runner.problems = ["maxG55"]
 #sdplib_runner.problems = \
-#  sdplib_runner.problems[sdplib_runner.problems.index("pilot4i"):]
+#  sdplib_runner.problems[sdplib_runner.problems.index("maxG55"):]
 #
 #probs = sdplib_runner.problems
 #for prob in probs:
@@ -60,8 +76,8 @@ sdplib_runner = SDPLIBRunner(solvers,
 #  sdplib_runner.solve(parallel=parallel, cores=12)
 #  shutil.rmtree("./results/sdplib_feasible")
 
-
 sdplib_runner.solve(parallel=parallel, cores=12)
 # Compute results statistics
 compute_stats_info(solvers, OUTPUT_FOLDER,
-                   high_accuracy=high_accuracy)
+                   high_accuracy=high_accuracy,
+                   infeasible_test=infeasible)
