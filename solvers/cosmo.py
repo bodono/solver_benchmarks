@@ -6,14 +6,23 @@ import time
 import numpy as np
 
 def scs_2_cosmo(A, b, cone):
-  
+
   A_cosmo = np.zeros(A.shape)
   b_cosmo = np.zeros_like(b)
-  
+
   # need to permute the rows in A and b
-  seen_rows = cone['f'] 
-  A_cosmo[:cone['f'], :] = A[:cone['f'], :].todense()
-  b_cosmo[:cone['f']] = b[:cone['f']]
+  seen_rows = 0
+  if 'f' in cone:
+    seen_rows = int(cone['f'])
+  if 'l' in cone:
+    seen_rows += int(cone['l'])
+  if 'q' in cone:
+    seen_rows += int(np.sum(cone['q']))
+
+  if seen_rows > 0:
+    A_cosmo[:seen_rows, :] = A[:seen_rows, :].todense()
+    b_cosmo[:seen_rows] = b[:seen_rows]
+
   for s in cone['s']:
     scs_cols, scs_rows = np.triu_indices(s)
     cosmo_cols, cosmo_rows = np.tril_indices(s)
@@ -30,6 +39,7 @@ def scs_2_cosmo(A, b, cone):
       cosmo_idx = int(cosmo_mat[cosmo_mat_row, cosmo_mat_col])
       A_cosmo[seen_rows + cosmo_idx, :] = A[seen_rows + i, :].todense()
       b_cosmo[seen_rows + cosmo_idx] = b[seen_rows + i]
+    seen_rows += int(s*(s+1) / 2)
 
   return scipy.sparse.csc_matrix(A_cosmo), b_cosmo
 
@@ -44,7 +54,7 @@ class COSMOSolver(object):
         Initialize solver object by setting require settings
         '''
         self._settings = settings
-        
+
 
     @property
     def settings(self):
@@ -88,7 +98,7 @@ class COSMOSolver(object):
           q = problem['q']
           A, b = scs_2_cosmo(problem['A'], problem['b'], scs_cone)
           cone = scs_cone.copy()
-          cone['s'] = [int(p*(p+1) / 2) for p in cone['s']] 
+          cone['s'] = [int(p*(p+1) / 2) for p in cone['s']]
         else:
           raise ValueError('Unrecognized problem type')
 

@@ -4,15 +4,15 @@ from itertools import repeat
 import pandas as pd
 
 from solvers.solvers import SOLVER_MAP
-from problem_classes.sdplib import SDPLIB
+from problem_classes.dimacs import DIMACS 
 from utils.general import make_sure_path_exists
 
 import numpy as np
 
-BASE_PROBLEMS_FOLDER = "sdplib_data"
+BASE_PROBLEMS_FOLDER = "dimacs_data"
+R_CONE_PROBS = []#"bm1", "filter48_socp"]
 
-
-class SDPLIBRunner(object):
+class DIMACSRunner(object):
     '''
     Examples runner
     '''
@@ -24,13 +24,16 @@ class SDPLIBRunner(object):
         self.settings = settings
         self.output_folder = output_folder
 
-        # Get sdplib problems list
+        # Get dimacs problems list
         self.problems_dir = os.path.join(".", "problem_classes", BASE_PROBLEMS_FOLDER)
 
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
-                            f.endswith('.jld2')])
-        self.problems = [f[:-5] for f in lst_probs]   # List of problem names
+                            f.endswith('.mat')])
+        self.problems = [f[:-4] for f in lst_probs]   # List of problem names
+        # cannot handle rotated lorentz cones:
+        self.problems = [f for f in self.problems if f not in
+                         R_CONE_PROBS]
         print(self.problems)
 
     def solve(self, parallel=True, cores=32):
@@ -53,7 +56,7 @@ class SDPLIBRunner(object):
             - 'N': nnz dimension (nnz(P) + nnz(A))
         '''
 
-        print("Solving SDPLIB instances")
+        print("Solving DIMACS instances")
         print("-------------------------------")
 
         if parallel:
@@ -110,7 +113,7 @@ class SDPLIBRunner(object):
                              problem,
                              solver, settings):
         '''
-        Solve SDPLIB 'problem' with 'solver'
+        Solve DIMACS 'problem' with 'solver'
 
         Args:
             dimension: problem leading dimension
@@ -123,8 +126,8 @@ class SDPLIBRunner(object):
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
-                                 BASE_PROBLEMS_FOLDER, "%s.jld2" % problem)
-        instance = SDPLIB(full_name)
+                                 BASE_PROBLEMS_FOLDER, "%s.mat" % problem)
+        instance = DIMACS(full_name)
 
 
         # Solve problem
