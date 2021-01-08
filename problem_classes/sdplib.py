@@ -4,10 +4,6 @@ import numpy as np
 import scipy.sparse
 import scs
 
-from julia.api import Julia
-jl = Julia(compiled_modules=False)
-import cosmopy as cosmo
-
 
 class SDPLIB(object):
     '''
@@ -15,9 +11,7 @@ class SDPLIB(object):
     '''
     def __init__(self, file_name):
         '''
-        Generate Maros problem in QP format and CVXPY format
-
-        NB. By default, the CVXPY problem is not created
+        Generate SDPlib problem using cvxpy
         '''
         # Load problem from file
         self._load_sdplib_problem(file_name)
@@ -27,7 +21,7 @@ class SDPLIB(object):
 
 
     def _parse_out_f(self, f, i):
-      #import pbd;pdb.set_trace
+      print(i)
       ref = f[f['F'][i]]
       value = np.array(ref).item()
       m = value[0]
@@ -39,21 +33,24 @@ class SDPLIB(object):
 
 
     def _load_sdplib_problem(self, filename, verbose=False):
-      f = h5py.File(filename, "r")
-      m = np.array(f['m']).item()
-      n = np.array(f['n']).item()
-      c = np.array(f['c'])
-      Fs = [] # F0 is not multiplied by var
-      for i in range(m + 1):
-        Fs.append(self._parse_out_f(f, i))
+      Fs = []
+      with h5py.File(filename, "r") as f:
+        print('opt objective val:', np.array(f['optVal']))
+        m = np.array(f['m']).item()
+        n = np.array(f['n']).item()
+        c = np.array(f['c'])
+        for i in range(m + 1):
+          Fs.append(self._parse_out_f(f, i))
 
-      print('opt objective val:', np.array(f['optVal']))
+      print('cvxpy forming problem')
       x_var = cvxpy.Variable(m)
       objective = c.T * x_var
+      # F0 is not multiplied by var
       constraints = [cvxpy.sum([Fs[i+1] * x_var[i] for i in range(m)]) >> Fs[0]]
       problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
-    
+      print('cvxpy parsing scs data')
       prob_data = problem.get_problem_data(solver=cvxpy.SCS)
+      print('cvxpy done')
 
       data = prob_data[0]
       dims = data['dims']
