@@ -57,8 +57,8 @@ settings = {
            'scaling': True,
            'adaptive_rho': True,
     },
-    SCS: {'eps_abs': eps_low,
-          'eps_rel': 1e-4,
+    SCS: {'eps_abs': 1e-9,
+          'eps_rel': 1e-9,
           'eps_infeas': 1e-6,
           'max_iters': int(1e05),
           'acceleration_lookback': 0,
@@ -85,6 +85,7 @@ settings = {
             'check_infeasibility' : 100,
             'check_termination' : 100,
             'decompose': False,
+            #'adaptive_rho':False
     },
     OSQP_high: {'eps_abs': eps_high,
                 'eps_rel': eps_high,
