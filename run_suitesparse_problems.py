@@ -46,8 +46,7 @@ if verbose:
     for key in s.settings:
         s.settings[key]['verbose'] = True
 
-solvers = [s.SCS]
-#solvers = [s.OSQP]
+solvers = [s.SCS, s.OSQP, s.qpOASES, s.ECOS, s.COSMO]
 
 problems = [
             'Lasso',
