@@ -7,8 +7,8 @@ import numpy as np
 
 def scs_2_cosmo(A, b, cone):
 
-  A_cosmo = np.zeros(A.shape)
-  b_cosmo = np.zeros_like(b)
+  A_cosmo = scipy.sparse.dok_matrix(A.shape)
+  b_cosmo = np.zeros_like(b, dtype=np.float64)
 
   # need to permute the rows in A and b
   seen_rows = 0
@@ -20,28 +20,21 @@ def scs_2_cosmo(A, b, cone):
     seen_rows += int(np.sum(cone['q']))
 
   if seen_rows > 0:
-    A_cosmo[:seen_rows, :] = A[:seen_rows, :].todense()
+    A_cosmo[:seen_rows, :] = A[:seen_rows, :]
     b_cosmo[:seen_rows] = b[:seen_rows]
 
   for s in cone['s']:
+    ll = int(s * (s + 1) // 2)
     scs_cols, scs_rows = np.triu_indices(s)
-    cosmo_cols, cosmo_rows = np.tril_indices(s)
-    cosmo_mat = np.zeros((s,s))
-    for i in range(len(cosmo_cols)):
-      cosmo_mat[cosmo_rows[i], cosmo_cols[i]] = i
-    # take curr_row from A and put it in right place of A_cosmo
-    for i in range(int(s*(s+1) / 2)):
-      # where is curr_row in S matrix from SCS POV?
-      scs_mat_row, scs_mat_col = scs_rows[i], scs_cols[i] # row, col
-      # convert that position in mat to the cosmo row indx:
-      cosmo_mat_row, cosmo_mat_col = scs_mat_col, scs_mat_row
-      # now where does this row/col get put in the vec(S) from cosmo POV?
-      cosmo_idx = int(cosmo_mat[cosmo_mat_row, cosmo_mat_col])
-      A_cosmo[seen_rows + cosmo_idx, :] = A[seen_rows + i, :].todense()
-      b_cosmo[seen_rows + cosmo_idx] = b[seen_rows + i]
-    seen_rows += int(s*(s+1) / 2)
+    cosmo_rows, cosmo_cols = np.tril_indices(s)
+    scs_mat = np.zeros((s,s), dtype=np.int64)
+    scs_mat[scs_rows, scs_cols] = range(ll)
+    mapping = scs_mat[cosmo_rows, cosmo_cols]
+    A_cosmo[seen_rows:seen_rows + ll, :] = A[seen_rows + mapping, :]
+    b_cosmo[seen_rows:seen_rows + ll] = b[seen_rows + mapping]
+    seen_rows += ll
 
-  return scipy.sparse.csc_matrix(A_cosmo), b_cosmo
+  return A_cosmo.tocsc(), b_cosmo
 
 class COSMOSolver(object):
     STATUS_MAP = {'Solved': s.OPTIMAL,

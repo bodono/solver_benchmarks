@@ -8,7 +8,7 @@ class MarosMeszaros(object):
     '''
     Maros Meszaros
     '''
-    def __init__(self, file_name, create_cvxpy_problem=False):
+    def __init__(self, file_name):
         '''
         Generate Maros problem in QP format and CVXPY format
 
@@ -19,9 +19,13 @@ class MarosMeszaros(object):
             self._load_maros_meszaros_problem(file_name)
 
         self.qp_problem = self._generate_qp_problem()
+        self._cvxpy_problem = None
 
-        if create_cvxpy_problem:
-            self.cvxpy_problem = self._generate_cvxpy_problem()
+    @property
+    def cvxpy_problem(self):
+      if self._cvxpy_problem is None:
+        self._cvxpy_problem = self._generate_cvxpy_problem()
+      return self._cvxpy_problem
 
     @staticmethod
     def _load_maros_meszaros_problem(f):
@@ -64,10 +68,14 @@ class MarosMeszaros(object):
         '''
         Generate QP problem
         '''
+        u = np.copy(self.u)
+        u[u == np.inf] = 1e9
+        l = np.copy(self.l)
+        l[l == -np.inf] = -1e9
         x_var = cvxpy.Variable(self.n)
         objective = .5 * cvxpy.quad_form(x_var, self.P) + self.q * x_var + \
             self.r
-        constraints = [self.A * x_var <= self.u, self.A * x_var >= self.l]
+        constraints = [self.A * x_var <= u, self.A * x_var >= l]
         problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
 
         return problem

@@ -21,7 +21,6 @@ class SDPLIB(object):
 
 
     def _parse_out_f(self, f, i):
-      print(i)
       ref = f[f['F'][i]]
       value = np.array(ref).item()
       m = value[0]
