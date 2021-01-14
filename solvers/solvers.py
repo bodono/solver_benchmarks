@@ -85,7 +85,8 @@ settings = {
             'check_infeasibility' : 100,
             'check_termination' : 100,
             'decompose': False,
-            #'adaptive_rho':False
+            'scaling': 1,
+            'adaptive_rho': True
     },
     OSQP_high: {'eps_abs': eps_high,
                 'eps_rel': eps_high,

@@ -63,7 +63,7 @@ else:
                               INFEASIBLE_PROBLEMS]
 
 # debug
-#sdplib_runner.problems = ["maxG55"]
+#sdplib_runner.problems = ["qap5"]
 #sdplib_runner.problems = \
 #  sdplib_runner.problems[sdplib_runner.problems.index("maxG55"):]
 #

@@ -40,7 +40,7 @@ else:
     solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
     OUTPUT_FOLDER = 'qplib_problems'
 
-solvers=[s.SCS, s.OSQP, s.qpOASES, s.ECOS, s.COSMO]
+solvers=[s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
 
 # Shut up solvers
 if verbose:

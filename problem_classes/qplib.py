@@ -21,8 +21,14 @@ class QPLIB(object):
 
         self.qp_problem = self._generate_qp_problem()
 
-        if create_cvxpy_problem:
-            self.cvxpy_problem = self._generate_cvxpy_problem()
+        self._cvxpy_problem = None
+
+
+    @property
+    def cvxpy_problem(self):
+      if self._cvxpy_problem is None:
+        self._cvxpy_problem = self._generate_cvxpy_problem()
+      return self._cvxpy_problem
 
     def _load_qplib_problem(self, filename, verbose=False):
         # minimize or maximize
@@ -348,10 +354,14 @@ class QPLIB(object):
         '''
         Generate QP problem
         '''
+        u = np.copy(self.u)
+        u[u == np.inf] = 1e9
+        l = np.copy(self.l)
+        l[l == -np.inf] = -1e9
         x_var = cvxpy.Variable(self.n)
         objective = .5 * cvxpy.quad_form(x_var, self.P) + self.q * x_var + \
             self.r
-        constraints = [self.A * x_var <= self.u, self.A * x_var >= self.l]
+        constraints = [self.A * x_var <= u, self.A * x_var >= l]
         problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
 
         return problem

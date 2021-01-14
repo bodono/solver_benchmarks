@@ -15,8 +15,8 @@ import argparse
 
 
 parser = argparse.ArgumentParser(description='Maros Meszaros Runner')
-parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
-                    action='store_true')
+parser.add_argument('--high_accuracy', help='Test with high accuracy',
+                    default=False, action='store_true')
 parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
@@ -40,7 +40,7 @@ else:
     solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
     OUTPUT_FOLDER = 'maros_meszaros_problems'
 
-solvers = [s.SCS, s.OSQP, s.qpOASES, s.ECOS, s.COSMO]
+solvers = [s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
 #solvers = [s.OSQP]
 
 # Shut up solvers
@@ -53,8 +53,7 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             s.settings,
                                             OUTPUT_FOLDER)
 
-# DEBUG only: Choose only 2 problems
-# maros_meszaros_runner.problems = ["STADAT1", "BOYD1"]
+#maros_meszaros_runner.problems = ["MOSARQP2"]
 
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
