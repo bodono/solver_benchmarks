@@ -81,8 +81,8 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
         eps_abs = s.eps_high
         eps_rel = s.eps_high
     else:
-        eps_abs=s.eps_low
-        eps_rel=s.eps_low
+        eps_abs=s.eps_abs_low
+        eps_rel=s.eps_rel_low
 
     # Get problem matrices
     P = qp_problem['P']
@@ -95,7 +95,6 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
     Ax = A.dot(x)
     eps_pri = eps_abs + eps_rel * la.norm(Ax, np.inf)
     pri_res = np.minimum(Ax - l, 0) + np.maximum(Ax - u, 0)
-
     if la.norm(pri_res, np.inf) > eps_pri:
         print("Error in primal residual: %.4e > %.4e" %
               (la.norm(pri_res, np.inf), eps_pri))
@@ -114,24 +113,34 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
               (la.norm(dua_res, np.inf), eps_dua))
         return False
 
+    y_plus = np.maximum(y, 0)
+    y_minus = np.minimum(y, 0)
+    gap = x.T.dot(Px) + q.T.dot(x) + y_plus.T.dot(u) + y_minus.T.dot(l)
+    eps_gap = eps_abs + eps_rel * np.max([x.T.dot(Px),
+                                          q.T.dot(x),
+                                          y_plus.T.dot(u),
+                                          y_minus.T.dot(l)])
+
+    if np.abs(gap) > eps_gap:
+        print("Error in gap residual: %.4e > %.4e" %
+              (np.abs(gap), eps_gap))
+        return False
+
     # Check complementary slackness (REMOVED, not compatible with IP methods)
-    #  y_plus = np.maximum(y, 0)
-    #  y_minus = np.minimum(y, 0)
-    #
-    #  eps_comp = eps_abs + eps_rel * np.max([la.norm(Ax, np.inf)])
-    #
-    #  comp_res_u = np.minimum(y_plus, np.abs(u - Ax))
-    #  comp_res_l = np.minimum(-y_minus, np.abs(Ax - l))
-    #
-    #  if la.norm(comp_res_l, np.inf) > eps_comp:
-    #      print("Error in complementary slackness residual l: %.4e > %.4e" %
-    #            (la.norm(comp_res_l, np.inf), eps_comp))
-    #      return False
-    #
-    #  if la.norm(comp_res_u, np.inf) > eps_comp:
-    #      print("Error in complementary slackness residual u: %.4e > %.4e" %
-    #            (la.norm(comp_res_u, np.inf), eps_comp))
-    #      return False
+    eps_comp = eps_abs + eps_rel * np.max([la.norm(Ax, np.inf)])
+
+    comp_res_u = np.minimum(y_plus, np.abs(u - Ax))
+    comp_res_l = np.minimum(-y_minus, np.abs(Ax - l))
+
+    if la.norm(comp_res_l, np.inf) > eps_comp:
+        print("Error in complementary slackness residual l: %.4e > %.4e" %
+              (la.norm(comp_res_l, np.inf), eps_comp))
+        #return False
+
+    if la.norm(comp_res_u, np.inf) > eps_comp:
+        print("Error in complementary slackness residual u: %.4e > %.4e" %
+              (la.norm(comp_res_u, np.inf), eps_comp))
+        #return False
 
     # If we arrived until here, the solution is optimal
     return True

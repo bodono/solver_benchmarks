@@ -30,18 +30,11 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-# Add high accuracy solvers when accurazy
-if high_accuracy:
-    solvers = [s.OSQP_high, s.OSQP_polish_high, s.GUROBI_high, s.MOSEK_high]
-    OUTPUT_FOLDER = 'maros_meszaros_problems_high_accuracy'
-    for key in s.settings:
-        s.settings[key]['high_accuracy'] = True
-else:
-    solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
-    OUTPUT_FOLDER = 'maros_meszaros_problems'
 
-solvers = [s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
-#solvers = [s.OSQP]
+OUTPUT_FOLDER = 'maros_meszaros_problems_scs'
+
+#solvers = [s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
+solvers = [s.SCS]
 
 # Shut up solvers
 if verbose:
@@ -53,8 +46,7 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             s.settings,
                                             OUTPUT_FOLDER)
 
-#maros_meszaros_runner.problems = ["MOSARQP2"]
-
+#maros_meszaros_runner.problems = ["QCAPRI"]
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

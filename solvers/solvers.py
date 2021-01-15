@@ -4,7 +4,7 @@ from solvers.ecos import ECOSSolver
 #from solvers.mosek import MOSEKSolver
 from solvers.osqp import OSQPSolver
 from solvers.qpoases import qpOASESSolver
-from solvers.cosmo import COSMOSolver 
+from solvers.cosmo import COSMOSolver
 
 SCS = 'SCS'
 COSMO = 'COSMO'
@@ -41,92 +41,107 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               }
 
 time_limit = 1000. # Seconds
-eps_low = 1e-03
+eps_abs_low = 1e-03
+eps_rel_low = 1e-04
 eps_high = 1e-05
+eps_infeas = 1e-8
+
+DEBUG = True
+
+if DEBUG:
+  NORMALIZE = False
+  SCALE = 1.0
+  ALPHA = 1.0
+  ADAPTIVE_SCALING = False
+else:
+  NORMALIZE = True
+  SCALE = 0.1
+  ALPHA = 1.5
+  ADAPTIVE_SCALING = True
 
 # Solver settings
 settings = {
-    OSQP: {'eps_abs': eps_low,
-           'eps_rel': 1e-4,
+    OSQP: {'eps_abs': eps_abs_low,
+           'eps_rel': eps_rel_low,
            'polish': False,
            'max_iter': int(1e05),
-           'eps_prim_inf': 1e-6,  # Disable infeas check
-           'eps_dual_inf': 1e-6,
-           'rho': 0.1,
-           'alpha': 1.5,
-           'scaling': True,
-           'adaptive_rho': True,
+           'eps_prim_inf': eps_infeas,  # Disable infeas check
+           'eps_dual_inf': eps_infeas,
+           'rho': SCALE,
+           'alpha': ALPHA,
+           'scaling': NORMALIZE,
+           'adaptive_rho': ADAPTIVE_SCALING,
     },
-    SCS: {'eps_abs': eps_low,
-          'eps_rel': 1e-4,
-          'eps_infeas': 1e-6,
+    SCS: {'eps_abs': eps_abs_low,
+          'eps_rel': eps_rel_low,
+          'eps_infeas': eps_infeas,
           'max_iters': int(1e05),
-          'acceleration_lookback': 0,
-          'scale': 0.1,
-          'alpha': 1.5,
-          'normalize': True,
-          'adaptive_scaling': True,
+          'acceleration_lookback': 20,
+          'scale': SCALE,
+          'alpha': ALPHA,
+          'normalize': NORMALIZE,
+          'adaptive_scaling': ADAPTIVE_SCALING,
           'use_indirect': False,
           #'rho_x': 1.,
     },
     SCS_high: {'eps_abs': eps_high,
                'eps_rel': eps_high,
-               'eps_infeas': 1e-6,
+               'eps_infeas': eps_infeas,
                'max_iters': int(1e09),
                'acceleration_lookback': 0,
     },
-    COSMO: {'eps_abs': eps_low,
-            'eps_rel': 1e-4,
-            'eps_prim_inf': 1e-6,
-            'eps_dual_inf': 1e-6,
+    COSMO: {'eps_abs': eps_abs_low,
+            'eps_rel': eps_rel_low,
+            'eps_prim_inf': eps_infeas,
+            'eps_dual_inf': eps_infeas,
             'max_iter': int(1e05),
-            'rho': 0.1,
-            'alpha': 1.5,
+            'rho': SCALE,
+            'alpha': ALPHA,
             'check_infeasibility' : 100,
             'check_termination' : 100,
             'decompose': False,
-            'scaling': 1,
-            'adaptive_rho': True
+            'scaling': 1 if NORMALIZE else 0,
+            'adaptive_rho': ADAPTIVE_SCALING
     },
     OSQP_high: {'eps_abs': eps_high,
                 'eps_rel': eps_high,
                 'polish': False,
                 'max_iter': int(1e09),
-                'eps_prim_inf': 1e-6,  # Disable infeas check
-                'eps_dual_inf': 1e-6
+                'eps_prim_inf': eps_infeas,  # Disable infeas check
+                'eps_dual_inf': eps_infeas
     },
-    OSQP_polish: {'eps_abs': eps_low,
-                  'eps_rel': eps_low,
+    OSQP_polish: {'eps_abs': eps_abs_low,
+                  'eps_rel': eps_rel_low,
                   'polish': True,
                   'max_iter': int(1e09),
-                  'eps_prim_inf': 1e-15,  # Disable infeas check
-                  'eps_dual_inf': 1e-15
+                  'eps_prim_inf': eps_infeas,  # Disable infeas check
+                  'eps_dual_inf': eps_infeas
     },
     OSQP_polish_high: {'eps_abs': eps_high,
                        'eps_rel': eps_high,
                        'polish': True,
                        'max_iter': int(1e09),
-                       'eps_prim_inf': 1e-15,  # Disable infeas check
-                       'eps_dual_inf': 1e-15
+                       'eps_prim_inf': eps_infeas,  # Disable infeas check
+                       'eps_dual_inf': eps_infeas
     },
     GUROBI: {'TimeLimit': time_limit,
-             'FeasibilityTol': eps_low,
-             'OptimalityTol': eps_low,
+             'FeasibilityTol': eps_abs_low,
+             'OptimalityTol': eps_abs_low,
              },
     GUROBI_high: {'TimeLimit': time_limit,
                   'FeasibilityTol': eps_high,
                   'OptimalityTol': eps_high,
                   },
     MOSEK: {'MSK_DPAR_OPTIMIZER_MAX_TIME': time_limit,
-            'MSK_DPAR_INTPNT_CO_TOL_PFEAS': eps_low,   # Primal feasibility tolerance
-            'MSK_DPAR_INTPNT_CO_TOL_DFEAS': eps_low,   # Dual feasibility tolerance
+            'MSK_DPAR_INTPNT_CO_TOL_PFEAS': eps_abs_low,   # Primal feasibility tolerance
+            'MSK_DPAR_INTPNT_CO_TOL_DFEAS': eps_abs_low,   # Dual feasibility tolerance
            },
     MOSEK_high: {'MSK_DPAR_OPTIMIZER_MAX_TIME': time_limit,
                  'MSK_DPAR_INTPNT_CO_TOL_PFEAS': eps_high,   # Primal feasibility tolerance
                  'MSK_DPAR_INTPNT_CO_TOL_DFEAS': eps_high,   # Dual feasibility tolerance
                 },
-    ECOS: {'abstol': eps_low,
-           'reltol': eps_low},
+    ECOS: {'abstol': eps_abs_low,
+           'reltol': eps_rel_low},
     ECOS_high: {'abstol': eps_high,
                 'reltol': eps_high},
     qpOASES: {}
