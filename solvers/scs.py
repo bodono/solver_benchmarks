@@ -41,19 +41,16 @@ class SCSSolver(object):
         high_accuracy = settings.pop('high_accuracy', None)
         if hasattr(example, 'qp_problem'):
           problem = example.qp_problem
-
-          # Solve
-          (m,n) = problem['A'].shape
-
+          A = problem['A']
+          (m, n) = problem['A'].shape
           # Hack out the equality constraints
-          idxs = (problem['u'] - problem['l'] < 1e-5)
-          A_scs = scipy.sparse.vstack((problem['A'][idxs, :],
-                                      np.zeros((1, n)),
-                                      -problem['A'][~idxs, :]))
+          idxs = (problem['u'] - problem['l'] < 1e-6)
+          o_idxs = np.array(range(A.shape[0])) # no need +1 for box cone
+          o_idxs = np.hstack((o_idxs[idxs], o_idxs[~idxs]))
+          inv_perm = np.argsort(np.hstack((o_idxs[idxs], o_idxs[~idxs])))
 
-          b_scs = np.hstack((problem['u'][idxs],
-                            1,
-                            np.zeros(m - np.sum(idxs))))
+          A_scs = scipy.sparse.vstack((A[idxs, :], np.zeros((1, n)), -A[~idxs, :]))
+          b_scs = np.hstack((problem['u'][idxs], 1, np.zeros(m - np.sum(idxs))))
 
           data = dict(P=scipy.sparse.csc_matrix(problem['P']), c=problem['q'],
                       A=scipy.sparse.csc_matrix(A_scs), b=b_scs)
@@ -73,14 +70,19 @@ class SCSSolver(object):
 
         # XXX TODO invert HACK above (on s and y)
 
-        status = self.STATUS_MAP.get(results['info']['statusVal'], s.SOLVER_ERROR)
-
-        #if status in s.SOLUTION_PRESENT:
-        #    if not is_qp_solution_optimal(problem,
-        #                                  results['x'],
-        #                                  -results['y'][1:],
-        #                                  high_accuracy=high_accuracy):
-        #        status = s.SOLVER_ERROR
+        if hasattr(example, 'qp_problem'):
+          y = results['y']
+          y[cone['f']:] *= -1.
+          y = np.delete(y, cone['f']) # remove perspective var from y
+          y = y[inv_perm]
+          status = self.STATUS_MAP.get(results['info']['statusVal'], s.SOLVER_ERROR)
+          if status in s.SOLUTION_PRESENT:
+            if not is_qp_solution_optimal(problem,
+                                          results['x'],
+                                          y,
+                                          high_accuracy=high_accuracy):
+              raise ValueError()
+              status = s.SOLVER_ERROR
 
         # Verify solver time
         if settings.get('time_limit') is not None:
