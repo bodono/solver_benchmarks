@@ -31,10 +31,10 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 
-OUTPUT_FOLDER = 'maros_meszaros_problems_scs'
+OUTPUT_FOLDER = 'maros_meszaros_problems_cosmo'
 
 #solvers = [s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
-solvers = [s.SCS]
+solvers = [s.COSMO]
 
 # Shut up solvers
 if verbose:
@@ -46,7 +46,7 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             s.settings,
                                             OUTPUT_FOLDER)
 
-#maros_meszaros_runner.problems = ["QCAPRI"]
+#maros_meszaros_runner.problems = ["QFORPLAN"]
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics
