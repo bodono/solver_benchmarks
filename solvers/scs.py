@@ -47,7 +47,7 @@ class SCSSolver(object):
           idxs = (problem['u'] - problem['l'] < 1e-6)
           o_idxs = np.array(range(A.shape[0])) # no need +1 for box cone
           o_idxs = np.hstack((o_idxs[idxs], o_idxs[~idxs]))
-          inv_perm = np.argsort(np.hstack((o_idxs[idxs], o_idxs[~idxs])))
+          inv_perm = np.argsort(o_idxs)
 
           A_scs = scipy.sparse.vstack((A[idxs, :], np.zeros((1, n)), -A[~idxs, :]))
           b_scs = np.hstack((problem['u'][idxs], 1, np.zeros(m - np.sum(idxs))))
@@ -68,8 +68,7 @@ class SCSSolver(object):
         results = scs.solve(data, cone, **settings)
         end = time.time()
 
-        # XXX TODO invert HACK above (on s and y)
-
+        # this only inverts y, not s
         if hasattr(example, 'qp_problem'):
           y = results['y']
           y[cone['f']:] *= -1.
@@ -81,7 +80,6 @@ class SCSSolver(object):
                                           results['x'],
                                           y,
                                           high_accuracy=high_accuracy):
-              raise ValueError()
               status = s.SOLVER_ERROR
 
         # Verify solver time

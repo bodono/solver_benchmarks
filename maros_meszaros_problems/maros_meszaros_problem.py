@@ -28,8 +28,8 @@ class MarosMeszarosRunner(object):
         # Get maros problems list
         problems_dir = os.path.join(".", "problem_classes", PROBLEMS_FOLDER)
         # List of problems in .mat format
-        lst_probs = [f for f in os.listdir(problems_dir) if \
-            f.endswith('.mat')]
+        lst_probs = sorted([f for f in os.listdir(problems_dir) if \
+            f.endswith('.mat')])
         self.problems = [f[:-4] for f in lst_probs]   # List of problem names
 
     def solve(self, parallel=True, cores=32):
