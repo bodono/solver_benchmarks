@@ -115,13 +115,20 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
 
     y_plus = np.maximum(y, 0)
     y_minus = np.minimum(y, 0)
+
+    # these next lines try to prevent errors like inf * 0 = nan or inf
+    l[l==-np.inf] = -1e20
+    u[u==np.inf] = 1e20
+    y_plus[np.abs(y_plus)<1e-12] = 0.
+    y_minus[np.abs(y_minus)<1e-12] = 0.
+
     gap = x.T.dot(Px) + q.T.dot(x) + y_plus.T.dot(u) + y_minus.T.dot(l)
     eps_gap = eps_abs + eps_rel * np.max([x.T.dot(Px),
                                           q.T.dot(x),
                                           y_plus.T.dot(u),
                                           y_minus.T.dot(l)])
 
-    if np.abs(gap) > eps_gap:
+    if np.isnan(gap) or np.abs(gap) > eps_gap:
         print("Error in gap residual: %.4e > %.4e" %
               (np.abs(gap), eps_gap))
         return False

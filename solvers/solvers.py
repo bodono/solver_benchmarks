@@ -46,7 +46,7 @@ eps_rel_low = 1e-04
 eps_high = 1e-05
 eps_infeas = 1e-8
 
-DEBUG = True
+DEBUG = False
 
 if DEBUG:
   NORMALIZE = False
@@ -76,7 +76,7 @@ settings = {
           'eps_rel': eps_rel_low,
           'eps_infeas': eps_infeas,
           'max_iters': int(1e05),
-          'acceleration_lookback': 20,
+          'acceleration_lookback': 0,
           'scale': SCALE,
           'alpha': ALPHA,
           'normalize': NORMALIZE,

@@ -109,6 +109,14 @@ class COSMOSolver(object):
         model.optimize()
         end = time.time()
         status = self.STATUS_MAP.get(model.get_status(), s.SOLVER_ERROR)
+        if hasattr(example, 'qp_problem'):
+          if status in s.SOLUTION_PRESENT:
+            if not is_qp_solution_optimal(problem,
+                                          model.get_x(),
+                                          -model.get_y(),
+                                          high_accuracy=high_accuracy):
+              status = s.SOLVER_ERROR
+
 
         run_time = end - start # this is poor due to python/julia overhead
         # will have to trust cosmo itself unforunately

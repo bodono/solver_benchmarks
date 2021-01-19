@@ -1,6 +1,6 @@
 import scs
 import scipy.sparse
-from . import statuses as s
+from . import statuses
 from .results import Results
 from utils.general import is_qp_solution_optimal
 import time
@@ -8,12 +8,12 @@ import numpy as np
 
 class SCSSolver(object):
 
-    STATUS_MAP = {1: s.OPTIMAL,
-                  2: s.MAX_ITER_REACHED,
-                  -2: s.PRIMAL_INFEASIBLE,
-                  -1: s.DUAL_INFEASIBLE,
-                  -6: s.DUAL_INFEASIBLE,
-                  -7: s.PRIMAL_INFEASIBLE}
+    STATUS_MAP = {1: statuses.OPTIMAL,
+                  2: statuses.MAX_ITER_REACHED,
+                  -2: statuses.PRIMAL_INFEASIBLE,
+                  -1: statuses.DUAL_INFEASIBLE,
+                  -6: statuses.DUAL_INFEASIBLE,
+                  -7: statuses.PRIMAL_INFEASIBLE}
 
     def __init__(self, settings={}):
         '''
@@ -68,24 +68,27 @@ class SCSSolver(object):
         results = scs.solve(data, cone, **settings)
         end = time.time()
 
-        # this only inverts y, not s
-        if hasattr(example, 'qp_problem'):
-          y = results['y']
+        def _inv(y):
           y[cone['f']:] *= -1.
           y = np.delete(y, cone['f']) # remove perspective var from y
           y = y[inv_perm]
-          status = self.STATUS_MAP.get(results['info']['statusVal'], s.SOLVER_ERROR)
-          if status in s.SOLUTION_PRESENT:
+          return y
+
+        if hasattr(example, 'qp_problem'):
+          y = _inv(results['y'])
+          s = _inv(results['s']) # just for debugging
+          status = self.STATUS_MAP.get(results['info']['statusVal'], statuses.SOLVER_ERROR)
+          if status in statuses.SOLUTION_PRESENT:
             if not is_qp_solution_optimal(problem,
                                           results['x'],
                                           y,
                                           high_accuracy=high_accuracy):
-              status = s.SOLVER_ERROR
+              status = statuses.SOLVER_ERROR
 
         # Verify solver time
         if settings.get('time_limit') is not None:
             if results.info.run_time > settings.get('time_limit'):
-                status = s.TIME_LIMIT
+                status = statuses.TIME_LIMIT
 
         #run_time = 1e-3 * (results['info']['solveTime']
         #                  + results['info']['setupTime'])

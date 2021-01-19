@@ -41,7 +41,7 @@ else:
     OUTPUT_FOLDER = 'qplib_problems'
 
 solvers=[s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
-
+#solvers=[s.SCS]
 # Shut up solvers
 if verbose:
     for key in s.settings:
