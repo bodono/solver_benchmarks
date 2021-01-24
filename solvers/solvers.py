@@ -65,7 +65,7 @@ settings = {
     OSQP: {'eps_abs': eps_abs_low,
            'eps_rel': eps_rel_low,
            'polish': False,
-           'max_iter': int(1e05),
+           'max_iter': int(1e07),
            'eps_prim_inf': eps_infeas,  # Disable infeas check
            'eps_dual_inf': eps_infeas,
            'rho': SCALE,
@@ -76,7 +76,7 @@ settings = {
     SCS: {'eps_abs': eps_abs_low,
           'eps_rel': eps_rel_low,
           'eps_infeas': eps_infeas,
-          'max_iters': int(1e05),
+          'max_iters': int(1e07),
           'acceleration_lookback': 0,
           'acceleration_interval': 50,
           'scale': SCALE,
