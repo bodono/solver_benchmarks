@@ -51,7 +51,7 @@ else:
   OUTPUT_FOLDER = 'netlib_feasible'
 
 if add_quadratic:
-  OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER, '_quadratic')
+  OUTPUT_FOLDER = OUTPUT_FOLDER + '_quadratic'
 
 # Run all examples
 netlib_runner = NETLIBRunner(solvers,
