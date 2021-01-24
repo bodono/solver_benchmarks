@@ -32,7 +32,7 @@ print('parallel', parallel)
 
 OUTPUT_FOLDER = 'qplib_problems'
 solvers=[s.OSQP, s.SCS, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES]
-,
+
 # Shut up solvers
 if verbose:
     for key in s.settings:
