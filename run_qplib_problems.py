@@ -38,10 +38,10 @@ if high_accuracy:
         s.settings[key]['high_accuracy'] = True
 else:
     solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
-    OUTPUT_FOLDER = 'qplib_problems'
+    OUTPUT_FOLDER = 'qplib_problems_tmp'
 
 solvers=[s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
-#solvers=[s.SCS]
+solvers=[s.SCS, s.OSQP]
 # Shut up solvers
 if verbose:
     for key in s.settings:
@@ -53,8 +53,7 @@ qplib_runner = QPLIBRunner(solvers,
                            OUTPUT_FOLDER)
 
 # DEBUG only: Choose only 2 problems
-#qplib_runner.problems = ["8906"]
-
+#qplib_runner.problems = ["9002"]
 qplib_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

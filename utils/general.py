@@ -1,6 +1,6 @@
 import numpy as np
 import numpy.linalg as la
-import solvers.solvers as s
+import solvers.solvers as statuses
 import errno
 import os
 
@@ -71,20 +71,76 @@ def gen_int_log_space(min_val, limit, n):
     return np.array(list(map(lambda x: round(x)-1 + min_val, result)),
                     dtype=int)
 
+def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
+    # primal: Ax + s == b
+    # dual:   Px + A'y + c == 0
+    # gap:    x'Px + c'x + b'y == 0
+    # cone:   s \in K, y in K^star
+    if high_accuracy:
+      eps_abs = statuses.eps_high
+      eps_rel = statuses.eps_high
+    else:
+      eps_abs=statuses.eps_abs_low
+      eps_rel=statuses.eps_rel_low
 
-def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
+    P = data['P']
+    A = data['A']
+    b = data['b']
+    c = data['c']
+
+    # Check primal feasibility
+    Ax = A.dot(x)
+    eps_pri = eps_abs + eps_rel * np.max([la.norm(Ax, np.inf),
+                                          la.norm(s, np.inf),
+                                          la.norm(b, np.inf)])
+
+    pri_res = Ax + s - b
+    if la.norm(pri_res, np.inf) > eps_pri:
+        print("Cone: Error in primal residual: %.4e > %.4e" %
+              (la.norm(pri_res, np.inf), eps_pri))
+        return False
+
+    # Check dual feasibility
+    Px = P.dot(x)
+    Aty = A.T.dot(y)
+    eps_dua = eps_abs + eps_rel * np.max([la.norm(Px, np.inf),
+                                          la.norm(c, np.inf),
+                                          la.norm(Aty, np.inf)])
+    dua_res = Px + c + Aty
+    if la.norm(dua_res, np.inf) > eps_dua:
+        print("Cone: Error in dual residual: %.4e > %.4e" %
+              (la.norm(dua_res, np.inf), eps_dua))
+        return False
+
+    gap = x.T.dot(Px) + c.T.dot(x) + b.T.dot(y)
+    eps_gap = eps_abs + eps_rel * np.max([x.T.dot(Px),
+                                          c.T.dot(x),
+                                          b.T.dot(y)])
+
+    if np.isnan(gap) or np.abs(gap) > eps_gap:
+        print("Cone: Error in gap residual: %.4e > %.4e" %
+              (np.abs(gap), eps_gap))
+        return False
+
+    # TODO check cone membership
+    print('Cone solution verified')
+    return True
+
+
+
+def is_qp_solution_optimal(qp_problem, x, y, high_accuracy):
     '''
     Check optimality condition of the QP given the
     primal-dual solution (x, y) and the tolerance eps
     '''
-    if high_accuracy:
-        eps_abs = s.eps_high
-        eps_rel = s.eps_high
-    else:
-        eps_abs=s.eps_abs_low
-        eps_rel=s.eps_rel_low
-
     # Get problem matrices
+    if high_accuracy:
+      eps_abs = statuses.eps_high
+      eps_rel = statuses.eps_high
+    else:
+      eps_abs=statuses.eps_abs_low
+      eps_rel=statuses.eps_rel_low
+
     P = qp_problem['P']
     q = qp_problem['q']
     A = qp_problem['A']
@@ -96,7 +152,7 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
     eps_pri = eps_abs + eps_rel * la.norm(Ax, np.inf)
     pri_res = np.minimum(Ax - l, 0) + np.maximum(Ax - u, 0)
     if la.norm(pri_res, np.inf) > eps_pri:
-        print("Error in primal residual: %.4e > %.4e" %
+        print("QP: Error in primal residual: %.4e > %.4e" %
               (la.norm(pri_res, np.inf), eps_pri))
         return False
 
@@ -109,7 +165,7 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
     dua_res = Px + q + Aty
 
     if la.norm(dua_res, np.inf) > eps_dua:
-        print("Error in dual residual: %.4e > %.4e" %
+        print("QP: Error in dual residual: %.4e > %.4e" %
               (la.norm(dua_res, np.inf), eps_dua))
         return False
 
@@ -129,7 +185,7 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
                                           y_minus.T.dot(l)])
 
     if np.isnan(gap) or np.abs(gap) > eps_gap:
-        print("Error in gap residual: %.4e > %.4e" %
+        print("QP: Error in gap residual: %.4e > %.4e" %
               (np.abs(gap), eps_gap))
         return False
 
@@ -140,16 +196,18 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy=False):
     comp_res_l = np.minimum(-y_minus, np.abs(Ax - l))
 
     if la.norm(comp_res_l, np.inf) > eps_comp:
-        print("Error in complementary slackness residual l: %.4e > %.4e" %
+        print("QP: Error in complementary slackness residual l: %.4e > %.4e" %
               (la.norm(comp_res_l, np.inf), eps_comp))
         #return False
 
     if la.norm(comp_res_u, np.inf) > eps_comp:
-        print("Error in complementary slackness residual u: %.4e > %.4e" %
+        print("QP: Error in complementary slackness residual u: %.4e > %.4e" %
               (la.norm(comp_res_u, np.inf), eps_comp))
         #return False
 
     # If we arrived until here, the solution is optimal
+
+    print('QP solution verified')
     return True
 
 

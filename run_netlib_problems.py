@@ -24,18 +24,21 @@ parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
 parser.add_argument('--infeasible', help='Run of infeasible', default=False,
                     action='store_true')
+parser.add_argument('--add_quadratic', help='Add a quadratic term,', default=False,
+                    action='store_true')
 
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
 verbose = args.verbose
 parallel = args.parallel
 infeasible = args.infeasible
+add_quadratic = args.add_quadratic
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.qpOASES, s.ECOS, s.COSMO]
+solvers=[s.SCS, s.OSQP, s.qpOASES, s.ECOS, s.COSMO, s.SCS2]
 
 # Shut up solvers
 if verbose:
@@ -47,11 +50,15 @@ if infeasible:
 else:
   OUTPUT_FOLDER = 'netlib_feasible'
 
+if add_quadratic:
+  OUTPUT_FOLDER = os.path.join(OUTPUT_FOLDER, '_quadratic')
+
 # Run all examples
 netlib_runner = NETLIBRunner(solvers,
                              s.settings,
                              OUTPUT_FOLDER,
-                             infeasible)
+                             infeasible,
+                             add_quadratic)
 
 # debug
 #netlib_runner.problems = ["czprob"]
