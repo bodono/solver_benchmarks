@@ -30,19 +30,9 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-# Add high accuracy solvers when accurazy
-if high_accuracy:
-    solvers = [s.OSQP_high, s.OSQP_polish_high, s.GUROBI_high, s.MOSEK_high]
-    OUTPUT_FOLDER = 'qplib_problems_high_accuracy'
-    for key in s.settings:
-        s.settings[key]['high_accuracy'] = True
-else:
-    solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
-    OUTPUT_FOLDER = 'qplib_problems'
-
-solvers=[s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
-solvers=[s.OSQP, s.SCS]
-
+OUTPUT_FOLDER = 'qplib_problems'
+solvers=[s.OSQP, s.SCS, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES]
+,
 # Shut up solvers
 if verbose:
     for key in s.settings:

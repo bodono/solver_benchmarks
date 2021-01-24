@@ -7,7 +7,7 @@ from solvers.qpoases import qpOASESSolver
 from solvers.cosmo import COSMOSolver
 
 SCS = 'SCS'
-SCS2 = 'SCS2'
+SCS_AA = 'SCS_AA'
 COSMO = 'COSMO'
 SCS_high = SCS + "_high"
 ECOS = 'ECOS'
@@ -37,7 +37,7 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               ECOS_high: ECOSSolver,
               COSMO: COSMOSolver,
               SCS: SCSSolver,
-              SCS2: SCSSolver,
+              SCS_AA: SCSSolver,
               qpOASES: qpOASESSolver
               }
 
@@ -48,6 +48,7 @@ eps_high = 1e-05
 eps_infeas = 1e-8
 
 DEBUG = False
+MAX_ITERS = int(1e5)
 
 if DEBUG:
   NORMALIZE = True
@@ -65,7 +66,7 @@ settings = {
     OSQP: {'eps_abs': eps_abs_low,
            'eps_rel': eps_rel_low,
            'polish': False,
-           'max_iter': int(1e07),
+           'max_iter': MAX_ITERS,
            'eps_prim_inf': eps_infeas,  # Disable infeas check
            'eps_dual_inf': eps_infeas,
            'rho': SCALE,
@@ -76,7 +77,7 @@ settings = {
     SCS: {'eps_abs': eps_abs_low,
           'eps_rel': eps_rel_low,
           'eps_infeas': eps_infeas,
-          'max_iters': int(1e07),
+          'max_iters': MAX_ITERS,
           'acceleration_lookback': 0,
           'acceleration_interval': 50,
           'scale': SCALE,
@@ -86,11 +87,11 @@ settings = {
           'use_indirect': False,
           #'rho_x': 1.,
     },
-    SCS2: {'eps_abs': eps_abs_low,
+    SCS_AA: {'eps_abs': eps_abs_low,
           'eps_rel': eps_rel_low,
           'eps_infeas': eps_infeas,
-          'max_iters': int(1e05),
-          'acceleration_lookback': 0,
+          'max_iters': MAX_ITERS,
+          'acceleration_lookback': 20,
           'acceleration_interval': 50,
           'scale': SCALE,
           'alpha': ALPHA,
@@ -109,7 +110,7 @@ settings = {
             'eps_rel': eps_rel_low,
             'eps_prim_inf': eps_infeas,
             'eps_dual_inf': eps_infeas,
-            'max_iter': int(1e05),
+            'max_iter': MAX_ITERS,
             'rho': SCALE,
             'alpha': ALPHA,
             'check_infeasibility' : 100,
