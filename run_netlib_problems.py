@@ -38,7 +38,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.qpOASES, s.ECOS, s.COSMO, s.SCS2]
+solvers=[s.SCS, s.OSQP] #, s.qpOASES, s.ECOS, s.COSMO, s.SCS2]
 
 # Shut up solvers
 if verbose:
@@ -61,7 +61,7 @@ netlib_runner = NETLIBRunner(solvers,
                              add_quadratic)
 
 # debug
-#netlib_runner.problems = ["czprob"]
+#netlib_runner.problems = ["mondou2"]
 #netlib_runner.problems = \
 #  netlib_runner.problems[netlib_runner.problems.index("pilot4i"):]
 #

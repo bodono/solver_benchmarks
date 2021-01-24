@@ -70,17 +70,17 @@ class SCSSolver(object):
         results = scs.solve(data, cone, **settings)
         end = time.time()
 
-        def _inv(y):
-          y = y.copy()
-          y[cone['f']:] *= -1.
-          y = np.delete(y, cone['f']) # remove perspective var from y
-          y = y[inv_perm]
-          return y
-
+        status = self.STATUS_MAP.get(results['info']['statusVal'], statuses.SOLVER_ERROR)
         if hasattr(example, 'qp_problem'):
+          def _inv(y):
+            y = y.copy()
+            y[cone['f']:] *= -1.
+            y = np.delete(y, cone['f']) # remove perspective var from y
+            y = y[inv_perm]
+            return y
+
           y = _inv(results['y'])
           s = _inv(results['s']) # just for debugging
-          status = self.STATUS_MAP.get(results['info']['statusVal'], statuses.SOLVER_ERROR)
           if status in statuses.SOLUTION_PRESENT:
             qp_optimal = is_qp_solution_optimal(problem,
                                           results['x'],
