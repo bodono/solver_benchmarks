@@ -8,6 +8,7 @@ from problem_classes.netlib import NETLIB
 from utils.general import make_sure_path_exists
 
 import numpy as np
+import scipy.sparse.linalg
 
 BASE_PROBLEMS_FOLDER = "netlib_data"
 
@@ -20,11 +21,13 @@ class NETLIBRunner(object):
                  solvers,
                  settings,
                  output_folder,
-                 infeasible):
+                 infeasible,
+                 add_quadratic=False):
         self.solvers = solvers
         self.settings = settings
         self.output_folder = output_folder
         self.infeasible = infeasible
+        self.add_quadratic = add_quadratic
 
         # Get maros problems list
         problems_dir = os.path.join(".", "problem_classes", BASE_PROBLEMS_FOLDER)
@@ -136,6 +139,9 @@ class NETLIBRunner(object):
                                  self.problems_folder, "%s.mps" % problem)
         instance = NETLIB(full_name)
 
+        assert scipy.sparse.linalg.norm(instance.qp_problem['P']) == 0.
+        if self.add_quadratic:
+          instance.qp_problem['P'] = scipy.sparse.eye(instance.qp_problem['P'].shape[0])
 
         # Solve problem
         s = SOLVER_MAP[solver](settings)

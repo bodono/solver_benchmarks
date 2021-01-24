@@ -3,6 +3,7 @@ import scipy.sparse
 from . import statuses
 from .results import Results
 from utils.general import is_qp_solution_optimal
+from utils.general import is_cone_solution_optimal
 import time
 import numpy as np
 
@@ -12,8 +13,9 @@ class SCSSolver(object):
                   2: statuses.MAX_ITER_REACHED,
                   -2: statuses.PRIMAL_INFEASIBLE,
                   -1: statuses.DUAL_INFEASIBLE,
-                  -6: statuses.DUAL_INFEASIBLE,
-                  -7: statuses.PRIMAL_INFEASIBLE}
+                  -6: statuses.MAX_ITER_REACHED, # unbounded inaccurate
+                  -7: statuses.MAX_ITER_REACHED, # infeasible inaccurate
+                  }
 
     def __init__(self, settings={}):
         '''
@@ -69,6 +71,7 @@ class SCSSolver(object):
         end = time.time()
 
         def _inv(y):
+          y = y.copy()
           y[cone['f']:] *= -1.
           y = np.delete(y, cone['f']) # remove perspective var from y
           y = y[inv_perm]
@@ -79,10 +82,14 @@ class SCSSolver(object):
           s = _inv(results['s']) # just for debugging
           status = self.STATUS_MAP.get(results['info']['statusVal'], statuses.SOLVER_ERROR)
           if status in statuses.SOLUTION_PRESENT:
-            if not is_qp_solution_optimal(problem,
+            qp_optimal = is_qp_solution_optimal(problem,
                                           results['x'],
                                           y,
-                                          high_accuracy=high_accuracy):
+                                          high_accuracy=high_accuracy)
+            cone_optimal = is_cone_solution_optimal(data, cone, results['x'],
+                                                    results['y'], results['s'],
+                                                    high_accuracy=high_accuracy)
+            if (not qp_optimal and not cone_optimal):
               status = statuses.SOLVER_ERROR
 
         # Verify solver time
@@ -106,6 +113,6 @@ class SCSSolver(object):
         #return_results.update_time = results['info']['coneTime']
         #return_results.update_time = results['info']['linSysTime']
         #return_results.update_time = results['info']['accelTime']
-        #return_results.rho_updates = results['info']['rho_updates']
+        #return_results.rho_updates = results['info']['scale_updates']
 
         return return_results

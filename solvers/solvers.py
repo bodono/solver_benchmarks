@@ -7,6 +7,7 @@ from solvers.qpoases import qpOASESSolver
 from solvers.cosmo import COSMOSolver
 
 SCS = 'SCS'
+SCS2 = 'SCS2'
 COSMO = 'COSMO'
 SCS_high = SCS + "_high"
 ECOS = 'ECOS'
@@ -36,7 +37,7 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               ECOS_high: ECOSSolver,
               COSMO: COSMOSolver,
               SCS: SCSSolver,
-              SCS_high: SCSSolver,
+              SCS2: SCSSolver,
               qpOASES: qpOASESSolver
               }
 
@@ -49,7 +50,7 @@ eps_infeas = 1e-8
 DEBUG = False
 
 if DEBUG:
-  NORMALIZE = False
+  NORMALIZE = True
   SCALE = 1.0
   ALPHA = 1.0
   ADAPTIVE_SCALING = False
@@ -77,6 +78,20 @@ settings = {
           'eps_infeas': eps_infeas,
           'max_iters': int(1e05),
           'acceleration_lookback': 0,
+          'acceleration_interval': 50,
+          'scale': SCALE,
+          'alpha': ALPHA,
+          'normalize': NORMALIZE,
+          'adaptive_scaling': ADAPTIVE_SCALING,
+          'use_indirect': False,
+          #'rho_x': 1.,
+    },
+    SCS2: {'eps_abs': eps_abs_low,
+          'eps_rel': eps_rel_low,
+          'eps_infeas': eps_infeas,
+          'max_iters': int(1e05),
+          'acceleration_lookback': 0,
+          'acceleration_interval': 50,
           'scale': SCALE,
           'alpha': ALPHA,
           'normalize': NORMALIZE,
