@@ -141,7 +141,7 @@ class NETLIBRunner(object):
 
         assert scipy.sparse.linalg.norm(instance.qp_problem['P']) == 0.
         if self.add_quadratic:
-          instance.qp_problem['P'] = scipy.sparse.eye(instance.qp_problem['P'].shape[0])
+          instance.qp_problem['P'] = scipy.sparse.eye(instance.qp_problem['P'].shape[0]).tocsc()
 
         # Solve problem
         s = SOLVER_MAP[solver](settings)
