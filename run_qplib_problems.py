@@ -38,10 +38,11 @@ if high_accuracy:
         s.settings[key]['high_accuracy'] = True
 else:
     solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
-    OUTPUT_FOLDER = 'qplib_problems_tmp'
+    OUTPUT_FOLDER = 'qplib_problems'
 
 solvers=[s.SCS, s.OSQP, s.ECOS, s.COSMO, s.qpOASES]
 solvers=[s.SCS, s.OSQP]
+
 # Shut up solvers
 if verbose:
     for key in s.settings:
