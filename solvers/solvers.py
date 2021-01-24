@@ -8,6 +8,8 @@ from solvers.cosmo import COSMOSolver
 
 SCS = 'SCS'
 SCS_AA = 'SCS_AA'
+SCS_INDIRECT = 'SCS_INDIRECT'
+SCS_INDIRECT_AA = 'SCS_INDIRECT_AA'
 COSMO = 'COSMO'
 SCS_high = SCS + "_high"
 ECOS = 'ECOS'
@@ -38,6 +40,8 @@ SOLVER_MAP = {OSQP: OSQPSolver,
               COSMO: COSMOSolver,
               SCS: SCSSolver,
               SCS_AA: SCSSolver,
+              SCS_INDIRECT: SCSSolver,
+              SCS_INDIRECT_AA: SCSSolver,
               qpOASES: qpOASESSolver
               }
 
@@ -98,6 +102,32 @@ settings = {
           'normalize': NORMALIZE,
           'adaptive_scaling': ADAPTIVE_SCALING,
           'use_indirect': False,
+          #'rho_x': 1.,
+    },
+    SCS_INDIRECT: {'eps_abs': eps_abs_low,
+          'eps_rel': eps_rel_low,
+          'eps_infeas': eps_infeas,
+          'max_iters': MAX_ITERS,
+          'acceleration_lookback': 0,
+          'acceleration_interval': 50,
+          'scale': SCALE,
+          'alpha': ALPHA,
+          'normalize': NORMALIZE,
+          'adaptive_scaling': ADAPTIVE_SCALING,
+          'use_indirect': True,
+          #'rho_x': 1.,
+    },
+    SCS_INDIRECT_AA: {'eps_abs': eps_abs_low,
+          'eps_rel': eps_rel_low,
+          'eps_infeas': eps_infeas,
+          'max_iters': MAX_ITERS,
+          'acceleration_lookback': 20,
+          'acceleration_interval': 50,
+          'scale': SCALE,
+          'alpha': ALPHA,
+          'normalize': NORMALIZE,
+          'adaptive_scaling': ADAPTIVE_SCALING,
+          'use_indirect': True,
           #'rho_x': 1.,
     },
     SCS_high: {'eps_abs': eps_high,
