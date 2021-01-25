@@ -33,7 +33,7 @@ print('parallel', parallel)
 
 OUTPUT_FOLDER = 'maros_meszaros_problems'
 
-solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES]
+solvers = [s.QPALM, s.SCS, s.OSQP, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES]
 
 # Shut up solvers
 if verbose:
