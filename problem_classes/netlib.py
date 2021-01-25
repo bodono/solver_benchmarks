@@ -118,7 +118,6 @@ class NETLIB(object):
         return problem
 
 
-    # XXX this method might be wrong:
     def _generate_cvxpy_problem(self):
         '''
         Generate QP problem

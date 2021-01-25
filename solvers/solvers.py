@@ -3,7 +3,7 @@ from solvers.ecos import ECOSSolver
 #from solvers.gurobi import GUROBISolver
 #from solvers.mosek import MOSEKSolver
 from solvers.osqp import OSQPSolver
-#from solvers.qpoases import qpOASESSolver
+from solvers.qpoases import qpOASESSolver
 from solvers.cosmo import COSMOSolver
 from solvers.qpalm import QPALMSolver
 
@@ -45,13 +45,13 @@ SOLVER_MAP = {
     SCS_AA: SCSSolver,
     SCS_INDIRECT: SCSSolver,
     SCS_INDIRECT_AA: SCSSolver,
-    #qpOASES: qpOASESSolver,
+    qpOASES: qpOASESSolver,
     QPALM: QPALMSolver
 }
 
 time_limit = 1000.  # Seconds
-eps_abs_low = 1e-03
-eps_rel_low = 1e-04
+eps_abs_low = 1e-09
+eps_rel_low = 1e-09
 eps_high = 1e-05
 eps_infeas = 1e-8
 
