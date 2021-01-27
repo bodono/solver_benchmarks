@@ -67,6 +67,8 @@ def gen_infeasible(m, n):
     _x = np.random.randn(n)
     c = -A.T @ _y - P @ _x
 
+    c /= np.linalg.norm(c)
+
     return (P, A, b, c)
 
 
@@ -102,6 +104,8 @@ def gen_unbounded(m, n):
     _s = pos(np.random.randn(m))
     # A _x + _s == b
     b = A.dot(_x) + _s
+
+    b /= np.linalg.norm(b)
 
     return (P, A, b, c)
 

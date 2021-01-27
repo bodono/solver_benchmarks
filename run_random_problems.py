@@ -41,7 +41,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP] #, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
+solvers=[s.SCS, s.OSQP, s.QPALM] #, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
 
 # Shut up solvers
 if verbose:
@@ -55,14 +55,14 @@ elif unbounded:
 else:
   OUTPUT_FOLDER = 'random_feasible'
 
-m=150
-n=100
+m=1500
+n=1000
 
 SEED = 1234
-NUM_PROBS = 10
+NUM_PROBS = 1000
 
 # Run all examples
-runner = RandomProbRunner(m, n, 
+runner = RandomProbRunner(m, n,
                           SEED,
                           NUM_PROBS,
                           solvers,
