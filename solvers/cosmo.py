@@ -104,19 +104,26 @@ class COSMOSolver(object):
           import cosmopy as cosmo
           model = cosmo.Model()
 
-        start = time.time()
-        model.setup(P=P, q=q, A=A, b=b, u=u, l=l, cone=cone, **settings)
-        model.optimize()
-        end = time.time()
-        status = self.STATUS_MAP.get(model.get_status(), s.SOLVER_ERROR)
-        if hasattr(example, 'qp_problem'):
-          if status in s.SOLUTION_PRESENT:
-            if not is_qp_solution_optimal(problem,
-                                          model.get_x(),
-                                          -model.get_y(),
-                                          high_accuracy=high_accuracy):
-              status = s.SOLVER_ERROR
+        while True:
+          start = time.time()
+          model.setup(P=P, q=q, A=A, b=b, u=u, l=l, cone=cone, **settings)
+          model.optimize()
+          end = time.time()
+          status = self.STATUS_MAP.get(model.get_status(), s.SOLVER_ERROR)
 
+          if hasattr(example, 'qp_problem'):
+            if status in s.SOLUTION_PRESENT:
+              if is_qp_solution_optimal(problem,
+                                       model.get_x(),
+                                       -model.get_y(),
+                                       high_accuracy=high_accuracy):
+                break
+              settings['eps_abs'] /= 2.
+              settings['eps_rel'] /= 2.
+            else:
+              break
+          else:
+            break
 
         run_time = end - start # this is poor due to python/julia overhead
         # will have to trust cosmo itself unforunately
