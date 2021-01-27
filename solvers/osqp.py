@@ -38,24 +38,30 @@ class OSQPSolver(object):
         settings = self._settings.copy()
         high_accuracy = settings.pop('high_accuracy', None)
 
-        # Setup OSQP
-        start = time.time()
-        m = osqp.OSQP()
-        m.setup(problem['P'], problem['q'], problem['A'], problem['l'],
-                problem['u'],
-                **settings)
-        # Solve
-        results = m.solve()
-        end = time.time()
+        while True:
 
-        status = self.STATUS_MAP.get(results.info.status_val, s.SOLVER_ERROR)
+          # Setup OSQP
+          start = time.time()
+          m = osqp.OSQP()
+          m.setup(problem['P'], problem['q'], problem['A'], problem['l'],
+                  problem['u'],
+                  **settings)
+          # Solve
+          results = m.solve()
+          end = time.time()
 
-        if status in s.SOLUTION_PRESENT:
-            if not is_qp_solution_optimal(problem,
-                                          results.x,
-                                          results.y,
-                                          high_accuracy=high_accuracy):
-                status = s.SOLVER_ERROR
+          status = self.STATUS_MAP.get(results.info.status_val, s.SOLVER_ERROR)
+
+          if status in s.SOLUTION_PRESENT:
+            if is_qp_solution_optimal(problem,
+                                            results.x,
+                                            results.y,
+                                            high_accuracy=high_accuracy):
+              break
+            settings['eps_abs'] /= 2.
+            settings['eps_rel'] /= 2.
+          else:
+            break
 
         # Verify solver time
         if settings.get('time_limit') is not None:

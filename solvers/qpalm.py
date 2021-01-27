@@ -44,33 +44,39 @@ class QPALMSolver(object):
 
         (m, n) = problem['A'].shape
 
-        start = time.time()
-        solver = qp.Qpalm()
-        solver._settings.contents.eps_abs = settings['eps_abs']
-        solver._settings.contents.eps_rel = settings['eps_rel']
-        solver._settings.contents.eps_prim_inf = settings['eps_prim_inf']
-        solver._settings.contents.eps_dual_inf = settings['eps_dual_inf']
-        solver.set_data(Q=problem['P'], A=problem['A'], q=problem['q'], bmin=problem['l'], bmax=problem['u'])
-        solver._solve()
-        end = time.time()
-        status = solver._work.contents.info.contents.status_val
-        status = self.STATUS_MAP.get(status, statuses.SOLVER_ERROR)
+        while True:
+          start = time.time()
+          solver = qp.Qpalm()
+          solver._settings.contents.eps_abs = settings['eps_abs']
+          solver._settings.contents.eps_rel = settings['eps_rel']
+          solver._settings.contents.eps_prim_inf = settings['eps_prim_inf']
+          solver._settings.contents.eps_dual_inf = settings['eps_dual_inf']
+          solver.set_data(Q=problem['P'], A=problem['A'], q=problem['q'], bmin=problem['l'], bmax=problem['u'])
+          solver._solve()
+          end = time.time()
+          status = solver._work.contents.info.contents.status_val
+          status = self.STATUS_MAP.get(status, statuses.SOLVER_ERROR)
 
-        x = solver._work.contents.solution.contents.x
-        x = np.ctypeslib.as_array(x, shape=(n,))
+          x = solver._work.contents.solution.contents.x
+          x = np.ctypeslib.as_array(x, shape=(n,))
 
-        y = solver._work.contents.solution.contents.y
-        y = np.ctypeslib.as_array(y, shape=(m,))
+          y = solver._work.contents.solution.contents.y
+          y = np.ctypeslib.as_array(y, shape=(m,))
 
-        iters = solver._work.contents.info.contents.iter
-        pobj = solver._work.contents.info.contents.objective
-        if status in statuses.SOLUTION_PRESENT:
-          qp_optimal = is_qp_solution_optimal(problem,
-                                            x,
-                                            y,
-                                            high_accuracy=high_accuracy)
-          if not qp_optimal:
-            status = statuses.SOLVER_ERROR
+          iters = solver._work.contents.info.contents.iter
+          pobj = solver._work.contents.info.contents.objective
+          if status in statuses.SOLUTION_PRESENT:
+            qp_optimal = is_qp_solution_optimal(problem,
+                                              x,
+                                              y,
+                                              high_accuracy=high_accuracy)
+            if qp_optimal:
+              break
+            else:
+              settings['eps_abs'] /= 2.
+              settings['eps_rel'] /= 2.
+          else:
+            break
 
         # Verify solver time
         #if settings.get('time_limit') is not None:
