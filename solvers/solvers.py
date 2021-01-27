@@ -1,11 +1,50 @@
-from solvers.scs import SCSSolver
-from solvers.ecos import ECOSSolver
-#from solvers.gurobi import GUROBISolver
-#from solvers.mosek import MOSEKSolver
-from solvers.osqp import OSQPSolver
-from solvers.qpoases import qpOASESSolver
-from solvers.cosmo import COSMOSolver
-from solvers.qpalm import QPALMSolver
+try:
+  from solvers.scs import SCSSolver
+except:
+  print('SCS import failed')
+  SCSSolver = None
+
+try:
+  from solvers.ecos import ECOSSolver
+except:
+  print('ECOS import failed')
+  ECOSSolver = None
+
+try:
+  from solvers.gurobi import GUROBISolver
+except:
+  print('Gurobi import failed')
+  GUROBISolver = None
+
+try:
+  from solvers.mosek import MOSEKSolver
+except:
+  print('MOSEK import failed')
+  MOSEKSolver = None
+
+try:
+  from solvers.osqp import OSQPSolver
+except:
+  print('OSQP import failed')
+  OSQPSolver = None
+
+try:
+  from solvers.qpoases import qpOASESSolver
+except:
+  print('qpOASES import failed')
+  qpOASESSolver = None
+
+try:
+  from solvers.cosmo import COSMOSolver
+except:
+  print('COSMO import failed')
+  COSMOSolver = None
+
+try:
+  from solvers.qpalm import QPALMSolver
+except:
+  print('QPALM import failed')
+  QPALMSolver = None
 
 SCS = 'SCS'
 SCS_AA = 'SCS_AA'
@@ -34,10 +73,10 @@ SOLVER_MAP = {
     OSQP_high: OSQPSolver,
     OSQP_polish: OSQPSolver,
     OSQP_polish_high: OSQPSolver,
-    #GUROBI: GUROBISolver,
-    #GUROBI_high: GUROBISolver,
-    #MOSEK: MOSEKSolver,
-    #MOSEK_high: MOSEKSolver,
+    GUROBI: GUROBISolver,
+    GUROBI_high: GUROBISolver,
+    MOSEK: MOSEKSolver,
+    MOSEK_high: MOSEKSolver,
     ECOS: ECOSSolver,
     ECOS_high: ECOSSolver,
     COSMO: COSMOSolver,
@@ -50,10 +89,10 @@ SOLVER_MAP = {
 }
 
 time_limit = 1000.  # Seconds
-eps_abs_low = 1e-09
-eps_rel_low = 1e-09
+eps_abs_low = 1e-03
+eps_rel_low = 1e-04
 eps_high = 1e-05
-eps_infeas = 1e-8
+eps_infeas = 1e-12
 
 DEBUG = False
 MAX_ITERS = int(1e5)
