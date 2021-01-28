@@ -2,6 +2,7 @@ import scipy.sparse
 from . import statuses as s
 from .results import Results
 from utils.general import is_qp_solution_optimal
+from utils.general import is_cone_solution_optimal
 import time
 import numpy as np
 
@@ -84,7 +85,9 @@ class COSMOSolver(object):
         elif hasattr(example, 'sdp_problem'):
           problem = example.sdp_problem
           scs_cone = problem['cone']
-          data = dict(A=problem['A'], b=problem['b'], c=problem['q'])
+          (m,n) = problem['A'].shape
+          data = dict(P=scipy.sparse.csc_matrix((n,n)),
+                      A=problem['A'], b=problem['b'], c=problem['q'])
           P = None
           u = None
           l = None
@@ -114,9 +117,21 @@ class COSMOSolver(object):
           if hasattr(example, 'qp_problem'):
             if status in s.SOLUTION_PRESENT:
               if is_qp_solution_optimal(problem,
-                                       model.get_x(),
-                                       -model.get_y(),
-                                       high_accuracy=high_accuracy):
+                                        model.get_x(),
+                                        -model.get_y(),
+                                        high_accuracy=high_accuracy):
+                break
+              settings['eps_abs'] /= 2.
+              settings['eps_rel'] /= 2.
+            else:
+              break
+          elif hasattr(example, 'sdp_problem'):
+            if status in s.SOLUTION_PRESENT:
+              if is_cone_solution_optimal(data, cone,
+                                          model.get_x(),
+                                          model.get_y(),
+                                          model.get_s(),
+                                          high_accuracy=high_accuracy):
                 break
               settings['eps_abs'] /= 2.
               settings['eps_rel'] /= 2.
@@ -124,6 +139,7 @@ class COSMOSolver(object):
               break
           else:
             break
+
 
         run_time = end - start # this is poor due to python/julia overhead
         # will have to trust cosmo itself unforunately
