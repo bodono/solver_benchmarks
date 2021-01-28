@@ -116,7 +116,6 @@ def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
     eps_gap = eps_abs + eps_rel * np.max([np.abs(x.T.dot(Px)),
                                           np.abs(c.T.dot(x)),
                                           np.abs(b.T.dot(y))])
-    import pdb;pdb.set_trace()
 
     if np.isnan(gap) or np.abs(gap) > eps_gap:
         print("Cone: Error in gap residual: %.4e > %.4e" %
