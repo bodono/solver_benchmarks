@@ -113,9 +113,10 @@ def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
         return False
 
     gap = x.T.dot(Px) + c.T.dot(x) + b.T.dot(y)
-    eps_gap = eps_abs + eps_rel * np.max([x.T.dot(Px),
-                                          c.T.dot(x),
-                                          b.T.dot(y)])
+    eps_gap = eps_abs + eps_rel * np.max([np.abs(x.T.dot(Px)),
+                                          np.abs(c.T.dot(x)),
+                                          np.abs(b.T.dot(y))])
+    import pdb;pdb.set_trace()
 
     if np.isnan(gap) or np.abs(gap) > eps_gap:
         print("Cone: Error in gap residual: %.4e > %.4e" %
@@ -179,10 +180,9 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy):
     y_minus[np.abs(y_minus)<1e-12] = 0.
 
     gap = x.T.dot(Px) + q.T.dot(x) + y_plus.T.dot(u) + y_minus.T.dot(l)
-    eps_gap = eps_abs + eps_rel * np.max([x.T.dot(Px),
-                                          q.T.dot(x),
-                                          y_plus.T.dot(u),
-                                          y_minus.T.dot(l)])
+    eps_gap = eps_abs + eps_rel * np.max([np.abs(x.T.dot(Px)),
+                                          np.abs(q.T.dot(x)),
+                                          np.abs(y_plus.T.dot(u) + y_minus.T.dot(l))])
 
     if np.isnan(gap) or np.abs(gap) > eps_gap:
         print("QP: Error in gap residual: %.4e > %.4e" %
