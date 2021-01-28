@@ -44,9 +44,7 @@ class QPALMSolver(object):
 
         (m, n) = problem['A'].shape
 
-        runs = 0
         while True:
-          runs += 1
           start = time.time()
           solver = qp.Qpalm()
           solver._settings.contents.eps_abs = settings['eps_abs']
@@ -79,12 +77,6 @@ class QPALMSolver(object):
               settings['eps_abs'] /= 2.
               settings['eps_rel'] /= 2.
           else:
-            break
-
-          # qpalm can fail to produce a solution even with high accuracy
-          # so we limit the number of attempts for this
-          if runs == 20:
-            status = statuses.SOLVER_ERROR
             break
 
         # Verify solver time
