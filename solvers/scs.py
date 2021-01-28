@@ -62,7 +62,10 @@ class SCSSolver(object):
         elif hasattr(example, 'sdp_problem'):
           problem = example.sdp_problem
           cone = problem['cone']
-          data = dict(A=problem['A'], b=problem['b'], c=problem['q'])
+          A = problem['A']
+          (m, n) = problem['A'].shape
+          data = dict(P=scipy.sparse.csc_matrix((n,n)),
+                      A=problem['A'], b=problem['b'], c=problem['q'])
         else:
           raise ValueError('Unrecognized problem type')
 
