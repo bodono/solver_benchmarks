@@ -98,7 +98,7 @@ DEBUG = False
 MAX_ITERS = int(1e5)
 
 if DEBUG:
-  NORMALIZE = True
+  NORMALIZE = False
   SCALE = 1.0
   ALPHA = 1.0
   ADAPTIVE_SCALING = False
