@@ -33,7 +33,7 @@ def plot_performance_profiles(problems, solvers):
     plt.legend()
     plt.grid()
     plt.show(block=False)
-    results_file = './results/%s/%s.png' % (problems, problems)
+    results_file = './results/%s/%s.pdf' % (problems, problems)
     print("Saving plots to %s" % results_file)
     plt.savefig(results_file)
 

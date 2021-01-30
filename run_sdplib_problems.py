@@ -10,6 +10,7 @@ This code tests the solvers:
 from sdplib_problems.sdplib_problem import SDPLIBRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
+from utils.make_table import make_latex_table
 import os
 import argparse
 import shutil
@@ -35,7 +36,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.COSMO, s.SCS_AA]
+solvers=[s.COSMO, s.SCS]
 
 # Shut up solvers
 if verbose:
@@ -81,3 +82,5 @@ sdplib_runner.solve(parallel=parallel, cores=12)
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy,
                    infeasible_test=infeasible)
+
+make_latex_table(solvers, OUTPUT_FOLDER, infeasible)

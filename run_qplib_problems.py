@@ -50,3 +50,5 @@ qplib_runner.solve(parallel=parallel, cores=12)
 # Compute results statistics
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy)
+
+make_latex_table(solvers, OUTPUT_FOLDER, False)
