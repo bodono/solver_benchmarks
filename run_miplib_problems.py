@@ -10,6 +10,7 @@ This code tests the solvers:
 from miplib_problems.miplib_problem import MIPLIBRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
+from utils.make_table import make_latex_table
 import os
 import argparse
 import shutil
@@ -69,3 +70,5 @@ miplib_runner.solve(parallel=parallel, cores=12)
 # Compute results statistics
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy)
+
+make_latex_table(solvers, OUTPUT_FOLDER, False)

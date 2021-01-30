@@ -10,6 +10,7 @@ This code tests the solvers:
 from netlib_problems.netlib_problem import NETLIBRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
+from utils.make_table import make_latex_table
 import os
 import argparse
 import shutil
@@ -38,7 +39,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.ECOS, s.QPALM, s.SCS_AA, s.qpOASES, s.COSMO]
+solvers=[s.SCS, s.OSQP, s.COSMO] #s.ECOS, s.QPALM, s.COSMO]
 
 # Shut up solvers
 if verbose:
@@ -84,3 +85,5 @@ netlib_runner.solve(parallel=parallel, cores=12)
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy,
                    infeasible_test=infeasible)
+
+make_latex_table(solvers, OUTPUT_FOLDER, infeasible)

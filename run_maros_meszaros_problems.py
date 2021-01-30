@@ -10,6 +10,7 @@ This code tests the solvers:
 from maros_meszaros_problems.maros_meszaros_problem import MarosMeszarosRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
+from utils.make_table import make_latex_table
 import os
 import argparse
 
@@ -31,9 +32,10 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 
-OUTPUT_FOLDER = 'maros_meszaros_problems'
+OUTPUT_FOLDER = 'maros_meszaros_problems_deleteme'
 
-solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
+solvers = [s.SCS, s.OSQP, s.COSMO]#, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
+solvers = [s.COSMO]
 
 # Shut up solvers
 if verbose:
@@ -45,9 +47,11 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             s.settings,
                                             OUTPUT_FOLDER)
 
-#maros_meszaros_runner.problems = ["BOYD1"]
+#maros_meszaros_runner.problems = ["QSTANDAT"]
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy)
+
+make_latex_table(solvers, OUTPUT_FOLDER, False)

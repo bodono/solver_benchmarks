@@ -77,3 +77,5 @@ runner.solve(parallel=parallel, cores=12)
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy,
                    infeasible_test=infeasible or unbounded)
+
+make_latex_table(solvers, OUTPUT_FOLDER, infeasible or unbounded)

@@ -88,7 +88,7 @@ SOLVER_MAP = {
     QPALM: QPALMSolver
 }
 
-time_limit = 1000.  # Seconds
+time_limit = 10000.  # Seconds
 eps_abs_low = 1e-03
 eps_rel_low = 1e-04
 eps_high = 1e-05
@@ -204,7 +204,8 @@ settings = {
         'check_termination': 100,
         'decompose': False,
         'scaling': 1 if NORMALIZE else 0,
-        'adaptive_rho': ADAPTIVE_SCALING
+        'adaptive_rho': ADAPTIVE_SCALING,
+        'time_limit': time_limit
     },
     OSQP_high: {
         'eps_abs': eps_high,
