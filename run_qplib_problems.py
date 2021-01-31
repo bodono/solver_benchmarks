@@ -10,6 +10,7 @@ This code tests the solvers:
 from qplib_problems.qplib_problem import QPLIBRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
+from utils.make_table import make_latex_table
 import os
 import argparse
 
@@ -31,7 +32,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 OUTPUT_FOLDER = 'qplib_problems'
-solvers=[s.OSQP, s.SCS, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES]
+solvers=[s.SCS, s.OSQP, s.COSMO]#, s.SCS_AA, s.ECOS, s.qpOASES]
 
 # Shut up solvers
 if verbose:
