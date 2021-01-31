@@ -98,7 +98,6 @@ class COSMOSolver(object):
         else:
           raise ValueError('Unrecognized problem type')
 
-
         while True:
           try:
             model = cosmo.Model()

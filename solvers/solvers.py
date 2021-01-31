@@ -208,7 +208,7 @@ settings = {
         'check_infeasibility': 100,
         'check_termination': 100,
         'decompose': False,
-        'scaling': 1 if NORMALIZE else 0,
+        'scaling': 10 if NORMALIZE else 0,
         'adaptive_rho': ADAPTIVE_SCALING,
         'time_limit': time_limit
     },
