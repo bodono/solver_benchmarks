@@ -26,23 +26,26 @@ def make_latex_table(solvers, output_folder, infeasible_test):
     data = get_data(solvers, output_folder, infeasible_test)
     # want this type of output:
     #         solver 1 | solver 2 | solver 3
-    # prob 1    time   |  FAIL    |  time 
+    # prob 1    time   |  FAIL    |  time
     # prob 2
     for solver in solvers:
       df = data[solver]
       if infeasible_test:
         df.loc[~df['status'].str.contains('infeasible')] = np.nan
-      else:  
+      else:
         df.loc[df['status'] != 'optimal'] = np.nan
-      df = df.rename(columns={'run_time': solver})
+      df = df.rename(columns={'run_time': solver.strip()})
       data[solver] = df[solver]
-  
-    probs = output_folder.replace('_', ' ')   
- 
+
+    probs = output_folder.replace('_', ' ')
+    column_format = 'l' + 'c' * len(data)
+
     #df = pd.concat([d for d in data.values()])
     df = pd.DataFrame(data)
     table = df.to_latex(float_format="%.4f", longtable=True, index_names=False,
-                        caption=f'Solver times on {probs} problems in seconds.')
+                        caption=f'Solver times on {probs} problems in seconds.',
+                        label=f't-{probs}-results',
+                        column_format=column_format)
     table_path = os.path.join('.', 'results', output_folder, f'{output_folder}_table.tex')
     with open(table_path, "w") as f:
       f.write(table)
@@ -50,7 +53,9 @@ def make_latex_table(solvers, output_folder, infeasible_test):
     path = os.path.join('.', 'results', output_folder, 'failure_rates.csv')
     df = pd.read_csv(path)
     table = df.to_latex(float_format="%.2f", index=False,
-                        caption=f'Solver failure rates on {probs} problems.')
+                        caption=f'Solver failure rates on {probs} problems.',
+                        label=f't-{probs}-failure',
+                        column_format=column_format)
     table_path = os.path.join('.', 'results', output_folder, f'{output_folder}_failure_table.tex')
     with open(table_path, "w") as f:
       f.write(table)
@@ -58,7 +63,9 @@ def make_latex_table(solvers, output_folder, infeasible_test):
     path = os.path.join('.', 'results', output_folder, 'geom_mean.csv')
     df = pd.read_csv(path)
     table = df.to_latex(float_format="%.2f", index=False,
-                        caption=f'Solver geometric means on {probs} problems.')
+                        caption=f'Solver geometric means on {probs} problems.',
+                        label=f't-{probs}-geom_mean',
+                        column_format=column_format)
     table_path = os.path.join('.', 'results', output_folder, f'{output_folder}_geom_mean_table.tex')
     with open(table_path, "w") as f:
       f.write(table)
