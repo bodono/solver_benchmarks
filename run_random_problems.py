@@ -55,8 +55,8 @@ elif unbounded:
 else:
   OUTPUT_FOLDER = 'random_feasible'
 
-m=1500
-n=1000
+m=150
+n=100
 
 SEED = 1234
 NUM_PROBS = 1000
