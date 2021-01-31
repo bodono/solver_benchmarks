@@ -10,6 +10,7 @@ This code tests the solvers:
 from random_problems.random_problem import RandomProbRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
+from utils.make_table import make_latex_table
 import os
 import argparse
 import shutil
@@ -41,7 +42,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.QPALM] #, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
+solvers=[s.SCS, s.OSQP, s.COSMO] #, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
 
 # Shut up solvers
 if verbose:
