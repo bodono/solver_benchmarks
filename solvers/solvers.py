@@ -88,7 +88,7 @@ SOLVER_MAP = {
     QPALM: QPALMSolver
 }
 
-time_limit = 10000.  # Seconds
+time_limit = 1000.  # Seconds
 eps_abs_low = 1e-03
 eps_rel_low = 1e-04
 eps_high = 1e-05
@@ -121,6 +121,7 @@ settings = {
         'alpha': ALPHA,
         'scaling': NORMALIZE,
         'adaptive_rho': ADAPTIVE_SCALING,
+        'time_limit': time_limit,
     },
     QPALM: {
         'eps_abs': eps_abs_low,
@@ -141,6 +142,7 @@ settings = {
         'normalize': NORMALIZE,
         'adaptive_scaling': ADAPTIVE_SCALING,
         'use_indirect': False,
+        'time_limit_secs': time_limit,
         #'rho_x': 1.,
     },
     SCS_AA: {
@@ -155,6 +157,7 @@ settings = {
         'normalize': NORMALIZE,
         'adaptive_scaling': ADAPTIVE_SCALING,
         'use_indirect': False,
+        'time_limit_secs': time_limit,
         #'rho_x': 1.,
     },
     SCS_INDIRECT: {
@@ -169,6 +172,7 @@ settings = {
         'normalize': NORMALIZE,
         'adaptive_scaling': ADAPTIVE_SCALING,
         'use_indirect': True,
+        #'time_limit_secs': time_limit,
         #'rho_x': 1.,
     },
     SCS_INDIRECT_AA: {
@@ -183,6 +187,7 @@ settings = {
         'normalize': NORMALIZE,
         'adaptive_scaling': ADAPTIVE_SCALING,
         'use_indirect': True,
+        #'time_limit_secs': time_limit,
         #'rho_x': 1.,
     },
     SCS_high: {
