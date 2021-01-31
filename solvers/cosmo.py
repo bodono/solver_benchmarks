@@ -98,16 +98,17 @@ class COSMOSolver(object):
         else:
           raise ValueError('Unrecognized problem type')
 
-        try:
-          model = cosmo.Model()
-        except:
-          # julia:
-          from julia.api import Julia
-          jl = Julia(compiled_modules=False)
-          import cosmopy as cosmo
-          model = cosmo.Model()
 
         while True:
+          try:
+            model = cosmo.Model()
+          except:
+            # julia:
+            from julia.api import Julia
+            jl = Julia(compiled_modules=False)
+            import cosmopy as cosmo
+            model = cosmo.Model()
+
           start = time.time()
           model.setup(P=P, q=q, A=A, b=b, u=u, l=l, cone=cone, **settings)
           model.optimize()
@@ -142,7 +143,7 @@ class COSMOSolver(object):
 
 
         run_time = end - start # this is poor due to python/julia overhead
-        # will have to trust cosmo itself unforunately
+        # will have to trust cosmo itself unfortunately
         run_time = model.get_times()['solver_time']
         return_results = Results(status,
                                  model.get_objective_value(),
