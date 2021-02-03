@@ -138,7 +138,8 @@ def geom_mean(t, shift=10.):
     return np.exp(np.sum(np.log(np.maximum(1, t + shift))/len(t))) - shift
 
 
-def compute_shifted_geometric_means(solvers, problems_type, infeasible_test):
+def compute_shifted_geometric_means(solvers, problems_type, infeasible_test,
+                                    field='run_time'):
     t = {}
     status = {}
     g_mean = {}
@@ -159,7 +160,7 @@ def compute_shifted_geometric_means(solvers, problems_type, infeasible_test):
         n_problems = len(df)
 
         # NB. Normalize to avoid overflow. They get normalized back anyway.
-        t[solver] = df['run_time'].values
+        t[solver] = df[field].values
         status[solver] = df['status'].values
 
         # Set maximum time for solvers that did not succeed
@@ -173,6 +174,13 @@ def compute_shifted_geometric_means(solvers, problems_type, infeasible_test):
 
         g_mean[solver] = geom_mean(t[solver])
 
+    # Store final pandas dataframe
+    df_g_mean = pd.Series(g_mean)
+    g_mean_file = os.path.join('.', 'results',
+                               problems_type,
+                               f'geom_mean_{field}_raw.csv')
+    df_g_mean.to_frame().transpose().to_csv(g_mean_file, index=False)
+
     # Normalize geometric means by best solver
     best_g_mean = np.min([g_mean[s] for s in solvers])
     for s in solvers:
@@ -182,7 +190,7 @@ def compute_shifted_geometric_means(solvers, problems_type, infeasible_test):
     df_g_mean = pd.Series(g_mean)
     g_mean_file = os.path.join('.', 'results',
                                problems_type,
-                               'geom_mean.csv')
+                               f'geom_mean_{field}_normalized.csv')
     df_g_mean.to_frame().transpose().to_csv(g_mean_file, index=False)
 
 
@@ -378,7 +386,10 @@ def compute_stats_info(solvers, benchmark_type,
     compute_performance_profiles(solvers, benchmark_type, infeasible_test)
 
     # Compute performance profiles
-    compute_shifted_geometric_means(solvers, benchmark_type, infeasible_test)
+    compute_shifted_geometric_means(solvers, benchmark_type, infeasible_test,
+                                    field='run_time')
+    compute_shifted_geometric_means(solvers, benchmark_type, infeasible_test,
+                                    field='iter')
 
     # Compute polish statistics
     if any(s.startswith('OSQP') for s in solvers):

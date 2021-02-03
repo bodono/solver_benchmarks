@@ -11,21 +11,44 @@ import numpy as np
 import scipy.sparse.linalg
 import cvxpy
 
+# This code is used to randomly generate problems of the form:
+#
+# min. (1/2) x'Px + c'x
+# s.t.  Ax + s == b
+#       s >= 0 (elementwise)
+#
+# over variable x \in R^n, s \in R^m
+# P is symmetric positive semi-definite
+#
+# each fn returns: P \in R^{n x n}, A \in R^{m x n}, b \in R^m, c \in R^n
+#
+# We can generate feasible, infeasible, or unbounded problems
+# The resulting problems typically have nice numerical conditioning and can
+# generally be solved very quickly.
 
+
+# Project onto positive orthant
 def pos(x):
     return (x + np.abs(x)) / 2.
 
+# Generate a FEASIBLE problem, n variables, m constraints
 def gen_feasible(m, n):
+    # randomly generate data and point (x, s, y) that satisfies KKT conditions
+    # Ax + s = 0
+    # Px + A'y == c
+    # s >= 0, y >= 0, s'y = 0
+
     z = np.random.randn(m)
     y = pos(z)
-    s = y - z
+    s = y - z # s >= 0, s'y = 0 via Moreau
 
     P = np.random.randn(n,n)
     P = 0.1 * P.T @ P
-    U, S, V = np.linalg.svd(P, full_matrices=False)
-    S = S**4
-    S /= np.max(S)
-    P = (U * S) @ V
+    eigs, V = np.linalg.eig(P)
+    # rank 5
+    eigs[:-5] = 0 # set some eigs to 0 to be slightly more challenging
+    P = (V * eigs) @ V.T
+    P = 0.5 * (P + P.T) # symmetrize just to be sure
 
     # Make problem slightly more numerically challenging:
     A = np.random.randn(m, n)
@@ -37,19 +60,18 @@ def gen_feasible(m, n):
     x = np.random.randn(n)
     c = -A.T @ y - P @ x
     b = A.dot(x) + s
-
     b /= np.linalg.norm(b)
-    c /= np.linalg.norm(c)
 
     return (P, A, b, c)
 
+# Generate an INFEASIBLE problem, n variables, m constraints
 def gen_infeasible(m, n):
-    # b'y < 0, A'y == 0
+    # infeasible cert: b'y < 0, A'y == 0
     # also make sure dual feasible:
     # P _x + A'_y + c = 0, _y \in K^*
 
     z = np.random.randn(m)
-    y = pos(z)  # y = s - z;
+    y = pos(z)  # certificate
 
     A = np.random.randn(m, n)
 
@@ -61,19 +83,23 @@ def gen_infeasible(m, n):
 
     P = np.random.randn(n,n)
     P = 0.1 * P.T @ P
+    eigs, V = np.linalg.eig(P)
+    # rank 5 
+    eigs[:-5] = 0 # set some eigs to 0 to be slightly more challenging
+    P = (V * eigs) @ V.T
+    P = 0.5 * (P + P.T) # symmetrize just to be sure
 
     # make a random point dual feasible
     _y = pos(np.random.randn(m))
     _x = np.random.randn(n)
     c = -A.T @ _y - P @ _x
 
-    c /= np.linalg.norm(c)
-
     return (P, A, b, c)
 
 
+# Generate an UNBOUNDED problem, n variables, m constraints
 def gen_unbounded(m, n):
-    # c'x < 0, Ax + s = 0, Px = 0
+    # unbounded cert: c'x < 0, Ax + s = 0, Px = 0
     # also make sure primal feasible:
     # A _x + _s = b, _s \in K
 
@@ -86,12 +112,12 @@ def gen_unbounded(m, n):
     eigs, V = np.linalg.eig(P)
 
     i = np.argmin(eigs)
-    eigs[:n//2] = 0 # set some eigs to 0
-    x = V[:,0] # certificate
-
-    # Px = 0
+    # rank n / 2
+    eigs[:n//2] = 0
     P = (V * eigs) @ V.T
-    P = 0.5 * (P + P.T)
+    P = 0.5 * (P + P.T) # symmetrize just to be sure
+    # Px = 0
+    x = V[:,0] # certificate
 
     A = np.random.randn(m, n)
     # A := A - (s + Ax)x' / x'x ===> Ax + s == 0
@@ -104,8 +130,6 @@ def gen_unbounded(m, n):
     _s = pos(np.random.randn(m))
     # A _x + _s == b
     b = A.dot(_x) + _s
-
-    b /= np.linalg.norm(b)
 
     return (P, A, b, c)
 
