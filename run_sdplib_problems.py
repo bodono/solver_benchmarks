@@ -48,8 +48,6 @@ if infeasible:
 else:
   OUTPUT_FOLDER = 'sdplib_feasible'
 
-OUTPUT_FOLDER += '_debug'
-
 # Run all examples
 sdplib_runner = SDPLIBRunner(solvers,
                              s.settings,
