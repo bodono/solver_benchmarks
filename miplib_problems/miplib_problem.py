@@ -4,12 +4,13 @@ from itertools import repeat
 import pandas as pd
 
 from solvers.solvers import SOLVER_MAP
-from problem_classes.miplib import MIPLIB 
+from problem_classes.miplib import MIPLIB
 from utils.general import make_sure_path_exists
 
 import numpy as np
 
 BASE_PROBLEMS_FOLDER = "miplib_data"
+MAX_PROB_SIZE = int(5e6)
 
 
 class MIPLIBRunner(object):
@@ -30,8 +31,20 @@ class MIPLIBRunner(object):
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
                             f.endswith('.mps')])
-        self.problems = [f[:-4] for f in lst_probs]   # List of problem names
-        print(self.problems)
+        problems = [f[:-4] for f in lst_probs]   # List of problem names
+        print("Full problem set:")
+        print(problems)
+        print(f"Filtering size to under {MAX_PROB_SIZE/1e6} Mbytes")
+        self.problems = []
+        for problem in problems:
+          # Create example instance
+          full_path = os.path.join(".", "problem_classes",
+                                    BASE_PROBLEMS_FOLDER, "%s.mps" % problem)
+          if os.stat(full_path).st_size > MAX_PROB_SIZE:
+            print(f'Skipping large problem {problem}')
+            continue
+          self.problems.append(problem)
+
 
     def solve(self, parallel=True, cores=32):
         '''
