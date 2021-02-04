@@ -99,6 +99,13 @@ class COSMOSolver(object):
           raise ValueError('Unrecognized problem type')
 
         while True:
+          # in case cosmo is borking the original data make copies
+          P = P.copy() if P is not None else None
+          A = A.copy() if A is not None else None
+          b = b.copy() if b is not None else None
+          q = q.copy() if q is not None else None
+          u = u.copy() if u is not None else None
+          l = l.copy() if l is not None else None
           try:
             model = cosmo.Model()
           except:

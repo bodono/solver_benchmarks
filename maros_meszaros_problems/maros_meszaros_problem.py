@@ -126,6 +126,7 @@ class MarosMeszarosRunner(object):
         instance = MarosMeszaros(full_name)
 
         print(" - Solving %s with solver %s" % (problem, solver))
+        print(f' - Optimal objective {OPT_COST_MAP[problem]}')
 
         # Solve problem
         s = SOLVER_MAP[solver](settings)

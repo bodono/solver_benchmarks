@@ -1,0 +1,5 @@
+name,solver,status,run_time,iter,obj_val,n,m,N
+infd1,COSMO,max_iter_reached,32.02614116668701,100000,-215.00854772311015,465,10,4650
+infd2,COSMO,max_iter_reached,32.769351959228516,100000,-739.2231380427493,465,10,4650
+infp1,COSMO,primal infeasible,0.09275293350219727,100,inf,465,10,4650
+infp2,COSMO,primal infeasible,0.0300600528717041,100,inf,465,10,4650

@@ -89,12 +89,12 @@ SOLVER_MAP = {
 }
 
 time_limit = 1000.  # Seconds
-eps_abs_low = 1e-3
-eps_rel_low = 1e-4
+eps_abs_low = 1e-12
+eps_rel_low = 1e-12
 eps_high = 1e-05
 eps_infeas = 1e-4
 
-DEBUG = False 
+DEBUG = True 
 MAX_ITERS = int(1e5)
 
 if DEBUG:
