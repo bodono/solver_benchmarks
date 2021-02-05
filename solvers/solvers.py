@@ -47,6 +47,7 @@ except:
   QPALMSolver = None
 
 SCS = 'SCS-3.0'
+SCS_ALT = 'SCS_ALT'
 SCS_AA = 'SCS_AA'
 SCS_INDIRECT = 'SCS_INDIRECT'
 SCS_INDIRECT_AA = 'SCS_INDIRECT_AA'
@@ -81,6 +82,7 @@ SOLVER_MAP = {
     ECOS_high: ECOSSolver,
     COSMO: COSMOSolver,
     SCS: SCSSolver,
+    SCS_ALT: SCSSolver,
     SCS_AA: SCSSolver,
     SCS_INDIRECT: SCSSolver,
     SCS_INDIRECT_AA: SCSSolver,
@@ -92,9 +94,9 @@ time_limit = 1000.  # Seconds
 eps_abs_low = 1e-3
 eps_rel_low = 1e-4
 eps_high = 1e-05
-eps_infeas = 1e-6
+eps_infeas = 1e-12
 
-DEBUG = False 
+DEBUG = False
 MAX_ITERS = int(1e5)
 
 if DEBUG:
@@ -131,6 +133,21 @@ settings = {
         #'verbose': True
     },
     SCS: {
+        'eps_abs': eps_abs_low,
+        'eps_rel': eps_rel_low,
+        'eps_infeas': eps_infeas,
+        'max_iters': MAX_ITERS,
+        'acceleration_lookback': 0,
+        'acceleration_interval': 50,
+        'scale': SCALE,
+        'alpha': ALPHA,
+        'normalize': NORMALIZE,
+        'adaptive_scaling': ADAPTIVE_SCALING,
+        'use_indirect': False,
+        'time_limit_secs': time_limit,
+        #'rho_x': 1.,
+    },
+    SCS_ALT: {
         'eps_abs': eps_abs_low,
         'eps_rel': eps_rel_low,
         'eps_infeas': eps_infeas,
