@@ -46,7 +46,7 @@ except:
   print('QPALM import failed')
   QPALMSolver = None
 
-SCS = 'SCS'
+SCS = 'SCS-3.0'
 SCS_AA = 'SCS_AA'
 SCS_INDIRECT = 'SCS_INDIRECT'
 SCS_INDIRECT_AA = 'SCS_INDIRECT_AA'
@@ -92,7 +92,7 @@ time_limit = 1000.  # Seconds
 eps_abs_low = 1e-3
 eps_rel_low = 1e-4
 eps_high = 1e-05
-eps_infeas = 1e-4
+eps_infeas = 1e-6
 
 DEBUG = False 
 MAX_ITERS = int(1e5)
