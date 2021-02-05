@@ -1,5 +1,0 @@
-name,solver,status,run_time,iter,obj_val,n,m,N
-infd1,SCS,dual infeasible,0.018486976623535156,50,-inf,465,10,4650
-infd2,SCS,dual infeasible,0.01618814468383789,50,-inf,465,10,4650
-infp1,SCS,primal infeasible,0.003609895706176758,49,inf,465,10,4650
-infp2,SCS,primal infeasible,0.01310110092163086,50,inf,465,10,4650
