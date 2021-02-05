@@ -27,8 +27,8 @@ class QPLIBRunner(object):
         # Get maros problems list
         problems_dir = os.path.join(".", "problem_classes", PROBLEMS_FOLDER)
         # List of problems in .mat format
-        lst_probs = [f for f in os.listdir(problems_dir) if \
-            f.endswith('.qplib')]
+        lst_probs = sorted([f for f in os.listdir(problems_dir) if \
+            f.endswith('.qplib')])
         self.problems = [f[6:-6] for f in lst_probs]   # List of problem names
         print(self.problems)
 
