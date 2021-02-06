@@ -1,5 +1,5 @@
 name,solver,status,run_time,iter,obj_val,n,m,N
-infd1,SCS-3.0,dual infeasible,0.018486976623535156,50,-inf,465,10,4650
-infd2,SCS-3.0,dual infeasible,0.01618814468383789,50,-inf,465,10,4650
-infp1,SCS-3.0,primal infeasible,0.003609895706176758,49,inf,465,10,4650
-infp2,SCS-3.0,primal infeasible,0.01310110092163086,50,inf,465,10,4650
+infd1,SCS-3.0,dual infeasible,0.010213851928710938,25,-inf,465,10,4650
+infd2,SCS-3.0,dual infeasible,0.01676797866821289,45,-inf,465,10,4650
+infp1,SCS-3.0,primal infeasible,0.003796100616455078,25,inf,465,10,4650
+infp2,SCS-3.0,primal infeasible,0.0027391910552978516,25,inf,465,10,4650
