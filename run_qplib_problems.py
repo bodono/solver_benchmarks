@@ -32,7 +32,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 OUTPUT_FOLDER = 'qplib_problems'
-solvers=[s.SCS, s.OSQP, s.COSMO, s.SCS_ALT]#, s.SCS_AA, s.ECOS, s.qpOASES]
+solvers=[s.SCS, s.OSQP, s.COSMO]#, s.SCS_AA, s.ECOS, s.qpOASES]
 
 # Shut up solvers
 if verbose:
