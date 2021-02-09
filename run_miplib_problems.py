@@ -23,11 +23,15 @@ parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
+parser.add_argument('--quick', help='Run quick probs only', default=False,
+                    action='store_true')
 
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
 verbose = args.verbose
 parallel = args.parallel
+quick = args.quick
+
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
@@ -47,8 +51,17 @@ miplib_runner = MIPLIBRunner(solvers,
                              s.settings,
                              OUTPUT_FOLDER)
 
+if quick:
+  probs = []
+  with open('problem_classes/miplib_data/quick_test.txt', 'r') as f:
+    probs = f.read().splitlines()
+  miplib_runner.problems = sorted(probs)
+  #miplib_runner.problems = sorted(list(set(probs) &
+  #                                set(miplib_runner.problems)))
+
+print(miplib_runner.problems)
 # debug
-#miplib_runner.problems = ["air05"]
+#miplib_runner.problems = ["fhnw-binpack4-48"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("pilot4i"):]
 #
@@ -64,7 +77,6 @@ miplib_runner = MIPLIBRunner(solvers,
 #    shutil.rmtree("./results/miplib_infeasible")
 #  else:
 #    shutil.rmtree("./results/miplib_feasible")
-
 
 miplib_runner.solve(parallel=parallel, cores=12)
 # Compute results statistics
