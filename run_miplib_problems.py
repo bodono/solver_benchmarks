@@ -45,6 +45,8 @@ if verbose:
         s.settings[key]['verbose'] = True
 
 OUTPUT_FOLDER = 'miplib_problems'
+if quick:
+  OUTPUT_FOLDER += '_quick'
 
 # Run all examples
 miplib_runner = MIPLIBRunner(solvers,
@@ -52,7 +54,6 @@ miplib_runner = MIPLIBRunner(solvers,
                              OUTPUT_FOLDER)
 
 if quick:
-  OUTPUT_FOLDER += '_quick'
   probs = []
   with open('problem_classes/miplib_data/quick_test.txt', 'r') as f:
     probs = f.read().splitlines()
