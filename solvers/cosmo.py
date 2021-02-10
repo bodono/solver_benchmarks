@@ -86,8 +86,6 @@ class COSMOSolver(object):
           problem = example.sdp_problem
           scs_cone = problem['cone']
           (m,n) = problem['A'].shape
-          data = dict(P=scipy.sparse.csc_matrix((n,n)),
-                      A=problem['A'], b=problem['b'], c=problem['q'])
           P = None
           u = None
           l = None
@@ -134,6 +132,7 @@ class COSMOSolver(object):
               break
           elif hasattr(example, 'sdp_problem'):
             if status in s.SOLUTION_PRESENT:
+              data = dict(P=scipy.sparse.csc_matrix((n,n)), A=A, b=b, c=q)
               if is_cone_solution_optimal(data, cone,
                                           model.get_x(),
                                           model.get_y(),
