@@ -91,8 +91,8 @@ SOLVER_MAP = {
 }
 
 time_limit = 1000.  # Seconds
-eps_abs_low = 1e-3
-eps_rel_low = 1e-4
+eps_abs_low = 1e-03
+eps_rel_low = 1e-04
 eps_high = 1e-05
 eps_infeas = 1e-12
 

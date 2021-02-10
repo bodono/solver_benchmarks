@@ -1,6 +1,7 @@
 import cvxpy
 import numpy as np
 import scipy.sparse
+import scipy.sparse.linalg
 import scipy.io
 import scs
 
@@ -43,11 +44,12 @@ class DIMACS(object):
       else:
         b = np.squeeze(b)
 
-
       try:
         _A = d['A'].T
       except:
         _A = d['At']
+      _A = scipy.sparse.csc_matrix(_A)
+
       #_A.indptr = _A.indices.astype(np.int)
       #_A.indices = _A.indices.astype(np.int)
       _A.data = _A.data.astype(np.float)
@@ -64,6 +66,7 @@ class DIMACS(object):
 
       curr_idx = 0
       to_drop = []
+      new_free_idxs = []
       cone = dict()
       if 'f' in K_names:
         cone['f'] = np.sum(K['f'][0][0])
@@ -88,25 +91,34 @@ class DIMACS(object):
           add_from_idxs = curr_idx + M[idxs]
           add_to_idxs = curr_idx + M[idxs[1], idxs[0]]
           diag_idxs = curr_idx + M_diags
-          _A[add_to_idxs, :] += _A[add_from_idxs, :]
-          _A[add_to_idxs, :] /= 2.
+          #_A[add_to_idxs, :] += _A[add_from_idxs, :]
+          #_A[add_to_idxs, :] /= 2.
           _A[diag_idxs, :] /= np.sqrt(2.)
-          b[add_to_idxs] += b[add_from_idxs]
-          b[add_to_idxs] /= 2.
+          #b[add_to_idxs] += b[add_from_idxs]
+          #b[add_to_idxs] /= 2.
           b[diag_idxs] /= np.sqrt(2.)
           to_drop += add_from_idxs.tolist()
+          new_free_idxs += add_to_idxs.tolist()
           curr_idx += s * s
 
+      A_free = _A[new_free_idxs, :] - _A[to_drop, :]
+      b_free = b[new_free_idxs] - b[to_drop]
       rows_to_keep = [r for r in range(_A.shape[0]) if r not in to_drop]
-      A = scipy.sparse.csc_matrix(_A[rows_to_keep, :])
-      b = b[rows_to_keep]
+       
+      if np.linalg.norm(b_free) > 0 or scipy.sparse.linalg.norm(A_free) > 0:
+        A = scipy.sparse.csc_matrix(
+              scipy.sparse.vstack((A_free, _A[rows_to_keep, :])))
+        b = np.hstack((b_free, b[rows_to_keep]))
+        if 'f' in cone:
+          cone['f'] += len(b_free)
+        else:
+          cone['f'] = len(b_free)
+      else:
+        A = scipy.sparse.csc_matrix(_A[rows_to_keep, :])
+        b = b[rows_to_keep]
 
       A = A.sorted_indices()
-
       data = dict(A=A, b=b, c=c)
-
-      #scs.solve(data, cone, verbose=True, eps_abs=1e-7, eps_rel=1e-7,
-      #    max_iters=int(1e6))
 
       self.cone = cone
       self.A = A 

@@ -51,7 +51,7 @@ dimacs_runner = DIMACSRunner(solvers,
 # debug
 #dimacs_runner.problems = ["filtinf1"]
 #dimacs_runner.problems = \
-#  dimacs_runner.problems[dimacs_runner.problems.index("hamming_7_5_6"):]
+#  dimacs_runner.problems[dimacs_runner.problems.index("hinf12"):]
 #
 #probs = dimacs_runner.problems
 #for prob in probs:
