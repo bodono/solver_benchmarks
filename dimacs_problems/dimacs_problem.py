@@ -4,13 +4,14 @@ from itertools import repeat
 import pandas as pd
 
 from solvers.solvers import SOLVER_MAP
-from problem_classes.dimacs import DIMACS 
+from problem_classes.dimacs import DIMACS
 from utils.general import make_sure_path_exists
 
 import numpy as np
 
 BASE_PROBLEMS_FOLDER = "dimacs_data"
-R_CONE_PROBS = []#"bm1", "filter48_socp"]
+R_CONE_PROBS = []
+MAX_PROB_SIZE = int(5e6)
 
 class DIMACSRunner(object):
     '''
@@ -32,9 +33,20 @@ class DIMACSRunner(object):
                             f.endswith('.mat')])
         self.problems = [f[:-4] for f in lst_probs]   # List of problem names
         # cannot handle rotated lorentz cones:
-        self.problems = [f for f in self.problems if f not in
-                         R_CONE_PROBS]
-        print(self.problems)
+        problems = [f for f in self.problems if f not in R_CONE_PROBS]
+        print("Full problem set:")
+        print(problems)
+        print(f"Filtering size to under {MAX_PROB_SIZE/1e6} Mbytes")
+        self.problems = []
+        for problem in problems:
+          # Create example instance
+          full_path = os.path.join(".", "problem_classes",
+                                    BASE_PROBLEMS_FOLDER, "%s.mat" % problem)
+          if os.stat(full_path).st_size > MAX_PROB_SIZE:
+            print(f'Skipping large problem {problem}')
+            continue
+          self.problems.append(problem)
+
 
     def solve(self, parallel=True, cores=32):
         '''

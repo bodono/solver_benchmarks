@@ -37,7 +37,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.SCS_AA, s.qpOASES, s.ECOS, s.COSMO]
+solvers=[s.SCS, s.OSQP, s.COSMO]
 
 # Shut up solvers
 if verbose:
@@ -52,18 +52,19 @@ miplib_runner = MIPLIBRunner(solvers,
                              OUTPUT_FOLDER)
 
 if quick:
+  OUTPUT_FOLDER += '_quick'
   probs = []
   with open('problem_classes/miplib_data/quick_test.txt', 'r') as f:
     probs = f.read().splitlines()
-  miplib_runner.problems = sorted(probs)
-  #miplib_runner.problems = sorted(list(set(probs) &
-  #                                set(miplib_runner.problems)))
+  #miplib_runner.problems = sorted(probs)
+  miplib_runner.problems = sorted(list(set(probs) &
+                                  set(miplib_runner.problems)))
 
 print(miplib_runner.problems)
 # debug
 #miplib_runner.problems = ["fhnw-binpack4-48"]
 #miplib_runner.problems = \
-#  miplib_runner.problems[miplib_runner.problems.index("pilot4i"):]
+#  miplib_runner.problems[miplib_runner.problems.index("lotsize"):]
 #
 #probs = miplib_runner.problems
 #for prob in probs:
