@@ -1,7 +1,7 @@
 import cvxpy
 import numpy as np
 import scipy.sparse
-from pysmps import smps_loader as mps
+import problem_classes.qpsreader
 
 
 class MIPLIB(object):
@@ -30,60 +30,7 @@ class MIPLIB(object):
     # min  q'x
     # s.t. l <= Ax <= u
     def _load_miplib_problem(self, filename, verbose=False):
-      data = mps.load_mps(filename)
-      if len(data["rhs_names"]) > 1:
-        raise ValueError("more than one rhs")
-      if len(data["bnd_names"]) > 1:
-        raise ValueError("more than one bnd")
-
-      A_mps = data["A"]
-      c = data["c"]
-      (m, n) = A_mps.shape
-      types = np.array(data["types"])
-      if not data["rhs"]: # if RHS totally missing, assume zeros
-        b_mps = np.zeros(m)
-      else:
-        b_mps = data["rhs"][data["rhs_names"][0]]
-      if not data["bnd_names"]: # if BOUNDS totally missing don't set them
-        bounds = None
-      else:
-        bounds = data["bnd"][data["bnd_names"][0]]
-
-      A_l = A_mps[types == "G",:]
-      A_u = A_mps[types == "L",:]
-
-      # check if A_l and A_u are equal
-      if A_l.shape == A_u.shape and len((A_l != A_u).data) == 0:
-        A_box = -A_u
-        l = b_mps[types == "G"]
-        u = b_mps[types == "L"]
-      else:
-        A_box = scipy.sparse.vstack((A_l, A_u))
-        l = np.hstack((b_mps[types == "G"], -np.inf*np.ones(sum(types == "L"))))
-        u = np.hstack((np.inf*np.ones(sum(types == "G")), b_mps[types == "L"]))
-
-      # variable bounds vl <= x <= vu
-      if bounds:
-        vl = bounds['LO']
-        vu = bounds['UP']
-
-        assert np.squeeze(vl).shape[0] == n
-        assert np.squeeze(vu).shape[0] == n
-
-      else:
-        #idxs = []
-        vl = np.zeros(n)
-        vu = np.inf * np.ones(n)
-
-      l = np.hstack((vl, l))
-      u = np.hstack((vu, u))
-
-      A = scipy.sparse.vstack((scipy.sparse.eye(n, format='dok'), A_box))
-      A = scipy.sparse.vstack((A_mps[types == "E", :], A))
-      # OSQP stack equality b on top
-      l = np.hstack((b_mps[types == "E"], l))
-      u = np.hstack((b_mps[types == "E"], u))
-
+      (A, c, l, u) = problem_classes.qpsreader.readMpsLp(filename)
       # Assign final values to problem
       self.m, self.n = A.shape
       self.l = l

@@ -4,9 +4,9 @@ import scipy.sparse
 import problem_classes.qpsreader
 
 
-class NETLIB(object):
+class KENNINGTON(object):
     '''
-    NETLIB
+    KENNINGTON
     '''
     def __init__(self, file_name):
         '''
@@ -15,7 +15,7 @@ class NETLIB(object):
         NB. By default, the CVXPY problem is not created
         '''
         # Load problem from file
-        self._load_netlib_problem(file_name)
+        self._load_kennington_problem(file_name)
 
         self.qp_problem = self._generate_qp_problem()
         self._cvxpy_problem = None
@@ -29,7 +29,7 @@ class NETLIB(object):
 
     # min  q'x
     # s.t. l <= Ax <= u
-    def _load_netlib_problem(self, filename, verbose=False):
+    def _load_kennington_problem(self, filename, verbose=False):
       (A, c, l, u) = problem_classes.qpsreader.readMpsLp(filename)
       # Assign final values to problem
       self.m, self.n = A.shape
@@ -45,10 +45,8 @@ class NETLIB(object):
       #    self.q *= -1
       #    self.r *= -1
 
-
-    @staticmethod
     def name():
-        return 'NETLIB'
+        return 'KENNINGTON'
 
     def _generate_qp_problem(self):
         '''
@@ -67,6 +65,7 @@ class NETLIB(object):
         return problem
 
 
+    # XXX this method might be wrong:
     def _generate_cvxpy_problem(self):
         '''
         Generate QP problem

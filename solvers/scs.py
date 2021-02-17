@@ -47,6 +47,8 @@ class SCSSolver(object):
           (m, n) = problem['A'].shape
           # Hack out the equality constraints
           idxs = (problem['u'] - problem['l'] < 1e-6)
+          idxs &= (problem['u'] < 1e20)
+          idxs &= (problem['l'] > -1e20)
           o_idxs = np.array(range(A.shape[0])) # no need +1 for box cone
           o_idxs = np.hstack((o_idxs[idxs], o_idxs[~idxs]))
           inv_perm = np.argsort(o_idxs)
