@@ -173,8 +173,8 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy):
     y_minus = np.minimum(y, 0)
 
     # these next lines try to prevent errors like inf * 0 = nan or inf
-    l[l==-np.inf] = -1e20
-    u[u==np.inf] = 1e20
+    l[l<=-1e20] = -1e20
+    u[u>=1e20] = 1e20
     y_plus[np.abs(y_plus)<1e-12] = 0.
     y_minus[np.abs(y_minus)<1e-12] = 0.
 

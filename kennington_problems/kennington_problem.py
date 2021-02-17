@@ -4,16 +4,16 @@ from itertools import repeat
 import pandas as pd
 
 from solvers.solvers import SOLVER_MAP
-from problem_classes.miplib import MIPLIB
+from problem_classes.kennington import KENNINGTON
 from utils.general import make_sure_path_exists
 
 import numpy as np
 
-BASE_PROBLEMS_FOLDER = "miplib_data"
+BASE_PROBLEMS_FOLDER = "kennington"
 MAX_PROB_SIZE = int(100e6)
 
 
-class MIPLIBRunner(object):
+class KENNINGTONRunner(object):
     '''
     Examples runner
     '''
@@ -25,7 +25,7 @@ class MIPLIBRunner(object):
         self.settings = settings
         self.output_folder = output_folder
 
-        # Get miplib problems list
+        # Get kennington problems list
         self.problems_dir = os.path.join(".", "problem_classes", BASE_PROBLEMS_FOLDER)
 
         # List of problems in .mat format
@@ -66,7 +66,7 @@ class MIPLIBRunner(object):
             - 'N': nnz dimension (nnz(P) + nnz(A))
         '''
 
-        print("Solving MIPLIB root node lp")
+        print("Solving KENNINGTON lp")
         print("-------------------------------")
 
         if parallel:
@@ -123,7 +123,7 @@ class MIPLIBRunner(object):
                              problem,
                              solver, settings):
         '''
-        Solve MIPLIB 'problem' with 'solver'
+        Solve KENNINGTON 'problem' with 'solver'
 
         Args:
             dimension: problem leading dimension
@@ -137,7 +137,7 @@ class MIPLIBRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  BASE_PROBLEMS_FOLDER, "%s.mps" % problem)
-        instance = MIPLIB(full_name)
+        instance = KENNINGTON(full_name)
 
 
         # Solve problem
