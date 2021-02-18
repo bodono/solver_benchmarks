@@ -28,5 +28,6 @@ def readMpsLp(filename):
         u = np.hstack((u, x_up[idxs]))
         mat = sparse.vstack((mat, sparse.eye(n, format='dok')[idxs, :]))
 
+    print('Finished reading')
     return (mat, c, l, u)
 
