@@ -2,14 +2,12 @@ import os
 import pandas as pd
 import numpy as np
 import solvers.statuses as statuses
-from solvers.solvers import time_limit
+from solvers.solvers import TIME_LIMIT as MAX_TIMING
 
 # Plotting
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pylab as plt
-
-MAX_TIMING = time_limit
 
 def plot_performance_profiles(problems, solvers):
     """

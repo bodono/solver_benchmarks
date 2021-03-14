@@ -77,8 +77,8 @@ def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
     # gap:    x'Px + c'x + b'y == 0
     # cone:   s \in K, y in K^star
     if high_accuracy:
-      eps_abs = statuses.eps_high
-      eps_rel = statuses.eps_high
+      eps_abs = statuses.eps_abs_high
+      eps_rel = statuses.eps_rel_high
     else:
       eps_abs=statuses.eps_abs_low
       eps_rel=statuses.eps_rel_low
@@ -135,8 +135,8 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy):
     '''
     # Get problem matrices
     if high_accuracy:
-      eps_abs = statuses.eps_high
-      eps_rel = statuses.eps_high
+      eps_abs = statuses.eps_abs_high
+      eps_rel = statuses.eps_rel_high
     else:
       eps_abs=statuses.eps_abs_low
       eps_rel=statuses.eps_rel_low
