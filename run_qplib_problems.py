@@ -18,7 +18,7 @@ import argparse
 parser = argparse.ArgumentParser(description='QPLIB Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
-parser.add_argument('--verbose', help='Verbose solvers', default=True,
+parser.add_argument('--verbose', help='Verbose solvers', default=False,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
@@ -34,14 +34,18 @@ print('parallel', parallel)
 OUTPUT_FOLDER = 'qplib_problems'
 solvers=[s.SCS, s.OSQP, s.COSMO]#, s.SCS_AA, s.ECOS, s.qpOASES]
 
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+
+settings = s.get_settings(infeasible)
+
 # Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 # Run all examples
 qplib_runner = QPLIBRunner(solvers,
-                           s.settings,
+                           settings,
                            OUTPUT_FOLDER)
 
 # DEBUG only: Choose only 2 problems

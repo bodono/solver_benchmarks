@@ -2,9 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 import solvers.statuses as statuses
-from solvers.solvers import time_limit
-
-MAX_TIMING = time_limit
+from solvers.solvers import TIME_LIMIT as MAX_TIMING
 
 def get_data(solvers, output_folder, infeasible_test):
     data = {}
@@ -72,7 +70,7 @@ def make_latex_table(solvers, output_folder, infeasible_test):
     with open(table_path, "w") as f:
       f.write(table)
 
-    # same again, except iter instead of run_time 
+    # same again, except iter instead of run_time
     data = {}
     for solver in solvers:
       df = orig_data[solver].copy()

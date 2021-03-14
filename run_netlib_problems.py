@@ -19,7 +19,7 @@ import shutil
 parser = argparse.ArgumentParser(description='NETLIB Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
-parser.add_argument('--verbose', help='Verbose solvers', default=True,
+parser.add_argument('--verbose', help='Verbose solvers', default=False,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
@@ -39,12 +39,16 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.COSMO] #s.ECOS, s.QPALM, s.COSMO]
+solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_AA] #s.ECOS, s.QPALM, s.COSMO]
+
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+
+settings = s.get_settings(infeasible)
 
 # Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+for key in settings:
+    settings[key]['verbose'] = True
 
 if infeasible:
   OUTPUT_FOLDER = 'netlib_infeasible'
@@ -56,7 +60,7 @@ if add_quadratic:
 
 # Run all examples
 netlib_runner = NETLIBRunner(solvers,
-                             s.settings,
+                             settings,
                              OUTPUT_FOLDER,
                              infeasible,
                              add_quadratic)
@@ -69,7 +73,7 @@ netlib_runner = NETLIBRunner(solvers,
 #probs = netlib_runner.problems
 #for prob in probs:
 #  netlib_runner = NETLIBRunner(solvers,
-#                             s.settings,
+#                             settings,
 #                             OUTPUT_FOLDER,
 #                             infeasible)
 #  netlib_runner.problems = [prob]
