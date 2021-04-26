@@ -1,0 +1,2 @@
+name,solver,status,run_time,iter,obj_val,obj_opt,n,m,N
+LISWET1,SCS-3.0_high,optimal,18.549983024597168,25725,25.002277510095155,36.122402,10002,20002,50004

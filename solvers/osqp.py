@@ -75,11 +75,12 @@ class OSQPSolver(object):
                                  end - start,
                                  #results.info.run_time,
                                  results.info.iter)
-
+        
         return_results.status_polish = results.info.status_polish
         return_results.setup_time = results.info.setup_time
         return_results.solve_time = results.info.solve_time
         return_results.update_time = results.info.update_time
         return_results.rho_updates = results.info.rho_updates
+        return_results.rho_estimate = results.info.rho_estimate
 
         return return_results

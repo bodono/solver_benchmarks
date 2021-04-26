@@ -1,0 +1,30 @@
+name,solver,status,run_time,iter,obj_val,n,m,N
+bgdbg1,SCS_AA2,primal infeasible,0.002168893814086914,25,inf,407,755,1847
+bgetam,SCS_AA2,primal infeasible,0.0047490596771240234,25,inf,688,1088,3097
+bgindy,SCS_AA2,primal infeasible,0.08796334266662598,0,inf,10116,12787,75618
+bgprtr,SCS_AA2,primal infeasible,0.0004611015319824219,0,inf,34,54,98
+box1,SCS_AA2,primal infeasible,0.0034918785095214844,125,inf,261,492,912
+ceria3d,SCS_AA2,max_iter_reached,25.671298027038574,100000,-0.9956839324406528,824,3576,17602
+chemcom,SCS_AA2,primal infeasible,0.02392101287841797,50,inf,720,1008,2286
+cplex1,SCS_AA2,primal infeasible,0.009675025939941406,0,inf,3221,6226,12165
+cplex2,SCS_AA2,max_iter_reached,2.263172149658203,100000,0.655052885784883,221,445,1279
+ex72a,SCS_AA2,primal infeasible,0.0032830238342285156,125,inf,215,412,682
+ex73a,SCS_AA2,primal infeasible,0.0029592514038085938,125,inf,211,404,668
+forest6,SCS_AA2,primal infeasible,0.00127410888671875,75,inf,95,161,305
+galenet,SCS_AA2,primal infeasible,0.0005576610565185547,25,inf,8,16,24
+gosh,SCS_AA2,primal infeasible,0.07745099067687988,0,inf,10733,14283,107722
+gran,SCS_AA2,primal infeasible,0.015991687774658203,0,inf,2520,5178,22626
+greenbea,SCS_AA2,primal infeasible,0.03271031379699707,0,inf,5405,7797,36282
+itest2,SCS_AA2,primal infeasible,0.000476837158203125,25,inf,4,13,21
+itest6,SCS_AA2,primal infeasible,0.00043892860412597656,0,inf,8,19,28
+klein1,SCS_AA2,max_iter_reached,0.7128288745880127,100000,inf,54,108,750
+klein2,SCS_AA2,primal infeasible,0.0029828548431396484,25,inf,54,531,4639
+klein3,SCS_AA2,primal infeasible,0.00832986831665039,25,inf,88,1082,12195
+mondou2,SCS_AA2,primal infeasible,0.0014879703521728516,0,inf,604,916,1812
+pang,SCS_AA2,primal infeasible,0.002262115478515625,0,inf,460,805,3096
+pilot4i,SCS_AA2,dual infeasible,0.9838621616363525,10025,-inf,1000,1322,6053
+qual,SCS_AA2,primal infeasible,0.0016980171203613281,0,inf,464,787,2110
+reactor,SCS_AA2,primal infeasible,0.013330221176147461,175,inf,637,955,3057
+refinery,SCS_AA2,primal infeasible,0.0013179779052734375,0,inf,464,787,2090
+vol1,SCS_AA2,primal infeasible,0.0013720989227294922,0,inf,464,787,2110
+woodinfe,SCS_AA2,primal infeasible,0.0013260841369628906,125,inf,89,124,229

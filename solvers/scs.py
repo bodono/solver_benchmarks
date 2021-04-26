@@ -119,5 +119,8 @@ class SCSSolver(object):
         #return_results.update_time = results['info']['linSysTime']
         #return_results.update_time = results['info']['accelTime']
         #return_results.rho_updates = results['info']['scale_updates']
+        
+        return_results.scale = results['info']['scale']
+        return_results.scale_updates = results['info']['scale_updates']
 
         return return_results

@@ -51,16 +51,20 @@ HIGH = '_high'
 
 SCS = 'SCS-3.0'
 SCS_ALT = 'SCS_ALT'
-SCS_AA = 'SCS_AA'
+SCS_AA1 = 'SCS_AA1'
+SCS_AA2 = 'SCS_AA2'
 SCS_INDIRECT = 'SCS_INDIRECT'
-SCS_INDIRECT_AA = 'SCS_INDIRECT_AA'
+SCS_INDIRECT_AA1 = 'SCS_INDIRECT_AA1'
+SCS_INDIRECT_AA2 = 'SCS_INDIRECT_AA2'
 COSMO = 'COSMO'
 COSMO_high = COSMO + HIGH
 SCS_high = SCS + HIGH
-SCS_AA_high = SCS_AA + HIGH
+SCS_AA1_high = SCS_AA1 + HIGH
+SCS_AA2_high = SCS_AA2 + HIGH
 SCS_ALT_high = SCS_ALT + HIGH
 SCS_INDIRECT_high = SCS_INDIRECT + HIGH
-SCS_INDIRECT_AA_high = SCS_INDIRECT_AA + HIGH
+SCS_INDIRECT_AA1_high = SCS_INDIRECT_AA1 + HIGH
+SCS_INDIRECT_AA2_high = SCS_INDIRECT_AA2 + HIGH
 ECOS = 'ECOS'
 ECOS_high = ECOS + HIGH
 GUROBI = 'GUROBI'
@@ -87,9 +91,11 @@ SOLVER_MAP_REGULAR = {
     COSMO: COSMOSolver,
     SCS: SCSSolver,
     SCS_ALT: SCSSolver,
-    SCS_AA: SCSSolver,
+    SCS_AA1: SCSSolver,
+    SCS_AA2: SCSSolver,
     SCS_INDIRECT: SCSSolver,
-    SCS_INDIRECT_AA: SCSSolver,
+    SCS_INDIRECT_AA1: SCSSolver,
+    SCS_INDIRECT_AA2: SCSSolver,
     qpOASES: qpOASESSolver,
     QPALM: QPALMSolver
 }
@@ -104,9 +110,11 @@ SOLVER_MAP_HIGH = {
     ECOS_high: ECOSSolver,
     SCS_high: SCSSolver,
     SCS_ALT_high: SCSSolver,
-    SCS_AA_high: SCSSolver,
+    SCS_AA1_high: SCSSolver,
+    SCS_AA2_high: SCSSolver,
     SCS_INDIRECT_high: SCSSolver,
-    SCS_INDIRECT_AA_high: SCSSolver,
+    SCS_INDIRECT_AA1_high: SCSSolver,
+    SCS_INDIRECT_AA2_high: SCSSolver,
 }
 
 SOLVER_MAP = {**SOLVER_MAP_REGULAR, **SOLVER_MAP_HIGH}
@@ -124,26 +132,26 @@ else:
   NORMALIZE = True
   SCALE = 0.1
   ALPHA = 1.5
-  ADAPTIVE_SCALING = True
+  ADAPTIVE_SCALING = True 
 
 # Solver settings
 eps_abs_low = 1e-03
 eps_rel_low = 1e-04
-eps_abs_high = 1e-04
-eps_rel_high = 1e-05
+eps_abs_high = 1e-05
+eps_rel_high = 1e-06
 eps_infeas = 1e-04
 eps_infeas_high = 1e-05
 
-def get_settings(infeasible):
+def get_settings(infeasible=False):
     if infeasible:
         _eps_abs_low = 1e-18
         _eps_rel_low = 1e-18
         _eps_abs_high = 1e-18
         _eps_rel_high = 1e-18
-        _eps_infeas = eps_infeas 
+        _eps_infeas = eps_infeas
         _eps_infeas_high = eps_infeas_high
     else:
-        _eps_abs_low = eps_abs_low 
+        _eps_abs_low = eps_abs_low
         _eps_rel_low = eps_rel_low
         _eps_abs_high = eps_abs_high
         _eps_rel_high = eps_rel_high
@@ -184,6 +192,7 @@ def get_settings(infeasible):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
+            # 'write_data_filename': 'LISWET1'
             #'rho_x': 1.,
         },
         SCS_ALT: {
@@ -201,12 +210,27 @@ def get_settings(infeasible):
             'time_limit_secs': TIME_LIMIT,
             #'rho_x': 1.,
         },
-        SCS_AA: {
+        SCS_AA1: {
             'eps_abs': _eps_abs_low,
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 20,
+            'acceleration_interval': 50,
+            'scale': SCALE,
+            'alpha': ALPHA,
+            'normalize': NORMALIZE,
+            'adaptive_scaling': ADAPTIVE_SCALING,
+            'use_indirect': False,
+            'time_limit_secs': TIME_LIMIT,
+            #'rho_x': 1.,
+        },
+        SCS_AA2: {
+            'eps_abs': _eps_abs_low,
+            'eps_rel': _eps_rel_low,
+            'eps_infeas': _eps_infeas,
+            'max_iters': MAX_ITERS,
+            'acceleration_lookback': -20,
             'acceleration_interval': 50,
             'scale': SCALE,
             'alpha': ALPHA,
@@ -231,12 +255,27 @@ def get_settings(infeasible):
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
             #'rho_x': 1.,
         },
-        SCS_INDIRECT_AA: {
+        SCS_INDIRECT_AA1: {
             'eps_abs': _eps_abs_low,
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 20,
+            'acceleration_interval': 50,
+            'scale': SCALE,
+            'alpha': ALPHA,
+            'normalize': NORMALIZE,
+            'adaptive_scaling': ADAPTIVE_SCALING,
+            'use_indirect': True,
+            'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
+            #'rho_x': 1.,
+        },
+        SCS_INDIRECT_AA2: {
+            'eps_abs': _eps_abs_low,
+            'eps_rel': _eps_rel_low,
+            'eps_infeas': _eps_infeas,
+            'max_iters': MAX_ITERS,
+            'acceleration_lookback': -20,
             'acceleration_interval': 50,
             'scale': SCALE,
             'alpha': ALPHA,
@@ -259,7 +298,7 @@ def get_settings(infeasible):
             'decompose': False,
             'scaling': 10 if NORMALIZE else 0,
             'adaptive_rho': ADAPTIVE_SCALING,
-            'time_limit': TIME_LIMIT 
+            'time_limit': TIME_LIMIT
         },
         OSQP_polish: {
             'eps_abs': _eps_abs_low,
@@ -303,10 +342,11 @@ def get_settings(infeasible):
         qpOASES: {}
     }
 
-    high_solvers = [OSQP_high, COSMO_high, SCS_high, SCS_ALT_high, SCS_AA_high,
-                    SCS_INDIRECT_high, SCS_INDIRECT_AA_high, QPALM_high]
+    high_solvers = [OSQP_high, COSMO_high, SCS_high, SCS_ALT_high, SCS_AA1_high,
+                    SCS_AA2_high, SCS_INDIRECT_high, SCS_INDIRECT_AA1_high,
+                    SCS_INDIRECT_AA2_high, QPALM_high]
 
-    for solver in high_solvers: 
+    for solver in high_solvers:
         settings[solver] = settings[solver.rstrip(HIGH)].copy()
         settings[solver]['eps_abs'] = _eps_abs_high
         settings[solver]['eps_rel'] = _eps_rel_high
@@ -315,7 +355,7 @@ def get_settings(infeasible):
         else:
             settings[solver]['eps_prim_inf'] = _eps_infeas_high
             settings[solver]['eps_dual_inf'] = _eps_infeas_high
-        
+
     for key in settings:
       settings[key]['verbose'] = False
 

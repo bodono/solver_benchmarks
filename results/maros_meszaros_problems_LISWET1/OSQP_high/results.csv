@@ -1,0 +1,2 @@
+name,solver,status,run_time,iter,obj_val,obj_opt,n,m,N,status_polish,setup_time,solve_time,update_time,rho_updates
+LISWET1,OSQP_high,optimal,11.489841938018799,28150,25.002276998276557,36.122402,10002,20002,50004,0,0.008967795,11.479599538,0.0,2
