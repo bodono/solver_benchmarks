@@ -173,12 +173,19 @@ class Example(object):
                          'N': [N]}
 
         # Add status polish if OSQP
-        if solver[:4] == 'OSQP':
+        if 'OSQP' in solver:
             solution_dict['status_polish'] = results.status_polish
             solution_dict['setup_time'] = results.setup_time
             solution_dict['solve_time'] = results.solve_time
             solution_dict['update_time'] = results.update_time
             solution_dict['rho_updates'] = results.rho_updates
+            solution_dict['rho_estimate'] = results.rho_estimate
+
+        if 'SCS' in solver:
+            solution_dict['setup_time'] = results.setup_time
+            solution_dict['solve_time'] = results.solve_time
+            solution_dict['scale'] = results.scale
+            solution_dict['scale_updates'] = results.scale_updates
 
         # Return solution
         return pd.DataFrame(solution_dict)

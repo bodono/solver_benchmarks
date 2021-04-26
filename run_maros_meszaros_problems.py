@@ -32,14 +32,14 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 
-OUTPUT_FOLDER = 'maros_meszaros_problems'
+OUTPUT_FOLDER = 'maros_meszaros_problems_XXY'
 
-solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_AA] #, s.ECOS, s.qpOASES, s.QPALM]
+solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
 
-settings = s.get_settings(infeasible)
+settings = s.get_settings()
 
 # Shut up solvers
 for key in settings:
@@ -50,7 +50,7 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             settings,
                                             OUTPUT_FOLDER)
 
-#maros_meszaros_runner.problems = ["QSTANDAT"]
+#maros_meszaros_runner.problems = ["LISWET1"]
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

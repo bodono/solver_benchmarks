@@ -1,0 +1,30 @@
+name,solver,status,run_time,iter,obj_val,n,m,N
+bgdbg1,SCS_AA1,primal infeasible,0.002104043960571289,25,inf,407,755,1847
+bgetam,SCS_AA1,primal infeasible,0.005294084548950195,25,inf,688,1088,3097
+bgindy,SCS_AA1,primal infeasible,0.08904790878295898,0,inf,10116,12787,75618
+bgprtr,SCS_AA1,primal infeasible,0.0012879371643066406,0,inf,34,54,98
+box1,SCS_AA1,primal infeasible,0.021030902862548828,125,inf,261,492,912
+ceria3d,SCS_AA1,primal infeasible,0.13438987731933594,600,inf,824,3576,17602
+chemcom,SCS_AA1,primal infeasible,0.004068136215209961,50,inf,720,1008,2286
+cplex1,SCS_AA1,primal infeasible,0.009860038757324219,0,inf,3221,6226,12165
+cplex2,SCS_AA1,max_iter_reached,1.9408347606658936,100000,0.6550518696412726,221,445,1279
+ex72a,SCS_AA1,primal infeasible,0.0026891231536865234,125,inf,215,412,682
+ex73a,SCS_AA1,primal infeasible,0.0035431385040283203,125,inf,211,404,668
+forest6,SCS_AA1,primal infeasible,0.0012488365173339844,75,inf,95,161,305
+galenet,SCS_AA1,primal infeasible,0.0006902217864990234,25,inf,8,16,24
+gosh,SCS_AA1,primal infeasible,0.07753491401672363,0,inf,10733,14283,107722
+gran,SCS_AA1,primal infeasible,0.014733076095581055,0,inf,2520,5178,22626
+greenbea,SCS_AA1,primal infeasible,0.04037284851074219,0,inf,5405,7797,36282
+itest2,SCS_AA1,primal infeasible,0.0007150173187255859,25,inf,4,13,21
+itest6,SCS_AA1,primal infeasible,0.000659942626953125,0,inf,8,19,28
+klein1,SCS_AA1,max_iter_reached,0.7738430500030518,100000,inf,54,108,750
+klein2,SCS_AA1,primal infeasible,0.003371000289916992,25,inf,54,531,4639
+klein3,SCS_AA1,primal infeasible,0.013321161270141602,25,inf,88,1082,12195
+mondou2,SCS_AA1,primal infeasible,0.0023279190063476562,0,inf,604,916,1812
+pang,SCS_AA1,primal infeasible,0.002917051315307617,0,inf,460,805,3096
+pilot4i,SCS_AA1,dual infeasible,0.3670642375946045,3675,-inf,1000,1322,6053
+qual,SCS_AA1,primal infeasible,0.001516103744506836,0,inf,464,787,2110
+reactor,SCS_AA1,dual infeasible,0.39434123039245605,7100,-inf,637,955,3057
+refinery,SCS_AA1,primal infeasible,0.0027267932891845703,0,inf,464,787,2090
+vol1,SCS_AA1,primal infeasible,0.0013058185577392578,0,inf,464,787,2110
+woodinfe,SCS_AA1,primal infeasible,0.001489877700805664,125,inf,89,124,229

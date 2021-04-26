@@ -156,15 +156,20 @@ class LIU_PATAKIRunner(object):
         #  else:
         #      obj_dist = np.inf
 
-        solution_dict = {'name': [problem],
-                         'solver': [solver],
-                         'status': [results.status],
-                         'run_time': [results.run_time],
-                         'iter': [results.niter],
-                         'obj_val': [obj],
-                         'n': [instance.sdp_problem["n"]],
-                         'm': [instance.sdp_problem["m"]],
-                         'N': [N]}
+        # Add status polish if OSQP
+        if 'OSQP' in solver:
+            solution_dict['status_polish'] = results.status_polish
+            solution_dict['setup_time'] = results.setup_time
+            solution_dict['solve_time'] = results.solve_time
+            solution_dict['update_time'] = results.update_time
+            solution_dict['rho_updates'] = results.rho_updates
+            solution_dict['rho_estimate'] = results.rho_estimate
+
+        if 'SCS' in solver:
+            solution_dict['setup_time'] = results.setup_time
+            solution_dict['solve_time'] = results.solve_time
+            solution_dict['scale'] = results.scale
+            solution_dict['scale_updates'] = results.scale_updates
 
         print(" - Solved %s with solver %s" % (problem, solver))
 
