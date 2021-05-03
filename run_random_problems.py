@@ -13,7 +13,6 @@ from utils.benchmark import compute_stats_info
 from utils.make_table import make_latex_table
 import os
 import argparse
-import shutil
 
 
 parser = argparse.ArgumentParser(description='random Runner')
@@ -44,10 +43,11 @@ print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO] #, s.COSMO, s.SCS_AA, s.ECOS, s.qpOASES, s.QPALM]
 
+settings = s.get_settings(infeasible or unbounded)
+
 # Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 if infeasible:
   OUTPUT_FOLDER = 'random_infeasible'
@@ -67,7 +67,7 @@ runner = RandomProbRunner(m, n,
                           SEED,
                           NUM_PROBS,
                           solvers,
-                          s.settings,
+                          settings,
                           OUTPUT_FOLDER,
                           infeasible,
                           unbounded)

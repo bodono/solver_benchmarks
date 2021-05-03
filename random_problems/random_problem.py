@@ -38,15 +38,15 @@ def gen_feasible(m, n):
     # Px + A'y == c
     # s >= 0, y >= 0, s'y = 0
 
-    z = np.random.randn(m)
+    z = 10 * np.random.randn(m)
     y = pos(z)
     s = y - z # s >= 0, s'y = 0 via Moreau
 
     P = np.random.randn(n,n)
     P = 0.1 * P.T @ P
     eigs, V = np.linalg.eig(P)
-    # rank 5
-    eigs[:-5] = 0 # set some eigs to 0 to be slightly more challenging
+    # low rank
+    eigs[:-n//2] = 0 # set some eigs to 0 to be slightly more challenging
     P = (V * eigs) @ V.T
     P = 0.5 * (P + P.T) # symmetrize just to be sure
 
@@ -57,12 +57,14 @@ def gen_feasible(m, n):
     S /= np.max(S)
     A = (U * S) @ V
 
-    x = np.random.randn(n)
+    x = 10 * np.random.randn(n)
     c = -A.T @ y - P @ x
     b = A.dot(x) + s
-    b /= np.linalg.norm(b)
 
-    return (P, A, b, c)
+    assert np.isclose(c.T @ x + b.T @ y + x.T @ P @ x, 0.)
+    assert np.isclose(s.T @ y, 0.)
+
+    return (P, A, b, c, 0.5 * x.T @ P @ x + c.T @ x)
 
 # Generate an INFEASIBLE problem, n variables, m constraints
 def gen_infeasible(m, n):
@@ -84,7 +86,7 @@ def gen_infeasible(m, n):
     P = np.random.randn(n,n)
     P = 0.1 * P.T @ P
     eigs, V = np.linalg.eig(P)
-    # rank 5 
+    # rank 5
     eigs[:-5] = 0 # set some eigs to 0 to be slightly more challenging
     P = (V * eigs) @ V.T
     P = 0.5 * (P + P.T) # symmetrize just to be sure
@@ -94,7 +96,7 @@ def gen_infeasible(m, n):
     _x = np.random.randn(n)
     c = -A.T @ _y - P @ _x
 
-    return (P, A, b, c)
+    return (P, A, b, c, np.inf)
 
 
 # Generate an UNBOUNDED problem, n variables, m constraints
@@ -131,7 +133,7 @@ def gen_unbounded(m, n):
     # A _x + _s == b
     b = A.dot(_x) + _s
 
-    return (P, A, b, c)
+    return (P, A, b, c, -np.inf)
 
 
 class _Problem(dict):
@@ -296,6 +298,8 @@ class RandomProbRunner(object):
         instance.qp_problem['l'] = -np.inf * np.ones(self.shape[0])
         instance.qp_problem['m'] = self.shape[0]
         instance.qp_problem['n'] = self.shape[1]
+
+        print(f'Optimal objective value: {problem[-1]}')
 
         instance.name = prob_name
         instance.P = instance.qp_problem['P']

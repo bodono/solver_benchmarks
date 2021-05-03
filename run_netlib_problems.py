@@ -39,7 +39,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers = [s.SCS, s.SCS_AA1, s.SCS_AA2, s.OSQP, s.COSMO] #s.ECOS, s.QPALM, s.COSMO]
+solvers = [s.SCS, s.OSQP, s.COSMO] #s.ECOS, s.QPALM, s.COSMO]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]

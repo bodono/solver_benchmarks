@@ -31,8 +31,8 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-OUTPUT_FOLDER = 'qplib_problems_8845'
-solvers=[s.SCS, s.OSQP, s.COSMO]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.qpOASES]
+OUTPUT_FOLDER = 'qplib_problems'
+solvers=[s.SCS, s.OSQP, s.COSMO, s.SCS_ALT]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.qpOASES]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
@@ -49,7 +49,7 @@ qplib_runner = QPLIBRunner(solvers,
                            OUTPUT_FOLDER)
 
 # DEBUG only: Choose only 2 problems
-qplib_runner.problems = ["8845"]
+#qplib_runner.problems = ["8845"]
 qplib_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

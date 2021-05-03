@@ -38,10 +38,14 @@ print('parallel', parallel)
 
 solvers=[s.SCS, s.COSMO]
 
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+
+settings = s.get_settings(infeasible)
+
 # Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+for key in settings:
+    settings[key]['verbose'] = True
 
 if infeasible:
   OUTPUT_FOLDER = 'sdplib_infeasible'
@@ -50,7 +54,7 @@ else:
 
 # Run all examples
 sdplib_runner = SDPLIBRunner(solvers,
-                             s.settings,
+                             settings,
                              OUTPUT_FOLDER)
 
 INFEASIBLE_PROBLEMS = ["infd1", "infd2", "infp1", "infp2"]

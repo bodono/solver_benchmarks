@@ -32,9 +32,9 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 
-OUTPUT_FOLDER = 'maros_meszaros_problems_XXY'
+OUTPUT_FOLDER = 'maros_meszaros_problems'
 
-solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
+solvers = [s.SCS, s.OSQP, s.COSMO] # , s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]

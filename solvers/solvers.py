@@ -132,7 +132,7 @@ else:
   NORMALIZE = True
   SCALE = 0.1
   ALPHA = 1.5
-  ADAPTIVE_SCALING = True 
+  ADAPTIVE_SCALING = True
 
 # Solver settings
 eps_abs_low = 1e-03
