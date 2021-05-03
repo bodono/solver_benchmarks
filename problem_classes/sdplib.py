@@ -43,7 +43,7 @@ class SDPLIB(object):
 
       print('cvxpy forming problem')
       x_var = cvxpy.Variable(m)
-      objective = c.T * x_var
+      objective = c.T @ x_var
       # F0 is not multiplied by var
       constraints = [cvxpy.sum([Fs[i+1] * x_var[i] for i in range(m)]) >> Fs[0]]
       problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)

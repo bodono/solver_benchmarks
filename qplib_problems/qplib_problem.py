@@ -11,6 +11,28 @@ import numpy as np
 
 PROBLEMS_FOLDER = "qplib_data"
 
+# from http://qplib.zib.de/qplib.solu
+OPT_VALS = {
+    10034:      -0.0660101760500000,
+    10038:       0.0000000000000000,
+    8495:    42857.4963900000002468,
+    8500:        np.nan,  # not on website
+    8515:      319.9999887000000172,
+    8547:       -0.0073984697840000,
+    8559: 74223239.8299999982118607,
+    8567: 78965987.9500000029802322,
+    8602:    27353.3872000000010303,
+    8616:      245.0685977999999920,
+    8785:     7867.4911490000004051,
+    8790:       -0.0001562421091000,
+    8792:     3593.5183550000001560,
+    8845: 10907992.4900000002235174,
+    8906:  2699111.5129999998025596,
+    8938:      -35.7794529499999996,
+    8991:       -0.0016678673780000,
+    9002:        np.nan,  # not on website
+    9008:        0.0000000000000000,
+}
 
 class QPLIBRunner(object):
     '''
@@ -41,7 +63,7 @@ class QPLIBRunner(object):
             ./results/{self.output_folder}/{solver}/results.csv
 
         using a pandas table with fields
-            - 'name': Maros problem name
+            - 'name': QPLIB problem name
             - 'solver': solver name
             - 'status': solver status
             - 'run_time': execution time
@@ -120,6 +142,7 @@ class QPLIBRunner(object):
 
         '''
         print(" - Solving %s with solver %s" % (problem, solver))
+        print(f" - OPT : {OPT_VALS[int(problem)]}")
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
