@@ -10,7 +10,6 @@ from utils.general import make_sure_path_exists
 import numpy as np
 
 BASE_PROBLEMS_FOLDER = "miplib_data"
-MAX_PROB_SIZE = int(100e6)
 
 
 class MIPLIBRunner(object):
@@ -20,7 +19,8 @@ class MIPLIBRunner(object):
     def __init__(self,
                  solvers,
                  settings,
-                 output_folder):
+                 output_folder,
+                 max_prob_size_mb=np.inf):
         self.solvers = solvers
         self.settings = settings
         self.output_folder = output_folder
@@ -34,13 +34,13 @@ class MIPLIBRunner(object):
         problems = [f[:-4] for f in lst_probs]   # List of problem names
         print("Full problem set:")
         print(problems)
-        print(f"Filtering size to under {MAX_PROB_SIZE/1e6} Mbytes")
+        print(f"Filtering size to under {max_prob_size_mb} Mbytes")
         self.problems = []
         for problem in problems:
           # Create example instance
           full_path = os.path.join(".", "problem_classes",
                                     BASE_PROBLEMS_FOLDER, "%s.mps" % problem)
-          if os.stat(full_path).st_size > MAX_PROB_SIZE:
+          if os.stat(full_path).st_size > max_prob_size_mb * 1e6:
             print(f'Skipping large problem {problem}')
             continue
           self.problems.append(problem)

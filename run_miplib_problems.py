@@ -11,10 +11,12 @@ from miplib_problems.miplib_problem import MIPLIBRunner
 import solvers.solvers as s
 from utils.benchmark import compute_stats_info
 from utils.make_table import make_latex_table
+import numpy as np
 import os
 import argparse
 import shutil
 
+MAX_PROB_SIZE_MB = np.inf #100
 
 parser = argparse.ArgumentParser(description='miplib Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
@@ -25,13 +27,15 @@ parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
 parser.add_argument('--quick', help='Run quick probs only', default=False,
                     action='store_true')
+parser.add_argument('--bisco', help='Run bisco probs only', default=False,
+                    action='store_true')
 
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
 verbose = args.verbose
 parallel = args.parallel
 quick = args.quick
-
+bisco = args.bisco
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
@@ -39,28 +43,43 @@ print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO]
 
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+
+settings = s.get_settings()
+
 # Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 OUTPUT_FOLDER = 'miplib_problems'
-if quick:
-  OUTPUT_FOLDER += '_quick'
 
 # Run all examples
 miplib_runner = MIPLIBRunner(solvers,
-                             s.settings,
-                             OUTPUT_FOLDER)
+                             settings,
+                             OUTPUT_FOLDER,
+                             MAX_PROB_SIZE_MB)
 
 if quick:
+  OUTPUT_FOLDER += '_quick'
   probs = []
+  print("QUICK test set")
   with open('problem_classes/miplib_data/quick_test.txt', 'r') as f:
     probs = f.read().splitlines()
   #miplib_runner.problems = sorted(probs)
   miplib_runner.problems = sorted(list(set(probs) &
                                   set(miplib_runner.problems)))
+elif bisco:
+  OUTPUT_FOLDER += '_bisco'
+  probs = []
+  print("BISCO test set")
+  with open('problem_classes/miplib_data/bisco_probs.txt', 'r') as f:
+    probs = f.read().splitlines()
+  #miplib_runner.problems = sorted(probs)
+  miplib_runner.problems = sorted(list(set(probs) &
+                                  set(miplib_runner.problems)))
 
+print("Final problem set:")
 print(miplib_runner.problems)
 # debug
 #miplib_runner.problems = ["fhnw-binpack4-48"]
