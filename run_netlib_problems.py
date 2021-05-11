@@ -48,7 +48,7 @@ settings = s.get_settings(infeasible)
 
 # Shut up solvers
 for key in settings:
-    settings[key]['verbose'] = True
+    settings[key]['verbose'] = verbose
 
 if infeasible:
   OUTPUT_FOLDER = 'netlib_infeasible'
