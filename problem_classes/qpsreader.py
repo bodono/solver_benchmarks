@@ -1,10 +1,11 @@
 import numpy as np
 from scipy import sparse
+from datetime import datetime
 from cylp.py.QP import QPSReader
 
 def readMpsLp(filename):
     (P, c, A, b, G, c_low, c_up, x_low, x_up, n, _, _, _) = QPSReader.readQPS(filename)
-
+    print('Finished from file QPSREADER: ', datetime.now())
     assert not P
 
     mat = sparse.dok_matrix((0, n))
@@ -28,6 +29,6 @@ def readMpsLp(filename):
         u = np.hstack((u, x_up[idxs]))
         mat = sparse.vstack((mat, sparse.eye(n, format='dok')[idxs, :]))
 
-    print('Finished reading')
+    print('Finished parsing QPSREADER: ', datetime.now())
     return (mat, c, l, u)
 

@@ -42,7 +42,7 @@ class NETLIBRunner(object):
 
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(problems_dir) if
-                            f.endswith('.mps')])
+                            f.endswith('.mps.gz')])
         self.problems = [f[:-4] for f in lst_probs]   # List of problem names
         print(self.problems)
 
@@ -136,7 +136,7 @@ class NETLIBRunner(object):
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
-                                 self.problems_folder, "%s.mps" % problem)
+                                 self.problems_folder, "%s.mps.gz" % problem)
         instance = NETLIB(full_name)
 
         assert scipy.sparse.linalg.norm(instance.qp_problem['P']) == 0.
