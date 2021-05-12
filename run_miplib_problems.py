@@ -16,7 +16,7 @@ import os
 import argparse
 import shutil
 
-MAX_PROB_SIZE_MB = 100
+MAX_PROB_SIZE_MB = 5
 
 parser = argparse.ArgumentParser(description='miplib Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
@@ -82,7 +82,7 @@ elif bisco:
 print("Final problem set:")
 print(miplib_runner.problems)
 # debug
-#miplib_runner.problems = ["fhnw-binpack4-48"]
+miplib_runner.problems = ["neos-5049753-cuanza"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("lotsize"):]
 #

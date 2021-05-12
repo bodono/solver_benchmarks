@@ -31,7 +31,7 @@ class MITTELMANNRunner(object):
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
                             f.endswith('.mps.gz')])
-        problems = [f[:-4] for f in lst_probs]   # List of problem names
+        problems = [f[:-7] for f in lst_probs]   # List of problem names
         print("Full problem set:")
         print(problems)
         print(f"Filtering size to under {MAX_PROB_SIZE/1e6} Mbytes")
