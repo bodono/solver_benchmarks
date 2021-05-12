@@ -30,8 +30,8 @@ class MIPLIBRunner(object):
 
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
-                            f.endswith('.mps')])
-        problems = [f[:-4] for f in lst_probs]   # List of problem names
+                            f.endswith('.mps.gz')])
+        problems = [f[:-7] for f in lst_probs]   # List of problem names
         print("Full problem set:")
         print(problems)
         print(f"Filtering size to under {max_prob_size_mb} Mbytes")
@@ -39,7 +39,7 @@ class MIPLIBRunner(object):
         for problem in problems:
           # Create example instance
           full_path = os.path.join(".", "problem_classes",
-                                    BASE_PROBLEMS_FOLDER, "%s.mps" % problem)
+                                    BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
           if os.stat(full_path).st_size > max_prob_size_mb * 1e6:
             print(f'Skipping large problem {problem}')
             continue
@@ -136,7 +136,7 @@ class MIPLIBRunner(object):
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
-                                 BASE_PROBLEMS_FOLDER, "%s.mps" % problem)
+                                 BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
         instance = MIPLIB(full_name)
 
 

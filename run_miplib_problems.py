@@ -16,7 +16,7 @@ import os
 import argparse
 import shutil
 
-MAX_PROB_SIZE_MB = np.inf #100
+MAX_PROB_SIZE_MB = 100
 
 parser = argparse.ArgumentParser(description='miplib Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
@@ -64,7 +64,7 @@ if quick:
   OUTPUT_FOLDER += '_quick'
   probs = []
   print("QUICK test set")
-  with open('problem_classes/miplib_data/quick_test.txt', 'r') as f:
+  with open('miplib_problems/quick_test.txt', 'r') as f:
     probs = f.read().splitlines()
   #miplib_runner.problems = sorted(probs)
   miplib_runner.problems = sorted(list(set(probs) &
@@ -73,7 +73,7 @@ elif bisco:
   OUTPUT_FOLDER += '_bisco'
   probs = []
   print("BISCO test set")
-  with open('problem_classes/miplib_data/bisco_probs.txt', 'r') as f:
+  with open('miplib_problems/bisco_probs.txt', 'r') as f:
     probs = f.read().splitlines()
   #miplib_runner.problems = sorted(probs)
   miplib_runner.problems = sorted(list(set(probs) &
