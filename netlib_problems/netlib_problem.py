@@ -43,7 +43,7 @@ class NETLIBRunner(object):
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(problems_dir) if
                             f.endswith('.mps.gz')])
-        self.problems = [f[:-4] for f in lst_probs]   # List of problem names
+        self.problems = [f[:-7] for f in lst_probs]   # List of problem names
         print(self.problems)
 
     def solve(self, parallel=True, cores=32):
