@@ -4,6 +4,7 @@ from datetime import datetime
 from cylp.py.QP import QPSReader
 
 def readMpsLp(filename):
+    print('Starting from file QPSREADER: ', datetime.now())
     (P, c, A, b, G, c_low, c_up, x_low, x_up, n, _, _, _) = QPSReader.readQPS(filename)
     print('Finished from file QPSREADER: ', datetime.now())
     assert not P
