@@ -29,6 +29,8 @@ parser.add_argument('--quick', help='Run quick probs only', default=False,
                     action='store_true')
 parser.add_argument('--bisco', help='Run bisco probs only', default=False,
                     action='store_true')
+parser.add_argument('--preprocessed', help='Run preprocessed probs only',
+                    default=False, action='store_true')
 
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
@@ -36,12 +38,14 @@ verbose = args.verbose
 parallel = args.parallel
 quick = args.quick
 bisco = args.bisco
+preprocessed = args.preprocessed
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO]
+solvers=[s.SCS_AA1, s.SCS_AA2]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
@@ -55,34 +59,41 @@ for key in settings:
 OUTPUT_FOLDER = 'miplib_problems'
 
 # Run all examples
-miplib_runner = MIPLIBRunner(solvers,
+if preprocessed:
+  OUTPUT_FOLDER += '_preprocessed'
+  miplib_runner = MIPLIBRunner(solvers,
                              settings,
                              OUTPUT_FOLDER,
-                             MAX_PROB_SIZE_MB)
-
-if quick:
-  OUTPUT_FOLDER += '_quick'
-  probs = []
-  print("QUICK test set")
-  with open('miplib_problems/quick_test.txt', 'r') as f:
-    probs = f.read().splitlines()
-  #miplib_runner.problems = sorted(probs)
-  miplib_runner.problems = sorted(list(set(probs) &
-                                  set(miplib_runner.problems)))
-elif bisco:
-  OUTPUT_FOLDER += '_bisco'
-  probs = []
-  print("BISCO test set")
-  with open('miplib_problems/bisco_probs.txt', 'r') as f:
-    probs = f.read().splitlines()
-  #miplib_runner.problems = sorted(probs)
-  miplib_runner.problems = sorted(list(set(probs) &
-                                  set(miplib_runner.problems)))
+                             MAX_PROB_SIZE_MB,
+                             "miplib2017-firstorderlp-paper-papilo")
+else:
+  miplib_runner = MIPLIBRunner(solvers,
+                             settings,
+                             OUTPUT_FOLDER,
+                                 MAX_PROB_SIZE_MB)
+  if quick:
+    OUTPUT_FOLDER += '_quick'
+    probs = []
+    print("QUICK test set")
+    with open('miplib_problems/quick_test.txt', 'r') as f:
+      probs = f.read().splitlines()
+    #miplib_runner.problems = sorted(probs)
+    miplib_runner.problems = sorted(list(set(probs) &
+                                    set(miplib_runner.problems)))
+  elif bisco:
+    OUTPUT_FOLDER += '_bisco'
+    probs = []
+    print("BISCO test set")
+    with open('miplib_problems/bisco_probs.txt', 'r') as f:
+      probs = f.read().splitlines()
+    #miplib_runner.problems = sorted(probs)
+    miplib_runner.problems = sorted(list(set(probs) &
+                                    set(miplib_runner.problems)))
 
 print("Final problem set:")
 print(miplib_runner.problems)
 # debug
-miplib_runner.problems = ["neos-5049753-cuanza"]
+#miplib_runner.problems = ["neos-5049753-cuanza"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("lotsize"):]
 #

@@ -50,7 +50,7 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             settings,
                                             OUTPUT_FOLDER)
 
-#maros_meszaros_runner.problems = ["LISWET1"]
+#maros_meszaros_runner.problems = ["AUG3D"]
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

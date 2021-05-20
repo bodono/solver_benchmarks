@@ -144,6 +144,8 @@ class MarosMeszarosRunner(object):
         if results.obj_val is not None:
             obj += instance.qp_problem["r"]
 
+        print(f'True obj val when including r term {obj}')
+
         # Optimal cost distance from Maros Meszaros results
         # (For DEBUG)
         # ( obj - opt_obj )/(|opt_obj|)

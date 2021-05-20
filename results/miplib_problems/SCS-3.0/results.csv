@@ -1,0 +1,2 @@
+name,solver,status,run_time,iter,obj_val,n,m,N,setup_time,solve_time,scale,scale_updates
+neos-5049753-cuanza,SCS-3.0,optimal,612.7487108707428,2550,463.981450337143,242736,564984,1683408,74586.789906,537985.709208,0.021994901178231316,2

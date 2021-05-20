@@ -23,6 +23,8 @@ parser.add_argument('--verbose', help='Verbose solvers', default=True,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
+parser.add_argument('--preprocessed', help='Run preprocessed probs only',
+                    default=False, action='store_true')
 
 args = parser.parse_args()
 high_accuracy = args.high_accuracy
@@ -35,17 +37,29 @@ print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO]
 
-# Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
 
-OUTPUT_FOLDER = 'mittelmann_problems'
+settings = s.get_settings()
+
+# Shut up solvers
+for key in settings:
+    settings[key]['verbose'] = verbose
+
 
 # Run all examples
-mittelmann_runner = MITTELMANNRunner(solvers,
+if preprocessed:
+  OUTPUT_FOLDER += '_preprocessed'
+  mittelmann_runner = MITTELMANNRunner(solvers,
                              s.settings,
                              OUTPUT_FOLDER)
+                             "mittelmann-papilo-preprocessed")
+else:
+  # Run all examples
+  mittelmann_runner = MITTELMANNRunner(solvers,
+                                       s.settings,
+                                       OUTPUT_FOLDER)
+
 
 print(mittelmann_runner.problems)
 # debug

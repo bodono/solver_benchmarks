@@ -20,13 +20,15 @@ class MIPLIBRunner(object):
                  solvers,
                  settings,
                  output_folder,
-                 max_prob_size_mb=np.inf):
+                 max_prob_size_mb=np.inf,
+                 problems_folder=BASE_PROBLEMS_FOLDER):
         self.solvers = solvers
         self.settings = settings
         self.output_folder = output_folder
+        self.problems_folder = problems_folder
 
         # Get miplib problems list
-        self.problems_dir = os.path.join(".", "problem_classes", BASE_PROBLEMS_FOLDER)
+        self.problems_dir = os.path.join(".", "problem_classes", self.problems_folder)
 
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
@@ -39,7 +41,7 @@ class MIPLIBRunner(object):
         for problem in problems:
           # Create example instance
           full_path = os.path.join(".", "problem_classes",
-                                    BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
+                                    self.problems_folder, "%s.mps.gz" % problem)
           if os.stat(full_path).st_size > max_prob_size_mb * 1e6:
             print(f'Skipping large problem {problem}')
             continue
@@ -136,7 +138,7 @@ class MIPLIBRunner(object):
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
-                                 BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
+                                 self.problems_folder, "%s.mps.gz" % problem)
         instance = MIPLIB(full_name)
 
 
