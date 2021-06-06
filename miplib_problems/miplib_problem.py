@@ -139,7 +139,7 @@ class MIPLIBRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  self.problems_folder, "%s.mps.gz" % problem)
-        instance = MIPLIB(full_name)
+        instance = MIPLIB(full_name, problem)
 
 
         # Solve problem

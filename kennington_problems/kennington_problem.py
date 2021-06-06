@@ -137,7 +137,7 @@ class KENNINGTONRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
-        instance = KENNINGTON(full_name)
+        instance = KENNINGTON(full_name, problem)
 
 
         # Solve problem

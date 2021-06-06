@@ -10,7 +10,7 @@ class DIMACS(object):
     '''
     DIMACS
     '''
-    def __init__(self, file_name):
+    def __init__(self, file_name, prob_name):
         '''
         Generate DIMACS problem using cvxpy
         '''
@@ -19,6 +19,7 @@ class DIMACS(object):
 
         self.sdp_problem = self._generate_sdp_problem()
         self._cvxpy_problem = None
+        self.prob_name = prob_name
 
 
     @property
@@ -84,7 +85,6 @@ class DIMACS(object):
         if type(cone['s']) is int:
           cone['s'] = [cone['s']]
         for s in cone['s']:
-          #import pdb;pdb.set_trace()
           M = np.arange(s * s).reshape(s, s).T
           M_diags = np.diag(M)
           idxs = np.triu_indices(s, 1)

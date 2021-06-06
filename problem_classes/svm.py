@@ -33,6 +33,7 @@ class SVMExample(object):
         self.qp_problem = self._generate_qp_problem()
         self.cvxpy_problem, self.cvxpy_variables = \
             self._generate_cvxpy_problem()
+        self.prob_name = f'svm_{n}_{seed}'
 
     @staticmethod
     def name():

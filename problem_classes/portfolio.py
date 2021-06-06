@@ -31,6 +31,7 @@ class PortfolioExample(object):
         self.qp_problem = self._generate_qp_problem()
         self.cvxpy_problem, self.cvxpy_param = \
             self._generate_cvxpy_problem()
+        self.prob_name = f'portfolio_{k}_{seed}'
 
     @staticmethod
     def name():

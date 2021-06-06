@@ -124,7 +124,7 @@ class SDPLIBRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  BASE_PROBLEMS_FOLDER, "%s.jld2" % problem)
-        instance = SDPLIB(full_name)
+        instance = SDPLIB(full_name, problem)
 
 
         # Solve problem

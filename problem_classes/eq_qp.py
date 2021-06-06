@@ -33,6 +33,7 @@ class EqQPExample(object):
 
         self.qp_problem = self._generate_qp_problem()
         self.cvxpy_problem = self._generate_cvxpy_problem()
+        self.prob_name = f'eq_qp_{n}_{seed}'
 
     @staticmethod
     def name():

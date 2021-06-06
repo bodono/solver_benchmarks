@@ -112,8 +112,6 @@ def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
               (la.norm(dua_res, np.inf), eps_dua))
         return False
 
-    import pdb;pdb.set_trace()
-
     gap = x.T.dot(Px) + c.T.dot(x) + b.T.dot(y)
     eps_gap = eps_abs + eps_rel * np.max([np.abs(x.T.dot(Px)),
                                           np.abs(c.T.dot(x)),

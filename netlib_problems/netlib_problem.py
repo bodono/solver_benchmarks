@@ -137,7 +137,7 @@ class NETLIBRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  self.problems_folder, "%s.mps.gz" % problem)
-        instance = NETLIB(full_name)
+        instance = NETLIB(full_name, problem)
 
         assert scipy.sparse.linalg.norm(instance.qp_problem['P']) == 0.
         if self.add_quadratic:

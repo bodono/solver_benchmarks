@@ -10,7 +10,7 @@ class QPLIB(object):
     '''
     QPLIB
     '''
-    def __init__(self, file_name, create_cvxpy_problem=False):
+    def __init__(self, file_name, prob_name, create_cvxpy_problem=False):
         '''
         Generate Maros problem in QP format and CVXPY format
 
@@ -20,7 +20,7 @@ class QPLIB(object):
         self._load_qplib_problem(file_name)
 
         self.qp_problem = self._generate_qp_problem()
-
+        self.prob_name = prob_name
         self._cvxpy_problem = None
 
 

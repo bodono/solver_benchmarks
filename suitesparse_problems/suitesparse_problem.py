@@ -133,7 +133,7 @@ class SuitesparseRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  PROBLEMS_FOLDER, problem)
-        instance = EXAMPLES_MAP[self.name](full_name)
+        instance = EXAMPLES_MAP[self.name](full_name, problem)
 
         print(" - Solving %s with solver %s" % (problem, solver))
 
