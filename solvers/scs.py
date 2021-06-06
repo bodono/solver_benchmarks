@@ -6,6 +6,7 @@ from utils.general import is_qp_solution_optimal
 from utils.general import is_cone_solution_optimal
 import time
 import numpy as np
+import os
 
 class SCSSolver(object):
 
@@ -41,6 +42,10 @@ class SCSSolver(object):
 
         settings = self._settings.copy()
         high_accuracy = settings.pop('high_accuracy', None)
+        
+        if 'log_csv_filename' in settings:
+            settings['log_csv_filename'] = os.path.join(settings['log_csv_filename'], example.prob_name)
+        
         if hasattr(example, 'qp_problem'):
           problem = example.qp_problem
           A = problem['A']

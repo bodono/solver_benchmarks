@@ -142,6 +142,9 @@ eps_rel_high = 1e-06
 eps_infeas = 1e-04
 eps_infeas_high = 1e-05
 
+
+LOG_CSV_FILENAME = './csv/'
+
 def get_settings(infeasible=False):
     if infeasible:
         _eps_abs_low = 1e-18
@@ -192,6 +195,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
+            'log_csv_filename': LOG_CSV_FILENAME,
             # 'write_data_filename': 'LISWET1'
             #'rho_x': 1.,
         },

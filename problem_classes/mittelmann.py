@@ -8,7 +8,7 @@ class MITTELMANN(object):
     '''
     MITTELMANN
     '''
-    def __init__(self, file_name):
+    def __init__(self, file_name, prob_name):
         '''
         Generate Maros problem in QP format and CVXPY format
 
@@ -19,6 +19,7 @@ class MITTELMANN(object):
 
         self.qp_problem = self._generate_qp_problem()
         self._cvxpy_problem = None
+        self.prob_name = prob_name
 
 
     @property

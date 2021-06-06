@@ -92,7 +92,6 @@ class PortfolioParametric(object):
 
                 if r.info.status != "solved":
                     print("OSQP no warmstart did not solve the problem")
-                    import ipdb; ipdb.set_trace()
 
                 res_list_no_ws.append(pd.DataFrame(solution_dict))
 

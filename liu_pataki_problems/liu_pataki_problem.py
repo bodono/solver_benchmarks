@@ -124,7 +124,7 @@ class LIU_PATAKIRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  BASE_PROBLEMS_FOLDER, "%s.mat" % problem)
-        instance = LIU_PATAKI(full_name)
+        instance = LIU_PATAKI(full_name, problem)
 
 
         # Solve problem

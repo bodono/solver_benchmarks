@@ -9,7 +9,7 @@ class SuitesparseLasso(object):
     '''
     SuiteSparse Lasso
     '''
-    def __init__(self, file_name):
+    def __init__(self, file_name, problem):
         '''
         Suitesparse Matrix collection Ax = b lasso problem.
 
@@ -21,6 +21,7 @@ class SuitesparseLasso(object):
 
         self.cvxpy_problem, self.cvxpy_variables, self.cvxpy_param = \
             self._generate_cvxpy_problem()
+        self.prob_name = f'suitesparse_lasso_{problem}'
 
     def _load_suitesparse_lasso_data(self, file):
         # Import with pytables

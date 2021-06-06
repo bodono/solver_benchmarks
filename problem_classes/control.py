@@ -75,6 +75,8 @@ class ControlExample(object):
         self.cvxpy_problem, self.cvxpy_variables, self.cvxpy_param = \
             self._generate_cvxpy_problem()
 
+        self.prob_name = f'control_{n}_{seed}'
+
     @staticmethod
     def name():
         return 'Control'

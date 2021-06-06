@@ -139,7 +139,7 @@ class DIMACSRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  BASE_PROBLEMS_FOLDER, "%s.mat" % problem)
-        instance = DIMACS(full_name)
+        instance = DIMACS(full_name, problem)
 
 
         # Solve problem

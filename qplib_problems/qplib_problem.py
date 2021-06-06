@@ -147,7 +147,7 @@ class QPLIBRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  PROBLEMS_FOLDER, "QPLIB_%s.qplib" % problem)
-        instance = QPLIB(full_name)
+        instance = QPLIB(full_name, problem)
 
 
         # Solve problem

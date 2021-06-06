@@ -123,7 +123,7 @@ class MarosMeszarosRunner(object):
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  PROBLEMS_FOLDER, problem)
-        instance = MarosMeszaros(full_name)
+        instance = MarosMeszaros(full_name, problem)
 
         print(" - Solving %s with solver %s" % (problem, solver))
         print(f' - Optimal objective {OPT_COST_MAP[problem]}')

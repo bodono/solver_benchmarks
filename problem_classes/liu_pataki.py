@@ -16,6 +16,7 @@ class LIU_PATAKI(object):
 
         self.sdp_problem = self._generate_sdp_problem()
         self._cvxpy_problem = None
+        self.prob_name = prob_name
 
 
     @property
@@ -79,7 +80,6 @@ class LIU_PATAKI(object):
         if type(cone['s']) is int:
           cone['s'] = [cone['s']]
         for s in cone['s']:
-          #import pdb;pdb.set_trace()
           M = np.arange(s * s).reshape(s, s).T
           M_diags = np.diag(M)
           idxs = np.triu_indices(s, 1)

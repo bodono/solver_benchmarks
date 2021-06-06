@@ -9,7 +9,7 @@ class SDPLIB(object):
     '''
     SDPLIB
     '''
-    def __init__(self, file_name):
+    def __init__(self, file_name, prob_name):
         '''
         Generate SDPlib problem using cvxpy
         '''
@@ -18,6 +18,7 @@ class SDPLIB(object):
 
         self.sdp_problem = self._generate_sdp_problem()
         self._cvxpy_problem = None
+        self.prob_name = prob_name
 
 
     def _parse_out_f(self, f, i):

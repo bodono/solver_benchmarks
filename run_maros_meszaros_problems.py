@@ -32,7 +32,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 
-OUTPUT_FOLDER = 'maros_meszaros_problems'
+OUTPUT_FOLDER = 'maros_meszaros_problems_TEST'
 
 solvers = [s.SCS, s.OSQP, s.COSMO] # , s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
 
