@@ -230,7 +230,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': True,
             'gpu': True,
-            'time_limit_secs': TIME_LIMIT,
+            'time_limit_secs': 5 * TIME_LIMIT,
             'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
