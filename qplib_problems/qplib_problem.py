@@ -142,13 +142,13 @@ class QPLIBRunner(object):
 
         '''
         print(" - Solving %s with solver %s" % (problem, solver))
-        print(f" - OPT : {OPT_VALS[int(problem)]}")
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
                                  PROBLEMS_FOLDER, "QPLIB_%s.qplib" % problem)
         instance = QPLIB(full_name, problem)
-
+        opt = OPT_VALS[int(problem)] - instance.qp_problem["r"]
+        print(f" - OPT : {opt}")
 
         # Solve problem
         s = SOLVER_MAP[solver](settings)

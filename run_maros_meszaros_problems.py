@@ -32,7 +32,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 
-OUTPUT_FOLDER = 'maros_meszaros_problems_TEST'
+OUTPUT_FOLDER = 'maros_meszaros_problems'
 
 solvers = [s.SCS, s.OSQP, s.COSMO] # , s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
 
@@ -50,7 +50,7 @@ maros_meszaros_runner = MarosMeszarosRunner(solvers,
                                             settings,
                                             OUTPUT_FOLDER)
 
-#maros_meszaros_runner.problems = ["AUG3D"]
+#maros_meszaros_runner.problems = ["BOYD2"]
 maros_meszaros_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

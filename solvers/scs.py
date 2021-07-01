@@ -44,7 +44,9 @@ class SCSSolver(object):
         high_accuracy = settings.pop('high_accuracy', None)
         
         if 'log_csv_filename' in settings:
-            settings['log_csv_filename'] = os.path.join(settings['log_csv_filename'], example.prob_name)
+            if settings['log_csv_filename'] is not None:
+                settings['log_csv_filename'] = os.path.join(
+                    settings['log_csv_filename'], example.prob_name)
         
         if hasattr(example, 'qp_problem'):
           problem = example.qp_problem

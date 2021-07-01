@@ -45,7 +45,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO]
-solvers=[s.SCS_AA1, s.SCS_AA2]
+#solvers=[s.SCS_AA1, s.SCS_AA2]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
