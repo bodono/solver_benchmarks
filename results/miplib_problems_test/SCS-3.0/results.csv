@@ -1,0 +1,2 @@
+name,solver,status,run_time,iter,obj_val,n,m,N,setup_time,solve_time,scale,scale_updates
+neos-4722843-widden,SCS-3.0,optimal,485.8081750869751,19975,-1921.3971086328602,77723,191276,389250,697.611178,485077.265153,0.021631137579700793,1

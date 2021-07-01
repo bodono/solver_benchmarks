@@ -126,7 +126,9 @@ class MarosMeszarosRunner(object):
         instance = MarosMeszaros(full_name, problem)
 
         print(" - Solving %s with solver %s" % (problem, solver))
-        print(f' - Optimal objective {OPT_COST_MAP[problem]}')
+
+        simple_obj = OPT_COST_MAP[problem] - instance.qp_problem["r"]
+        print(f' - Optimal objective {simple_obj}')
 
         # Solve problem
         s = SOLVER_MAP[solver](settings)
@@ -143,8 +145,6 @@ class MarosMeszarosRunner(object):
         obj = results.obj_val
         if results.obj_val is not None:
             obj += instance.qp_problem["r"]
-
-        print(f'True obj val when including r term {obj}')
 
         # Optimal cost distance from Maros Meszaros results
         # (For DEBUG)

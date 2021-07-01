@@ -143,7 +143,7 @@ eps_infeas = 1e-04
 eps_infeas_high = 1e-05
 
 
-LOG_CSV_FILENAME = './csv/'
+LOG_CSV_FILENAME = None # './csv/'
 
 def get_settings(infeasible=False):
     if infeasible:
@@ -212,6 +212,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
+            'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
         SCS_AA1: {
@@ -227,6 +228,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
+            'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
         SCS_AA2: {
@@ -242,6 +244,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
+            'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
         SCS_INDIRECT: {
@@ -257,6 +260,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': True,
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
+            'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
         SCS_INDIRECT_AA1: {
@@ -272,6 +276,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': True,
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
+            'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
         SCS_INDIRECT_AA2: {
@@ -287,6 +292,7 @@ def get_settings(infeasible=False):
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': True,
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
+            'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
         },
         COSMO: {
