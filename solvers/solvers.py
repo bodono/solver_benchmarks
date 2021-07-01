@@ -50,6 +50,7 @@ TIME_LIMIT = 1000.  # Seconds
 HIGH = '_high'
 
 SCS = 'SCS-3.0'
+SCS_GPU = 'SCS_GPU'
 SCS_ALT = 'SCS_ALT'
 SCS_AA1 = 'SCS_AA1'
 SCS_AA2 = 'SCS_AA2'
@@ -91,6 +92,7 @@ SOLVER_MAP_REGULAR = {
     COSMO: COSMOSolver,
     SCS: SCSSolver,
     SCS_ALT: SCSSolver,
+    SCS_GPU: SCSSolver,
     SCS_AA1: SCSSolver,
     SCS_AA2: SCSSolver,
     SCS_INDIRECT: SCSSolver,
@@ -211,6 +213,23 @@ def get_settings(infeasible=False):
             'normalize': NORMALIZE,
             'adaptive_scaling': ADAPTIVE_SCALING,
             'use_indirect': False,
+            'time_limit_secs': TIME_LIMIT,
+            'log_csv_filename': LOG_CSV_FILENAME,
+            #'rho_x': 1.,
+        },
+        SCS_GPU: {
+            'eps_abs': _eps_abs_low,
+            'eps_rel': _eps_rel_low,
+            'eps_infeas': _eps_infeas,
+            'max_iters': MAX_ITERS,
+            'acceleration_lookback': 0,
+            'acceleration_interval': 50,
+            'scale': SCALE,
+            'alpha': ALPHA,
+            'normalize': NORMALIZE,
+            'adaptive_scaling': ADAPTIVE_SCALING,
+            'use_indirect': True,
+            'gpu': True,
             'time_limit_secs': TIME_LIMIT,
             'log_csv_filename': LOG_CSV_FILENAME,
             #'rho_x': 1.,
