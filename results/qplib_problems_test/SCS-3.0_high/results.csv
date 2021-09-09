@@ -1,2 +1,0 @@
-name,solver,status,run_time,iter,obj_val,n,m,N,setup_time,solve_time,scale,scale_updates
-8602,SCS-3.0_high,solver_error,1074.0488979816437,-1,,34552,87535,277439,72050.043083,1001970.065464,3.29e-321,140481122001368

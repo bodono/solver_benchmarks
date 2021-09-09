@@ -46,7 +46,7 @@ except:
   print('QPALM import failed')
   QPALMSolver = None
 
-TIME_LIMIT = 1000.  # Seconds
+TIME_LIMIT = 10000.  # Seconds
 HIGH = '_high'
 
 SCS = 'SCS-3.0'
@@ -123,7 +123,7 @@ SOLVER_MAP = {**SOLVER_MAP_REGULAR, **SOLVER_MAP_HIGH}
 
 
 DEBUG = False
-MAX_ITERS = int(1e5)
+MAX_ITERS = int(1e7)
 
 if DEBUG:
   NORMALIZE = False
@@ -191,10 +191,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 0,
             'acceleration_interval': 50,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
             'log_csv_filename': LOG_CSV_FILENAME,
@@ -208,10 +208,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 0,
             'acceleration_interval': 50,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
             'log_csv_filename': LOG_CSV_FILENAME,
@@ -224,10 +224,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 0,
             'acceleration_interval': 50,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': True,
             'gpu': True,
             'time_limit_secs': TIME_LIMIT,
@@ -241,10 +241,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 5,
             'acceleration_interval': 1,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
             'log_csv_filename': LOG_CSV_FILENAME,
@@ -257,10 +257,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': -5,
             'acceleration_interval': 1,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': False,
             'time_limit_secs': TIME_LIMIT,
             'log_csv_filename': LOG_CSV_FILENAME,
@@ -273,10 +273,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 0,
             'acceleration_interval': 50,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': True,
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
             'log_csv_filename': LOG_CSV_FILENAME,
@@ -289,10 +289,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 5,
             'acceleration_interval': 1,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': True,
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
             'log_csv_filename': LOG_CSV_FILENAME,
@@ -305,10 +305,10 @@ def get_settings(infeasible=False):
             'max_iters': MAX_ITERS,
             'acceleration_lookback': -5,
             'acceleration_interval': 1,
-            'scale': SCALE,
+            'init_scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
-            'adaptive_scaling': ADAPTIVE_SCALING,
+            'adaptive_scale': ADAPTIVE_SCALING,
             'use_indirect': True,
             'time_limit_secs': 5 * TIME_LIMIT, # higher time limit for better understanding
             'log_csv_filename': LOG_CSV_FILENAME,
