@@ -28,7 +28,7 @@ dimensions = {'Lasso': [50, 100, 150, 200],
               }
 
 # OSQP solver settings
-osqp_settings = {'verbose': False,
+osqp_settings = {'verbose': True,
                  'polish': False,
                  'rho': 0.1}
 
