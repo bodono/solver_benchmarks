@@ -31,22 +31,18 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
+solvers=[s.SCS, s.OSQP, s.COSMO]
 
-# Add high accuracy solvers when accurazy
 if high_accuracy:
-    solvers = [s.OSQP_high, s.OSQP_polish_high, s.GUROBI_high, s.MOSEK_high]
-    OUTPUT_FOLDER = 'suitesparse_problems_high_accuracy'
-    for key in s.settings:
-        s.settings[key]['high_accuracy'] = True
-else:
-    solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK]
-    OUTPUT_FOLDER = 'suitesparse_problems'
+    solvers = [solver + s.HIGH for solver in solvers]
 
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
+settings = s.get_settings()
 
-solvers = [s.SCS, s.OSQP, s.COSMO]
+# Shut up solvers
+for key in settings:
+    settings[key]['verbose'] = verbose
+
+OUTPUT_FOLDER = 'suitesparse_problems'
 
 problems = [
             'Lasso',
@@ -57,7 +53,7 @@ problems = [
 for problem in problems:
     suitesparse_runner = SuitesparseRunner(problem,
                                            solvers,
-                                           s.settings,
+                                           settings,
                                            OUTPUT_FOLDER)
     #suitesparse_runner.problems.remove('Rucci_Rucci1')  # Problematic, makes Gurobi crash the whole system
     # DEBUG: To test
@@ -77,3 +73,5 @@ for problem in problems:
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    problems=problems,
                    high_accuracy=high_accuracy)
+
+make_latex_table(solvers, OUTPUT_FOLDER, False)

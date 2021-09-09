@@ -27,15 +27,13 @@ dimensions = {'Lasso': [50, 100, 150, 200],
               'Portfolio': [100, 200, 300, 400]
               }
 
-# OSQP solver settings
-osqp_settings = {'verbose': True,
-                 'polish': False,
-                 'rho': 0.1}
+# solver settings
+scs_settings = {'verbose': True}
 
 # Solve all problems
 for problem in problems:
     for dim in dimensions[problem]:
-        problem_instance = PROBLEMS_MAP[problem](osqp_settings,
+        problem_instance = PROBLEMS_MAP[problem](scs_settings,
                                                  dim)
         problem_instance.solve()
 

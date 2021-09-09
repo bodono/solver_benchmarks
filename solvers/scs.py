@@ -65,7 +65,7 @@ class SCSSolver(object):
 
           data = dict(P=scipy.sparse.csc_matrix(problem['P']), c=problem['q'],
                       A=scipy.sparse.csc_matrix(A_scs), b=b_scs)
-          cone = dict(f=np.int(np.sum(idxs)), bl=problem['l'][~idxs].tolist(),
+          cone = dict(z=np.int(np.sum(idxs)), bl=problem['l'][~idxs].tolist(),
                       bu=problem['u'][~idxs].tolist())
 
         elif hasattr(example, 'sdp_problem'):
@@ -82,12 +82,12 @@ class SCSSolver(object):
         results = scs.solve(data, cone, **settings)
         end = time.time()
 
-        status = self.STATUS_MAP.get(results['info']['statusVal'], statuses.SOLVER_ERROR)
+        status = self.STATUS_MAP.get(results['info']['status_val'], statuses.SOLVER_ERROR)
         if hasattr(example, 'qp_problem'):
           def _inv(y):
             y = y.copy()
-            y[cone['f']:] *= -1.
-            y = np.delete(y, cone['f']) # remove perspective var from y
+            y[cone['z']:] *= -1.
+            y = np.delete(y, cone['z']) # remove perspective var from y
             y = y[inv_perm]
             return y
 
@@ -106,11 +106,10 @@ class SCSSolver(object):
 
         # Verify solver time
         if settings.get('time_limit') is not None:
-            if results.info.run_time > settings.get('time_limit'):
-                status = statuses.TIME_LIMIT
+            pass
 
-        #run_time = 1e-3 * (results['info']['solveTime']
-        #                  + results['info']['setupTime'])
+        #run_time = 1e-3 * (results['info']['solve_time']
+        #                  + results['info']['setup_time'])
         run_time = end - start
         return_results = Results(status,
                                  results['info']['pobj'],
@@ -119,8 +118,8 @@ class SCSSolver(object):
                                  run_time,
                                  results['info']['iter'])
 
-        return_results.setup_time = results['info']['setupTime']
-        return_results.solve_time = results['info']['solveTime']
+        return_results.setup_time = results['info']['setup_time']
+        return_results.solve_time = results['info']['solve_time']
         # TODO XXX add this to SCS
         #return_results.update_time = results['info']['coneTime']
         #return_results.update_time = results['info']['linSysTime']
