@@ -46,7 +46,7 @@ except:
   print('QPALM import failed')
   QPALMSolver = None
 
-TIME_LIMIT = 10000.  # Seconds
+TIME_LIMIT = 1000.  # Seconds
 HIGH = '_high'
 
 SCS = 'SCS-3.0'
@@ -123,7 +123,7 @@ SOLVER_MAP = {**SOLVER_MAP_REGULAR, **SOLVER_MAP_HIGH}
 
 
 DEBUG = False
-MAX_ITERS = int(1e7)
+MAX_ITERS = int(1e5)
 
 if DEBUG:
   NORMALIZE = False
@@ -137,10 +137,10 @@ else:
   ADAPTIVE_SCALING = True
 
 # Solver settings
-eps_abs_low = 1e-03
+eps_abs_low = 1e-04
 eps_rel_low = 1e-04
 eps_abs_high = 1e-05
-eps_rel_high = 1e-06
+eps_rel_high = 1e-05
 eps_infeas = 1e-04
 eps_infeas_high = 1e-05
 
@@ -239,7 +239,7 @@ def get_settings(infeasible=False):
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
-            'acceleration_lookback': 5,
+            'acceleration_lookback': -15,
             'acceleration_interval': 1,
             'scale': SCALE,
             'alpha': ALPHA,
@@ -255,7 +255,7 @@ def get_settings(infeasible=False):
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
-            'acceleration_lookback': -5,
+            'acceleration_lookback': 15,
             'acceleration_interval': 1,
             'scale': SCALE,
             'alpha': ALPHA,
@@ -287,8 +287,8 @@ def get_settings(infeasible=False):
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
-            'acceleration_lookback': 5,
-            'acceleration_interval': 1,
+            'acceleration_lookback': -10,
+            'acceleration_interval': 10,
             'scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
@@ -303,8 +303,8 @@ def get_settings(infeasible=False):
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
-            'acceleration_lookback': -5,
-            'acceleration_interval': 1,
+            'acceleration_lookback': 10,
+            'acceleration_interval': 10,
             'scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,

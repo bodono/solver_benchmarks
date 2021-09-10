@@ -36,6 +36,7 @@ solvers=[s.SCS, s.OSQP, s.COSMO, s.SCS_ALT]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
 
 settings = s.get_settings()
 

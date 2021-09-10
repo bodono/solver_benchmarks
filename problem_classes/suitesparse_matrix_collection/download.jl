@@ -46,7 +46,6 @@ for problem in list
                 matwrite(file_name, new_problem)
             catch e
                 print(e)
-                break
             end
             
             print("Written to file $(file_name)\n")

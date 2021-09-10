@@ -15,6 +15,8 @@ import os
 import argparse
 
 
+MAX_PROB_SIZE_MB = 5
+
 parser = argparse.ArgumentParser(description='Suitesparse Lasso Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
@@ -31,18 +33,18 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.COSMO]
+settings = s.get_settings()
+solvers=[s.SCS, s.OSQP] #, s.COSMO]
+OUTPUT_FOLDER = 'suitesparse_problems'
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
-
-settings = s.get_settings()
+    OUTPUT_FOLDER += s.HIGH
 
 # Shut up solvers
 for key in settings:
     settings[key]['verbose'] = verbose
 
-OUTPUT_FOLDER = 'suitesparse_problems'
 
 problems = [
             'Lasso',
@@ -54,14 +56,14 @@ for problem in problems:
     suitesparse_runner = SuitesparseRunner(problem,
                                            solvers,
                                            settings,
-                                           OUTPUT_FOLDER)
-    #suitesparse_runner.problems.remove('Rucci_Rucci1')  # Problematic, makes Gurobi crash the whole system
+                                           OUTPUT_FOLDER,
+                                           MAX_PROB_SIZE_MB)
     # DEBUG: To test
-    #  suitesparse_runner.problems = ['HB_abb313', 'HB_ash331']
+    # suitesparse_runner.problems = ['Bai_qh768']
     suitesparse_runner.solve(parallel=parallel, cores=12)
 
 #  suitesparse_lasso_runner = SuitesparseLassoRunner(solvers,
-                                                  #  s.settings,
+                                                  #  settings,
                                                   #  OUTPUT_FOLDER)
 
 # DEBUG Only two problems

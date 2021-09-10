@@ -35,16 +35,23 @@ print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO]
 
-# Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
-
 OUTPUT_FOLDER = 'kennington_problems'
+
+solvers = [s.SCS, s.OSQP, s.COSMO] # , s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
+
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
+
+settings = s.get_settings()
+
+# Shut up solvers
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 # Run all examples
 kennington_runner = KENNINGTONRunner(solvers,
-                             s.settings,
+                             settings,
                              OUTPUT_FOLDER)
 
 print(kennington_runner.problems)
@@ -56,7 +63,7 @@ print(kennington_runner.problems)
 #probs = kennington_runner.problems
 #for prob in probs:
 #  kennington_runner = kenningtonRunner(solvers,
-#                             s.settings,
+#                             settings,
 #                             OUTPUT_FOLDER,
 #                             infeasible)
 #  kennington_runner.problems = [prob]

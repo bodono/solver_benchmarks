@@ -36,9 +36,11 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 solvers=[s.SCS, s.OSQP, s.COSMO]
+OUTPUT_FOLDER = "mittelmann_problems"
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
 
 settings = s.get_settings()
 
@@ -51,13 +53,13 @@ for key in settings:
 if preprocessed:
   OUTPUT_FOLDER += '_preprocessed'
   mittelmann_runner = MITTELMANNRunner(solvers,
-                             s.settings,
+                             settings,
                              OUTPUT_FOLDER)
                              "mittelmann-papilo-preprocessed")
 else:
   # Run all examples
   mittelmann_runner = MITTELMANNRunner(solvers,
-                                       s.settings,
+                                       settings,
                                        OUTPUT_FOLDER)
 
 
@@ -70,7 +72,7 @@ print(mittelmann_runner.problems)
 #probs = mittelmann_runner.problems
 #for prob in probs:
 #  mittelmann_runner = mittelmannRunner(solvers,
-#                             s.settings,
+#                             settings,
 #                             OUTPUT_FOLDER,
 #                             infeasible)
 #  mittelmann_runner.problems = [prob]

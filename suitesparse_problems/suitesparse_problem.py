@@ -28,7 +28,8 @@ class SuitesparseRunner(object):
                  name,
                  solvers,
                  settings,
-                 output_folder):
+                 output_folder,
+                 max_prob_size_mb=np.inf):
         self.name = name
         self.solvers = solvers
         self.settings = settings
@@ -39,8 +40,19 @@ class SuitesparseRunner(object):
         # List of problems in .mat format
         lst_probs = [f for f in os.listdir(problems_dir) if \
             f.endswith('.mat')]
-        self.problems = [f[:-4] for f in lst_probs]   # List of problem names
-
+        problems = [f[:-4] for f in lst_probs]   # List of problem names
+        print("Full problem set:")
+        print(problems)
+        print(f"Filtering size to under {max_prob_size_mb} Mbytes")
+        self.problems = []
+        for problem in problems:
+          # Create example instance
+          full_path = os.path.join(".", "problem_classes",
+                                   PROBLEMS_FOLDER, "%s.mat" % problem)
+          if os.stat(full_path).st_size > max_prob_size_mb * 1e6:
+            print(f'Skipping large problem {problem}')
+            continue
+          self.problems.append(problem)
 
     def solve(self, parallel=True, cores=32):
         '''

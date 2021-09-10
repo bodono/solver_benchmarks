@@ -59,9 +59,13 @@ class SCSSolver(object):
           o_idxs = np.array(range(A.shape[0])) # no need +1 for box cone
           o_idxs = np.hstack((o_idxs[idxs], o_idxs[~idxs]))
           inv_perm = np.argsort(o_idxs)
-
-          A_scs = scipy.sparse.vstack((A[idxs, :], np.zeros((1, n)), -A[~idxs, :]))
-          b_scs = np.hstack((problem['u'][idxs], 1, np.zeros(m - np.sum(idxs))))
+    
+          if np.all(idxs): # no box cone
+            A_scs = A.copy()
+            b_scs = problem['u'].copy()
+          else:
+            A_scs = scipy.sparse.vstack((A[idxs, :], np.zeros((1, n)), -A[~idxs, :]))
+            b_scs = np.hstack((problem['u'][idxs], 1, np.zeros(m - np.sum(idxs))))
 
           data = dict(P=scipy.sparse.csc_matrix(problem['P']), c=problem['q'],
                       A=scipy.sparse.csc_matrix(A_scs), b=b_scs)
@@ -85,6 +89,8 @@ class SCSSolver(object):
         status = self.STATUS_MAP.get(results['info']['status_val'], statuses.SOLVER_ERROR)
         if hasattr(example, 'qp_problem'):
           def _inv(y):
+            if len(y) == cone['z']:
+                return y
             y = y.copy()
             y[cone['z']:] *= -1.
             y = np.delete(y, cone['z']) # remove perspective var from y
