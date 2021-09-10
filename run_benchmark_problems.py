@@ -33,26 +33,18 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
+settings = s.get_settings()
 
+OUTPUT_FOLDER = 'benchmark_problems'
+solvers=[s.SCS, s.OSQP, s.SCS_AA1, s.SCS_AA2]
 
-
-# Add high accuracy solvers when accurazy
 if high_accuracy:
-    solvers = [s.OSQP_high, s.OSQP_polish_high, s.GUROBI_high, s.MOSEK_high, s.ECOS_high, s.qpOASES]
-    OUTPUT_FOLDER = 'benchmark_problems_high_accuracy'
-    for key in s.settings:
-        s.settings[key]['high_accuracy'] = True
-else:
-    solvers = [s.OSQP, s.OSQP_polish, s.GUROBI, s.MOSEK, s.ECOS, s.qpOASES]
-    OUTPUT_FOLDER = 'benchmark_problems'
-
+    solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
 
 if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
-
-solvers = [s.SCS, s.OSQP]
-
+    for key in settings:
+        settings[key]['verbose'] = True
 
 # Number of instances per different dimension
 n_instances = 10
@@ -97,7 +89,7 @@ for problem in problems:
     example = Example(problem,
                       problem_dimensions[problem],
                       solvers,
-                      s.settings,
+                      settings,
                       OUTPUT_FOLDER,
                       n_instances)
     example.solve(parallel=problem_parallel[problem])

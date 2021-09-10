@@ -33,19 +33,23 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.COSMO]
-
-# Shut up solvers
-if verbose:
-    for key in s.settings:
-        s.settings[key]['verbose'] = True
-
 OUTPUT_FOLDER = 'dimacs_problems'
 
+solvers = [s.SCS, s.OSQP, s.COSMO] # , s.SCS_AA1, s.SCS_AA2] #, s.ECOS, s.qpOASES, s.QPALM]
+
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
+
+settings = s.get_settings()
+
+# Shut up solvers
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 # Run all examples
 dimacs_runner = DIMACSRunner(solvers,
-                             s.settings,
+                             settings,
                              OUTPUT_FOLDER)
 
 # debug
@@ -56,7 +60,7 @@ dimacs_runner = DIMACSRunner(solvers,
 #probs = dimacs_runner.problems
 #for prob in probs:
 #  dimacs_runner = dimacsRunner(solvers,
-#                             s.settings,
+#                             settings,
 #                             OUTPUT_FOLDER)
 #  dimacs_runner.problems = [prob]
 #  dimacs_runner.solve(parallel=parallel, cores=12)

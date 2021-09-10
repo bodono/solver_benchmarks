@@ -36,21 +36,21 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
+settings = s.get_settings(infeasible)
 solvers=[s.SCS, s.COSMO]
+if infeasible:
+  OUTPUT_FOLDER = 'sdplib_infeasible'
+else:
+  OUTPUT_FOLDER = 'sdplib_feasible'
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
-
-settings = s.get_settings(infeasible)
+    OUTPUT_FOLDER += s.HIGH 
 
 # Shut up solvers
 for key in settings:
     settings[key]['verbose'] = verbose
 
-if infeasible:
-  OUTPUT_FOLDER = 'sdplib_infeasible'
-else:
-  OUTPUT_FOLDER = 'sdplib_feasible'
 
 # Run all examples
 sdplib_runner = SDPLIBRunner(solvers,
@@ -74,7 +74,7 @@ else:
 #probs = sdplib_runner.problems
 #for prob in probs:
 #  sdplib_runner = sdplibRunner(solvers,
-#                             s.settings,
+#                             settings,
 #                             OUTPUT_FOLDER)
 #  sdplib_runner.problems = [prob]
 #  sdplib_runner.solve(parallel=parallel, cores=12)

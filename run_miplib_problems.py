@@ -44,19 +44,19 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
+settings = s.get_settings()
+
+OUTPUT_FOLDER = 'miplib_problems'
 solvers=[s.SCS, s.OSQP, s.COSMO]
-#solvers=[s.SCS_AA1, s.SCS_AA2]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
 
-settings = s.get_settings()
 
 # Shut up solvers
-for key in settings:
-    settings[key]['verbose'] = verbose
-
-OUTPUT_FOLDER = 'miplib_problems'
+if verbose:
+    settings['verbose'] = True
 
 # Run all examples
 if preprocessed:
@@ -70,7 +70,7 @@ else:
   miplib_runner = MIPLIBRunner(solvers,
                              settings,
                              OUTPUT_FOLDER,
-                                 MAX_PROB_SIZE_MB)
+                             MAX_PROB_SIZE_MB)
   if quick:
     OUTPUT_FOLDER += '_quick'
     probs = []
@@ -100,7 +100,7 @@ print(miplib_runner.problems)
 #probs = miplib_runner.problems
 #for prob in probs:
 #  miplib_runner = miplibRunner(solvers,
-#                             s.settings,
+#                             settings,
 #                             OUTPUT_FOLDER,
 #                             infeasible)
 #  miplib_runner.problems = [prob]

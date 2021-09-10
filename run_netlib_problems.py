@@ -40,16 +40,6 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_ALT] #s.ECOS, s.QPALM, s.COSMO]
-
-if high_accuracy:
-    solvers = [solver + s.HIGH for solver in solvers]
-
-settings = s.get_settings(infeasible)
-
-# Shut up solvers
-for key in settings:
-    settings[key]['verbose'] = verbose
-
 if infeasible:
   OUTPUT_FOLDER = 'netlib_infeasible'
 else:
@@ -57,6 +47,16 @@ else:
 
 if add_quadratic:
   OUTPUT_FOLDER = OUTPUT_FOLDER + '_quadratic'
+
+if high_accuracy:
+    solvers = [solver + s.HIGH for solver in solvers]
+    OUTPUT_FOLDER += s.HIGH
+
+settings = s.get_settings(infeasible)
+
+# Shut up solvers
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 # Run all examples
 netlib_runner = NETLIBRunner(solvers,
