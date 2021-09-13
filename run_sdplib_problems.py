@@ -39,7 +39,7 @@ print('parallel', parallel)
 settings = s.get_settings(infeasible)
 solvers=[s.SCS, s.COSMO]
 if infeasible:
-  OUTPUT_FOLDER = 'sdplib_infeasible'
+  OUTPUT_FOLDER = 'sdplib_infeasible_NEW'
 else:
   OUTPUT_FOLDER = 'sdplib_feasible'
 

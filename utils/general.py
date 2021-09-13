@@ -175,8 +175,8 @@ def is_qp_solution_optimal(qp_problem, x, y, high_accuracy):
     # these next lines try to prevent errors like inf * 0 = nan or inf
     l[l<=-1e20] = -1e20
     u[u>=1e20] = 1e20
-    y_plus[np.abs(y_plus)<1e-12] = 0.
-    y_minus[np.abs(y_minus)<1e-12] = 0.
+    y_plus[np.abs(y_plus)<1e-10] = 0.
+    y_minus[np.abs(y_minus)<1e-10] = 0.
 
     gap = x.T.dot(Px) + q.T.dot(x) + y_plus.T.dot(u) + y_minus.T.dot(l)
     eps_gap = eps_abs + eps_rel * np.max([np.abs(x.T.dot(Px)),
