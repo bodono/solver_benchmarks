@@ -39,11 +39,11 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers = [s.SCS, s.OSQP, s.COSMO, s.SCS_ALT] #s.ECOS, s.QPALM, s.COSMO]
+solvers = [s.SCS, s.OSQP] #, s.COSMO] #, s.SCS_ALT #s.ECOS, s.QPALM, s.COSMO]
 if infeasible:
-  OUTPUT_FOLDER = 'netlib_infeasible'
+  OUTPUT_FOLDER = 'netlib_infeasible_NEW'
 else:
-  OUTPUT_FOLDER = 'netlib_feasible'
+  OUTPUT_FOLDER = 'netlib_feasible_NEW'
 
 if add_quadratic:
   OUTPUT_FOLDER = OUTPUT_FOLDER + '_quadratic'
@@ -66,7 +66,7 @@ netlib_runner = NETLIBRunner(solvers,
                              add_quadratic)
 
 # debug
-#netlib_runner.problems = ["mondou2"]
+# netlib_runner.problems = ["dfl001"]
 #netlib_runner.problems = \
 #  netlib_runner.problems[netlib_runner.problems.index("pilot4i"):]
 #
