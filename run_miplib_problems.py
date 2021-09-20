@@ -21,7 +21,7 @@ MAX_PROB_SIZE_MB = 5
 parser = argparse.ArgumentParser(description='miplib Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
                     action='store_true')
-parser.add_argument('--verbose', help='Verbose solvers', default=True,
+parser.add_argument('--verbose', help='Verbose solvers', default=False,
                     action='store_true')
 parser.add_argument('--parallel', help='Parallel solution', default=False,
                     action='store_true')
@@ -46,17 +46,16 @@ print('parallel', parallel)
 
 settings = s.get_settings()
 
-OUTPUT_FOLDER = 'miplib_problems'
-solvers=[s.SCS, s.OSQP, s.COSMO]
+OUTPUT_FOLDER = 'miplib_problems_NEW'
+solvers=[s.SCS, s.OSQP, s.SCS_AA1, s.SCS_AA2]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
     OUTPUT_FOLDER += s.HIGH
 
-
 # Shut up solvers
-if verbose:
-    settings['verbose'] = True
+for key in settings:
+    settings[key]['verbose'] = verbose
 
 # Run all examples
 if preprocessed:

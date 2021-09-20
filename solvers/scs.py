@@ -126,13 +126,15 @@ class SCSSolver(object):
 
         return_results.setup_time = results['info']['setup_time']
         return_results.solve_time = results['info']['solve_time']
-        # TODO XXX add this to SCS
-        #return_results.update_time = results['info']['coneTime']
-        #return_results.update_time = results['info']['linSysTime']
-        #return_results.update_time = results['info']['accelTime']
-        #return_results.rho_updates = results['info']['scale_updates']
+        
+        return_results.cone_time = results['info']['cone_time']
+        return_results.lin_sys_time = results['info']['lin_sys_time']
+        return_results.accel_time = results['info']['accel_time']
         
         return_results.scale = results['info']['scale']
         return_results.scale_updates = results['info']['scale_updates']
+        
+        return_results.accepted_accel_steps = results['info']['accepted_accel_steps']
+        return_results.rejected_accel_steps = results['info']['rejected_accel_steps']
 
         return return_results

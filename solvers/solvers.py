@@ -139,10 +139,10 @@ else:
 # Solver settings
 eps_abs_low = 1e-04
 eps_rel_low = 1e-04
-eps_abs_high = 1e-05
-eps_rel_high = 1e-05
+eps_abs_high = 1e-06
+eps_rel_high = 1e-06
 eps_infeas = 1e-04
-eps_infeas_high = 1e-05
+eps_infeas_high = 1e-06
 
 
 LOG_CSV_FILENAME = None # './csv/'
@@ -288,7 +288,7 @@ def get_settings(infeasible=False):
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
             'acceleration_lookback': -10,
-            'acceleration_interval': 1,
+            'acceleration_interval': 10,
             'scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
@@ -304,7 +304,7 @@ def get_settings(infeasible=False):
             'eps_infeas': _eps_infeas,
             'max_iters': MAX_ITERS,
             'acceleration_lookback': 10,
-            'acceleration_interval': 1,
+            'acceleration_interval': 10,
             'scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,

@@ -32,7 +32,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 OUTPUT_FOLDER = 'qplib_problems_NEW'
-solvers=[s.SCS, s.OSQP] #, s.COSMO, s.SCS_ALT]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.qpOASES]
+solvers=[s.SCS, s.OSQP, s.SCS_AA1, s.SCS_AA2] #, s.COSMO, s.SCS_ALT]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.qpOASES]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
