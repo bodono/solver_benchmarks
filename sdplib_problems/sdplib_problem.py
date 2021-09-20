@@ -180,7 +180,11 @@ class SDPLIBRunner(object):
             solution_dict['solve_time'] = results.solve_time
             solution_dict['scale'] = results.scale
             solution_dict['scale_updates'] = results.scale_updates
-
+            solution_dict['lin_sys_time'] = results.lin_sys_time
+            solution_dict['cone_time'] = results.cone_time
+            solution_dict['accel_time'] = results.accel_time
+            solution_dict['accepted_accel_steps'] = results.accepted_accel_steps
+            solution_dict['rejected_accel_steps'] = results.rejected_accel_steps
 
         print(" - Solved %s with solver %s" % (problem, solver))
 
