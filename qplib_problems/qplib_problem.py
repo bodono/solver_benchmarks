@@ -199,15 +199,8 @@ class QPLIBRunner(object):
             solution_dict['rho_estimate'] = results.rho_estimate
 
         if 'SCS' in solver:
-            solution_dict['setup_time'] = results.setup_time
-            solution_dict['solve_time'] = results.solve_time
-            solution_dict['scale'] = results.scale
-            solution_dict['scale_updates'] = results.scale_updates
-            solution_dict['lin_sys_time'] = results.lin_sys_time
-            solution_dict['cone_time'] = results.cone_time
-            solution_dict['accel_time'] = results.accel_time
-            solution_dict['accepted_accel_steps'] = results.accepted_accel_steps
-            solution_dict['rejected_accel_steps'] = results.rejected_accel_steps
+            for k, v in results.info.items():
+                solution_dict[k] = v
 
         print(" - Solved %s with solver %s" % (problem, solver))
 
