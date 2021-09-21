@@ -92,7 +92,7 @@ else:
 print("Final problem set:")
 print(miplib_runner.problems)
 # debug
-#miplib_runner.problems = ["neos-5049753-cuanza"]
+# miplib_runner.problems = ["scpj4scip"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("lotsize"):]
 #
