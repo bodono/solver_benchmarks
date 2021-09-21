@@ -56,6 +56,8 @@ elif unbounded:
 else:
   OUTPUT_FOLDER = 'random_feasible'
 
+OUTPUT_FOLDER += '_NEW'
+
 m=150
 n=100
 

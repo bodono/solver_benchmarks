@@ -35,7 +35,7 @@ print('parallel', parallel)
 
 settings = s.get_settings()
 solvers=[s.SCS, s.OSQP] #, s.COSMO]
-OUTPUT_FOLDER = 'suitesparse_problems'
+OUTPUT_FOLDER = 'suitesparse_problems_NEW'
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
