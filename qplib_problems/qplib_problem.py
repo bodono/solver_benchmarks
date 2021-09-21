@@ -97,32 +97,20 @@ class QPLIBRunner(object):
             # Get solver file name
             results_file_name = os.path.join(path, 'results.csv')
 
-            # Check if file name already exists
-            if not os.path.isfile(results_file_name):
-                # Solve Maros Meszaros problems
-                if parallel:
-                    results = pool.starmap(self.solve_single_example,
-                                           zip(self.problems,
-                                               repeat(solver),
-                                               repeat(settings)))
+            # If results file already exists read in solved problems
+            if os.path.isfile(results_file_name):
+                df = pd.read_csv(results_file_name)
+                # filter down to unsolved only
+                self.problems = [p for p in self.problems if p not in df['name'].values]
+
+            for problem in self.problems:
+                df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
+                if os.path.isfile(results_file_name):
+                    # append to existing csv
+                    df.to_csv(results_file_name, mode='a', header=False, index=False)
                 else:
-                    results = []
-                    for problem in self.problems:
-                        results.append(self.solve_single_example(problem,
-                                                                 solver,
-                                                                 settings))
-                # Create dataframe
-                df = pd.concat(results)
-
-                # Store results
-                df.to_csv(results_file_name, index=False)
-
-            #  else:
-            #      # Load from file
-            #      df = pd.read_csv(results_file_name)
-            #
-            #      # Combine list of dataframes
-            #      results_solver.append(df)
+                    # csv is new, write with header
+                    df.to_csv(results_file_name, mode='w', header=True, index=False)
 
         if parallel:
             pool.close()  # Not accepting any more jobs on this pool

@@ -240,33 +240,23 @@ class RandomProbRunner(object):
 
             # Get solver file name
             results_file_name = os.path.join(path, 'results.csv')
+            
+            # If results file already exists read in solved problems
+            df_curr = None
+            if os.path.isfile(results_file_name):
+                df_curr = pd.read_csv(results_file_name)
 
-            # Check if file name already exists
-            if not os.path.isfile(results_file_name):
-                if parallel:
-                    results = pool.starmap(self.solve_single_example,
-                                           zip(self.problems,
-                                               repeat(solver),
-                                               repeat(settings)))
+            for name, problem in self.problems():
+                # filter down to unsolved only
+                if df_curr is not None and name in df_curr['name'].values:
+                    continue
+                df = pd.DataFrame(self.solve_single_example(name, problem, solver, settings))
+                if os.path.isfile(results_file_name):
+                    # append to existing csv
+                    df.to_csv(results_file_name, mode='a', header=False, index=False)
                 else:
-                    results = []
-                    for name, problem in self.problems():
-                        results.append(self.solve_single_example(name,
-                                                                 problem,
-                                                                 solver,
-                                                                 settings))
-                # Create dataframe
-                df = pd.concat(results)
-
-                # Store results
-                df.to_csv(results_file_name, index=False)
-
-            #  else:
-            #      # Load from file
-            #      df = pd.read_csv(results_file_name)
-            #
-            #      # Combine list of dataframes
-            #      results_solver.append(df)
+                    # csv is new, write with header
+                    df.to_csv(results_file_name, mode='w', header=True, index=False)
 
         if parallel:
             pool.close()  # Not accepting any more jobs on this pool

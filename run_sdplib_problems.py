@@ -41,7 +41,7 @@ solvers=[s.SCS, s.COSMO]
 if infeasible:
   OUTPUT_FOLDER = 'sdplib_infeasible_NEW'
 else:
-  OUTPUT_FOLDER = 'sdplib_feasible'
+  OUTPUT_FOLDER = 'sdplib_feasible_NEW'
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
