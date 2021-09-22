@@ -332,7 +332,8 @@ class RandomProbRunner(object):
 
         if 'SCS' in solver:
             for k, v in results.info.items():
-                solution_dict[k] = v
+                if k not in solution_dict:  # don't overwrite existing
+                    solution_dict[k] = v
 
         print(" - Solved %s with solver %s" % (prob_name, solver))
 

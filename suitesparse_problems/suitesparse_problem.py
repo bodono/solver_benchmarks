@@ -102,9 +102,11 @@ class SuitesparseRunner(object):
             if os.path.isfile(results_file_name):
                 df = pd.read_csv(results_file_name)
                 # filter down to unsolved only
-                self.problems = [p for p in self.problems if p not in df['name'].values]
+                solver_problems = [p for p in self.problems if p not in df['name'].values]
+            else:
+                solver_problems = self.problems.copy()
 
-            for problem in self.problems:
+            for problem in solver_problems:
                 df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
                 if os.path.isfile(results_file_name):
                     # append to existing csv
@@ -168,7 +170,8 @@ class SuitesparseRunner(object):
 
         if 'SCS' in solver:
             for k, v in results.info.items():
-                solution_dict[k] = v
+                if k not in solution_dict:  # don't overwrite existing
+                    solution_dict[k] = v
 
         print(" - Solved %s with solver %s" % (problem, solver))
 

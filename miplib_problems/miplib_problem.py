@@ -94,10 +94,13 @@ class MIPLIBRunner(object):
             # If results file already exists read in solved problems
             if os.path.isfile(results_file_name):
                 df = pd.read_csv(results_file_name)
-                # filter down to unsolved only
-                self.problems = [p for p in self.problems if p not in df['name'].values]
+                # filter down to unsolved only, do not overwrite self.problems
+                solver_problems = [p for p in self.problems if p not in df['name'].values]
+            else:
+                solver_problems = self.problems.copy()
 
-            for problem in self.problems:
+
+            for problem in solver_problems:
                 df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
                 if os.path.isfile(results_file_name):
                     # append to existing csv
@@ -105,31 +108,6 @@ class MIPLIBRunner(object):
                 else:
                     # csv is new, write with header
                     df.to_csv(results_file_name, mode='w', header=True, index=False)
-
-            # if not os.path.isfile(results_file_name):
-            #     if parallel:
-            #         results = pool.starmap(self.solve_single_example,
-            #                                zip(self.problems,
-            #                                    repeat(solver),
-            #                                    repeat(settings)))
-            #     else:
-            #         results = []
-            #         for problem in self.problems:
-            #             results.append(self.solve_single_example(problem,
-            #                                                      solver,
-            #                                                      settings))
-            #     # Create dataframe
-            #     df = pd.concat(results)
-
-            #     # Store results
-            #     df.to_csv(results_file_name, index=False)
-
-            #  else:
-            #      # Load from file
-            #      df = pd.read_csv(results_file_name)
-            #
-            #      # Combine list of dataframes
-            #      results_solver.append(df)
 
         if parallel:
             pool.close()  # Not accepting any more jobs on this pool
@@ -206,7 +184,8 @@ class MIPLIBRunner(object):
 
         if 'SCS' in solver:
             for k, v in results.info.items():
-                solution_dict[k] = v
+                if k not in solution_dict:  # don't overwrite existing
+                    solution_dict[k] = v
 
         print(" - Solved %s with solver %s" % (problem, solver))
 
