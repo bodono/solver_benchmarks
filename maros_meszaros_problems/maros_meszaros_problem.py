@@ -78,8 +78,9 @@ class MarosMeszarosRunner(object):
 
             # If results file already exists read in solved problems
             if os.path.isfile(results_file_name):
-                df = pd.read_csv(results_file_name)
-                # filter down to unsolved only
+                with open(results_file_name, 'r') as f:
+                    df = pd.read_csv(f)
+                # filter down to unsolved only, do not overwrite self.problems
                 solver_problems = [p for p in self.problems if p not in df['name'].values]
             else:
                 solver_problems = self.problems.copy()
@@ -89,35 +90,14 @@ class MarosMeszarosRunner(object):
                 df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
                 if os.path.isfile(results_file_name):
                     # append to existing csv
-                    df.to_csv(results_file_name, mode='a', header=False, index=False)
+                    with open(results_file_name, 'a') as f:
+                        df.to_csv(f, header=False, index=False)
                 else:
                     # csv is new, write with header
-                    df.to_csv(results_file_name, mode='w', header=True, index=False)
+                    with open(results_file_name, 'w') as f:
+                        df.to_csv(f, header=True, index=False)
 
-            # if not os.path.isfile(results_file_name):
-            #     if parallel:
-            #         results = pool.starmap(self.solve_single_example,
-            #                                zip(self.problems,
-            #                                    repeat(solver),
-            #                                    repeat(settings)))
-            #     else:
-            #         results = []
-            #         for problem in self.problems:
-            #             results.append(self.solve_single_example(problem,
-            #                                                      solver,
-            #                                                      settings))
-            #     # Create dataframe
-            #     df = pd.concat(results)
 
-            #     # Store results
-            #     df.to_csv(results_file_name, index=False)
-
-            #  else:
-            #      # Load from file
-            #      df = pd.read_csv(results_file_name)
-            #
-            #      # Combine list of dataframes
-            #      results_solver.append(df)
 
         if parallel:
             pool.close()  # Not accepting any more jobs on this pool

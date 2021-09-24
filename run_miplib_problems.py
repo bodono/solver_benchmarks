@@ -47,7 +47,7 @@ print('parallel', parallel)
 settings = s.get_settings()
 
 OUTPUT_FOLDER = 'miplib_problems_NEW'
-solvers=[s.SCS, s.OSQP, s.SCS_AA1, s.SCS_AA2]
+solvers=[s.SCS, s.SCS_AA1, s.SCS_AA2, s.OSQP]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
