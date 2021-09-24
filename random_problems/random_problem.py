@@ -240,11 +240,12 @@ class RandomProbRunner(object):
 
             # Get solver file name
             results_file_name = os.path.join(path, 'results.csv')
-            
+
             # If results file already exists read in solved problems
             df_curr = None
             if os.path.isfile(results_file_name):
-                df_curr = pd.read_csv(results_file_name)
+                with open(results_file_name, 'r') as f:
+                    df_curr = pd.read_csv(results_file_name)
 
             for name, problem in self.problems():
                 # filter down to unsolved only
@@ -253,10 +254,12 @@ class RandomProbRunner(object):
                 df = pd.DataFrame(self.solve_single_example(name, problem, solver, settings))
                 if os.path.isfile(results_file_name):
                     # append to existing csv
-                    df.to_csv(results_file_name, mode='a', header=False, index=False)
+                    with open(results_file_name, 'a') as f:
+                        df.to_csv(f, header=False, index=False)
                 else:
                     # csv is new, write with header
-                    df.to_csv(results_file_name, mode='w', header=True, index=False)
+                    with open(results_file_name, 'w') as f:
+                        df.to_csv(f, header=True, index=False)
 
         if parallel:
             pool.close()  # Not accepting any more jobs on this pool
