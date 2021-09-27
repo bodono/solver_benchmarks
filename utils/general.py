@@ -122,7 +122,46 @@ def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
               (np.abs(gap), eps_gap))
         return False
 
-    # TODO check cone membership
+    if np.abs(y.T @ s) > 1e-6 * max(
+            np.linalg.norm(s, np.inf), np.linalg.norm(y, np.inf)):
+        print("Cone: Error in complementary slackness: %.4e > %.4e" %
+              (np.abs(y.T @ s), 1e-6))
+        return False
+
+    # check cone membership (TODO only zero, linear, box cones for now)
+    # (TODO check y cone)
+
+    def check_zero_cone(s):
+        return max(np.abs(s[:cone['z']])) < 1e-9
+
+    def check_pos_cone(s):
+        arr = s[s < 0]
+        if arr:
+            return max(-arr) < 1e-9
+        return True
+
+    def check_box_cone(s, l, u):
+        t = s[0]
+        s = s[1:]
+        print('Box cone solution: t is %.4e' % t)
+        return np.all(l <= s / t + 1e-9) and np.all(u >= s / t - 1e-9)
+
+    idx = 0
+    if 'z' in cone:
+        if not check_zero_cone(s[:cone['z']]):
+            print("Cone: Error in zero cone")
+            return False
+        idx += cone['z']
+    if 'l' in cone:
+        if not check_pos_cone(s[idx:idx+cone['l']]):
+            print("Cone: Error in linear cone")
+            return False
+        idx += cone['l']
+    if 'bl' in cone or 'bu' in cone:
+        if not check_box_cone(s[idx:], np.array(cone['bl']), np.array(cone['bu'])):
+            print("Cone: Error in box cone")
+            return False
+
     print('Cone solution verified')
     return True
 
