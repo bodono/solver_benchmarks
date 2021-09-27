@@ -15,6 +15,7 @@ import os
 import argparse
 import shutil
 
+MAX_PROB_SIZE_MB = 1
 
 parser = argparse.ArgumentParser(description='SDPLIB Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
@@ -37,7 +38,7 @@ print('verbose', verbose)
 print('parallel', parallel)
 
 settings = s.get_settings(infeasible)
-solvers=[s.SCS, s.COSMO]
+solvers=[s.SCS, s.SCS_AA1, s.SCS_AA2]
 if infeasible:
   OUTPUT_FOLDER = 'sdplib_infeasible_NEW'
 else:
@@ -55,7 +56,8 @@ for key in settings:
 # Run all examples
 sdplib_runner = SDPLIBRunner(solvers,
                              settings,
-                             OUTPUT_FOLDER)
+                             OUTPUT_FOLDER,
+                             MAX_PROB_SIZE_MB)
 
 INFEASIBLE_PROBLEMS = ["infd1", "infd2", "infp1", "infp2"]
 

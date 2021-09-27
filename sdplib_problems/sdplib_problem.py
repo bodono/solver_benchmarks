@@ -19,7 +19,8 @@ class SDPLIBRunner(object):
     def __init__(self,
                  solvers,
                  settings,
-                 output_folder):
+                 output_folder,
+                 max_prob_size_mb=np.inf):
         self.solvers = solvers
         self.settings = settings
         self.output_folder = output_folder
@@ -30,8 +31,18 @@ class SDPLIBRunner(object):
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
                             f.endswith('.jld2')])
-        self.problems = [f[:-5] for f in lst_probs]   # List of problem names
-        print(self.problems)
+        problems = [f[:-5] for f in lst_probs]   # List of problem names
+        print("Full problem set:")
+        print(problems)
+        print(f"Filtering size to under {max_prob_size_mb} Mbytes")
+        self.problems = []
+        for problem in problems:
+          # Create example instance
+          full_path = os.path.join(self.problems_dir, "%s.jld2" % problem)
+          if os.stat(full_path).st_size > max_prob_size_mb * 1e6:
+            print(f'Skipping large problem {problem}')
+            continue
+          self.problems.append(problem)
 
     def solve(self, parallel=True, cores=32):
         '''
