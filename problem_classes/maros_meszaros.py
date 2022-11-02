@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.sparse as spa
 import scipy.io as spio
-import cvxpy
 
 
 class MarosMeszaros(object):
@@ -66,6 +65,7 @@ class MarosMeszaros(object):
         return problem
 
     def _generate_cvxpy_problem(self):
+        import cvxpy
         '''
         Generate QP problem
         '''
