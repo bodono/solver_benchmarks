@@ -30,12 +30,13 @@ args = parser.parse_args()
 high_accuracy = args.high_accuracy
 verbose = args.verbose
 parallel = args.parallel
+preprocessed = args.preprocessed
 
 print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP, s.COSMO]
+solvers=[s.SCS, s.OSQP]
 OUTPUT_FOLDER = "mittelmann_problems"
 
 if high_accuracy:
@@ -54,7 +55,7 @@ if preprocessed:
   OUTPUT_FOLDER += '_preprocessed'
   mittelmann_runner = MITTELMANNRunner(solvers,
                              settings,
-                             OUTPUT_FOLDER)
+                             OUTPUT_FOLDER,
                              "mittelmann-papilo-preprocessed")
 else:
   # Run all examples
