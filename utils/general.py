@@ -132,7 +132,9 @@ def is_cone_solution_optimal(data, cone, x, y, s, high_accuracy):
     # (TODO check y cone)
 
     def check_zero_cone(s):
-        return max(np.abs(s[:cone['z']])) < 1e-9
+        if len(s):
+            return max(np.abs(s) < 1e-9)
+        return True
 
     def check_pos_cone(s):
         arr = s[s < 0]
