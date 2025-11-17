@@ -99,17 +99,33 @@ class NETLIBRunner(object):
                 solver_problems = self.problems.copy()
 
 
-            for problem in solver_problems:
-                df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
+            if solver_problems:
+              if parallel:
+                results = pool.starmap(self.solve_single_example,
+                                       zip(solver_problems,
+                                           repeat(solver),
+                                           repeat(settings)))
+                df = pd.concat(results)
+                df = df.sort_values('name')
                 if os.path.isfile(results_file_name):
-                    # append to existing csv
+                  # append to existing csv
                     with open(results_file_name, 'a') as f:
-                        df.to_csv(f, header=False, index=False)
+                      df.to_csv(f, header=False, index=False)
                 else:
-                    # csv is new, write with header
+                  # csv is new, write with header
                     with open(results_file_name, 'w') as f:
-                        df.to_csv(f, header=True, index=False)
-
+                      df.to_csv(f, header=True, index=False)
+              else:
+                for problem in solver_problems:
+                    df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
+                    if os.path.isfile(results_file_name):
+                        # append to existing csv
+                        with open(results_file_name, 'a') as f:
+                            df.to_csv(f, header=False, index=False)
+                    else:
+                        # csv is new, write with header
+                        with open(results_file_name, 'w') as f:
+                            df.to_csv(f, header=True, index=False)
 
         if parallel:
             pool.close()  # Not accepting any more jobs on this pool
@@ -117,7 +133,7 @@ class NETLIBRunner(object):
 
     def solve_single_example(self,
                              problem,
-                             solver, settings):
+                             solver_name, settings):
         '''
         Solve NETLIB 'problem' with 'solver'
 
@@ -128,7 +144,8 @@ class NETLIBRunner(object):
             settings: settings dictionary for the solver
 
         '''
-        print(" - Solving %s with solver %s" % (problem, solver))
+        solver = settings['solver']
+        print(" - Solving %s with solver %s" % (problem, solver_name))
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
@@ -138,9 +155,9 @@ class NETLIBRunner(object):
         assert scipy.sparse.linalg.norm(instance.qp_problem['P']) == 0.
         if self.add_quadratic:
           instance.qp_problem['P'] = scipy.sparse.eye(instance.qp_problem['P'].shape[0]).tocsc()
-
+        
         # Solve problem
-        s = SOLVER_MAP[solver](settings)
+        s = solver(settings)
         results = s.solve(instance)
 
         # Create solution as pandas table
@@ -169,7 +186,7 @@ class NETLIBRunner(object):
         #      obj_dist = np.inf
 
         solution_dict = {'name': [problem],
-                         'solver': [solver],
+                         'solver': [solver_name],
                          'status': [results.status],
                          'run_time': [results.run_time],
                          'iter': [results.niter],
@@ -179,7 +196,7 @@ class NETLIBRunner(object):
                          'N': [N]}
 
         # Add status polish if OSQP
-        if 'OSQP' in solver:
+        if 'OSQP' in solver_name:
             solution_dict['status_polish'] = results.status_polish
             solution_dict['setup_time'] = results.setup_time
             solution_dict['solve_time'] = results.solve_time
@@ -187,12 +204,12 @@ class NETLIBRunner(object):
             solution_dict['rho_updates'] = results.rho_updates
             solution_dict['rho_estimate'] = results.rho_estimate
 
-        if 'SCS' in solver:
+        if 'SCS' in solver_name:
             for k, v in results.info.items():
                 if k not in solution_dict:  # don't overwrite existing
                     solution_dict[k] = v
 
-        print(" - Solved %s with solver %s" % (problem, solver))
+        print(" - Solved %s with solver %s" % (problem, solver_name))
 
         # Return solution
         return pd.DataFrame(solution_dict)

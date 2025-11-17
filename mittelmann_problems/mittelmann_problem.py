@@ -10,7 +10,7 @@ from utils.general import make_sure_path_exists
 import numpy as np
 
 BASE_PROBLEMS_FOLDER = "mittelmann"
-MAX_PROB_SIZE = int(100e6)
+MAX_PROB_SIZE = int(10e6)
 
 
 class MITTELMANNRunner(object):
@@ -20,13 +20,16 @@ class MITTELMANNRunner(object):
     def __init__(self,
                  solvers,
                  settings,
-                 output_folder):
+                 output_folder,
+                 problems_folder=BASE_PROBLEMS_FOLDER):
         self.solvers = solvers
         self.settings = settings
         self.output_folder = output_folder
+        self.problems_folder = problems_folder
+        print(problems_folder)
 
         # Get mittelmann problems list
-        self.problems_dir = os.path.join(".", "problem_classes", BASE_PROBLEMS_FOLDER)
+        self.problems_dir = os.path.join(".", "problem_classes", self.problems_folder)
 
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(self.problems_dir) if
@@ -39,7 +42,7 @@ class MITTELMANNRunner(object):
         for problem in problems:
           # Create example instance
           full_path = os.path.join(".", "problem_classes",
-                                    BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
+                                    self.problems_folder, "%s.mps.gz" % problem)
           if os.stat(full_path).st_size > MAX_PROB_SIZE:
             print(f'Skipping large problem {problem}')
             continue
@@ -117,7 +120,7 @@ class MITTELMANNRunner(object):
 
     def solve_single_example(self,
                              problem,
-                             solver, settings):
+                             solver_name, settings):
         '''
         Solve MITTELMANN 'problem' with 'solver'
 
@@ -128,16 +131,17 @@ class MITTELMANNRunner(object):
             settings: settings dictionary for the solver
 
         '''
-        print(" - Solving %s with solver %s" % (problem, solver))
+        print(" - Solving %s with solver %s" % (problem, solver_name))
 
+        solver = settings['solver']
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
-                                 BASE_PROBLEMS_FOLDER, "%s.mps.gz" % problem)
+                                 self.problems_folder, "%s.mps" % problem)
         instance = MITTELMANN(full_name, problem)
 
 
         # Solve problem
-        s = SOLVER_MAP[solver](settings)
+        s = solver(settings)
         results = s.solve(instance)
 
         # Create solution as pandas table
@@ -166,7 +170,7 @@ class MITTELMANNRunner(object):
         #      obj_dist = np.inf
 
         solution_dict = {'name': [problem],
-                         'solver': [solver],
+                         'solver': [solver_name],
                          'status': [results.status],
                          'run_time': [results.run_time],
                          'iter': [results.niter],
@@ -176,7 +180,7 @@ class MITTELMANNRunner(object):
                          'N': [N]}
 
         # Add status polish if OSQP
-        if 'OSQP' in solver:
+        if 'OSQP' in solver_name:
             solution_dict['status_polish'] = results.status_polish
             solution_dict['setup_time'] = results.setup_time
             solution_dict['solve_time'] = results.solve_time
@@ -184,12 +188,12 @@ class MITTELMANNRunner(object):
             solution_dict['rho_updates'] = results.rho_updates
             solution_dict['rho_estimate'] = results.rho_estimate
 
-        if 'SCS' in solver:
+        if 'SCS' in solver_name:
             for k, v in results.info.items():
                 if k not in solution_dict:  # don't overwrite existing
                     solution_dict[k] = v
 
-        print(" - Solved %s with solver %s" % (problem, solver))
+        print(" - Solved %s with solver %s" % (problem, solver_name))
 
         # Return solution
         return pd.DataFrame(solution_dict)

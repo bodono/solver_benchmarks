@@ -1,12 +1,33 @@
 \begin{table}
-\centering
 \caption{Solver geometric means on netlib feasible problems.}
 \label{t-netlib feasible-geom_mean}
-\begin{tabular}{lccc}
+\begin{tabular}{lccccccccccccccccccccccc}
 \toprule
- SCS-3.0 &  OSQP &  COSMO \\
+Unnamed: 0 & 0 \\
 \midrule
-    1.00 & 15.78 &  19.66 \\
+QTQP_0_0_3_pardiso & 13.45 \\
+QTQP_0_0_3_qdldl & 14.71 \\
+QTQP_clarabel_term_conds_qdldl & 9.50 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static_mu_times_10_no_normalization & 13.24 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static_mu_times_100_no_normalization & 16.10 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static_mu_times_4_no_normalization & 9.46 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static_orig_anchor & 8.30 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static_orig_terms_equilibrate_before_init & 24.42 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static_orig_terms_equilibrate_after_init & 17.62 \\
+QTQP_qdldl_1e8_static_orig_terms_equilibrate_after_init & 17.61 \\
+QTQP_qdldl_1e8_static_init_with_10mu_newton_step & 19.17 \\
+QTQP_qdldl_1e8_static_init_with_10mu_newton_step_10_times & 22.82 \\
+QTQP_qdldl_1e8_static_init_with_100mu_newton_step_20_times & 26.65 \\
+QTQP_qdldl_1e8_static_init_with_10mu_newton_step_s_times_mu & 28.34 \\
+QTQP_mcc & 17.52 \\
+QTQP_equilibration_fix_xyt_anchor_1e8_min_static_reg & 11.88 \\
+QTQP_equilibration_fix_mu_fix_tatc_fix_1e8_min_static_reg & 9.53 \\
+QTQP_equilibration_fix_1e8_min_static_reg & 8.37 \\
+QTQP_clarabel_term_conds_qdldl_1e8_static & 6.22 \\
+QTQP_clarabel_term_conds_qdldl_1e9_static & 20.94 \\
+QTQP_clarabel_term_conds_qdldl_1e10_static & 24.53 \\
+Clarabel & 1.00 \\
+Clarabel_no_dyn_reg & 1.00 \\
 \bottomrule
 \end{tabular}
 \end{table}

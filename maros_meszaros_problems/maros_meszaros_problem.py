@@ -30,7 +30,30 @@ class MarosMeszarosRunner(object):
         # List of problems in .mat format
         lst_probs = sorted([f for f in os.listdir(problems_dir) if \
             f.endswith('.mat')])
-        self.problems = [f[:-4] for f in lst_probs]   # List of problem names
+        problems = [f[:-4] for f in lst_probs]   # List of problem names
+        _problems = []
+        for problem in problems:
+          full_name = os.path.join(".", "problem_classes",
+                                 PROBLEMS_FOLDER, problem)
+          instance = MarosMeszaros(full_name, problem)
+          qp_problem = instance.qp_problem
+          # Hack out the equality constraints
+          idxs = (qp_problem['u'] - qp_problem['l'] < 1e-6)
+          idxs &= (qp_problem['u'] < 1e7)
+          idxs &= (qp_problem['l'] > -1e7)
+          z = int(np.sum(idxs))
+
+          bad_u_idxs = (qp_problem['u'] > 1e7)
+          bad_l_idxs = (qp_problem['l'] < -1e7)
+
+          m = z + int(np.sum(~idxs & ~bad_u_idxs)) + int(np.sum(~idxs & ~bad_l_idxs))
+          if m == z:
+            print(f'skip {problem} since m = z')
+          else:
+            _problems.append(problem)
+
+        self.problems = _problems
+
 
     def solve(self, parallel=True, cores=32):
         '''
@@ -86,17 +109,33 @@ class MarosMeszarosRunner(object):
                 solver_problems = self.problems.copy()
 
 
-            for problem in solver_problems:
-                df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
+            if solver_problems:
+              if parallel:
+                results = pool.starmap(self.solve_single_example,
+                                       zip(solver_problems,
+                                           repeat(solver),
+                                           repeat(settings)))
+                df = pd.concat(results)
+                df = df.sort_values('name')
                 if os.path.isfile(results_file_name):
-                    # append to existing csv
+                  # append to existing csv
                     with open(results_file_name, 'a') as f:
-                        df.to_csv(f, header=False, index=False)
+                      df.to_csv(f, header=False, index=False)
                 else:
-                    # csv is new, write with header
+                  # csv is new, write with header
                     with open(results_file_name, 'w') as f:
-                        df.to_csv(f, header=True, index=False)
-
+                      df.to_csv(f, header=True, index=False)
+              else:
+                for problem in solver_problems:
+                    df = pd.DataFrame(self.solve_single_example(problem, solver, settings))
+                    if os.path.isfile(results_file_name):
+                        # append to existing csv
+                        with open(results_file_name, 'a') as f:
+                            df.to_csv(f, header=False, index=False)
+                    else:
+                        # csv is new, write with header
+                        with open(results_file_name, 'w') as f:
+                            df.to_csv(f, header=True, index=False)
 
 
         if parallel:
@@ -105,7 +144,7 @@ class MarosMeszarosRunner(object):
 
     def solve_single_example(self,
                              problem,
-                             solver, settings):
+                             solver_name, settings):
         '''
         Solve Maros Meszaro 'problem' with 'solver'
 
@@ -121,13 +160,14 @@ class MarosMeszarosRunner(object):
                                  PROBLEMS_FOLDER, problem)
         instance = MarosMeszaros(full_name, problem)
 
-        print(" - Solving %s with solver %s" % (problem, solver))
+        solver = settings['solver']
+        print(" - Solving %s with solver %s" % (problem, solver_name))
 
         simple_obj = OPT_COST_MAP[problem] - instance.qp_problem["r"]
         print(f' - Optimal objective {simple_obj}')
 
         # Solve problem
-        s = SOLVER_MAP[solver](settings)
+        s = solver(settings)
         results = s.solve(instance)
 
         # Create solution as pandas table
@@ -154,7 +194,7 @@ class MarosMeszarosRunner(object):
         #      obj_dist = np.inf
 
         solution_dict = {'name': [problem],
-                         'solver': [solver],
+                         'solver': [solver_name],
                          'status': [results.status],
                          'run_time': [results.run_time],
                          'iter': [results.niter],
@@ -166,7 +206,7 @@ class MarosMeszarosRunner(object):
                          'N': [N]}
 
         # Add status polish if OSQP
-        if 'OSQP' in solver:
+        if 'OSQP' in solver_name:
             solution_dict['status_polish'] = results.status_polish
             solution_dict['setup_time'] = results.setup_time
             solution_dict['solve_time'] = results.solve_time
@@ -174,12 +214,13 @@ class MarosMeszarosRunner(object):
             solution_dict['rho_updates'] = results.rho_updates
             solution_dict['rho_estimate'] = results.rho_estimate
 
-        if 'SCS' in solver:
+        if 'SCS' or 'QTQP' or 'Clarabel' in solver_name:
             for k, v in results.info.items():
                 if k not in solution_dict:  # don't overwrite existing
+                  if type(v) != type(dict()):
                     solution_dict[k] = v
 
-        print(" - Solved %s with solver %s" % (problem, solver))
+        print(" - Solved %s with solver %s" % (problem, solver_name))
 
         # Return solution
         return pd.DataFrame(solution_dict)

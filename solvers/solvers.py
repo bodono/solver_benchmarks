@@ -46,12 +46,17 @@ except:
   print('QPALM import failed')
   QPALMSolver = None
 
+from solvers.qtqp import QTQPSolver
+from solvers.clarabel import ClarabelSolver
+
+
 TIME_LIMIT = 1000.  # Seconds
 HIGH = '_high'
 
 SCS = 'SCS-3.0'
 SCS_GPU = 'SCS_GPU'
 SCS_ALT = 'SCS_ALT'
+SCS_MKL = 'SCS_MKL'
 SCS_AA1 = 'SCS_AA1'
 SCS_AA2 = 'SCS_AA2'
 SCS_INDIRECT = 'SCS_INDIRECT'
@@ -60,6 +65,7 @@ SCS_INDIRECT_AA2 = 'SCS_INDIRECT_AA2'
 COSMO = 'COSMO'
 COSMO_high = COSMO + HIGH
 SCS_high = SCS + HIGH
+SCS_MKL_high = SCS_MKL + HIGH
 SCS_AA1_high = SCS_AA1 + HIGH
 SCS_AA2_high = SCS_AA2 + HIGH
 SCS_ALT_high = SCS_ALT + HIGH
@@ -79,6 +85,8 @@ MOSEK_high = MOSEK + HIGH
 qpOASES = 'qpOASES'
 QPALM = 'QPALM'
 QPALM_high = QPALM + HIGH
+QTQP = 'QTQP'
+Clarabel = 'Clarabel'
 
 # solvers = [ECOSSolver, GUROBISolver, MOSEKSolver, OSQPSolver]
 # SOLVER_MAP = {solver.name(): solver for solver in solvers}
@@ -90,9 +98,12 @@ SOLVER_MAP_REGULAR = {
     MOSEK: MOSEKSolver,
     ECOS: ECOSSolver,
     COSMO: COSMOSolver,
+    QTQP: QTQPSolver,
+    Clarabel: ClarabelSolver,
     SCS: SCSSolver,
     SCS_ALT: SCSSolver,
     SCS_GPU: SCSSolver,
+    SCS_MKL: SCSSolver,
     SCS_AA1: SCSSolver,
     SCS_AA2: SCSSolver,
     SCS_INDIRECT: SCSSolver,
@@ -111,6 +122,7 @@ SOLVER_MAP_HIGH = {
     MOSEK_high: MOSEKSolver,
     ECOS_high: ECOSSolver,
     SCS_high: SCSSolver,
+    SCS_MKL_high: SCSSolver,
     SCS_ALT_high: SCSSolver,
     SCS_AA1_high: SCSSolver,
     SCS_AA2_high: SCSSolver,
@@ -139,8 +151,8 @@ else:
 # Solver settings
 eps_abs_low = 1e-04
 eps_rel_low = 1e-04
-eps_abs_high = 1e-06
-eps_rel_high = 1e-06
+eps_abs_high = 1e-08
+eps_rel_high = 1e-08
 eps_infeas = 1e-04
 eps_infeas_high = 1e-06
 
@@ -184,13 +196,28 @@ def get_settings(infeasible=False):
             'eps_dual_inf': _eps_infeas,
             #'verbose': True
         },
+        SCS_MKL: {
+            'mkl': True,
+            'eps_abs': _eps_abs_low,
+            'eps_rel': _eps_rel_low,
+            'eps_infeas': _eps_infeas,
+            'max_iters': int(99999999999999),
+            'acceleration_lookback': 0,
+            'acceleration_interval': 100,
+            'scale': SCALE,
+            'alpha': ALPHA,
+            'normalize': NORMALIZE,
+            'adaptive_scale': ADAPTIVE_SCALING,
+            'use_indirect': False,
+            'time_limit_secs': 28 * 24 * 60 * 60,
+            'log_csv_filename': LOG_CSV_FILENAME,
+            # 'write_data_filename': 'LISWET1'
+            #'rho_x': 1.,
+        },
         SCS: {
             'eps_abs': _eps_abs_low,
             'eps_rel': _eps_rel_low,
             'eps_infeas': _eps_infeas,
-            'max_iters': MAX_ITERS,
-            'acceleration_lookback': 0,
-            'acceleration_interval': 50,
             'scale': SCALE,
             'alpha': ALPHA,
             'normalize': NORMALIZE,
@@ -368,10 +395,12 @@ def get_settings(infeasible=False):
             'abstol': _eps_abs_high,
             'reltol': _eps_rel_high
         },
-        qpOASES: {}
+        qpOASES: {},
+        QTQP: {},
+        Clarabel: {},
     }
 
-    high_solvers = [OSQP_high, COSMO_high, SCS_high, SCS_ALT_high, SCS_AA1_high,
+    high_solvers = [OSQP_high, COSMO_high, SCS_MKL_high, SCS_high, SCS_ALT_high, SCS_AA1_high,
                     SCS_AA2_high, SCS_INDIRECT_high, SCS_INDIRECT_AA1_high,
                     SCS_INDIRECT_AA2_high, QPALM_high]
 

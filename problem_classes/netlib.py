@@ -1,4 +1,3 @@
-import cvxpy
 import numpy as np
 import scipy.sparse
 import problem_classes.qpsreader
@@ -72,16 +71,7 @@ class NETLIB(object):
         '''
         Generate QP problem
         '''
-        u = np.copy(self.u)
-        u[u == np.inf] = 1e9
-        l = np.copy(self.l)
-        l[l == -np.inf] = -1e9
-        x_var = cvxpy.Variable(self.n)
-        objective = self.q * x_var + self.r
-        constraints = [self.A * x_var <= u, self.A * x_var >= l]
-        problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
-
-        return problem
+        return None
 
     # XXX this method might be wrong:
     def revert_cvxpy_solution(self):

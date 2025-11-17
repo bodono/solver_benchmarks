@@ -1,49 +1,47 @@
-\begin{longtable}{lccc}
-\caption{Solver times on netlib infeasible problems in seconds.}
-\label{t-netlib infeasible-results}\\
+\begin{longtable}{lcc}
+\caption{Solver times on netlib infeasible problems in seconds.} \label{t-netlib infeasible-results} \\
 \toprule
-{} &  SCS-3.0 &   OSQP &  COSMO \\
+ & QTQP_0_0_3_pardiso & Clarabel \\
 \midrule
 \endfirsthead
 \caption[]{Solver times on netlib infeasible problems in seconds.} \\
 \toprule
-{} &  SCS-3.0 &   OSQP &  COSMO \\
+ & QTQP_0_0_3_pardiso & Clarabel \\
 \midrule
 \endhead
 \midrule
-\multicolumn{4}{r}{{Continued on next page}} \\
+\multicolumn{3}{r}{Continued on next page} \\
 \midrule
 \endfoot
-
 \bottomrule
 \endlastfoot
-bgdbg1   &   0.0030 & 0.0094 &    NaN \\
-bgetam   &   0.0070 & 0.1118 &    NaN \\
-bgindy   &   0.0922 & 7.1957 &    NaN \\
-bgprtr   &   0.0025 & 0.0012 &    NaN \\
-box1     &   0.0027 & 0.0008 & 0.0334 \\
-ceria3d  &   0.2048 & 7.4616 &    NaN \\
-chemcom  &   0.0048 & 0.0160 &    NaN \\
-cplex1   &   0.0109 &    NaN &    NaN \\
-cplex2   &      NaN &    NaN &    NaN \\
-ex72a    &   0.0023 & 0.0045 & 0.0244 \\
-ex73a    &   0.0022 & 0.0038 & 0.0424 \\
-forest6  &   0.0015 & 0.0122 & 0.0520 \\
-galenet  &   0.0006 & 0.0145 &    NaN \\
-gosh     &      NaN &    NaN &    NaN \\
-gran     &   1.4270 & 6.8937 &    NaN \\
-greenbea &   0.3251 &    NaN &    NaN \\
-itest2   &   0.0005 & 0.0003 &    NaN \\
-itest6   &   0.0004 & 0.0783 &    NaN \\
-klein1   &   0.0126 &    NaN &    NaN \\
-klein2   &   0.0042 &    NaN &    NaN \\
-klein3   &   0.0082 &    NaN &    NaN \\
-mondou2  &   0.0019 & 0.0229 & 0.0483 \\
-pang     &      NaN & 0.7767 &    NaN \\
-pilot4i  &      NaN &    NaN &    NaN \\
-qual     &      NaN &    NaN &    NaN \\
-reactor  &   0.0046 &    NaN &    NaN \\
-refinery &   0.2660 & 0.8303 & 2.2726 \\
-vol1     &      NaN &    NaN &    NaN \\
-woodinfe &   0.0017 & 0.0011 & 0.0141 \\
+bgdbg1 & 0.0722 & 0.0044 \\
+bgetam & 0.0487 & 0.0111 \\
+bgindy & 0.2935 & 0.2370 \\
+bgprtr & 0.0378 & 0.0008 \\
+box1 & 0.0396 & 0.0023 \\
+ceria3d & 0.1067 & 0.0557 \\
+chemcom & 0.0308 & 0.0055 \\
+cplex1 & 0.3657 & 0.0233 \\
+cplex2 & NaN & NaN \\
+ex72a & 0.0321 & 0.0021 \\
+ex73a & 0.0389 & 0.0019 \\
+forest6 & 0.0230 & 0.0013 \\
+galenet & 0.0198 & 0.0017 \\
+gosh & NaN & NaN \\
+gran & 0.4003 & 0.0814 \\
+greenbea & NaN & NaN \\
+itest2 & 0.0182 & 0.0005 \\
+itest6 & 0.0168 & 0.0005 \\
+klein1 & 0.0445 & 0.0027 \\
+klein2 & 0.0493 & 0.0099 \\
+klein3 & 0.0769 & 0.0301 \\
+mondou2 & 0.0507 & 0.0044 \\
+pang & 0.0649 & 0.0138 \\
+pilot4i & 0.0834 & 0.0428 \\
+qual & 0.2994 & 0.0265 \\
+reactor & 0.1119 & 0.0217 \\
+refinery & 0.0536 & 0.0089 \\
+vol1 & 0.1624 & 0.0229 \\
+woodinfe & 0.0244 & 0.0010 \\
 \end{longtable}

@@ -15,6 +15,10 @@ import numpy as np
 import os
 import argparse
 import shutil
+import qtqp
+import logging
+logger = logging.getLogger()
+# logger.setLevel(logging.DEBUG)
 
 MAX_PROB_SIZE_MB = 5
 
@@ -46,8 +50,8 @@ print('parallel', parallel)
 
 settings = s.get_settings()
 
-OUTPUT_FOLDER = 'miplib_problems_NEW'
-solvers=[s.SCS, s.SCS_AA1, s.SCS_AA2, s.OSQP]
+OUTPUT_FOLDER = 'miplib_problems'
+solvers=[s.QTQP, s.OSQP] # , s.SCS_AA1, s.SCS_AA2, s.OSQP]
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
@@ -57,6 +61,38 @@ if high_accuracy:
 for key in settings:
     settings[key]['verbose'] = verbose
 
+solvers = []
+solvers.append("Clarabel_w_equil")
+settings[solvers[-1]] = dict(verbose=verbose, solver=s.ClarabelSolver)
+#for solver in [qtqp.LinearSolver.QDLDL]: #, qtqp.LinearSolver.PARDISO]:
+#  for atol in [1e-7]:
+#    for rtol in [1e-8]:
+#      for it in [1, 5, 10, 20, 50]:
+#        for streg in [1e-6, 1e-7, 1e-8, 1e-9, 1e-10]:
+#          for equilibrate in [True, False]:
+#            solvers.append(f"QTQP_{solver}_atol{atol}_rtol{rtol}_it{it}_streg{streg}_equilibrate{equilibrate}")
+#            settings[solvers[-1]] = dict(verbose=verbose, 
+#                                        solver=s.QTQPSolver, 
+#                                        linear_solver=solver,
+#                                        atol=atol,
+#                                        rtol=rtol,
+#                                        max_iterative_refinement_steps=it,
+#                                        min_static_regularization=streg,
+#                                        equilibrate=equilibrate)
+for solver in [qtqp.LinearSolver.PARDISO]: #, qtqp.LinearSolver.SCIPY, qtqp.LinearSolver.EIGEN, qtqp.LinearSolver.QDLDL]:
+  solvers.append(f"QTQP_{solver}_0_0_3_always_1_it_refinement")
+  settings[solvers[-1]] = dict(
+                              solver=s.QTQPSolver,
+                              linear_solver=solver,
+                              )
+
+
+miplib_runner = MIPLIBRunner(solvers,
+                             settings,
+                             OUTPUT_FOLDER,
+                             MAX_PROB_SIZE_MB)
+
+
 # Run all examples
 if preprocessed:
   OUTPUT_FOLDER += '_preprocessed'
@@ -65,34 +101,35 @@ if preprocessed:
                              OUTPUT_FOLDER,
                              MAX_PROB_SIZE_MB,
                              "miplib2017-firstorderlp-paper-papilo")
-else:
+elif quick:
+  OUTPUT_FOLDER += '_quick'
+  probs = []
+  print("QUICK test set")
+  with open('miplib_problems/quick_test.txt', 'r') as f:
+    probs = f.read().splitlines()
   miplib_runner = MIPLIBRunner(solvers,
-                             settings,
-                             OUTPUT_FOLDER,
-                             MAX_PROB_SIZE_MB)
-  if quick:
-    OUTPUT_FOLDER += '_quick'
-    probs = []
-    print("QUICK test set")
-    with open('miplib_problems/quick_test.txt', 'r') as f:
-      probs = f.read().splitlines()
-    #miplib_runner.problems = sorted(probs)
-    miplib_runner.problems = sorted(list(set(probs) &
-                                    set(miplib_runner.problems)))
-  elif bisco:
-    OUTPUT_FOLDER += '_bisco'
-    probs = []
-    print("BISCO test set")
-    with open('miplib_problems/bisco_probs.txt', 'r') as f:
-      probs = f.read().splitlines()
-    #miplib_runner.problems = sorted(probs)
-    miplib_runner.problems = sorted(list(set(probs) &
-                                    set(miplib_runner.problems)))
+                           settings,
+                           OUTPUT_FOLDER,
+                           MAX_PROB_SIZE_MB)
+  miplib_runner.problems = sorted(list(set(probs) &
+                                  set(miplib_runner.problems)))
+elif bisco:
+  OUTPUT_FOLDER += '_bisco'
+  probs = []
+  print("BISCO test set")
+  with open('miplib_problems/bisco_probs.txt', 'r') as f:
+    probs = f.read().splitlines()
+  miplib_runner = MIPLIBRunner(solvers,
+                           settings,
+                           OUTPUT_FOLDER,
+                           MAX_PROB_SIZE_MB)
+  miplib_runner.problems = sorted(list(set(probs) &
+                                  set(miplib_runner.problems)))
 
 print("Final problem set:")
 print(miplib_runner.problems)
 # debug
-# miplib_runner.problems = ["scpj4scip"]
+# miplib_runner.problems = ["cryptanalysiskb128n5obj16"]
 #miplib_runner.problems = \
 #  miplib_runner.problems[miplib_runner.problems.index("lotsize"):]
 #
@@ -109,7 +146,7 @@ print(miplib_runner.problems)
 #  else:
 #    shutil.rmtree("./results/miplib_feasible")
 
-miplib_runner.solve(parallel=parallel, cores=12)
+miplib_runner.solve(parallel=parallel, cores=24)
 # Compute results statistics
 compute_stats_info(solvers, OUTPUT_FOLDER,
                    high_accuracy=high_accuracy)

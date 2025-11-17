@@ -69,7 +69,7 @@ class SCSSolver(object):
 
           data = dict(P=scipy.sparse.csc_matrix(problem['P']), c=problem['q'],
                       A=scipy.sparse.csc_matrix(A_scs), b=b_scs)
-          cone = dict(z=np.int(np.sum(idxs)), bl=problem['l'][~idxs].tolist(),
+          cone = dict(z=int(np.sum(idxs)), bl=problem['l'][~idxs].tolist(),
                       bu=problem['u'][~idxs].tolist())
 
         elif hasattr(example, 'sdp_problem'):

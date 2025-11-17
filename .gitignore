@@ -1,6 +1,10 @@
 # Ignore results folder
 #results/*
 
+*.csv
+*.mps
+*.pb
+
 # Add certain results
 #!results/benchmark_problems/
 #results/benchmark_problems/*

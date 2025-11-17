@@ -13,7 +13,7 @@ from utils.benchmark import compute_stats_info
 from utils.make_table import make_latex_table
 import os
 import argparse
-
+import qtqp
 
 parser = argparse.ArgumentParser(description='QPLIB Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
@@ -31,8 +31,8 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-OUTPUT_FOLDER = 'qplib_problems_NEW'
-solvers=[s.SCS, s.OSQP, s.SCS_AA1, s.SCS_AA2] #, s.COSMO, s.SCS_ALT]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.qpOASES]
+OUTPUT_FOLDER = 'qplib_problems'
+solvers=[s.QTQP] #, s.COSMO, s.SCS_ALT]#, s.SCS_AA1, s.SCS_AA2]#, s.ECOS, s.qpOASES]nnn
 
 if high_accuracy:
     solvers = [solver + s.HIGH for solver in solvers]
@@ -44,13 +44,23 @@ settings = s.get_settings()
 for key in settings:
     settings[key]['verbose'] = verbose
 
+settings = {}
+solvers = []
+#solvers.append("QTQP_new")
+#settings[solvers[-1]] = dict(verbose=verbose, solver=s.QTQPSolver, linear_solver=qtqp.LinearSolver.PARDISO)
+solvers.append("QTQP_0_0_3")
+settings[solvers[-1]] = dict(verbose=verbose, solver=s.QTQPSolver, linear_solver=qtqp.LinearSolver.PARDISO)
+solvers.append("Clarabel")
+settings[solvers[-1]] = dict(verbose=verbose, solver=s.ClarabelSolver)
+
+
 # Run all examples
 qplib_runner = QPLIBRunner(solvers,
                            settings,
                            OUTPUT_FOLDER)
 
 # DEBUG only: Choose only 2 problems
-#qplib_runner.problems = ["8845"]
+#qplib_runner.problems.remove("9008")
 qplib_runner.solve(parallel=parallel, cores=12)
 
 # Compute results statistics

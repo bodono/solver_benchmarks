@@ -53,7 +53,7 @@ def get_cumulative_data(solvers, problems, output_folder):
 
         # Store dataframe into results
         solver_file_name = os.path.join(path, 'results.csv')
-        df.to_csv(solver_file_name, index=False)
+        df.to_csv(solver_file_name)
 
 
 def compute_performance_profiles(solvers, problems_type, infeasible_test=False):
@@ -114,7 +114,7 @@ def compute_performance_profiles(solvers, problems_type, infeasible_test=False):
     performance_profiles_file = os.path.join('.', 'results',
                                              problems_type,
                                              'performance_profiles.csv')
-    df_performance_profiles.to_csv(performance_profiles_file, index=False)
+    df_performance_profiles.to_csv(performance_profiles_file)
 
     # Plot performance profiles
     # import matplotlib.pylab as plt
@@ -177,7 +177,7 @@ def compute_shifted_geometric_means(solvers, problems_type, infeasible_test,
     g_mean_file = os.path.join('.', 'results',
                                problems_type,
                                f'geom_mean_{field}_raw.csv')
-    df_g_mean.to_frame().transpose().to_csv(g_mean_file, index=False)
+    df_g_mean.to_frame().to_csv(g_mean_file)
 
     # Normalize geometric means by best solver
     best_g_mean = np.min([g_mean[s] for s in solvers])
@@ -189,7 +189,7 @@ def compute_shifted_geometric_means(solvers, problems_type, infeasible_test,
     g_mean_file = os.path.join('.', 'results',
                                problems_type,
                                f'geom_mean_{field}_normalized.csv')
-    df_g_mean.to_frame().transpose().to_csv(g_mean_file, index=False)
+    df_g_mean.to_frame().to_csv(g_mean_file)
 
 
     # r = {}  # Dictionary of relative times for each solver/problem
@@ -225,7 +225,7 @@ def compute_shifted_geometric_means(solvers, problems_type, infeasible_test,
     # performance_profiles_file = os.path.join('.', 'results',
     #                                          problems_type,
     #                                          'performance_profiles.csv')
-    # df_performance_profiles.to_csv(performance_profiles_file, index=False)
+    # df_performance_profiles.to_csv(performance_profiles_file)
 
 
 def compute_failure_rates(solvers, problems_type, infeasible_test=False):
@@ -260,7 +260,7 @@ def compute_failure_rates(solvers, problems_type, infeasible_test=False):
 
     # Write csv file
     df_failure_rates = pd.Series(failure_rates)
-    df_failure_rates.to_frame().transpose().to_csv(failure_rates_file, index=False)
+    df_failure_rates.to_frame().to_csv(failure_rates_file)
 
 
 def compute_polish_statistics(problems_type, high_accuracy=False):
@@ -301,7 +301,7 @@ def compute_polish_statistics(problems_type, high_accuracy=False):
                          'percentage_of_success': (polish_success * 100)}
 
     df_polish = pd.Series(polish_statistics)
-    df_polish.to_frame().transpose().to_csv(polish_file, index=False)
+    df_polish.to_frame().to_csv(polish_file)
 
 
 def compute_ratio_setup_solve(problems_type, high_accuracy=False):
@@ -334,7 +334,7 @@ def compute_ratio_setup_solve(problems_type, high_accuracy=False):
                    }
 
     df_ratio = pd.Series(ratio_stats)
-    df_ratio.to_frame().transpose().to_csv(ratio_file, index=False)
+    df_ratio.to_frame().to_csv(ratio_file)
 
 
 def compute_rho_updates(problems_type, high_accuracy=False):
@@ -363,7 +363,7 @@ def compute_rho_updates(problems_type, high_accuracy=False):
             }
 
     df_ratio = pd.Series(rho_updates_stats)
-    df_ratio.to_frame().transpose().to_csv(rho_updates_file, index=False)
+    df_ratio.to_frame().to_csv(rho_updates_file)
 
 
 def compute_stats_info(solvers, benchmark_type,

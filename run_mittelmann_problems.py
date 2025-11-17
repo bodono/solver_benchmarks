@@ -14,7 +14,10 @@ from utils.make_table import make_latex_table
 import os
 import argparse
 import shutil
-
+import qtqp
+import logging
+logger = logging.getLogger()
+# logger.setLevel(logging.DEBUG)
 
 parser = argparse.ArgumentParser(description='mittelmann Runner')
 parser.add_argument('--high_accuracy', help='Test with high accuracy', default=False,
@@ -36,7 +39,7 @@ print('high_accuracy', high_accuracy)
 print('verbose', verbose)
 print('parallel', parallel)
 
-solvers=[s.SCS, s.OSQP]
+solvers=[s.QTQP] #, s.OSQP]
 OUTPUT_FOLDER = "mittelmann_problems"
 
 if high_accuracy:
@@ -48,6 +51,28 @@ settings = s.get_settings()
 # Shut up solvers
 for key in settings:
     settings[key]['verbose'] = verbose
+
+solvers = []
+settings = {}
+#solvers = ["QTQP_new_params"]
+#settings[solvers[-1]] = dict(verbose=verbose, solver=s.QTQPSolver, linear_solver=qtqp.LinearSolver.PARDISO)
+#
+#solvers += ["QTQP_new_params_w_equil"]
+#settings[solvers[-1]] = dict(verbose=verbose, solver=s.QTQPSolver, linear_solver=qtqp.LinearSolver.PARDISO)
+#
+for solver in [qtqp.LinearSolver.PARDISO]: #, qtqp.LinearSolver.EIGEN, qtqp.LinearSolver.QDLDL]:
+
+  solvers.append(f"QTQP_{solver}_0_0_3_always_1_it_refinement")
+  settings[solvers[-1]] = dict(
+                              solver=s.QTQPSolver,
+                              linear_solver=solver,
+                              )
+
+
+solvers.append("Clarabel")
+settings[solvers[-1]] = dict(verbose=verbose, solver=s.ClarabelSolver)
+
+
 
 
 # Run all examples
@@ -66,7 +91,8 @@ else:
 
 print(mittelmann_runner.problems)
 # debug
-#mittelmann_runner.problems = ["Linf_520c"]
+# mittelmann_runner.problems = ["heat-source-instance-easy"]
+#mittelmann_runner.problems = ["synthetic-design-match"]
 #mittelmann_runner.problems = \
 #  mittelmann_runner.problems[mittelmann_runner.problems.index("lotsize"):]
 #

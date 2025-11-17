@@ -102,7 +102,7 @@ class QPLIBRunner(object):
                 with open(results_file_name, 'r') as f:
                     df = pd.read_csv(f)
                 # filter down to unsolved only, do not overwrite self.problems
-                solver_problems = [p for p in self.problems if p not in df['name'].values]
+                solver_problems = [p for p in self.problems if p not in str(df['name'].values)]
             else:
                 solver_problems = self.problems.copy()
 
@@ -125,7 +125,7 @@ class QPLIBRunner(object):
 
     def solve_single_example(self,
                              problem,
-                             solver, settings):
+                             solver_name, settings):
         '''
         Solve QPLIB 'problem' with 'solver'
 
@@ -136,7 +136,8 @@ class QPLIBRunner(object):
             settings: settings dictionary for the solver
 
         '''
-        print(" - Solving %s with solver %s" % (problem, solver))
+        solver = settings['solver']
+        print(" - Solving %s with solver %s" % (problem, solver_name))
 
         # Create example instance
         full_name = os.path.join(".", "problem_classes",
@@ -146,7 +147,7 @@ class QPLIBRunner(object):
         print(f" - OPT : {opt}")
 
         # Solve problem
-        s = SOLVER_MAP[solver](settings)
+        s = solver(settings)
         results = s.solve(instance)
 
         # Create solution as pandas table
@@ -175,7 +176,7 @@ class QPLIBRunner(object):
         #      obj_dist = np.inf
 
         solution_dict = {'name': [problem],
-                         'solver': [solver],
+                         'solver': [solver_name],
                          'status': [results.status],
                          'run_time': [results.run_time],
                          'iter': [results.niter],
@@ -185,7 +186,7 @@ class QPLIBRunner(object):
                          'N': [N]}
 
         # Add status polish if OSQP
-        if 'OSQP' in solver:
+        if 'OSQP' in solver_name:
             solution_dict['status_polish'] = results.status_polish
             solution_dict['setup_time'] = results.setup_time
             solution_dict['solve_time'] = results.solve_time
@@ -193,12 +194,12 @@ class QPLIBRunner(object):
             solution_dict['rho_updates'] = results.rho_updates
             solution_dict['rho_estimate'] = results.rho_estimate
 
-        if 'SCS' in solver:
+        if 'SCS' in solver_name:
             for k, v in results.info.items():
                 if k not in solution_dict:  # don't overwrite existing
                     solution_dict[k] = v
 
-        print(" - Solved %s with solver %s" % (problem, solver))
+        print(" - Solved %s with solver %s" % (problem, solver_name))
 
         # Return solution
         return pd.DataFrame(solution_dict)
