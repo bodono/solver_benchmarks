@@ -1,4 +1,3 @@
 ,0
-QTQP_LinearSolver.PARDISO_0_0_3_clarabel_terms,5.473874965272445
-QTQP_LinearSolver.PARDISO_0_0_3_always_1_it_refinement,6.05578574712408
-Clarabel_all_default_settings_no_m_z,5.184648879162214
+Clarabel,5.178235448726545
+QTQP_qdldl,5.068945366813475

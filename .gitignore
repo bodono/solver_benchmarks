@@ -25,7 +25,7 @@ __pycache__/
 
 # C extensions
 *.so
-
+problem_classes/mittelmann/temperature_ground_truth-easy.hdf5
 # Distribution / packaging
 .Python
 build/
