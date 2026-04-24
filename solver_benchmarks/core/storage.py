@@ -22,7 +22,7 @@ from .result import ProblemResult, to_jsonable
 def make_run_id(config: RunConfig) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dataset = slugify(config.dataset)
-    return f"{stamp}_{dataset}_{config.config_hash}"
+    return f"{dataset}_{config.config_hash}_{stamp}"
 
 
 def slugify(value: str) -> str:

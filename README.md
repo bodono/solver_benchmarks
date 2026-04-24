@@ -232,7 +232,7 @@ bench run configs/maros_meszaros_example.yaml
 The command prints the run directory:
 
 ```text
-runs/20260424T101304Z_synthetic_qp_d5939d8c1f2d
+runs/synthetic_qp_d5939d8c1f2d_20260424T101304Z
 ```
 
 Resume a run:
@@ -332,7 +332,7 @@ the per-solve log files remain separated and are the authoritative logs.
 Every run is immutable by default:
 
 ```text
-runs/20260424T101304Z_synthetic_qp_d5939d8c1f2d/
+runs/synthetic_qp_d5939d8c1f2d_20260424T101304Z/
   manifest.json
   events.jsonl
   results.jsonl
