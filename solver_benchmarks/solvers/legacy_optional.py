@@ -79,17 +79,19 @@ class GurobiSolverAdapter(SolverAdapter):
                 run_time_seconds=time.perf_counter() - start,
                 info={"error": str(exc)},
             )
+        elapsed = time.perf_counter() - start
 
         mapped = _map_gurobi_status(model.Status, grb)
         return SolverResult(
             status=mapped,
             objective_value=float(model.ObjVal) if mapped in status.SOLUTION_PRESENT else None,
             iterations=_maybe_int(getattr(model, "BarIterCount", None) or getattr(model, "IterCount", None)),
-            run_time_seconds=float(getattr(model, "Runtime", time.perf_counter() - start)),
+            run_time_seconds=elapsed,
             info={
                 "raw_status": int(model.Status),
                 "solver": "gurobi",
                 "version": ".".join(str(part) for part in grb.gurobi.version()),
+                "solver_reported_runtime": _maybe_float(getattr(model, "Runtime", None)),
             },
         )
 
@@ -149,22 +151,24 @@ class MosekSolverAdapter(SolverAdapter):
                 run_time_seconds=time.perf_counter() - start,
                 info={"error": str(exc)},
             )
+        elapsed = time.perf_counter() - start
 
         soltype = mosek.soltype.itr
         raw_status = task.getsolsta(soltype)
         mapped = _map_mosek_status(raw_status, termination_code, mosek)
-        run_time = task.getdouinf(mosek.dinfitem.optimizer_time)
+        solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
         iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
         objective = task.getprimalobj(soltype) if mapped in status.SOLUTION_PRESENT else None
         return SolverResult(
             status=mapped,
             objective_value=None if objective is None else float(objective),
             iterations=int(iterations) if iterations is not None else None,
-            run_time_seconds=float(run_time),
+            run_time_seconds=elapsed,
             info={
                 "raw_status": str(raw_status),
                 "termination_code": str(termination_code),
                 "solver": "mosek",
+                "solver_reported_runtime": float(solver_reported_runtime),
             },
         )
 
@@ -280,3 +284,7 @@ def _handle_mosek_enum_param(task, param, value, mosek) -> None:
 
 def _maybe_int(value) -> int | None:
     return None if value is None else int(value)
+
+
+def _maybe_float(value) -> float | None:
+    return None if value is None else float(value)
