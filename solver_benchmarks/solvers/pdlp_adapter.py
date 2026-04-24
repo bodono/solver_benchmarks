@@ -32,6 +32,7 @@ class PDLPSolverAdapter(SolverAdapter):
         try:
             import ortools
             import google.protobuf  # noqa: F401
+            _import_model_builder_helper()
         except ModuleNotFoundError:
             return False
         return _version_tuple(getattr(ortools, "__version__", "0")) >= (9, 3, 0)
@@ -79,8 +80,8 @@ def _import_ortools() -> None:
         import google.protobuf  # noqa: F401
         import ortools
         from ortools.linear_solver import linear_solver_pb2  # noqa: F401
-        from ortools.model_builder.python import model_builder_helper  # noqa: F401
         from ortools.pdlp import solve_log_pb2, solvers_pb2  # noqa: F401
+        _import_model_builder_helper()
     except ModuleNotFoundError as exc:
         raise SolverUnavailable("Install with the pdlp extra to use PDLP") from exc
     if _version_tuple(getattr(ortools, "__version__", "0")) < (9, 3, 0):
@@ -174,8 +175,8 @@ def _build_lp_model_from_linear_cone(cone_problem: dict):
 def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> SolverResult:
     from google.protobuf import text_format
     from ortools.linear_solver import linear_solver_pb2
-    from ortools.model_builder.python import model_builder_helper
     from ortools.pdlp import solve_log_pb2, solvers_pb2
+    model_builder_helper = _import_model_builder_helper()
 
     settings = dict(settings)
     verbose = bool(settings.pop("verbose", False))
@@ -190,7 +191,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> Solver
         solver_type=linear_solver_pb2.MPModelRequest.PDLP_LINEAR_PROGRAMMING,
     )
     if time_limit is not None:
-        request.solver_time_limit_sec = float(time_limit)
+        _set_time_limit(request, float(time_limit))
 
     parameters = solvers_pb2.PrimalDualHybridGradientParams()
     parameters.presolve_options.use_glop = use_glop
@@ -202,8 +203,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> Solver
     request.solver_specific_parameters = text_format.MessageToString(parameters)
 
     start = time.perf_counter()
-    solver = model_builder_helper.ModelSolverHelper()
-    response = solver.Solve(request)
+    response = _solve_request(model_builder_helper, linear_solver_pb2, request)
     elapsed = time.perf_counter() - start
 
     solve_log = solve_log_pb2.SolveLog.FromString(response.solver_specific_info)
@@ -229,6 +229,39 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> Solver
             "dual_solution_size": len(response.dual_value),
         },
     )
+
+
+def _import_model_builder_helper():
+    try:
+        from ortools.linear_solver.python import model_builder_helper
+
+        return model_builder_helper
+    except ModuleNotFoundError:
+        from ortools.model_builder.python import model_builder_helper
+
+        return model_builder_helper
+
+
+def _set_time_limit(request, value: float) -> None:
+    fields = request.DESCRIPTOR.fields_by_name
+    if "solver_time_limit_sec" in fields:
+        request.solver_time_limit_sec = value
+        return
+    if "solver_time_limit_seconds" in fields:
+        request.solver_time_limit_seconds = value
+        return
+    raise AttributeError("MPModelRequest does not expose a solver time-limit field")
+
+
+def _solve_request(model_builder_helper, linear_solver_pb2, request):
+    try:
+        solver = model_builder_helper.ModelSolverHelper()
+    except TypeError:
+        solver = model_builder_helper.ModelSolverHelper("PDLP")
+    if hasattr(solver, "Solve"):
+        return solver.Solve(request)
+    serialized = solver.solve_serialized_request(request.SerializeToString())
+    return linear_solver_pb2.MPSolutionResponse.FromString(serialized)
 
 
 def _map_status(solve_log) -> str:

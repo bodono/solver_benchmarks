@@ -28,6 +28,7 @@ def test_synthetic_dataset_loads_qp():
     problems = dataset.list_problems()
     problem = dataset.load_problem(problems[0].name)
 
+    assert {problem.name for problem in problems} == {"one_variable_eq", "one_variable_lp"}
     assert problem.kind == "qp"
     assert problem.qp["P"].shape == (1, 1)
     assert problem.qp["A"].shape == (1, 1)

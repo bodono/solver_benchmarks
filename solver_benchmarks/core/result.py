@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from typing import Any
 
 import math
@@ -62,6 +63,8 @@ def to_jsonable(value: Any) -> Any:
         return to_jsonable(value.tolist())
     if isinstance(value, np.generic):
         return to_jsonable(value.item())
+    if isinstance(value, Enum):
+        return to_jsonable(value.value)
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return str(value)
     return value

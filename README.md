@@ -28,7 +28,7 @@ pip install -e ".[all]"
 ```
 
 The `all` extra installs open-source solver dependencies declared by the package,
-including SCS, OSQP, Clarabel, OR-Tools/PDLP, PyYAML, and pytest.
+including QTQP, SCS, OSQP, Clarabel, OR-Tools/PDLP, PyYAML, and pytest.
 
 Commercial solvers are optional and must be installed separately with valid licenses:
 
@@ -43,6 +43,7 @@ Install only one optional solver if you prefer:
 pip install -e ".[scs]"
 pip install -e ".[osqp]"
 pip install -e ".[clarabel]"
+pip install -e ".[qtqp]"
 pip install -e ".[pdlp]"
 ```
 
@@ -525,6 +526,7 @@ the default branch if weekly runs are required.
 Run the test suite:
 
 ```bash
+pip install -e ".[test,all]"
 pytest
 ```
 
@@ -537,6 +539,7 @@ Current tests cover:
 - Structured warning events for unsupported combinations.
 - Subprocess stdout/stderr capture.
 - Worker trace serialization.
+- Real solver smoke coverage for QTQP, SCS, Clarabel, OSQP, and PDLP on a tiny LP.
 - Loading JSONL/Parquet-backed result tables.
 - Solver summary output.
 - Performance profile and shifted geometric mean calculations.
@@ -550,7 +553,8 @@ Recommended tests for new contributions:
 - One end-to-end run using `synthetic_qp` or another small dataset.
 - A resume test if result-writing behavior changes.
 - CLI tests for any new user-facing command.
-- Optional-dependency tests that do not require the dependency to be installed.
+- Optional-dependency tests for MOSEK/GUROBI must not require the dependency or a
+  license to be installed.
 
 ## Development Notes
 

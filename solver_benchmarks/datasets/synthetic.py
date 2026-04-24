@@ -20,21 +20,53 @@ class SyntheticQPDataset(Dataset):
                 name="one_variable_eq",
                 kind=QP,
                 metadata={"expected_objective": 0.5},
-            )
+            ),
+            ProblemSpec(
+                dataset_id=self.dataset_id,
+                name="one_variable_lp",
+                kind=QP,
+                metadata={"expected_objective": 1.0},
+            ),
         ]
 
     def load_problem(self, name: str) -> ProblemData:
-        if name != "one_variable_eq":
+        if name == "one_variable_eq":
+            qp = {
+                "P": sp.csc_matrix([[1.0]]),
+                "q": np.array([0.0]),
+                "r": 0.0,
+                "A": sp.csc_matrix([[1.0]]),
+                "l": np.array([1.0]),
+                "u": np.array([1.0]),
+                "n": 1,
+                "m": 1,
+                "obj_type": "min",
+            }
+            return ProblemData(
+                self.dataset_id,
+                name,
+                QP,
+                qp,
+                metadata={"expected_objective": 0.5},
+            )
+        if name == "one_variable_lp":
+            qp = {
+                "P": sp.csc_matrix((1, 1)),
+                "q": np.array([1.0]),
+                "r": 0.0,
+                "A": sp.csc_matrix([[1.0]]),
+                "l": np.array([1.0]),
+                "u": np.array([2.0]),
+                "n": 1,
+                "m": 1,
+                "obj_type": "min",
+            }
+            return ProblemData(
+                self.dataset_id,
+                name,
+                QP,
+                qp,
+                metadata={"expected_objective": 1.0},
+            )
+        else:
             raise KeyError(name)
-        qp = {
-            "P": sp.csc_matrix([[1.0]]),
-            "q": np.array([0.0]),
-            "r": 0.0,
-            "A": sp.csc_matrix([[1.0]]),
-            "l": np.array([1.0]),
-            "u": np.array([1.0]),
-            "n": 1,
-            "m": 1,
-            "obj_type": "min",
-        }
-        return ProblemData(self.dataset_id, name, QP, qp, metadata={"expected_objective": 0.5})

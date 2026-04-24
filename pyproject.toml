@@ -24,6 +24,7 @@ dependencies = [
 scs = ["scs>=3.0"]
 osqp = ["osqp>=0.6"]
 clarabel = ["clarabel>=0.7"]
+qtqp = ["qtqp>=0.0.5"]
 gurobi = ["gurobipy>=11.0"]
 mosek = ["Mosek>=10.0"]
 pdlp = ["ortools>=9.3.0"]
@@ -32,6 +33,7 @@ all = [
     "scs>=3.0",
     "osqp>=0.6",
     "clarabel>=0.7",
+    "qtqp>=0.0.5",
     "ortools>=9.3.0",
     "pytest>=7.0",
 ]

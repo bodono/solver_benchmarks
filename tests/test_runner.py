@@ -16,6 +16,7 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
             "run": {
                 "dataset": "synthetic_qp",
                 "output_dir": str(tmp_path / "runs"),
+                "include": ["one_variable_eq"],
                 "parallelism": 1,
                 "resume": True,
             },
@@ -100,6 +101,7 @@ def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path):
             "run": {
                 "dataset": "synthetic_qp",
                 "output_dir": str(tmp_path / "runs"),
+                "include": ["one_variable_eq"],
                 "parallelism": 1,
             },
             "solvers": [{"id": "pdlp_smoke", "solver": "pdlp", "settings": {}}],
