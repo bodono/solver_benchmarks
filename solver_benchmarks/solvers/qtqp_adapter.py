@@ -11,11 +11,12 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult, to_jsonable
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
-from .base import SolverAdapter, SolverUnavailable
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
 class QTQPSolverAdapter(SolverAdapter):
@@ -37,7 +38,7 @@ class QTQPSolverAdapter(SolverAdapter):
             raise SolverUnavailable("Install QTQP to use the QTQP adapter") from exc
 
         qp = problem.qp
-        settings = dict(self.settings)
+        settings = settings_with_defaults(self.settings)
         settings = _normalize_settings(settings, qtqp)
         a, b, z = qp_to_nonnegative_cone(qp)
         p = sp.csc_matrix(qp["P"])
@@ -71,6 +72,12 @@ class QTQPSolverAdapter(SolverAdapter):
             "unbounded": status.DUAL_INFEASIBLE,
             "failed": status.SOLVER_ERROR,
         }.get(str(raw_status), status.SOLVER_ERROR)
+        cone_dict: dict = {}
+        if z:
+            cone_dict["z"] = int(z)
+        if a.shape[0] - z:
+            cone_dict["l"] = int(a.shape[0] - z)
+        kkt_dict = _compute_kkt(mapped, solution, p, c, a, b, cone_dict)
         return SolverResult(
             status=mapped,
             objective_value=objective,
@@ -78,7 +85,27 @@ class QTQPSolverAdapter(SolverAdapter):
             run_time_seconds=elapsed,
             info={"raw_status": raw_status, **info},
             trace=[to_jsonable(row) for row in trace],
+            kkt=kkt_dict,
         )
+
+
+def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
+    x = getattr(solution, "x", None)
+    y = getattr(solution, "y", None)
+    s_slack = getattr(solution, "s", None)
+    if x is None:
+        return None
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        if y is None or s_slack is None:
+            return None
+        return kkt.cone_residuals(p, c, a, b, cone_dict, x, y, s_slack)
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        if y is None:
+            return None
+        return kkt.cone_primal_infeasibility_cert(a, b, cone_dict, y)
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        return kkt.cone_dual_infeasibility_cert(p, c, a, cone_dict, x)
+    return None
 
 
 def _normalize_settings(settings: dict, qtqp_module):
@@ -91,7 +118,6 @@ def _normalize_settings(settings: dict, qtqp_module):
         }
         attr = lookup.get(linear_solver.lower(), linear_solver.upper())
         settings["linear_solver"] = getattr(qtqp_module.LinearSolver, attr)
-    settings.setdefault("verbose", False)
     return settings
 
 

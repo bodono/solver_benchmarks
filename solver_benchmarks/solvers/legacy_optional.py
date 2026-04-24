@@ -11,7 +11,7 @@ import scipy.sparse as sp
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.core import status
-from .base import SolverAdapter, SolverUnavailable
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
 class GurobiSolverAdapter(SolverAdapter):
@@ -179,7 +179,8 @@ def _finite_bounds(values, inf_value: float, *, lower: bool) -> np.ndarray:
 
 
 def _configure_gurobi(model, settings: dict, grb) -> None:
-    if not settings.get("verbose", False):
+    settings = settings_with_defaults(settings)
+    if not settings.get("verbose"):
         model.setParam("OutputFlag", 0)
     if "time_limit" in settings:
         model.setParam("TimeLimit", float(settings["time_limit"]))
@@ -203,7 +204,8 @@ def _map_gurobi_status(raw_status: int, grb) -> str:
 
 
 def _configure_mosek(task, env, settings: dict, mosek) -> None:
-    if settings.get("verbose", False):
+    settings = settings_with_defaults(settings)
+    if settings.get("verbose"):
         def streamprinter(text):
             print(text, end="")
 

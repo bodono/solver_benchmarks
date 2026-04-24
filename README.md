@@ -179,7 +179,6 @@ solvers:
   - id: osqp_default
     solver: osqp
     settings:
-      verbose: false
       eps_abs: 1.0e-4
       eps_rel: 1.0e-4
       max_iter: 100000
@@ -187,7 +186,6 @@ solvers:
   - id: osqp_tight
     solver: osqp
     settings:
-      verbose: false
       eps_abs: 1.0e-6
       eps_rel: 1.0e-6
       max_iter: 200000
@@ -195,7 +193,6 @@ solvers:
   - id: pdlp_default
     solver: pdlp
     settings:
-      verbose: false
       time_limit_sec: 120
 ```
 
@@ -218,6 +215,9 @@ Important fields:
 | `solvers[].timeout_seconds` | Optional per-solver timeout override. |
 
 The same solver may appear many times with different `id` and `settings`.
+Solver output is verbose by default and is captured in each solve's
+`stdout.log`/`stderr.log`; set `verbose: false` in a solver's settings to run it
+quietly.
 
 ## Running Benchmarks
 
@@ -245,11 +245,87 @@ If `resume: true`, already completed `(problem, solver_id)` pairs in
 `results.jsonl` are skipped. New solver variants or newly included problems are
 appended.
 
+Append more work to an existing run by editing the config and reusing the same
+run directory:
+
+```yaml
+solvers:
+  - id: qtqp_default
+    solver: qtqp
+
+  - id: clarabel_default
+    solver: clarabel
+
+  - id: clarabel_tight
+    solver: clarabel
+    settings:
+      tol_gap_abs: 1.0e-8
+      tol_feas: 1.0e-8
+```
+
+Then run:
+
+```bash
+bench run configs/my_run.yaml --run-dir runs/<run_id>
+```
+
+The resume key is exactly `(problem, solver_id)`. If you change solver settings
+but keep the same `id`, the old rows are treated as complete and will not be
+rerun. Use a new `id` whenever settings change, such as `clarabel_tight` instead
+of reusing `clarabel_default`.
+
 Run only specific problems by editing `include`, or list problems first:
 
 ```bash
 bench list problems netlib --option subset=feasible
 ```
+
+## CLI Reference
+
+`bench` is the installed console script for `solver_benchmarks.cli`. If the
+script is not on your `PATH`, use `python -m solver_benchmarks.cli` with the same
+arguments.
+
+Every command supports `--help`. Option names use hyphens, not underscores; for
+example use `--max-value`, not `--max_value`.
+
+Discovery commands:
+
+| Command | Arguments | Purpose |
+|---|---|---|
+| `bench list datasets` | none | List registered dataset IDs and descriptions. |
+| `bench list solvers` | none | List registered solver IDs, availability, and supported problem types. |
+| `bench list problems DATASET` | `--repo-root PATH`, `--option key=value`, `--prepare/--no-prepare` default `--no-prepare` | List problems in one dataset. Repeat `--option` for dataset-specific options such as `subset=feasible`. |
+
+Data-management commands:
+
+| Command | Arguments | Purpose |
+|---|---|---|
+| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible, the data path, source, and preparation command. Omit `DATASET` to check all datasets. |
+| `bench data prepare DATASET` | `--repo-root PATH`, `--option key=value`, `--problem NAME`, `--all` default false | Download or prepare missing data for datasets that support automatic preparation. Repeat `--problem` for selected instances. Use `--all` only when you intentionally want every known remote problem. |
+
+Run and analysis commands:
+
+| Command | Arguments | Purpose |
+|---|---|---|
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. |
+| `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
+| `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
+| `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, problem)` results relative to the run manifest. |
+| `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
+| `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default `10.0`, `--max-value VALUE` default `1000.0`, `--success-only` default false | Write shifted geometric means into the run directory. By default failures are penalized with `--max-value`; use `--success-only` for solved-problem-only geomeans. |
+| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, and failure rates. |
+| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--repo-root PATH` | Write a complete report directory containing CSV tables and PNG plots. |
+
+Common metrics for `profile` and `geomean` are `run_time_seconds`,
+`solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
+each solver reports.
+
+When run from the CLI, `bench run` streams solver stdout/stderr to the terminal
+and writes the same output to each solve's `stdout.log`/`stderr.log`. It also
+prints progress lines such as `[bench] starting ...` and `[bench] finished ...`.
+With `parallelism > 1`, live solver output from different workers can interleave;
+the per-solve log files remain separated and are the authoritative logs.
 
 ## Run Directory Layout
 
@@ -293,7 +369,7 @@ Each solve runs in a subprocess. This gives:
 
 - Native solver crashes do not kill the main runner.
 - Timeouts are enforced per solve.
-- Solver stdout/stderr are captured per problem and solver variant.
+- Solver stdout/stderr are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.
 
@@ -324,21 +400,65 @@ Summary by solver/status:
 
 ```bash
 bench summary runs/<run_id>
+bench failures runs/<run_id>
+bench missing runs/<run_id>
 ```
 
-Generate a performance-profile CSV:
+`bench summary` includes solver-level runtime and iteration aggregates, status
+counts, and completion counts. The completion table is the fastest way to detect
+an interrupted run: every solver should have `missing = 0` and `complete = True`.
+
+Generate a Dolan-More performance-profile CSV:
 
 ```bash
 bench profile runs/<run_id>
 bench profile runs/<run_id> --metric iterations
 ```
 
+The Dolan-More profile uses `r[p, s] = metric[p, s] / min_s metric[p, s]` and
+plots the fraction of problems with `r[p, s] <= tau`. Failed or inaccurate solves
+are assigned the failure penalty before ratios are computed.
+
 Generate shifted geometric means:
 
 ```bash
 bench geomean runs/<run_id>
 bench geomean runs/<run_id> --metric iterations
+bench geomean runs/<run_id> --success-only
 ```
+
+The default `bench geomean` output is a penalized shifted geometric mean for
+benchmark comparison, not a raw average runtime. Non-`optimal` statuses,
+including `optimal_inaccurate`, are assigned `--max-value` before the geometric
+mean is computed. Use `bench summary` for raw totals/means/medians, or
+`bench geomean --success-only` for a geomean over successful solves only. The
+default failure penalty is `1000` seconds and can be changed with `--max-value`.
+
+Generate PNG plots:
+
+```bash
+bench plot runs/<run_id>
+bench plot runs/<run_id> --metric iterations
+```
+
+Generate a complete report directory:
+
+```bash
+bench report runs/<run_id>
+bench report runs/<run_id> --metric iterations --output-dir reports/my_run
+```
+
+`bench report` writes:
+
+- Solver-level metrics, status counts, failure rates, completion, and missing results.
+- Dolan-More performance-profile CSVs and plots.
+- Cactus plots showing the fraction of problems solved under each time/iteration budget.
+- Pairwise scatter plots for problems solved by both solvers.
+- Pairwise speedup tables with wins/losses/ties and largest wins.
+- A per-problem cross-solver table, `problem_solver_comparison.csv`, with columns such as `qtqp_default__status`, `qtqp_default__run_time_seconds`, and `qtqp_default__iterations`.
+- Per-solver problem tables under `solver_problem_tables/`, with rows as problems and columns for status, runtime, iterations, objective, artifact path, and problem dimensions when available.
+- Objective-spread and slowest-solve tables.
+- Status and performance-ratio heatmaps.
 
 Programmatic use:
 
@@ -354,8 +474,9 @@ geomean = shifted_geomean(df, metric="run_time_seconds")
 
 Status handling:
 
-- By default, `optimal` and `optimal_inaccurate` count as successful for
-  performance profiles and shifted geometric means.
+- By default, only `optimal` counts as successful for performance profiles and
+  shifted geometric means. `optimal_inaccurate` and other inaccurate statuses
+  are penalized because the solver did not hit the requested target.
 - Failed, skipped, timeout, and solver-error statuses receive a large penalty.
 - You can pass custom `success_statuses` and `max_value` in Python.
 
@@ -535,7 +656,6 @@ Settings:
 
 ```yaml
 settings:
-  verbose: false
   time_limit_sec: 120
   use_glop: true
   parameters_text: |

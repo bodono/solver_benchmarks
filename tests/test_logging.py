@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import sys
 
 import numpy as np
 import scipy.sparse as sp
@@ -8,7 +9,7 @@ import scipy.sparse as sp
 from solver_benchmarks.core.config import RunConfig, SolverConfig, parse_run_config
 from solver_benchmarks.core.problem import CONE, QP, ProblemData, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult, SolverResult
-from solver_benchmarks.core.runner import _run_one, run_benchmark
+from solver_benchmarks.core.runner import _run_one, _run_subprocess, run_benchmark
 from solver_benchmarks.core.storage import ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
@@ -67,7 +68,15 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
     problem = ProblemSpec(dataset_id="synthetic_qp", name="fake_problem", kind=QP)
     solver = SolverConfig(id="fake_solver", solver="scs")
 
-    def fake_run(cmd, cwd, capture_output, text, timeout, check):
+    def fake_run_subprocess(
+        cmd,
+        *,
+        cwd,
+        timeout,
+        stdout_path,
+        stderr_path,
+        stream_output,
+    ):
         payload_path = Path(cmd[-1])
         payload = json.loads(payload_path.read_text())
         artifact_dir = Path(payload["artifacts_dir"])
@@ -85,9 +94,16 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
             artifact_dir=str(artifact_dir),
         )
         (artifact_dir / "worker_result.json").write_text(json.dumps(result.to_record()))
-        return SimpleNamespace(returncode=0, stdout="solver stdout\n", stderr="solver stderr\n")
+        stdout_path.write_text("solver stdout\n")
+        stderr_path.write_text("solver stderr\n")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="solver stdout\n",
+            stderr="solver stderr\n",
+            timed_out=False,
+        )
 
-    monkeypatch.setattr("solver_benchmarks.core.runner.subprocess.run", fake_run)
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess)
 
     result = _run_one(store, config, Path.cwd(), problem, solver)
     artifact_dir = Path(result.artifact_dir)
@@ -95,6 +111,35 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
     assert result.status == "optimal"
     assert (artifact_dir / "stdout.log").read_text() == "solver stdout\n"
     assert (artifact_dir / "stderr.log").read_text() == "solver stderr\n"
+
+
+def test_run_subprocess_streams_while_writing_logs(tmp_path: Path, capsys):
+    result = _run_subprocess(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "print('solver stdout'); "
+                "print('solver stderr', file=sys.stderr)"
+            ),
+        ],
+        cwd=Path.cwd(),
+        timeout=10,
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        stream_output=True,
+    )
+
+    captured = capsys.readouterr()
+
+    assert result.returncode == 0
+    assert result.stdout == "solver stdout\n"
+    assert result.stderr == "solver stderr\n"
+    assert (tmp_path / "stdout.log").read_text() == "solver stdout\n"
+    assert (tmp_path / "stderr.log").read_text() == "solver stderr\n"
+    assert "solver stdout" in captured.out
+    assert "solver stderr" in captured.err
 
 
 def test_worker_writes_solver_trace(monkeypatch, tmp_path: Path):

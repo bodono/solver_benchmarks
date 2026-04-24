@@ -46,7 +46,7 @@ all = [
 bench = "solver_benchmarks.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["solver_benchmarks*"]
+include = ["solver_benchmarks*", "problem_classes*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

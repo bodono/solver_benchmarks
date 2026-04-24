@@ -8,11 +8,12 @@ import time
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
-from .base import SolverAdapter, SolverUnavailable
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
 class ClarabelSolverAdapter(SolverAdapter):
@@ -34,21 +35,22 @@ class ClarabelSolverAdapter(SolverAdapter):
             raise SolverUnavailable("Install with the clarabel extra to use Clarabel") from exc
 
         if problem.kind == QP:
-            p, q, a, b, cones = _qp_data(problem.qp, clarabel)
+            p, q, a, b, cones, cone_dict = _qp_data(problem.qp, clarabel)
         elif problem.kind == CONE:
             native = _cone_data(problem.cone, clarabel)
             if isinstance(native, SolverResult):
                 return native
-            p, q, a, b, cones = native
+            p, q, a, b, cones, cone_dict = native
         else:
             return SolverResult(
                 status=status.SKIPPED_UNSUPPORTED,
                 info={"reason": f"Clarabel does not support problem kind {problem.kind!r}"},
             )
 
+        normalized_settings = settings_with_defaults(self.settings)
         settings = clarabel.DefaultSettings()
-        settings.verbose = bool(self.settings.get("verbose", False))
-        for key, value in self.settings.items():
+        settings.verbose = bool(normalized_settings.get("verbose"))
+        for key, value in normalized_settings.items():
             if key == "verbose":
                 continue
             if hasattr(settings, key):
@@ -68,6 +70,7 @@ class ClarabelSolverAdapter(SolverAdapter):
             "MaxIterations": status.MAX_ITER_REACHED,
             "MaxTime": status.TIME_LIMIT,
         }.get(str(solution.status), status.SOLVER_ERROR)
+        kkt_dict = _compute_kkt(mapped, solution, p, q, a, b, cone_dict)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(getattr(solution, "obj_val", None)),
@@ -79,7 +82,27 @@ class ClarabelSolverAdapter(SolverAdapter):
                 "r_dual": getattr(solution, "r_dual", None),
                 "solve_time": getattr(solution, "solve_time", None),
             },
+            kkt=kkt_dict,
         )
+
+
+def _compute_kkt(mapped_status, solution, p, q, a, b, cone_dict):
+    x = getattr(solution, "x", None)
+    y = getattr(solution, "z", None)
+    s_slack = getattr(solution, "s", None)
+    if x is None:
+        return None
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        if y is None or s_slack is None:
+            return None
+        return kkt.cone_residuals(p, q, a, b, cone_dict, x, y, s_slack)
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        if y is None:
+            return None
+        return kkt.cone_primal_infeasibility_cert(a, b, cone_dict, y)
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        return kkt.cone_dual_infeasibility_cert(p, q, a, cone_dict, x)
+    return None
 
 
 def _maybe_float(value):
@@ -95,12 +118,15 @@ def _qp_data(qp: dict, clarabel):
     p = sp.csc_matrix(qp["P"])
     q = np.asarray(qp["q"], dtype=float)
     cones = []
+    cone_dict: dict = {}
     if z:
         cones.append(clarabel.ZeroConeT(z))
+        cone_dict["z"] = int(z)
     nonnegative = a.shape[0] - z
     if nonnegative:
         cones.append(clarabel.NonnegativeConeT(nonnegative))
-    return p, q, sp.csc_matrix(a), b, cones
+        cone_dict["l"] = int(nonnegative)
+    return p, q, sp.csc_matrix(a), b, cones, cone_dict
 
 
 def _cone_data(cone_problem: dict, clarabel):
@@ -116,16 +142,17 @@ def _cone_data(cone_problem: dict, clarabel):
     parsed = _parse_cones(dict(cone_problem["cone"]), a.shape[0], clarabel)
     if isinstance(parsed, SolverResult):
         return parsed
-    cones, keep_rows = parsed
+    cones, keep_rows, cone_dict = parsed
     if len(keep_rows) != a.shape[0]:
         a = a[keep_rows, :]
         b = b[keep_rows]
-    return p, q, sp.csc_matrix(a), b, cones
+    return p, q, sp.csc_matrix(a), b, cones, cone_dict
 
 
 def _parse_cones(cone: dict, row_count: int, clarabel):
     cones = []
     keep_rows: list[int] = []
+    cone_dict: dict = {}
     row = 0
     for name, value in cone.items():
         if name in ("f", "z"):
@@ -133,6 +160,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
             if dim:
                 cones.append(clarabel.ZeroConeT(dim))
                 keep_rows.extend(range(row, row + dim))
+                cone_dict["z"] = cone_dict.get("z", 0) + dim
             row += dim
             continue
         if name == "l":
@@ -140,6 +168,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
             if dim:
                 cones.append(clarabel.NonnegativeConeT(dim))
                 keep_rows.extend(range(row, row + dim))
+                cone_dict["l"] = cone_dict.get("l", 0) + dim
             row += dim
             continue
         if name == "q":
@@ -148,6 +177,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
                 if dim:
                     cones.append(clarabel.SecondOrderConeT(dim))
                     keep_rows.extend(range(row, row + dim))
+                    cone_dict.setdefault("q", []).append(dim)
                 row += dim
             continue
         if name == "s":
@@ -157,6 +187,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
                 if dim:
                     cones.append(clarabel.PSDTriangleConeT(dim))
                     keep_rows.extend(range(row, row + triangle_dim))
+                    cone_dict.setdefault("s", []).append(dim)
                 row += triangle_dim
             continue
         return SolverResult(
@@ -173,7 +204,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
                 "a_rows": row_count,
             },
         )
-    return cones, keep_rows
+    return cones, keep_rows, cone_dict
 
 
 def _as_list(value):

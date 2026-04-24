@@ -46,6 +46,7 @@ def write_analysis_plots(
         _write_pairwise_scatter(results, output_dir, metric),
         _write_performance_ratio_heatmap(results, output_dir, metric),
         _write_status_heatmap(results, output_dir),
+        _write_kkt_residual_boxplot(results, output_dir),
     ]
     return [path for path in paths if path is not None]
 
@@ -269,6 +270,66 @@ def _write_performance_ratio_heatmap(
     cbar.set_label("log10(metric / best metric)")
 
     path = output_dir / f"performance_ratio_heatmap_{metric}.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
+    residual_fields = [
+        ("kkt.primal_res_rel", "primal_res_rel"),
+        ("kkt.dual_res_rel", "dual_res_rel"),
+        ("kkt.comp_slack", "comp_slack"),
+        ("kkt.duality_gap_rel", "duality_gap_rel"),
+    ]
+    available = [(col, label) for col, label in residual_fields if col in results]
+    if not available:
+        return None
+
+    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    if successful.empty:
+        return None
+
+    solver_ids = sorted(successful["solver_id"].dropna().unique())
+    if not solver_ids:
+        return None
+
+    cols = len(available)
+    fig, axes = plt.subplots(
+        1, cols, figsize=(4.5 * cols, 4.5), constrained_layout=True, squeeze=False
+    )
+    drew_any = False
+    for ax, (col, label) in zip(axes.ravel(), available):
+        data = []
+        labels = []
+        for solver_id in solver_ids:
+            values = pd.to_numeric(
+                successful[successful["solver_id"] == solver_id][col], errors="coerce"
+            ).dropna()
+            values = values[np.isfinite(values) & (values > 0.0)]
+            if values.empty:
+                continue
+            data.append(np.log10(values.to_numpy()))
+            labels.append(solver_id)
+        if not data:
+            ax.set_axis_off()
+            ax.set_title(f"{label}\n(no data)")
+            continue
+        drew_any = True
+        ax.boxplot(data, labels=labels, showfliers=True)
+        ax.set_title(label)
+        ax.set_ylabel("log10(residual)")
+        ax.grid(True, axis="y", alpha=0.25)
+        for tick in ax.get_xticklabels():
+            tick.set_rotation(30)
+            tick.set_ha("right")
+
+    if not drew_any:
+        plt.close(fig)
+        return None
+
+    fig.suptitle("KKT Residuals on Successful Solves")
+    path = output_dir / "kkt_residuals.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)
     return path

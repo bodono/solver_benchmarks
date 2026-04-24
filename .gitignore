@@ -5,6 +5,9 @@
 *.mps
 *.pb
 
+# Benchmark run outputs
+configs/runs/
+
 # Add certain results
 #!results/benchmark_problems/
 #results/benchmark_problems/*

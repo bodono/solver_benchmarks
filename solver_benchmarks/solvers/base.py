@@ -35,6 +35,15 @@ class SolverAdapter(ABC):
         raise NotImplementedError
 
 
+DEFAULT_VERBOSE = True
+
+
+def settings_with_defaults(settings: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(settings)
+    normalized.setdefault("verbose", DEFAULT_VERBOSE)
+    return normalized
+
+
 OLD_STATUS_MAP = {
     "optimal": canonical.OPTIMAL,
     "optimal inaccurate": canonical.OPTIMAL_INACCURATE,

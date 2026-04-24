@@ -8,7 +8,19 @@ from pathlib import Path
 import click
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
-from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
+from solver_benchmarks.analysis.plots import write_analysis_plots
+from solver_benchmarks.analysis.profiles import (
+    DEFAULT_FAILURE_PENALTY,
+    performance_profile,
+    shifted_geomean,
+)
+from solver_benchmarks.analysis.report import write_run_report
+from solver_benchmarks.analysis.reports import (
+    completion_summary,
+    failure_rates,
+    missing_results,
+    solver_metrics,
+)
 from solver_benchmarks.core.config import load_run_config
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.datasets import get_dataset, list_datasets
@@ -123,18 +135,58 @@ def run_cmd(
     config = load_run_config(config_path)
     if prepare_data:
         config = replace(config, auto_prepare_data=True)
-    store = run_benchmark(config, run_dir=run_dir, repo_root=repo_root)
+    store = run_benchmark(
+        config,
+        run_dir=run_dir,
+        repo_root=repo_root,
+        stream_output=True,
+    )
     click.echo(str(store.run_dir))
 
 
 @main.command("summary")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
-def summary_cmd(run_dir: Path) -> None:
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
+    df = load_results(run_dir)
     summary = solver_summary(run_dir)
     if summary.empty:
         click.echo("No results found.")
         return
+    metrics = solver_metrics(df)
+    if not metrics.empty:
+        click.echo("Solver metrics:")
+        click.echo(metrics.to_string(index=False))
+        click.echo()
+    click.echo("Status counts:")
     click.echo(summary.to_string(index=False))
+    completion = completion_summary(run_dir, df, repo_root=repo_root)
+    if not completion.empty:
+        click.echo("\nCompletion:")
+        click.echo(completion.to_string(index=False))
+
+
+@main.command("failures")
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+def failures_cmd(run_dir: Path) -> None:
+    df = load_results(run_dir)
+    failures = failure_rates(df)
+    if failures.empty:
+        click.echo("No results found.")
+        return
+    click.echo(failures.to_string(index=False))
+
+
+@main.command("missing")
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def missing_cmd(run_dir: Path, repo_root: Path | None) -> None:
+    df = load_results(run_dir)
+    missing = missing_results(run_dir, df, repo_root=repo_root)
+    if missing.empty:
+        click.echo("No missing results.")
+        return
+    click.echo(missing.to_string(index=False))
 
 
 @main.command("profile")
@@ -151,12 +203,69 @@ def profile_cmd(run_dir: Path, metric: str) -> None:
 @main.command("geomean")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
-def geomean_cmd(run_dir: Path, metric: str) -> None:
+@click.option("--shift", default=10.0, show_default=True)
+@click.option("--max-value", default=DEFAULT_FAILURE_PENALTY, show_default=True)
+@click.option(
+    "--success-only",
+    is_flag=True,
+    help="Use only successful solves instead of penalizing failures.",
+)
+def geomean_cmd(
+    run_dir: Path,
+    metric: str,
+    shift: float,
+    max_value: float,
+    success_only: bool,
+) -> None:
     df = load_results(run_dir)
-    result = shifted_geomean(df, metric=metric)
-    out = run_dir / f"shifted_geomean_{metric}.csv"
+    result = shifted_geomean(
+        df,
+        metric=metric,
+        shift=shift,
+        max_value=max_value,
+        penalize_failures=not success_only,
+    )
+    suffix = "_success_only" if success_only else ""
+    out = run_dir / f"shifted_geomean_{metric}{suffix}.csv"
     result.to_csv(out, index=False)
     click.echo(str(out))
+
+
+@main.command("plot")
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--metric", default="run_time_seconds")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None)
+def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None) -> None:
+    paths = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir)
+    if not paths:
+        click.echo("No results found.")
+        return
+    for path in paths:
+        click.echo(str(path))
+
+
+@main.command("report")
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--metric", default="run_time_seconds")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None)
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def report_cmd(
+    run_dir: Path,
+    metric: str,
+    output_dir: Path | None,
+    repo_root: Path | None,
+) -> None:
+    paths = write_run_report(
+        run_dir,
+        metric=metric,
+        output_dir=output_dir,
+        repo_root=repo_root,
+    )
+    if not paths:
+        click.echo("No results found.")
+        return
+    for path in paths:
+        click.echo(str(path))
 
 
 def _parse_options(options: tuple[str]) -> dict:

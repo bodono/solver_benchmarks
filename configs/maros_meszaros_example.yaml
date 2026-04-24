@@ -12,19 +12,16 @@ solvers:
   - id: qtqp_qdldl
     solver: qtqp
     settings:
-      verbose: false
       linear_solver: qdldl
 
   - id: qtqp_accelerate
     solver: qtqp
     settings:
-      verbose: false
       linear_solver: accelerate
 
   - id: scs_default
     solver: scs
     settings:
-      verbose: false
       eps_abs: 1.0e-4
       eps_rel: 1.0e-4
       max_iters: 100000
@@ -32,5 +29,4 @@ solvers:
   - id: clarabel_default
     solver: clarabel
     settings:
-      verbose: false
       max_iter: 200

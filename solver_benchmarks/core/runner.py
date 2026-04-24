@@ -10,6 +10,8 @@ from typing import Iterable
 import json
 import subprocess
 import sys
+import threading
+from types import SimpleNamespace
 
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import RunConfig, SolverConfig
@@ -25,6 +27,7 @@ def run_benchmark(
     *,
     run_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
+    stream_output: bool = False,
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     store = ResultStore.create(config, run_dir=run_dir)
@@ -82,11 +85,28 @@ def run_benchmark(
     parallelism = max(1, int(config.parallelism))
     if parallelism == 1:
         for problem, solver_config in tasks:
-            store.write_result(_run_one(store, config, repo_root, problem, solver_config))
+            store.write_result(
+                _run_one(
+                    store,
+                    config,
+                    repo_root,
+                    problem,
+                    solver_config,
+                    stream_output=stream_output,
+                )
+            )
     else:
         with ThreadPoolExecutor(max_workers=parallelism) as executor:
             futures = [
-                executor.submit(_run_one, store, config, repo_root, problem, solver_config)
+                executor.submit(
+                    _run_one,
+                    store,
+                    config,
+                    repo_root,
+                    problem,
+                    solver_config,
+                    stream_output,
+                )
                 for problem, solver_config in tasks
             ]
             for future in as_completed(futures):
@@ -100,6 +120,7 @@ def _run_one(
     repo_root: Path,
     problem: ProblemSpec,
     solver_config: SolverConfig,
+    stream_output: bool = False,
 ) -> ProblemResult:
     artifacts_dir = store.problem_solver_dir(problem.name, solver_config.id)
     payload = {
@@ -121,18 +142,17 @@ def _run_one(
     atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
     timeout = solver_config.timeout_seconds or config.timeout_seconds
     cmd = [sys.executable, "-m", "solver_benchmarks.worker", "--payload", str(payload_path)]
-    try:
-        completed = subprocess.run(
-            cmd,
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        atomic_write_text(artifacts_dir / "stdout.log", exc.stdout or "")
-        atomic_write_text(artifacts_dir / "stderr.log", exc.stderr or "")
+    _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
+    completed = _run_subprocess(
+        cmd,
+        cwd=repo_root,
+        timeout=timeout,
+        stdout_path=artifacts_dir / "stdout.log",
+        stderr_path=artifacts_dir / "stderr.log",
+        stream_output=stream_output,
+    )
+    if completed.timed_out:
+        _emit_progress(stream_output, f"timeout {problem.name} with {solver_config.id}")
         return ProblemResult(
             run_id=store.run_id,
             dataset=config.dataset,
@@ -149,12 +169,19 @@ def _run_one(
             metadata=dict(problem.metadata),
         )
 
-    atomic_write_text(artifacts_dir / "stdout.log", completed.stdout)
-    atomic_write_text(artifacts_dir / "stderr.log", completed.stderr)
     worker_result_path = artifacts_dir / "worker_result.json"
     if completed.returncode == 0 and worker_result_path.exists():
         record = json.loads(worker_result_path.read_text())
-        return ProblemResult(**record)
+        result = ProblemResult(**record)
+        _emit_progress(
+            stream_output,
+            f"finished {problem.name} with {solver_config.id}: {result.status}",
+        )
+        return result
+    _emit_progress(
+        stream_output,
+        f"worker error {problem.name} with {solver_config.id}: exit {completed.returncode}",
+    )
     return ProblemResult(
         run_id=store.run_id,
         dataset=config.dataset,
@@ -170,6 +197,74 @@ def _run_one(
         artifact_dir=str(artifacts_dir),
         metadata=dict(problem.metadata),
     )
+
+
+def _emit_progress(enabled: bool, message: str) -> None:
+    if enabled:
+        print(f"[bench] {message}", file=sys.stderr, flush=True)
+
+
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout: float | None,
+    stdout_path: Path,
+    stderr_path: Path,
+    stream_output: bool,
+):
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    with stdout_path.open("w") as stdout_log, stderr_path.open("w") as stderr_log:
+        process = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        assert process.stderr is not None
+        threads = [
+            threading.Thread(
+                target=_tee_stream,
+                args=(process.stdout, stdout_log, sys.stdout, stdout_chunks, stream_output),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=_tee_stream,
+                args=(process.stderr, stderr_log, sys.stderr, stderr_chunks, stream_output),
+                daemon=True,
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        timed_out = False
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            returncode = process.wait()
+        for thread in threads:
+            thread.join()
+    return SimpleNamespace(
+        returncode=returncode,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
+        timed_out=timed_out,
+    )
+
+
+def _tee_stream(source, log_file, sink, chunks: list[str], stream_output: bool) -> None:
+    for line in source:
+        chunks.append(line)
+        log_file.write(line)
+        log_file.flush()
+        if stream_output:
+            sink.write(line)
+            sink.flush()
 
 
 def _filter_problems(

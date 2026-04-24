@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -122,9 +123,54 @@ class ResultStore:
         if not records:
             return
         df = pd.json_normalize(records)
+        df = normalize_table_for_parquet(df)
         tmp = self.results_parquet_path.with_suffix(".parquet.tmp")
         df.to_parquet(tmp, index=False)
         os.replace(tmp, self.results_parquet_path)
+
+
+def normalize_table_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = df.copy()
+    normalized = normalized.replace(
+        {
+            "nan": None,
+            "NaN": None,
+            "NAN": None,
+            "inf": None,
+            "Inf": None,
+            "INF": None,
+            "+inf": None,
+            "+Inf": None,
+            "+INF": None,
+            "-inf": None,
+            "-Inf": None,
+            "-INF": None,
+            "Infinity": None,
+            "+Infinity": None,
+            "-Infinity": None,
+        }
+    )
+    for column in [
+        "objective_value",
+        "iterations",
+        "run_time_seconds",
+        "setup_time_seconds",
+        "solve_time_seconds",
+    ]:
+        if column not in normalized:
+            continue
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        normalized[column] = normalized[column].map(_finite_or_none)
+    return normalized
+
+
+def _finite_or_none(value):
+    if pd.isna(value):
+        return None
+    value = float(value)
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def atomic_write_text(path: Path, text: str) -> None:

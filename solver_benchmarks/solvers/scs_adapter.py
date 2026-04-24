@@ -9,11 +9,12 @@ import time
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
-from solver_benchmarks.transforms.cones import qp_to_scs_box_cone
-from .base import SolverAdapter, SolverUnavailable
+from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dual
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
 class SCSSolverAdapter(SolverAdapter):
@@ -34,13 +35,13 @@ class SCSSolverAdapter(SolverAdapter):
         except ModuleNotFoundError as exc:
             raise SolverUnavailable("Install with the scs extra to use SCS") from exc
 
-        settings = dict(self.settings)
-        settings.setdefault("verbose", False)
+        settings = settings_with_defaults(self.settings)
         if settings.get("log_csv_filename") is True:
             settings["log_csv_filename"] = str(artifacts_dir / "scs_trace.csv")
 
+        inv_perm = None
         if problem.kind == QP:
-            data, cone, _ = qp_to_scs_box_cone(problem.qp)
+            data, cone, inv_perm = qp_to_scs_box_cone(problem.qp)
         else:
             cone_problem = problem.cone
             a = sp.csc_matrix(cone_problem["A"])
@@ -64,6 +65,7 @@ class SCSSolverAdapter(SolverAdapter):
         info = dict(raw.get("info", {}))
         mapped = _map_scs_status(info)
         trace = _read_csv_trace(settings.get("log_csv_filename"))
+        kkt_dict = _compute_kkt(problem, mapped, raw, cone, inv_perm)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(info.get("pobj")),
@@ -73,7 +75,55 @@ class SCSSolverAdapter(SolverAdapter):
             solve_time_seconds=_maybe_scs_seconds(info.get("solve_time")),
             info=info,
             trace=trace,
+            kkt=kkt_dict,
         )
+
+
+def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
+    x = raw.get("x")
+    y = raw.get("y")
+    s = raw.get("s")
+    if x is None:
+        return None
+    if problem.kind == QP:
+        qp = problem.qp
+        if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE} and y is not None:
+            y_qp = unbox_scs_dual(y, cone, inv_perm)
+            return kkt.qp_residuals(
+                qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y_qp
+            )
+        if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE} and y is not None:
+            y_qp = unbox_scs_dual(y, cone, inv_perm)
+            return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y_qp)
+        if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+            return kkt.qp_dual_infeasibility_cert(
+                qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x
+            )
+        return None
+    cone_problem = problem.cone
+    p = cone_problem.get("P")
+    if p is None:
+        p = sp.csc_matrix((sp.csc_matrix(cone_problem["A"]).shape[1],) * 2)
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE} and y is not None and s is not None:
+        return kkt.cone_residuals(
+            p,
+            cone_problem["q"],
+            cone_problem["A"],
+            cone_problem["b"],
+            cone,
+            x,
+            y,
+            s,
+        )
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE} and y is not None:
+        return kkt.cone_primal_infeasibility_cert(
+            cone_problem["A"], cone_problem["b"], cone, y
+        )
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        return kkt.cone_dual_infeasibility_cert(
+            p, cone_problem["q"], cone_problem["A"], cone, x
+        )
+    return None
 
 
 def _map_scs_status(info: dict) -> str:

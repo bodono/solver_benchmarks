@@ -21,6 +21,7 @@ class SolverResult:
     info: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
     trace: list[dict[str, Any]] = field(default_factory=list)
+    kkt: dict[str, Any] | None = None
 
 
 @dataclass
@@ -41,6 +42,7 @@ class ProblemResult:
     artifact_dir: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     info: dict[str, Any] = field(default_factory=dict)
+    kkt: dict[str, Any] | None = None
 
     def to_record(self) -> dict[str, Any]:
         return to_jsonable(asdict(self))
@@ -66,5 +68,5 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, Enum):
         return to_jsonable(value.value)
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-        return str(value)
+        return None
     return value

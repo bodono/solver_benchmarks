@@ -13,6 +13,8 @@ from solver_benchmarks.analysis.reports import (
     completion_summary,
     failure_rates,
     failures_with_successful_alternatives,
+    kkt_certificate_summary,
+    kkt_summary,
     missing_results,
     objective_spreads,
     pairwise_speedups,
@@ -67,6 +69,8 @@ def write_run_report(
             failures_with_successful_alternatives(results, metric=metric)
         ),
         "status_matrix.csv": status_matrix(results),
+        "kkt_summary.csv": kkt_summary(results),
+        "kkt_certificate_summary.csv": kkt_certificate_summary(results),
     }
     for name, table in tables.items():
         path = _write_table(output_dir / name, table)

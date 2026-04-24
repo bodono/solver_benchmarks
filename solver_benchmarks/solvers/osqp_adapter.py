@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
-from .base import SolverAdapter, SolverUnavailable
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
 class OSQPSolverAdapter(SolverAdapter):
@@ -32,8 +34,7 @@ class OSQPSolverAdapter(SolverAdapter):
             raise SolverUnavailable("Install with the osqp extra to use OSQP") from exc
 
         qp = problem.qp
-        settings = dict(self.settings)
-        settings.setdefault("verbose", False)
+        settings = settings_with_defaults(self.settings)
         p = sp.csc_matrix(qp["P"])
         a = sp.csc_matrix(qp["A"])
 
@@ -80,6 +81,7 @@ class OSQPSolverAdapter(SolverAdapter):
             ]
             if hasattr(raw.info, key)
         }
+        kkt_dict = _compute_kkt(mapped, raw, qp, p, a)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(raw.info.obj_val),
@@ -93,7 +95,31 @@ class OSQPSolverAdapter(SolverAdapter):
                 "rho_updates": getattr(raw.info, "rho_updates", None),
                 "rho_estimate": getattr(raw.info, "rho_estimate", None),
             },
+            kkt=kkt_dict,
         )
+
+
+def _compute_kkt(mapped_status, raw, qp, p, a):
+    q = np.asarray(qp["q"], dtype=float)
+    l = np.asarray(qp["l"], dtype=float)
+    u = np.asarray(qp["u"], dtype=float)
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        x = getattr(raw, "x", None)
+        y = getattr(raw, "y", None)
+        if x is None or y is None:
+            return None
+        return kkt.qp_residuals(p, q, a, l, u, x, y)
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        cert = getattr(raw, "prim_inf_cert", None)
+        if cert is None:
+            return None
+        return kkt.qp_primal_infeasibility_cert(a, l, u, cert)
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        cert = getattr(raw, "dual_inf_cert", None)
+        if cert is None:
+            return None
+        return kkt.qp_dual_infeasibility_cert(p, q, a, l, u, cert)
+    return None
 
 
 def _maybe_float(value):

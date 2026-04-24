@@ -1,10 +1,13 @@
 import json
+import math
 from pathlib import Path
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.core.config import parse_run_config
 from solver_benchmarks.core.problem import CONE, QP, ProblemSpec
+from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.runner import run_benchmark
+from solver_benchmarks.core.storage import ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
 from solver_benchmarks.solvers.base import SolverAdapter
@@ -54,6 +57,100 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
     df = load_results(store.run_dir)
     assert len(df) == 1
     assert df.loc[0, "solver_id"] == "scs_smoke"
+
+
+def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "solver", "solver": "scs", "settings": {}}],
+        }
+    )
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+
+    store.write_result(
+        ProblemResult(
+            run_id=store.run_id,
+            dataset="synthetic_qp",
+            problem="p1",
+            problem_kind=QP,
+            solver_id="solver",
+            solver="scs",
+            status="optimal",
+            objective_value=1.0,
+            iterations=1,
+            run_time_seconds=0.1,
+        )
+    )
+    store.write_result(
+        ProblemResult(
+            run_id=store.run_id,
+            dataset="synthetic_qp",
+            problem="p2",
+            problem_kind=QP,
+            solver_id="solver",
+            solver="scs",
+            status="max_iter_reached",
+            objective_value=math.nan,
+            iterations=None,
+            run_time_seconds=0.2,
+        )
+    )
+
+    records = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    df = load_results(store.run_dir)
+
+    assert records[1]["objective_value"] is None
+    assert store.results_parquet_path.exists()
+    assert len(df) == 2
+    assert df.loc[df["problem"] == "p2", "objective_value"].isna().all()
+
+
+def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "solver", "solver": "scs", "settings": {}}],
+        }
+    )
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    store.results_jsonl_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "run_id": store.run_id,
+                        "dataset": "synthetic_qp",
+                        "problem": "p1",
+                        "problem_kind": QP,
+                        "solver_id": "solver",
+                        "solver": "scs",
+                        "status": "optimal",
+                        "objective_value": 1.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "run_id": store.run_id,
+                        "dataset": "synthetic_qp",
+                        "problem": "p2",
+                        "problem_kind": QP,
+                        "solver_id": "solver",
+                        "solver": "scs",
+                        "status": "max_iter_reached",
+                        "objective_value": "nan",
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    store.rewrite_parquet()
+    df = load_results(store.run_dir)
+
+    assert len(df) == 2
+    assert df.loc[df["problem"] == "p2", "objective_value"].isna().all()
 
 
 def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path):

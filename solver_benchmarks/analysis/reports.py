@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 from itertools import combinations
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -63,6 +64,133 @@ def solver_metrics(
                 "iterations_mean": _mean(iterations),
                 "iterations_median": _median(iterations),
                 "iterations_max": _max(iterations),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
+
+
+KKT_RESIDUAL_COLUMNS: tuple[str, ...] = (
+    "kkt.primal_res",
+    "kkt.primal_res_rel",
+    "kkt.dual_res",
+    "kkt.dual_res_rel",
+    "kkt.comp_slack",
+    "kkt.primal_cone_res",
+    "kkt.dual_cone_res",
+    "kkt.duality_gap",
+    "kkt.duality_gap_rel",
+)
+
+KKT_CERTIFICATE_COLUMNS: tuple[str, ...] = (
+    "kkt.Aty_rel",
+    "kkt.Px_rel",
+    "kkt.qtx",
+    "kkt.bty",
+    "kkt.support",
+    "kkt.primal_cone_res",
+    "kkt.dual_cone_res",
+    "kkt.valid",
+)
+
+
+def kkt_summary(
+    results: pd.DataFrame,
+    *,
+    success_statuses: set[str] | None = None,
+) -> pd.DataFrame:
+    """Per-solver summary of KKT residuals on successful solves."""
+    if success_statuses is None:
+        success_statuses = set(status.SOLUTION_PRESENT)
+    residual_fields = [
+        "primal_res_rel",
+        "dual_res_rel",
+        "comp_slack",
+        "primal_cone_res",
+        "dual_cone_res",
+        "duality_gap_rel",
+    ]
+    base_columns = ["solver_id", "success_count", "kkt_count", "kkt_missing"]
+    stat_columns = [
+        f"{field}_{stat}"
+        for field in residual_fields
+        for stat in ("median", "p95", "max")
+    ]
+    columns = base_columns + stat_columns
+    if results.empty:
+        return pd.DataFrame(columns=columns)
+
+    successful = results[results["status"].isin(success_statuses)]
+    if successful.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for solver_id, group in successful.groupby("solver_id"):
+        row: dict[str, Any] = {
+            "solver_id": solver_id,
+            "success_count": int(len(group)),
+        }
+        any_present = pd.Series(False, index=group.index)
+        for field in residual_fields:
+            col = f"kkt.{field}"
+            values = _numeric_column(group, col)
+            any_present = any_present | (
+                pd.to_numeric(group.get(col, pd.Series(dtype=float)), errors="coerce").notna()
+                if col in group
+                else pd.Series(False, index=group.index)
+            )
+            row[f"{field}_median"] = _median(values)
+            row[f"{field}_p95"] = _quantile(values, 0.95)
+            row[f"{field}_max"] = _max(values)
+        row["kkt_count"] = int(any_present.sum())
+        row["kkt_missing"] = int(len(group) - row["kkt_count"])
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
+
+
+def kkt_certificate_summary(
+    results: pd.DataFrame,
+    *,
+    infeasible_statuses: set[str] | None = None,
+) -> pd.DataFrame:
+    """Per-solver validity counts for infeasibility certificates."""
+    if infeasible_statuses is None:
+        infeasible_statuses = {
+            status.PRIMAL_INFEASIBLE,
+            status.PRIMAL_INFEASIBLE_INACCURATE,
+            status.DUAL_INFEASIBLE,
+            status.DUAL_INFEASIBLE_INACCURATE,
+        }
+    columns = [
+        "solver_id",
+        "infeasible_count",
+        "cert_count",
+        "cert_valid",
+        "cert_invalid",
+        "Aty_rel_max",
+        "Px_rel_max",
+    ]
+    if results.empty:
+        return pd.DataFrame(columns=columns)
+    infeasible = results[results["status"].isin(infeasible_statuses)]
+    if infeasible.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for solver_id, group in infeasible.groupby("solver_id"):
+        valid_series = group.get("kkt.valid")
+        cert_rows = group if valid_series is None else group[valid_series.notna()]
+        valid_count = int(valid_series.fillna(False).astype(bool).sum()) if valid_series is not None else 0
+        aty = _numeric_column(group, "kkt.Aty_rel")
+        px = _numeric_column(group, "kkt.Px_rel")
+        rows.append(
+            {
+                "solver_id": solver_id,
+                "infeasible_count": int(len(group)),
+                "cert_count": int(len(cert_rows)),
+                "cert_valid": valid_count,
+                "cert_invalid": int(len(cert_rows) - valid_count),
+                "Aty_rel_max": _max(aty),
+                "Px_rel_max": _max(px),
             }
         )
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
@@ -453,6 +581,10 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "run_time_seconds",
         "iterations",
         "objective_value",
+        "kkt.primal_res_rel",
+        "kkt.dual_res_rel",
+        "kkt.comp_slack",
+        "kkt.duality_gap_rel",
         "artifact_dir",
         "error",
     ]
@@ -577,6 +709,10 @@ def _median(values: pd.Series):
 
 def _max(values: pd.Series):
     return None if values.empty else float(values.max())
+
+
+def _quantile(values: pd.Series, q: float):
+    return None if values.empty else float(values.quantile(q))
 
 
 def _expected_problem_names(config: dict, *, repo_root: str | Path | None = None) -> list[str]:

@@ -66,6 +66,7 @@ def run_payload(payload: dict) -> ProblemResult:
             artifact_dir=str(artifacts_dir),
             metadata=metadata,
             info=to_jsonable(solver_result.info),
+            kkt=to_jsonable(solver_result.kkt) if solver_result.kkt else None,
         )
     except Exception as exc:
         traceback.print_exc()

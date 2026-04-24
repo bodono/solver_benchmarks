@@ -14,10 +14,11 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
-from .base import SolverAdapter, SolverUnavailable
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
 INF_BOUND = 1.0e20
@@ -57,7 +58,11 @@ class PDLPSolverAdapter(SolverAdapter):
                 info={"reason": "PDLP supports LPs only; this problem has nonzero P"},
             )
         model = _build_lp_model_from_qp(qp)
-        return _solve_model(model, self.settings, artifacts_dir)
+
+        def compute_kkt(mapped_status, x, y):
+            return _qp_kkt(mapped_status, qp, x, y)
+
+        return _solve_model(model, self.settings, artifacts_dir, compute_kkt)
 
     def _solve_linear_cone(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         cone_problem = problem.cone
@@ -72,7 +77,11 @@ class PDLPSolverAdapter(SolverAdapter):
                 },
             )
         model = _build_lp_model_from_linear_cone(cone_problem)
-        return _solve_model(model, self.settings, artifacts_dir)
+
+        def compute_kkt(mapped_status, x, y):
+            return _cone_kkt(mapped_status, cone_problem, x, y)
+
+        return _solve_model(model, self.settings, artifacts_dir, compute_kkt)
 
 
 def _import_ortools() -> None:
@@ -172,14 +181,14 @@ def _build_lp_model_from_linear_cone(cone_problem: dict):
     return model
 
 
-def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> SolverResult:
+def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_kkt=None) -> SolverResult:
     from google.protobuf import text_format
     from ortools.linear_solver import linear_solver_pb2
     from ortools.pdlp import solve_log_pb2, solvers_pb2
     model_builder_helper = _import_model_builder_helper()
 
-    settings = dict(settings)
-    verbose = bool(settings.pop("verbose", False))
+    settings = settings_with_defaults(settings)
+    verbose = bool(settings.pop("verbose"))
     time_limit = settings.pop("time_limit_sec", None)
     time_limit = settings.pop("solver_time_limit_sec", time_limit)
     parameters_text = settings.pop("parameters_text", None)
@@ -214,8 +223,20 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> Solver
         text_format.MessageToString(response)
     )
 
+    mapped_status = _map_status(solve_log)
+    x = np.asarray(response.variable_value, dtype=float) if len(response.variable_value) else None
+    # OR-Tools returns the dual negated relative to our QP sign convention
+    # (y_qp = λ_u − λ_l). Flip here so downstream KKT helpers see the right sign.
+    y = -np.asarray(response.dual_value, dtype=float) if len(response.dual_value) else None
+    kkt_dict = None
+    if compute_kkt is not None and x is not None:
+        try:
+            kkt_dict = compute_kkt(mapped_status, x, y)
+        except Exception:
+            kkt_dict = None
+
     return SolverResult(
-        status=_map_status(solve_log),
+        status=mapped_status,
         objective_value=float(response.objective_value),
         iterations=_extract_iterations(solve_log),
         run_time_seconds=elapsed,
@@ -228,7 +249,44 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path) -> Solver
             "primal_solution_size": len(response.variable_value),
             "dual_solution_size": len(response.dual_value),
         },
+        kkt=kkt_dict,
     )
+
+
+def _qp_kkt(mapped_status, qp, x, y):
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        if y is None:
+            return None
+        return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        if y is None:
+            return None
+        return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y)
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        return kkt.qp_dual_infeasibility_cert(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x)
+    return None
+
+
+def _cone_kkt(mapped_status, cone_problem, x, y):
+    a = sp.csc_matrix(cone_problem["A"])
+    b = np.asarray(cone_problem["b"], dtype=float)
+    c = np.asarray(cone_problem["q"], dtype=float)
+    cone = dict(cone_problem["cone"])
+    p = cone_problem.get("P")
+    if p is None:
+        p = sp.csc_matrix((a.shape[1], a.shape[1]))
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        if y is None:
+            return None
+        s = b - a @ x
+        return kkt.cone_residuals(p, c, a, b, cone, x, y, s)
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        if y is None:
+            return None
+        return kkt.cone_primal_infeasibility_cert(a, b, cone, y)
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        return kkt.cone_dual_infeasibility_cert(p, c, a, cone, x)
+    return None
 
 
 def _import_model_builder_helper():
