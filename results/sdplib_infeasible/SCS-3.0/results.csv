@@ -1,5 +1,0 @@
-name,solver,status,run_time,iter,obj_val,n,m,N,setup_time,solve_time,scale,scale_updates
-infd1,SCS-3.0,dual infeasible,0.01898479461669922,50,-inf,465,10,4650,1.118226,16.927346,0.1,0
-infd2,SCS-3.0,dual infeasible,0.018249988555908203,50,-inf,465,10,4650,0.938774,16.686354,0.1,0
-infp1,SCS-3.0,primal infeasible,0.003016948699951172,25,inf,465,10,4650,0.794347,1.848847,0.1,0
-infp2,SCS-3.0,primal infeasible,0.003729104995727539,25,inf,465,10,4650,0.975792,2.059662,0.1,0

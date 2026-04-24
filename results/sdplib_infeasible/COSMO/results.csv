@@ -1,5 +1,0 @@
-name,solver,status,run_time,iter,obj_val,n,m,N
-infd1,COSMO,dual infeasible,2.1776092052459717,1200,-inf,465,10,4650
-infd2,COSMO,dual infeasible,0.03214883804321289,100,-inf,465,10,4650
-infp1,COSMO,primal infeasible,0.11536407470703125,200,inf,465,10,4650
-infp2,COSMO,primal infeasible,0.11189103126525879,200,inf,465,10,4650

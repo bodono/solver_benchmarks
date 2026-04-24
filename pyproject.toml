@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solver-benchmarks"
+version = "0.1.0"
+description = "Config-driven benchmark suite for convex optimization solvers."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "h5py>=3.0",
+    "highspy>=1.0",
+    "matplotlib>=3.7",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "PyYAML>=6.0",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+scs = ["scs>=3.0"]
+osqp = ["osqp>=0.6"]
+clarabel = ["clarabel>=0.7"]
+gurobi = ["gurobipy>=11.0"]
+mosek = ["Mosek>=10.0"]
+pdlp = ["ortools>=9.3.0"]
+test = ["pytest>=7.0"]
+all = [
+    "scs>=3.0",
+    "osqp>=0.6",
+    "clarabel>=0.7",
+    "ortools>=9.3.0",
+    "pytest>=7.0",
+]
+
+[project.scripts]
+bench = "solver_benchmarks.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["solver_benchmarks*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
