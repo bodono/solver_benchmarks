@@ -69,7 +69,7 @@ class QTQPSolverAdapter(SolverAdapter):
             "solved": status.OPTIMAL,
             "infeasible": status.PRIMAL_INFEASIBLE,
             "unbounded": status.DUAL_INFEASIBLE,
-            "failed": status.MAX_ITER_REACHED,
+            "failed": status.SOLVER_ERROR,
         }.get(str(raw_status), status.SOLVER_ERROR)
         return SolverResult(
             status=mapped,

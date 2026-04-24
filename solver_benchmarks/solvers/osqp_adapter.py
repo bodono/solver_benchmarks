@@ -51,6 +51,15 @@ class OSQPSolverAdapter(SolverAdapter):
             osqp.constant("OSQP_DUAL_INFEASIBLE"): status.DUAL_INFEASIBLE,
             osqp.constant("OSQP_TIME_LIMIT_REACHED"): status.TIME_LIMIT,
         }
+        for name, canonical in [
+            ("OSQP_PRIMAL_INFEASIBLE_INACCURATE", status.PRIMAL_INFEASIBLE_INACCURATE),
+            ("OSQP_DUAL_INFEASIBLE_INACCURATE", status.DUAL_INFEASIBLE_INACCURATE),
+            ("OSQP_NON_CVX", status.SOLVER_ERROR),
+        ]:
+            try:
+                status_map[osqp.constant(name)] = canonical
+            except (ValueError, KeyError, AttributeError):
+                continue
         mapped = status_map.get(raw.info.status_val, status.SOLVER_ERROR)
         info = {
             key: getattr(raw.info, key, None)

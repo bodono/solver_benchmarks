@@ -54,6 +54,9 @@ class SCSSolverAdapter(SolverAdapter):
                 "c": np.asarray(cone_problem["q"], dtype=float),
             }
             cone = dict(cone_problem["cone"])
+            free = int(cone.pop("f", 0))
+            if free:
+                cone["z"] = int(cone.get("z", 0)) + free
 
         start = time.perf_counter()
         raw = scs.solve(data, cone, **settings)

@@ -277,18 +277,13 @@ def _map_status(solve_log) -> str:
         return status.DUAL_INFEASIBLE
     if reason == termination.TERMINATION_REASON_PRIMAL_OR_DUAL_INFEASIBLE:
         return status.PRIMAL_OR_DUAL_INFEASIBLE
-    if reason in {
-        termination.TERMINATION_REASON_TIME_LIMIT,
-        termination.TERMINATION_REASON_ITERATION_LIMIT,
-        termination.TERMINATION_REASON_KKT_MATRIX_PASS_LIMIT,
-        termination.TERMINATION_REASON_NUMERICAL_ERROR,
-    }:
+    if reason == termination.TERMINATION_REASON_TIME_LIMIT:
         return status.TIME_LIMIT
     if reason in {
-        termination.TERMINATION_REASON_INVALID_PROBLEM,
-        termination.TERMINATION_REASON_INVALID_PARAMETER,
+        termination.TERMINATION_REASON_ITERATION_LIMIT,
+        termination.TERMINATION_REASON_KKT_MATRIX_PASS_LIMIT,
     }:
-        return status.SOLVER_ERROR
+        return status.MAX_ITER_REACHED
     return status.SOLVER_ERROR
 
 

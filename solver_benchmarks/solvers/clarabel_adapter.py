@@ -128,10 +128,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
     keep_rows: list[int] = []
     row = 0
     for name, value in cone.items():
-        if name == "f":
-            row += int(value)
-            continue
-        if name == "z":
+        if name in ("f", "z"):
             dim = int(value)
             if dim:
                 cones.append(clarabel.ZeroConeT(dim))
