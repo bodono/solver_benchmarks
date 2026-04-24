@@ -1,16 +1,11 @@
-"""Download selected Mittelmann LP benchmark problems.
+"""Download Kennington LP instances from NETLIB.
 
-Default behavior downloads qap15, a small smoke-test-sized LP.
+Default behavior downloads the standard 16-problem Kennington subset.
 
 Examples:
-  python scripts/prepare_mittelmann.py
-  python scripts/prepare_mittelmann.py --problem qap15
-  python scripts/prepare_mittelmann.py --problem brazil3 --problem ex10
-  python scripts/prepare_mittelmann.py --all
-
-Warning:
-  --all follows the ASU lptestset directory and can download many problems.
-  Prefer explicit --problem names for routine local runs.
+  python scripts/prepare_kennington.py
+  python scripts/prepare_kennington.py --problem ken-07
+  python scripts/prepare_kennington.py --all
 """
 
 from __future__ import annotations
@@ -18,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 
-from solver_benchmarks.datasets.mps import MittelmannDataset
+from solver_benchmarks.datasets.mps import KenningtonDataset
 
 
 def main() -> int:
@@ -32,8 +27,8 @@ def main() -> int:
     options = {}
     if args.data_root is not None:
         options["data_root"] = str(args.data_root)
-    dataset = MittelmannDataset(repo_root=args.repo_root, **options)
-    dataset.prepare_data(args.problem or None, all_problems=args.all_problems)
+    dataset = KenningtonDataset(repo_root=args.repo_root, **options)
+    dataset.prepare_data(args.problem or None, all_problems=args.all_problems or not args.problem)
     status = dataset.data_status()
     print(f"{status.dataset}: {status.problem_count} problems available in {status.data_dir}")
     return 0

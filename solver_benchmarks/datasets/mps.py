@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import bz2
+import gzip
 import re
 import urllib.error
 import urllib.request
@@ -96,6 +97,29 @@ class NetlibDataset(MPSLPDataset):
         return self.problem_classes_dir / "netlib_data" / str(subset)
 
 
+class KenningtonDataset(MPSLPDataset):
+    dataset_id = "kennington"
+    description = "Kennington LP subset from the NETLIB LP collection."
+    problem_folder = "kennington"
+    data_source = "external download from https://www.netlib.org/lp/data/kennington/"
+    prepare_command = "python scripts/prepare_kennington.py"
+
+    def prepare_data(
+        self,
+        problem_names: list[str] | None = None,
+        *,
+        all_problems: bool = False,
+    ) -> None:
+        names = list(problem_names or [])
+        if all_problems:
+            names = _KENNINGTON_PROBLEMS
+        if not names:
+            names = _KENNINGTON_PROBLEMS
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            _download_kennington_problem(name, self.folder)
+
+
 class MiplibDataset(MPSLPDataset):
     dataset_id = "miplib"
     description = "MIPLIB root-node LP relaxation dataset."
@@ -119,14 +143,7 @@ class MittelmannDataset(MPSLPDataset):
         if all_problems:
             names = _mittelmann_remote_problem_names()
         if not names:
-            if self.data_status().available:
-                return
-            raise RuntimeError(
-                "Mittelmann data is large and is not downloaded implicitly. "
-                "Use `bench data prepare mittelmann --problem qap15` for specific "
-                "problems or `bench data prepare mittelmann --all` for the full "
-                "root lptestset index."
-            )
+            names = ["qap15"]
         self.folder.mkdir(parents=True, exist_ok=True)
         for name in names:
             _download_mittelmann_problem(name, self.folder)
@@ -166,6 +183,46 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             last_error = exc
     raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}")
+
+
+_KENNINGTON_PROBLEMS = [
+    "cre-a",
+    "cre-b",
+    "cre-c",
+    "cre-d",
+    "ken-07",
+    "ken-11",
+    "ken-13",
+    "ken-18",
+    "osa-07",
+    "osa-14",
+    "osa-30",
+    "osa-60",
+    "pds-02",
+    "pds-06",
+    "pds-10",
+    "pds-20",
+]
+
+
+def _download_kennington_problem(name: str, folder: Path) -> None:
+    stem = _mps_name(Path(name))
+    stem = stem if stem is not None else Path(name).name.removesuffix(".gz")
+    if stem not in _KENNINGTON_PROBLEMS:
+        available = ", ".join(_KENNINGTON_PROBLEMS)
+        raise RuntimeError(f"Unknown Kennington problem {name!r}. Available: {available}")
+    target = folder / f"{stem}.mps.gz"
+    if target.exists():
+        return
+    url = f"https://www.netlib.org/lp/data/kennington/{stem}.gz"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            compressed = response.read()
+        # Validate that NETLIB served a gzip stream before writing it under .mps.gz.
+        gzip.decompress(compressed)
+        target.write_bytes(compressed)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"Could not download Kennington problem {name!r}: {exc}") from exc
 
 
 def _strip_mittelmann_suffix(name: str) -> str:

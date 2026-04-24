@@ -56,7 +56,7 @@ bench list solvers
 Example output:
 
 ```text
-clarabel  available               qp
+clarabel  available               cone,qp
 gurobi    missing optional extra  qp
 mosek     missing optional extra  qp
 osqp      available               qp
@@ -79,11 +79,15 @@ Current maintained adapters:
 |---|---|---|---|
 | Maros-Meszaros | `maros_meszaros` | QP | Loads `.mat` QP files. |
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
+| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset; prepare script downloads 16 instances. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only. |
-| QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY. |
-| Mittelmann | `mittelmann` | LP as QP | Data is not fully bundled; use `bench data prepare mittelmann --problem qap15`. |
-| SDPLIB | `sdplib` | Cone/SDP | Reads `.jld2`; requires `h5py`. |
+| QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
+| Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
+| SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files; requires `h5py`. |
 | DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
+| CBLIB | `cblib` | Cone | Downloads CBF files; adapter lists continuous linear/SOC instances it can parse. |
+| MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
+| CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
 
 Check local dataset availability:
@@ -94,17 +98,60 @@ bench data status netlib
 ```
 
 Most benchmark data currently used by the suite is bundled under
-`problem_classes/`. The exception is intentionally-large external data. For
-Mittelmann LP instances, download selected problems from the ASU lptestset into
-the expected location with either the CLI or the wrapper script:
+`problem_classes/`. External or intentionally-large sources are prepared
+explicitly. The convention is:
+
+- `bench data prepare DATASET` downloads or extracts a small default subset.
+- `bench data prepare DATASET --problem NAME` prepares one or more named problems.
+- `bench data prepare DATASET --all` opts into the largest known source for that dataset.
+- `bench run CONFIG --prepare-data` calls the dataset's prepare hook before solving.
+
+Examples:
 
 ```bash
-bench data prepare mittelmann --problem qap15
-python scripts/prepare_mittelmann.py --problem qap15
+bench data prepare cblib
+bench data prepare mpc_qpbenchmark
+bench data prepare qplib
+bench data prepare kennington
+bench data prepare mittelmann
+bench data prepare sdplib
+bench data prepare dimacs
 ```
 
-The full root lptestset index can be downloaded with `--all`, but this is large
-and should not be run accidentally. Benchmark runs can opt into preparation:
+Default prepared subsets are intentionally small:
+
+| Dataset | Default prepare set |
+|---|---|
+| `cblib` | `nql30`, `qssp30`, `sched_50_50_orig`, `nb`, `nb_L2_bessel` |
+| `mpc_qpbenchmark` | `LIPMWALK0`, `WHLIPBAL0`, `QUADCMPC1` |
+| `qplib` | `8790`, `8515`, `8495` |
+| `kennington` | The 16 standard Kennington LP files. |
+| `mittelmann` | `qap15` |
+| `sdplib` | `arch0`, `control1`, `theta1` extracted from the bundled converted archive. |
+| `dimacs` | `nb`, `filter48_socp`, `qssp30` |
+
+Every prepare command also has a heavily-signposted wrapper script under
+`scripts/`:
+
+```bash
+python scripts/prepare_cblib.py
+python scripts/prepare_mpc_qpbenchmark.py
+python scripts/prepare_qplib.py
+python scripts/prepare_kennington.py
+python scripts/prepare_mittelmann.py
+python scripts/prepare_sdplib.py
+python scripts/prepare_dimacs.py
+python scripts/prepare_cutest_qp.py
+```
+
+The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
+follows the full CBLIB directory index and may download mixed-integer or
+currently unsupported CBF files; the `cblib` adapter only lists continuous
+linear/SOC instances it can parse. Mittelmann `--all` follows the ASU lptestset
+index. DIMACS `--all` follows the official Challenge index. QPLIB `--all` uses
+`problem_classes/qplib_data/list_convex_qps.txt`.
+
+Benchmark runs can opt into preparation:
 
 ```yaml
 run:
@@ -125,10 +172,24 @@ List problems in a dataset:
 bench list problems netlib --option subset=feasible
 bench list problems maros_meszaros
 bench list problems qplib
+bench list problems qplib --option subset=ccb
+bench list problems mpc_qpbenchmark --option subset=default
+bench list problems cblib
 ```
 
 Dataset options are passed as `key=value` on the CLI or as `dataset_options` in
 config files.
+
+Useful dataset options:
+
+| Dataset | Option | Meaning |
+|---|---|---|
+| `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
+| `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
+| `mpc_qpbenchmark` | `subset=default`, `all`, or comma-separated names | Filter downloaded MPC QP `.npz` files. |
+| `cutest_qp` | `subset=default`, `all`, or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
+| `cblib` | `subset=default`, `all`, or comma-separated names | Filter downloaded CBF files. |
+| `cblib` | `include_unsupported=true` | Show downloaded CBF files the parser would otherwise hide. |
 
 ## Supported Solvers
 

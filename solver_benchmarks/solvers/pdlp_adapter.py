@@ -192,7 +192,14 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     time_limit = settings.pop("time_limit_sec", None)
     time_limit = settings.pop("solver_time_limit_sec", time_limit)
     parameters_text = settings.pop("parameters_text", None)
-    use_glop = bool(settings.pop("use_glop", True))
+    # Default use_glop=False: Glop's presolver can short-circuit PDLP's
+    # infeasibility detection and returns primal_or_dual_infeasible without
+    # a Farkas certificate. Pure PDLP gives valid certificates.
+    use_glop = bool(settings.pop("use_glop", False))
+    eps_abs = settings.pop("eps_abs", None)
+    eps_rel = settings.pop("eps_rel", None)
+    max_iter = settings.pop("max_iter", None)
+    max_iter = settings.pop("iteration_limit", max_iter)
 
     request = linear_solver_pb2.MPModelRequest(
         model=model,
@@ -204,6 +211,12 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
 
     parameters = solvers_pb2.PrimalDualHybridGradientParams()
     parameters.presolve_options.use_glop = use_glop
+    if eps_abs is not None:
+        parameters.termination_criteria.eps_optimal_absolute = float(eps_abs)
+    if eps_rel is not None:
+        parameters.termination_criteria.eps_optimal_relative = float(eps_rel)
+    if max_iter is not None:
+        parameters.termination_criteria.iteration_limit = int(max_iter)
     if parameters_text:
         text_format.Parse(str(parameters_text), parameters)
     if settings:

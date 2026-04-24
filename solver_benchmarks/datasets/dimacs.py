@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from io import BytesIO
 import gzip
+import re
+import urllib.request
 
 import numpy as np
 import scipy.io
@@ -15,10 +17,16 @@ from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from .base import Dataset
 
 
+DIMACS_BASE_URL = "https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances"
+DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")
+
+
 class DIMACSDataset(Dataset):
     dataset_id = "dimacs"
     description = "DIMACS conic benchmark dataset."
+    data_source = "bundled data; official source https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances/"
     data_patterns = ("*.mat", "*.mat.gz")
+    prepare_command = "python scripts/prepare_dimacs.py"
 
     @property
     def folder(self) -> Path:
@@ -60,6 +68,17 @@ class DIMACSDataset(Dataset):
         assert spec.path is not None
         problem = _read_dimacs(spec.path)
         return ProblemData(self.dataset_id, name, CONE, problem, metadata=dict(spec.metadata))
+
+    def prepare_data(
+        self,
+        problem_names: list[str] | None = None,
+        *,
+        all_problems: bool = False,
+    ) -> None:
+        names = dimacs_remote_problem_names() if all_problems else list(problem_names or DIMACS_DEFAULT_SUBSET)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            _download_dimacs_problem(name, self.folder)
 
 
 def _read_dimacs(path: Path) -> dict:
@@ -164,3 +183,27 @@ def _parse_dimacs_cone(k, n_rows: int, b: np.ndarray):
 
     rows_to_keep = [row for row in range(n_rows) if row not in dropped_rows]
     return cone, rows_to_keep, free_rows, dropped_rows, b
+
+
+def dimacs_remote_problem_names() -> list[str]:
+    with urllib.request.urlopen(f"{DIMACS_BASE_URL}/", timeout=30) as response:
+        html = response.read().decode("utf-8", "replace")
+    filenames = re.findall(r'href="([^"]+\.mat\.gz)"', html)
+    return sorted({filename[: -len(".mat.gz")] for filename in filenames})
+
+
+def _download_dimacs_problem(name: str, folder: Path) -> Path:
+    stem = Path(name).name
+    for suffix in (".mat.gz", ".mat"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+    existing_mat = folder / f"{stem}.mat"
+    target = folder / f"{stem}.mat.gz"
+    if existing_mat.exists() or target.exists():
+        return target if target.exists() else existing_mat
+    url = f"{DIMACS_BASE_URL}/{stem}.mat.gz"
+    with urllib.request.urlopen(url, timeout=60) as response:
+        content = response.read()
+    gzip.decompress(content)
+    target.write_bytes(content)
+    return target

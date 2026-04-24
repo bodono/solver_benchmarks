@@ -22,6 +22,13 @@ from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.solvers import get_solver
 
 
+# Grace period added on top of the configured timeout before the subprocess
+# is force-killed. This lets solvers that honor their own internal time
+# limit return a partial result (status, iterations, residuals) instead of
+# being killed mid-return.
+SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
+
+
 def run_benchmark(
     config: RunConfig,
     *,
@@ -140,13 +147,18 @@ def _run_one(
     }
     payload_path = artifacts_dir / "payload.json"
     atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
-    timeout = solver_config.timeout_seconds or config.timeout_seconds
+    configured_timeout = solver_config.timeout_seconds or config.timeout_seconds
+    subprocess_timeout = (
+        float(configured_timeout) + SUBPROCESS_TIMEOUT_GRACE_SECONDS
+        if configured_timeout
+        else None
+    )
     cmd = [sys.executable, "-m", "solver_benchmarks.worker", "--payload", str(payload_path)]
     _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
     completed = _run_subprocess(
         cmd,
         cwd=repo_root,
-        timeout=timeout,
+        timeout=subprocess_timeout,
         stdout_path=artifacts_dir / "stdout.log",
         stderr_path=artifacts_dir / "stderr.log",
         stream_output=stream_output,
@@ -163,8 +175,8 @@ def _run_one(
             status=status.TIME_LIMIT,
             objective_value=None,
             iterations=None,
-            run_time_seconds=float(timeout) if timeout else None,
-            error=f"Subprocess exceeded timeout_seconds={timeout}",
+            run_time_seconds=float(subprocess_timeout) if subprocess_timeout else None,
+            error=f"Subprocess exceeded timeout_seconds={subprocess_timeout}",
             artifact_dir=str(artifacts_dir),
             metadata=dict(problem.metadata),
         )

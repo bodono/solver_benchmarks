@@ -115,7 +115,10 @@ def data_prepare_cmd(
 ) -> None:
     dataset_cls = get_dataset(dataset)
     dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
-    dataset_obj.prepare_data(list(problems) or None, all_problems=all_problems)
+    try:
+        dataset_obj.prepare_data(list(problems) or None, all_problems=all_problems)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
     status = dataset_obj.data_status()
     marker = "available" if status.available else "missing"
     click.echo(f"{status.dataset}\t{marker}\t{status.problem_count}\t{status.message}")

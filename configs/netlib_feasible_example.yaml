@@ -3,34 +3,18 @@ run:
   output_dir: runs
   dataset_options:
     subset: feasible
-  include:
-    - afiro
-    - sc50a
-  parallelism: 2
+  parallelism: 1
   resume: true
   timeout_seconds: 120
 
 solvers:
-  - id: scs_default
-    solver: scs
-    settings:
-      eps_abs: 1.0e-4
-      eps_rel: 1.0e-4
-      max_iters: 100000
-
-  - id: clarabel_default
-    solver: clarabel
-    settings:
-      max_iter: 200
-
-  - id: osqp_default
-    solver: osqp
-    settings:
-      eps_abs: 1.0e-4
-      eps_rel: 1.0e-4
-      max_iter: 100000
-
   - id: pdlp_default
     solver: pdlp
     settings:
       time_limit_sec: 120
+
+  - id: scs_default
+    solver: scs
+    settings:
+      max_iters: 100000
+

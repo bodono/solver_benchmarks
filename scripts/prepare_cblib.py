@@ -1,16 +1,17 @@
-"""Download selected Mittelmann LP benchmark problems.
+"""Download CBLIB CBF instances into problem_classes/cblib_data.
 
-Default behavior downloads qap15, a small smoke-test-sized LP.
+Default behavior downloads a small continuous SOCP-oriented subset:
+nql30, qssp30, sched_50_50_orig, nb, nb_L2_bessel.
 
 Examples:
-  python scripts/prepare_mittelmann.py
-  python scripts/prepare_mittelmann.py --problem qap15
-  python scripts/prepare_mittelmann.py --problem brazil3 --problem ex10
-  python scripts/prepare_mittelmann.py --all
+  python scripts/prepare_cblib.py
+  python scripts/prepare_cblib.py --problem beam7 --problem nb
+  python scripts/prepare_cblib.py --all
 
 Warning:
-  --all follows the ASU lptestset directory and can download many problems.
-  Prefer explicit --problem names for routine local runs.
+  --all follows the full CBLIB directory index. That can download thousands of
+  files, including mixed-integer or unsupported CBF instances. The benchmark
+  adapter only lists continuous linear/SOC instances it can parse.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 
-from solver_benchmarks.datasets.mps import MittelmannDataset
+from solver_benchmarks.datasets.cblib import CBLIBDataset
 
 
 def main() -> int:
@@ -32,10 +33,10 @@ def main() -> int:
     options = {}
     if args.data_root is not None:
         options["data_root"] = str(args.data_root)
-    dataset = MittelmannDataset(repo_root=args.repo_root, **options)
+    dataset = CBLIBDataset(repo_root=args.repo_root, **options)
     dataset.prepare_data(args.problem or None, all_problems=args.all_problems)
     status = dataset.data_status()
-    print(f"{status.dataset}: {status.problem_count} problems available in {status.data_dir}")
+    print(f"{status.dataset}: {status.problem_count} supported problems available in {status.data_dir}")
     return 0
 
 
