@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import inspect
 import json
 import time
 
@@ -44,7 +45,10 @@ class QTQPSolverAdapter(SolverAdapter):
 
         start = time.perf_counter()
         solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
-        solution = solver.solve(**settings, collect_stats=True)
+        solve_kwargs = dict(settings)
+        if "collect_stats" in inspect.signature(solver.solve).parameters:
+            solve_kwargs["collect_stats"] = True
+        solution = solver.solve(**solve_kwargs)
         elapsed = time.perf_counter() - start
 
         raw_status = getattr(solution.status, "value", str(solution.status))
