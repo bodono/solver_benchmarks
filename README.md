@@ -1,5 +1,7 @@
 # Solver Benchmarks
 
+[![Tests](https://github.com/bodono/solver_benchmarks/actions/workflows/tests.yml/badge.svg?branch=qtqp)](https://github.com/bodono/solver_benchmarks/actions/workflows/tests.yml)
+
 Config-driven benchmark suite for convex optimization solvers.
 
 The maintained path is the `solver_benchmarks` package and the `bench` CLI. Older
@@ -514,6 +516,11 @@ PDLP artifacts:
 - `pdlp_response.textproto`
 
 ## Testing
+
+CI runs the same checks on pull requests and pushes to `master` or `qtqp`.
+The scheduled run executes every Monday at 06:00 UTC. GitHub only evaluates
+scheduled workflows from the repository default branch, so keep the workflow on
+the default branch if weekly runs are required.
 
 Run the test suite:
 
