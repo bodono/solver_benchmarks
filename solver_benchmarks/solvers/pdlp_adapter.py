@@ -212,9 +212,9 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     parameters = solvers_pb2.PrimalDualHybridGradientParams()
     parameters.presolve_options.use_glop = use_glop
     if eps_abs is not None:
-        parameters.termination_criteria.eps_optimal_absolute = float(eps_abs)
+        parameters.termination_criteria.simple_optimality_criteria.eps_optimal_absolute = float(eps_abs)
     if eps_rel is not None:
-        parameters.termination_criteria.eps_optimal_relative = float(eps_rel)
+        parameters.termination_criteria.simple_optimality_criteria.eps_optimal_relative = float(eps_rel)
     if max_iter is not None:
         parameters.termination_criteria.iteration_limit = int(max_iter)
     if parameters_text:
