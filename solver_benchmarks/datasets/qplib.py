@@ -13,10 +13,16 @@ from .base import Dataset
 class QPLIBDataset(Dataset):
     dataset_id = "qplib"
     description = "Convex QPLIB subset present in problem_classes/qplib_data."
+    data_patterns = ("QPLIB_*.qplib",)
+    prepare_command = "cd problem_classes/qplib_data && python download.py"
 
     @property
     def folder(self) -> Path:
         return self.problem_classes_dir / "qplib_data"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.folder
 
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():

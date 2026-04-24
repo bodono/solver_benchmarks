@@ -30,7 +30,17 @@ def run_benchmark(
     store = ResultStore.create(config, run_dir=run_dir)
     dataset_cls = get_dataset(config.dataset)
     dataset = dataset_cls(repo_root=repo_root, **config.dataset_options)
+    if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
+        dataset.prepare_data(problem_names=config.include or None)
     problems = _filter_problems(dataset.list_problems(), config.include, config.exclude)
+    if not problems:
+        data_status = dataset.data_status() if hasattr(dataset, "data_status") else None
+        message = (
+            data_status.message
+            if data_status is not None
+            else f"Dataset {config.dataset!r} produced no problems."
+        )
+        store.append_event("warning", message, dataset=config.dataset)
     completed = store.completed_keys() if config.resume else set()
 
     tasks: list[tuple[ProblemSpec, SolverConfig]] = []

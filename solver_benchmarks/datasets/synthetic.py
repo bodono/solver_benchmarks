@@ -12,6 +12,7 @@ from .base import Dataset
 class SyntheticQPDataset(Dataset):
     dataset_id = "synthetic_qp"
     description = "Tiny deterministic QP smoke-test dataset."
+    data_source = "generated in code"
 
     def list_problems(self) -> list[ProblemSpec]:
         return [

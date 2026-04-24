@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import bz2
+import re
+import urllib.error
+import urllib.request
 
 import numpy as np
 import scipy.sparse as sp
@@ -18,6 +22,7 @@ class MPSLPDataset(Dataset):
     problem_folder: str
     dataset_id: str
     description: str
+    data_patterns = ("*.mps", "*.mps.gz")
 
     def __init__(self, repo_root: str | Path | None = None, **options: Any):
         super().__init__(repo_root=repo_root, **options)
@@ -27,6 +32,10 @@ class MPSLPDataset(Dataset):
     def folder(self) -> Path:
         folder = self.options.get("folder", self.problem_folder)
         return self.problem_classes_dir / str(folder)
+
+    @property
+    def data_dir(self) -> Path:
+        return self.folder
 
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():
@@ -97,6 +106,30 @@ class MittelmannDataset(MPSLPDataset):
     dataset_id = "mittelmann"
     description = "Mittelmann LP/QP dataset."
     problem_folder = "mittelmann"
+    data_source = "external download from https://plato.asu.edu/ftp/lptestset/"
+    prepare_command = "python scripts/prepare_mittelmann.py --problem qap15"
+
+    def prepare_data(
+        self,
+        problem_names: list[str] | None = None,
+        *,
+        all_problems: bool = False,
+    ) -> None:
+        names = list(problem_names or [])
+        if all_problems:
+            names = _mittelmann_remote_problem_names()
+        if not names:
+            if self.data_status().available:
+                return
+            raise RuntimeError(
+                "Mittelmann data is large and is not downloaded implicitly. "
+                "Use `bench data prepare mittelmann --problem qap15` for specific "
+                "problems or `bench data prepare mittelmann --all` for the full "
+                "root lptestset index."
+            )
+        self.folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            _download_mittelmann_problem(name, self.folder)
 
 
 def _mps_name(path: Path) -> str | None:
@@ -105,3 +138,38 @@ def _mps_name(path: Path) -> str | None:
     if path.name.endswith(".mps"):
         return path.name[: -len(".mps")]
     return None
+
+
+def _mittelmann_remote_problem_names() -> list[str]:
+    html = urllib.request.urlopen("https://plato.asu.edu/ftp/lptestset/", timeout=30).read()
+    names = []
+    for match in re.findall(rb'href="([^"]+\.bz2)"', html):
+        filename = match.decode("utf-8")
+        names.append(_strip_mittelmann_suffix(filename))
+    return sorted(set(names))
+
+
+def _download_mittelmann_problem(name: str, folder: Path) -> None:
+    stem = _strip_mittelmann_suffix(Path(name).name)
+    target = folder / f"{stem}.mps"
+    if target.exists():
+        return
+    candidates = [f"{stem}.mps.bz2", f"{stem}.bz2"]
+    last_error = None
+    for filename in candidates:
+        url = f"https://plato.asu.edu/ftp/lptestset/{filename}"
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                compressed = response.read()
+            target.write_bytes(bz2.decompress(compressed))
+            return
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            last_error = exc
+    raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}")
+
+
+def _strip_mittelmann_suffix(name: str) -> str:
+    for suffix in (".mps.bz2", ".bz2", ".mps.gz", ".mps"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name

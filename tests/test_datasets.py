@@ -1,5 +1,5 @@
 from solver_benchmarks.datasets import get_dataset, list_datasets
-from solver_benchmarks.solvers import list_solvers
+from solver_benchmarks.solvers import get_solver, list_solvers
 
 
 def test_required_datasets_are_registered():
@@ -21,6 +21,7 @@ def test_required_solvers_are_registered():
     required = {"qtqp", "scs", "clarabel", "osqp", "mosek", "gurobi", "pdlp"}
 
     assert required.issubset(set(list_solvers()))
+    assert "cone" in get_solver("clarabel").supported_problem_kinds
 
 
 def test_synthetic_dataset_loads_qp():
@@ -32,3 +33,13 @@ def test_synthetic_dataset_loads_qp():
     assert problem.kind == "qp"
     assert problem.qp["P"].shape == (1, 1)
     assert problem.qp["A"].shape == (1, 1)
+
+
+def test_dataset_data_status_reports_local_problem_counts():
+    synthetic = get_dataset("synthetic_qp")()
+    dimacs = get_dataset("dimacs")()
+
+    assert synthetic.data_status().available
+    assert synthetic.data_status().problem_count == 2
+    assert dimacs.data_status().available
+    assert dimacs.data_status().problem_count > 0

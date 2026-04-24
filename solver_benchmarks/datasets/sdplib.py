@@ -16,10 +16,15 @@ from .base import Dataset
 class SDPLIBDataset(Dataset):
     dataset_id = "sdplib"
     description = "SDPLIB SDP benchmark dataset."
+    data_patterns = ("*.jld2", "sdplib.tar")
 
     @property
     def folder(self) -> Path:
         return self.problem_classes_dir / "sdplib_data"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.folder
 
     @property
     def tar_path(self) -> Path:

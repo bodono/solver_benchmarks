@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - master
-      - qtqp
   # GitHub Actions schedules are evaluated in UTC and only from the
   # repository default branch.
   schedule:

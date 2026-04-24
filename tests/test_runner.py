@@ -113,3 +113,42 @@ def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path):
 
     assert len(df) == 1
     assert df.loc[0, "status"] == "skipped_unsupported"
+
+
+def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):
+    called = {}
+
+    class FakeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def prepare_data(self, problem_names=None, all_problems=False):
+            called["problem_names"] = problem_names
+            called["all_problems"] = all_problems
+
+        def list_problems(self):
+            return []
+
+        def data_status(self):
+            return type(
+                "Status",
+                (),
+                {"message": "fake dataset has no problems"},
+            )()
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "fake_empty", FakeDataset)
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "fake_empty",
+                "output_dir": str(tmp_path / "runs"),
+                "include": ["needed"],
+                "auto_prepare_data": True,
+            },
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    run_benchmark(config, repo_root=Path.cwd())
+
+    assert called == {"problem_names": ["needed"], "all_problems": False}

@@ -13,10 +13,15 @@ from .base import Dataset
 class MarosMeszarosDataset(Dataset):
     dataset_id = "maros_meszaros"
     description = "Maros-Meszaros convex QP collection."
+    data_patterns = ("*.mat",)
 
     @property
     def folder(self) -> Path:
         return self.problem_classes_dir / "maros_meszaros_data"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.folder
 
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():

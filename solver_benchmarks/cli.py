@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -44,19 +45,84 @@ def list_solvers_cmd() -> None:
 @click.argument("dataset")
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option("--option", "options", multiple=True, help="Dataset option as key=value.")
-def list_problems_cmd(dataset: str, repo_root: Path | None, options: tuple[str]) -> None:
+@click.option("--prepare/--no-prepare", default=False, help="Prepare missing data first.")
+def list_problems_cmd(
+    dataset: str,
+    repo_root: Path | None,
+    options: tuple[str],
+    prepare: bool,
+) -> None:
     dataset_cls = get_dataset(dataset)
     dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
+    if prepare:
+        dataset_obj.prepare_data()
     for spec in dataset_obj.list_problems():
         click.echo(f"{spec.name}\t{spec.kind}\t{spec.path or ''}")
+
+
+@main.group("data")
+def data_group() -> None:
+    """Inspect and prepare benchmark data."""
+
+
+@data_group.command("status")
+@click.argument("dataset", required=False)
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@click.option("--option", "options", multiple=True, help="Dataset option as key=value.")
+def data_status_cmd(
+    dataset: str | None,
+    repo_root: Path | None,
+    options: tuple[str],
+) -> None:
+    names = [dataset] if dataset else list_datasets()
+    parsed_options = _parse_options(options)
+    for name in names:
+        dataset_cls = get_dataset(name)
+        status = dataset_cls(repo_root=repo_root, **parsed_options).data_status()
+        marker = "available" if status.available else "missing"
+        path = str(status.data_dir) if status.data_dir is not None else ""
+        command = status.prepare_command or ""
+        click.echo(
+            f"{status.dataset}\t{marker}\t{status.problem_count}\t"
+            f"{path}\t{status.source}\t{command}"
+        )
+
+
+@data_group.command("prepare")
+@click.argument("dataset")
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@click.option("--option", "options", multiple=True, help="Dataset option as key=value.")
+@click.option("--problem", "problems", multiple=True, help="Problem name to prepare.")
+@click.option("--all", "all_problems", is_flag=True, help="Prepare all known remote data.")
+def data_prepare_cmd(
+    dataset: str,
+    repo_root: Path | None,
+    options: tuple[str],
+    problems: tuple[str],
+    all_problems: bool,
+) -> None:
+    dataset_cls = get_dataset(dataset)
+    dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
+    dataset_obj.prepare_data(list(problems) or None, all_problems=all_problems)
+    status = dataset_obj.data_status()
+    marker = "available" if status.available else "missing"
+    click.echo(f"{status.dataset}\t{marker}\t{status.problem_count}\t{status.message}")
 
 
 @main.command("run")
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--run-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
-def run_cmd(config_path: Path, run_dir: Path | None, repo_root: Path | None) -> None:
+@click.option("--prepare-data", is_flag=True, help="Prepare missing dataset data first.")
+def run_cmd(
+    config_path: Path,
+    run_dir: Path | None,
+    repo_root: Path | None,
+    prepare_data: bool,
+) -> None:
     config = load_run_config(config_path)
+    if prepare_data:
+        config = replace(config, auto_prepare_data=True)
     store = run_benchmark(config, run_dir=run_dir, repo_root=repo_root)
     click.echo(str(store.run_dir))
 

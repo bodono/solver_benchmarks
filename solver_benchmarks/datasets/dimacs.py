@@ -18,10 +18,15 @@ from .base import Dataset
 class DIMACSDataset(Dataset):
     dataset_id = "dimacs"
     description = "DIMACS conic benchmark dataset."
+    data_patterns = ("*.mat", "*.mat.gz")
 
     @property
     def folder(self) -> Path:
         return self.problem_classes_dir / "dimacs_data"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.folder
 
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():

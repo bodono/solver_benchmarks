@@ -30,6 +30,7 @@ class RunConfig:
     resume: bool = True
     timeout_seconds: float | None = None
     fail_on_unsupported: bool = False
+    auto_prepare_data: bool = False
 
     @property
     def config_hash(self) -> str:
@@ -63,6 +64,7 @@ class RunConfig:
             "resume": self.resume,
             "timeout_seconds": self.timeout_seconds,
             "fail_on_unsupported": self.fail_on_unsupported,
+            "auto_prepare_data": self.auto_prepare_data,
             "config_hash": self.config_hash,
             "solvers": [
                 {
@@ -125,6 +127,9 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
         timeout_seconds=run.get("timeout_seconds", raw.get("timeout_seconds")),
         fail_on_unsupported=bool(
             run.get("fail_on_unsupported", raw.get("fail_on_unsupported", False))
+        ),
+        auto_prepare_data=bool(
+            run.get("auto_prepare_data", raw.get("auto_prepare_data", False))
         ),
     )
 

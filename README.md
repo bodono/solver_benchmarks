@@ -1,6 +1,6 @@
 # Solver Benchmarks
 
-[![Tests](https://github.com/bodono/solver_benchmarks/actions/workflows/tests.yml/badge.svg?branch=qtqp)](https://github.com/bodono/solver_benchmarks/actions/workflows/tests.yml)
+[![Tests](https://github.com/bodono/solver_benchmarks/actions/workflows/tests.yml/badge.svg?branch=master)](https://github.com/bodono/solver_benchmarks/actions/workflows/tests.yml)
 
 Config-driven benchmark suite for convex optimization solvers.
 
@@ -81,10 +81,43 @@ Current maintained adapters:
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only. |
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY. |
-| Mittelmann | `mittelmann` | LP as QP | Adapter exists; data may not be present locally. |
+| Mittelmann | `mittelmann` | LP as QP | Data is not fully bundled; use `bench data prepare mittelmann --problem qap15`. |
 | SDPLIB | `sdplib` | Cone/SDP | Reads `.jld2`; requires `h5py`. |
 | DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
+
+Check local dataset availability:
+
+```bash
+bench data status
+bench data status netlib
+```
+
+Most benchmark data currently used by the suite is bundled under
+`problem_classes/`. The exception is intentionally-large external data. For
+Mittelmann LP instances, download selected problems from the ASU lptestset into
+the expected location with either the CLI or the wrapper script:
+
+```bash
+bench data prepare mittelmann --problem qap15
+python scripts/prepare_mittelmann.py --problem qap15
+```
+
+The full root lptestset index can be downloaded with `--all`, but this is large
+and should not be run accidentally. Benchmark runs can opt into preparation:
+
+```yaml
+run:
+  auto_prepare_data: true
+  include:
+    - qap15
+```
+
+or from the CLI:
+
+```bash
+bench run configs/my_run.yaml --prepare-data
+```
 
 List problems in a dataset:
 
@@ -105,7 +138,7 @@ Current maintained adapters:
 |---|---|---|---|
 | QTQP | `qtqp` | QP | Converts QP bounds to nonnegative cone form internally. |
 | SCS | `scs` | QP, cone | Supports SCS box-cone form for QPs and native conic data. |
-| Clarabel | `clarabel` | QP | Uses nonnegative cone conversion for `l <= Ax <= u`. |
+| Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
 | PDLP | `pdlp` | LP-only QP, simple linear cone | Uses OR-Tools directly, no CVXPY. |
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. |
@@ -178,6 +211,7 @@ Important fields:
 | `run.parallelism` | Number of concurrent subprocess solves. |
 | `run.resume` | If true, completed `(problem, solver_id)` pairs are not rerun. |
 | `run.timeout_seconds` | Default subprocess timeout per solve. |
+| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
@@ -518,7 +552,7 @@ PDLP artifacts:
 
 ## Testing
 
-CI runs the same checks on pull requests and pushes to `master` or `qtqp`.
+CI runs the same checks on pull requests and pushes to `master`.
 The scheduled run executes every Monday at 06:00 UTC. GitHub only evaluates
 scheduled workflows from the repository default branch, so keep the workflow on
 the default branch if weekly runs are required.
