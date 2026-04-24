@@ -6,23 +6,43 @@ import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.core.config import RunConfig, SolverConfig, parse_run_config
-from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
+from solver_benchmarks.core.problem import CONE, QP, ProblemData, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult, SolverResult
 from solver_benchmarks.core.runner import _run_one, run_benchmark
 from solver_benchmarks.core.storage import ResultStore
+from solver_benchmarks.datasets import registry as dataset_registry
+from solver_benchmarks.solvers import registry as solver_registry
+from solver_benchmarks.solvers.base import SolverAdapter
 from solver_benchmarks.worker import run_payload
 
 
-def test_warning_events_are_structured_for_unsupported_combinations(tmp_path: Path):
+def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch, tmp_path: Path):
+    class FakeConeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="fake_cone", name="cone_problem", kind=CONE)]
+
+    class FakeQPSolver(SolverAdapter):
+        solver_name = "fake_qp"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):
+            raise AssertionError("Unsupported solver should not be invoked")
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "fake_cone", FakeConeDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "fake_qp", FakeQPSolver)
+
     config = parse_run_config(
         {
             "run": {
-                "dataset": "dimacs",
+                "dataset": "fake_cone",
                 "output_dir": str(tmp_path / "runs"),
-                "include": ["qssp30"],
+                "include": ["cone_problem"],
                 "parallelism": 1,
             },
-            "solvers": [{"id": "osqp_skip", "solver": "osqp", "settings": {}}],
+            "solvers": [{"id": "fake_qp_skip", "solver": "fake_qp", "settings": {}}],
         }
     )
 
@@ -30,8 +50,8 @@ def test_warning_events_are_structured_for_unsupported_combinations(tmp_path: Pa
     event = json.loads(store.events_path.read_text().strip())
 
     assert event["level"] == "warning"
-    assert event["solver_id"] == "osqp_skip"
-    assert event["problem"] == "qssp30"
+    assert event["solver_id"] == "fake_qp_skip"
+    assert event["problem"] == "cone_problem"
     assert event["problem_kind"] == "cone"
     assert "does not support" in event["message"]
 
