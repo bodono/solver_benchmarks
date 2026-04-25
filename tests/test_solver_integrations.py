@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -10,6 +11,7 @@ from solver_benchmarks.solvers import get_solver
 
 
 OPEN_SOURCE_SOLVERS = {
+    "highs": {"verbose": False},
     "qtqp": {"verbose": False},
     "scs": {
         "verbose": False,
@@ -26,7 +28,16 @@ OPEN_SOURCE_SOLVERS = {
         "polish": True,
     },
     "pdlp": {"time_limit_sec": 10.0},
+    "piqp": {"verbose": False, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
 }
+
+if sys.version_info < (3, 14):
+    OPEN_SOURCE_SOLVERS["proxqp"] = {
+        "verbose": False,
+        "eps_abs": 1.0e-8,
+        "eps_rel": 1.0e-8,
+        "max_iter": 10000,
+    }
 
 
 def test_all_open_source_solvers_solve_synthetic_lp(tmp_path: Path):

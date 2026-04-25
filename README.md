@@ -28,13 +28,16 @@ pip install -e ".[all]"
 ```
 
 The `all` extra installs open-source solver dependencies declared by the package,
-including QTQP, SCS, OSQP, Clarabel, OR-Tools/PDLP, PyYAML, and pytest.
+including QTQP, SCS, OSQP, Clarabel, HiGHS, PIQP, OR-Tools/PDLP, PyYAML, and
+pytest. ProxQP and SDPA are included on Python versions where their wheels are
+available; currently they are skipped on Python 3.14 by dependency markers.
 
 Commercial solvers are optional and must be installed separately with valid licenses:
 
 ```bash
 pip install -e ".[gurobi]"
 pip install -e ".[mosek]"
+pip install -e ".[cplex]"
 ```
 
 Install only one optional solver if you prefer:
@@ -43,8 +46,12 @@ Install only one optional solver if you prefer:
 pip install -e ".[scs]"
 pip install -e ".[osqp]"
 pip install -e ".[clarabel]"
+pip install -e ".[highs]"
 pip install -e ".[qtqp]"
 pip install -e ".[pdlp]"
+pip install -e ".[piqp]"
+pip install -e ".[proxqp]"
+pip install -e ".[sdpa]"
 ```
 
 Check what is available in the current environment:
@@ -57,11 +64,16 @@ Example output:
 
 ```text
 clarabel  available               cone,qp
+cplex     missing optional extra  qp
 gurobi    missing optional extra  qp
+highs     available               qp
 mosek     missing optional extra  qp
 osqp      available               qp
 pdlp      available               cone,qp
+piqp      available               qp
+proxqp    available               qp
 qtqp      available               qp
+sdpa      available               cone
 scs       available               cone,qp
 ```
 
@@ -202,8 +214,13 @@ Current maintained adapters:
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
 | PDLP | `pdlp` | LP-only QP, simple linear cone | Uses OR-Tools directly, no CVXPY. |
+| HiGHS | `highs` | QP | Direct LP/QP adapter through `highspy`; strong LP baseline. |
+| ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite; optional on Python < 3.14 while wheels are available. |
+| PIQP | `piqp` | QP | Direct sparse/dense QP adapter. |
+| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP/SOCP subsets, optional on Python < 3.14 while wheels are available. |
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. |
+| CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. |
 
 Unsupported solver/problem combinations are skipped by default and recorded as
 `skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped.

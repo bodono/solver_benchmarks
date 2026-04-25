@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+highs = ["highspy>=1.0"]
 scs = ["scs>=3.0"]
 osqp = ["osqp>=0.6"]
 clarabel = ["clarabel>=0.7"]
@@ -31,6 +32,10 @@ qtqp = [
 gurobi = ["gurobipy>=11.0"]
 mosek = ["Mosek>=10.0"]
 pdlp = ["ortools>=9.3.0"]
+proxqp = ["proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'"]
+piqp = ["piqp>=0.6.0"]
+sdpa = ["sdpa-python>=0.2.2; python_version < '3.14'"]
+cplex = ["cplex>=22.1"]
 test = ["pytest>=7.0"]
 all = [
     "scs>=3.0",
@@ -39,6 +44,9 @@ all = [
     "qtqp>=0.0.3; python_version < '3.11'",
     "qtqp>=0.0.5; python_version >= '3.11'",
     "ortools>=9.3.0",
+    "piqp>=0.6.0",
+    "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
+    "sdpa-python>=0.2.2; python_version < '3.14'",
     "pytest>=7.0",
 ]
 

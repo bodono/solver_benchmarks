@@ -30,7 +30,20 @@ def test_required_datasets_are_registered():
 
 
 def test_required_solvers_are_registered():
-    required = {"qtqp", "scs", "clarabel", "osqp", "mosek", "gurobi", "pdlp"}
+    required = {
+        "qtqp",
+        "scs",
+        "clarabel",
+        "osqp",
+        "mosek",
+        "gurobi",
+        "pdlp",
+        "highs",
+        "proxqp",
+        "piqp",
+        "sdpa",
+        "cplex",
+    }
 
     assert required.issubset(set(list_solvers()))
     assert "cone" in get_solver("clarabel").supported_problem_kinds

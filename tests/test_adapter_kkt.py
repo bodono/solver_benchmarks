@@ -9,16 +9,20 @@ import pytest
 import scipy.sparse as sp
 
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import QP, ProblemData
+from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.solvers import get_solver
 
 
 SOLVER_SETTINGS = {
+    "highs": {"verbose": False},
     "osqp": {"verbose": False, "eps_abs": 1e-8, "eps_rel": 1e-8, "max_iter": 10000, "polish": True},
+    "proxqp": {"verbose": False, "eps_abs": 1e-8, "eps_rel": 1e-8, "max_iter": 10000},
+    "piqp": {"verbose": False, "eps_abs": 1e-8, "eps_rel": 1e-8, "max_iter": 10000},
     "scs": {"verbose": False, "eps_abs": 1e-8, "eps_rel": 1e-8, "max_iters": 5000},
     "clarabel": {"verbose": False},
     "qtqp": {"verbose": False},
     "pdlp": {"time_limit_sec": 10.0, "use_glop": False},
+    "sdpa": {"verbose": False, "max_iter": 50, "optimality_tolerance": 1e-5},
 }
 
 
@@ -79,6 +83,21 @@ def _unbounded_lp():
     }
 
 
+def _small_cone_lp():
+    # min x s.t. x >= 1 in cone form A x + s = b, s >= 0.
+    return {
+        "P": None,
+        "q": np.array([1.0]),
+        "A": sp.csc_matrix([[-1.0]]),
+        "b": np.array([-1.0]),
+        "r": 0.0,
+        "n": 1,
+        "m": 1,
+        "cone": {"l": 1},
+        "obj_type": "min",
+    }
+
+
 def _solve(solver_name: str, qp: dict, tmp_path: Path):
     adapter_cls = get_solver(solver_name)
     if not adapter_cls.is_available():
@@ -90,7 +109,18 @@ def _solve(solver_name: str, qp: dict, tmp_path: Path):
     return adapter.solve(problem, artifacts)
 
 
-@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp"])
+def _solve_cone(solver_name: str, cone_problem: dict, tmp_path: Path):
+    adapter_cls = get_solver(solver_name)
+    if not adapter_cls.is_available():
+        pytest.skip(f"{solver_name} not installed")
+    adapter = adapter_cls(SOLVER_SETTINGS.get(solver_name, {}))
+    problem = ProblemData("test", "p", CONE, cone_problem)
+    artifacts = tmp_path / solver_name
+    artifacts.mkdir(parents=True, exist_ok=True)
+    return adapter.solve(problem, artifacts)
+
+
+@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "highs", "proxqp", "piqp"])
 def test_adapter_reports_kkt_for_small_qp(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _small_qp(), tmp_path)
     assert result.status == status.OPTIMAL, result.status
@@ -103,7 +133,7 @@ def test_adapter_reports_kkt_for_small_qp(solver_name: str, tmp_path: Path):
     assert result.kkt["duality_gap_rel"] < 1e-4
 
 
-@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "pdlp"])
+@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "pdlp", "highs", "proxqp", "piqp"])
 def test_adapter_reports_kkt_for_small_lp(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _small_lp(), tmp_path)
     assert result.status == status.OPTIMAL, result.status
@@ -111,6 +141,15 @@ def test_adapter_reports_kkt_for_small_lp(solver_name: str, tmp_path: Path):
     assert result.kkt is not None
     assert np.isfinite(result.kkt["primal_res_rel"])
     assert np.isfinite(result.kkt["dual_res_rel"])
+    assert result.kkt["primal_res_rel"] < 1e-4
+    assert result.kkt["dual_res_rel"] < 1e-4
+
+
+def test_sdpa_reports_kkt_for_small_cone_lp(tmp_path: Path):
+    result = _solve_cone("sdpa", _small_cone_lp(), tmp_path)
+    assert result.status == status.OPTIMAL, result.status
+    assert result.objective_value == pytest.approx(1.0, abs=1e-4)
+    assert result.kkt is not None
     assert result.kkt["primal_res_rel"] < 1e-4
     assert result.kkt["dual_res_rel"] < 1e-4
 
