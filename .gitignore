@@ -1,20 +1,9 @@
-# Ignore results folder
-#results/*
-
 *.csv
 *.mps
 *.pb
 
 # Benchmark run outputs
 configs/runs/
-
-# Add certain results
-#!results/benchmark_problems/
-#results/benchmark_problems/*
-#!results/benchmark_problems/benchmark_problems.png
-#!results/maros_meszaros_problems/
-#results/maros_meszaros_problems/*
-#!results/maros_meszaros_problems/maros_meszaros_problems.png
 
 # OSX Files
 .DS_Store
@@ -28,7 +17,7 @@ __pycache__/
 
 # C extensions
 *.so
-problem_classes/mittelmann/temperature_ground_truth-easy.hdf5
+
 # Distribution / packaging
 .Python
 build/
