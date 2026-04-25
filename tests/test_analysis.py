@@ -20,6 +20,7 @@ from solver_benchmarks.analysis.reports import (
     objective_spreads,
     pairwise_speedups,
     performance_ratio_matrix,
+    problem_dimensions,
     problem_solver_comparison,
     setup_solve_breakdown,
     slowest_solves,
@@ -692,6 +693,76 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
     assert "ds_a" in markdown and "ds_b" in markdown
     # The Run Overview should list both datasets.
     assert "Datasets:" in markdown
+
+
+def test_problem_keyed_tables_preserve_dataset_for_shared_names():
+    frame = pd.DataFrame(
+        [
+            {
+                "problem": "p1",
+                "solver_id": "solver_a",
+                "dataset": "ds_a",
+                "status": "optimal",
+                "run_time_seconds": 1.0,
+                "iterations": 10,
+                "objective_value": 1.0,
+                "metadata.n": 5.0,
+                "metadata.m": 3.0,
+            },
+            {
+                "problem": "p1",
+                "solver_id": "solver_a",
+                "dataset": "ds_b",
+                "status": "time_limit",
+                "run_time_seconds": 9.0,
+                "iterations": 90,
+                "objective_value": None,
+                "metadata.n": 200.0,
+                "metadata.m": 100.0,
+            },
+            {
+                "problem": "p1",
+                "solver_id": "solver_b",
+                "dataset": "ds_a",
+                "status": "optimal",
+                "run_time_seconds": 2.0,
+                "iterations": 20,
+                "objective_value": 1.01,
+                "metadata.n": 5.0,
+                "metadata.m": 3.0,
+            },
+        ]
+    )
+
+    dimensions = problem_dimensions(frame).set_index(["dataset", "problem"])
+    # Same problem name in two datasets must be two separate rows, each with
+    # the dimensions from its own dataset.
+    assert dimensions.loc[("ds_a", "p1"), "n"] == pytest.approx(5.0)
+    assert dimensions.loc[("ds_b", "p1"), "n"] == pytest.approx(200.0)
+
+    comparison = problem_solver_comparison(frame)
+    assert list(comparison.columns[:2]) == ["dataset", "problem"]
+    by_pair = comparison.set_index(["dataset", "problem"])
+    # solver_a status must reflect the dataset the row came from, not be
+    # collapsed to whichever row happened to win drop_duplicates.
+    assert by_pair.loc[("ds_a", "p1"), "solver_a__status"] == "optimal"
+    assert by_pair.loc[("ds_b", "p1"), "solver_a__status"] == "time_limit"
+    # solver_b only ran on ds_a; ds_b row should be missing for solver_b.
+    assert by_pair.loc[("ds_a", "p1"), "solver_b__status"] == "optimal"
+    assert pd.isna(by_pair.loc[("ds_b", "p1"), "solver_b__status"])
+
+    matrix = status_matrix(frame)
+    # Row index is (dataset, problem) when the column is present.
+    assert matrix.index.names == ["dataset", "problem"]
+    assert matrix.loc[("ds_a", "p1"), "solver_a"] == "optimal"
+    assert matrix.loc[("ds_b", "p1"), "solver_a"] == "time_limit"
+
+    tables = solver_problem_tables(frame)
+    solver_a_table = tables["solver_a"].set_index(["dataset", "problem"])
+    assert solver_a_table.loc[("ds_a", "p1"), "n"] == pytest.approx(5.0)
+    assert solver_a_table.loc[("ds_b", "p1"), "n"] == pytest.approx(200.0)
+    assert solver_a_table.loc[("ds_a", "p1"), "status"] == "optimal"
+    assert solver_a_table.loc[("ds_b", "p1"), "status"] == "time_limit"
 
 
 def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):

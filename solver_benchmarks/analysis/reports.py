@@ -787,11 +787,28 @@ def failures_with_successful_alternatives(
     return pd.DataFrame(rows, columns=columns)
 
 
+def _problem_keys(results: pd.DataFrame) -> list[str]:
+    """Return the row-identity columns for problem-keyed tables.
+
+    Multi-dataset runs can have the same ``problem`` name in different
+    datasets (e.g. ``afiro`` in two LP bundles), so any pivot/merge that
+    keys on ``problem`` alone silently collapses them and can attach the
+    wrong dimensions or status. Use ``(dataset, problem)`` whenever the
+    frame carries a ``dataset`` column; fall back to ``("problem",)`` for
+    legacy frames or empty inputs.
+    """
+    if "dataset" in results.columns:
+        return ["dataset", "problem"]
+    return ["problem"]
+
+
 def status_matrix(results: pd.DataFrame) -> pd.DataFrame:
     if results.empty:
         return pd.DataFrame()
+    keys = _problem_keys(results)
+    index = keys[0] if len(keys) == 1 else keys
     return results.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values="status",
         aggfunc="first",
@@ -812,23 +829,36 @@ def problem_solver_comparison(
     if results.empty:
         return pd.DataFrame()
 
-    problems = sorted(results["problem"].dropna().unique())
-    output = pd.DataFrame({"problem": problems})
+    keys = _problem_keys(results)
+    output = (
+        results[keys]
+        .dropna(subset=["problem"])
+        .drop_duplicates()
+        .sort_values(keys)
+        .reset_index(drop=True)
+    )
     dimensions = problem_dimensions(results)
     if not dimensions.empty:
-        output = output.merge(dimensions, on="problem", how="left")
+        output = output.merge(dimensions, on=keys, how="left")
 
     for solver_id in sorted(results["solver_id"].dropna().unique()):
         solver_rows = results[results["solver_id"] == solver_id]
         for field in fields:
             if field not in solver_rows:
                 continue
-            values = solver_rows.pivot_table(
-                index="problem",
-                values=field,
-                aggfunc="first",
+            lookup = (
+                solver_rows.dropna(subset=["problem"])
+                .drop_duplicates(subset=keys)
+                .set_index(keys)[field]
             )
-            output[f"{solver_id}__{field}"] = output["problem"].map(values[field])
+            output_keys = (
+                output[keys[0]]
+                if len(keys) == 1
+                else list(zip(*[output[key] for key in keys]))
+            )
+            output[f"{solver_id}__{field}"] = [
+                lookup.get(key) for key in output_keys
+            ]
     return output
 
 
@@ -836,9 +866,10 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
     if results.empty:
         return {}
     dimensions = problem_dimensions(results)
+    keys = _problem_keys(results)
     tables = {}
     base_columns = [
-        "problem",
+        *keys,
         "problem_kind",
         "status",
         "run_time_seconds",
@@ -853,24 +884,28 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
     ]
     for solver_id, group in results.groupby("solver_id"):
         available = [column for column in base_columns if column in group]
-        table = group[available].sort_values("problem").reset_index(drop=True)
+        table = group[available].sort_values(keys).reset_index(drop=True)
         if not dimensions.empty:
             dimension_columns = dimensions.drop(
-                columns=[column for column in dimensions.columns if column in table and column != "problem"],
+                columns=[
+                    column
+                    for column in dimensions.columns
+                    if column in table and column not in keys
+                ],
                 errors="ignore",
             )
-            table = table.merge(dimension_columns, on="problem", how="left")
+            table = table.merge(dimension_columns, on=keys, how="left")
         tables[str(solver_id)] = table
     return tables
 
 
 def problem_dimensions(results: pd.DataFrame) -> pd.DataFrame:
+    keys = _problem_keys(results)
     if results.empty:
-        return pd.DataFrame(columns=["problem"])
+        return pd.DataFrame(columns=keys)
     dimension_columns = [
         column
         for column in [
-            "dataset",
             "problem_kind",
             "metadata.n",
             "metadata.m",
@@ -882,11 +917,18 @@ def problem_dimensions(results: pd.DataFrame) -> pd.DataFrame:
         if column in results
     ]
     if not dimension_columns:
-        return pd.DataFrame({"problem": sorted(results["problem"].dropna().unique())})
+        unique = (
+            results[keys]
+            .dropna(subset=["problem"])
+            .drop_duplicates()
+            .sort_values(keys)
+            .reset_index(drop=True)
+        )
+        return unique
     dimensions = (
-        results[["problem", *dimension_columns]]
-        .drop_duplicates("problem")
-        .sort_values("problem")
+        results[[*keys, *dimension_columns]]
+        .drop_duplicates(subset=keys)
+        .sort_values(keys)
         .reset_index(drop=True)
     )
     return dimensions.rename(
