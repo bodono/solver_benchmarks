@@ -30,9 +30,11 @@ def run_environment_matrix(
         ],
     )
     if run_dir is None:
+        from solver_benchmarks.core.storage import _datasets_slug
+
         run_dir = (
             combined_config.output_dir
-            / f"{combined_config.dataset}_{combined_config.config_hash}_env"
+            / f"{_datasets_slug(combined_config)}_{combined_config.config_hash}_env"
         )
         if not run_dir.is_absolute():
             run_dir = repo_root / run_dir

@@ -1,0 +1,30 @@
+run:
+  output_dir: runs
+  parallelism: 2
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - name: netlib
+      dataset_options:
+        subset: feasible
+      include:
+        - afiro
+        - sc50a
+    - name: maros_meszaros
+      include:
+        - AUG2D
+        - CVXQP1_S
+    - synthetic_qp
+
+solvers:
+  - id: scs_default
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+
+  - id: clarabel_default
+    solver: clarabel
+    settings:
+      max_iter: 200

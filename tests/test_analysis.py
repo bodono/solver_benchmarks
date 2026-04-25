@@ -20,6 +20,7 @@ from solver_benchmarks.analysis.reports import (
     objective_spreads,
     pairwise_speedups,
     performance_ratio_matrix,
+    problem_dimensions,
     problem_solver_comparison,
     setup_solve_breakdown,
     slowest_solves,
@@ -556,3 +557,496 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
     ]:
         assert (report_dir / filename).exists(), f"missing plot file {filename}"
         assert f"![{alt_text}]({filename})" in markdown, f"markdown missing {filename}"
+
+
+def _multi_dataset_records(dataset_a: str, dataset_b: str) -> list[dict]:
+    base = []
+    for problem, solver, dataset, status_str, run_time, obj in [
+        ("p1", "solver_a", dataset_a, "optimal", 1.0, 1.0),
+        ("p1", "solver_b", dataset_a, "optimal", 2.0, 1.0),
+        ("p1", "solver_a", dataset_b, "optimal", 0.5, 0.5),
+        ("p1", "solver_b", dataset_b, "time_limit", 9.0, None),
+        ("p2", "solver_a", dataset_b, "optimal", 0.8, 1.5),
+        ("p2", "solver_b", dataset_b, "optimal", 0.6, 1.5),
+    ]:
+        base.append(
+            {
+                "problem": problem,
+                "solver_id": solver,
+                "dataset": dataset,
+                "status": status_str,
+                "run_time_seconds": run_time,
+                "iterations": 10,
+                "objective_value": obj,
+            }
+        )
+    return base
+
+
+def _register_fake_datasets(monkeypatch, dataset_a: str, dataset_b: str):
+    from solver_benchmarks.core.problem import QP, ProblemSpec
+    from solver_benchmarks.datasets import registry as dataset_registry
+
+    class _FakeA:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id=dataset_a, name="p1", kind=QP)]
+
+    class _FakeB:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [
+                ProblemSpec(dataset_id=dataset_b, name="p1", kind=QP),
+                ProblemSpec(dataset_id=dataset_b, name="p2", kind=QP),
+            ]
+
+    monkeypatch.setitem(dataset_registry.DATASETS, dataset_a, _FakeA)
+    monkeypatch.setitem(dataset_registry.DATASETS, dataset_b, _FakeB)
+
+
+def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path):
+    _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "datasets": [
+                {
+                    "name": "ds_a",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+                {
+                    "name": "ds_b",
+                    "dataset_options": {},
+                    "include": ["p1", "p2"],
+                    "exclude": [],
+                },
+            ],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in _multi_dataset_records("ds_a", "ds_b"):
+            handle.write(json.dumps(record) + "\n")
+
+    completion = completion_summary(run_dir, load_results(run_dir), repo_root=Path.cwd())
+    by_pair = completion.set_index(["solver_id", "dataset"])
+
+    assert by_pair.loc[("solver_a", "ds_a"), "expected"] == 1
+    assert by_pair.loc[("solver_a", "ds_a"), "missing"] == 0
+    assert by_pair.loc[("solver_a", "ds_b"), "expected"] == 2
+    assert by_pair.loc[("solver_a", "ds_b"), "completed"] == 2
+    assert by_pair.loc[("solver_b", "ds_b"), "expected"] == 2
+    # solver_b only completed p1 and p2 in ds_b (one row each); none missing.
+    assert by_pair.loc[("solver_b", "ds_b"), "missing"] == 0
+
+
+def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
+    _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "datasets": [
+                {
+                    "name": "ds_a",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+                {
+                    "name": "ds_b",
+                    "dataset_options": {},
+                    "include": ["p1", "p2"],
+                    "exclude": [],
+                },
+            ],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in _multi_dataset_records("ds_a", "ds_b"):
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+
+    assert "## By Dataset" in markdown
+    # Per-dataset h3 sections should exist for each dataset.
+    assert "ds_a" in markdown and "ds_b" in markdown
+    # The Run Overview should list both datasets.
+    assert "Datasets:" in markdown
+
+
+def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
+    monkeypatch, tmp_path: Path
+):
+    """Two entries with the same registry name but distinct ids must each
+    surface as their own populated h3 section."""
+    from solver_benchmarks.core.problem import QP, ProblemSpec
+    from solver_benchmarks.datasets import registry as dataset_registry
+
+    class _FakeNetlib:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="netlib", name="p1", kind=QP)]
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "netlib", _FakeNetlib)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "datasets": [
+                {
+                    "id": "netlib_feasible",
+                    "name": "netlib",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+                {
+                    "id": "netlib_infeasible",
+                    "name": "netlib",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+            ],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    records = [
+        {
+            "problem": "p1",
+            "solver_id": "solver_a",
+            "dataset": "netlib_feasible",
+            "status": "optimal",
+            "run_time_seconds": 1.0,
+            "iterations": 10,
+            "objective_value": 1.0,
+        },
+        {
+            "problem": "p1",
+            "solver_id": "solver_b",
+            "dataset": "netlib_feasible",
+            "status": "optimal",
+            "run_time_seconds": 2.0,
+            "iterations": 20,
+            "objective_value": 1.0,
+        },
+        {
+            "problem": "p1",
+            "solver_id": "solver_a",
+            "dataset": "netlib_infeasible",
+            "status": "primal_infeasible",
+            "run_time_seconds": 0.5,
+            "iterations": 5,
+            "objective_value": None,
+        },
+        {
+            "problem": "p1",
+            "solver_id": "solver_b",
+            "dataset": "netlib_infeasible",
+            "status": "primal_infeasible",
+            "run_time_seconds": 0.7,
+            "iterations": 7,
+            "objective_value": None,
+        },
+    ]
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+
+    assert "### netlib_feasible (netlib)" in markdown
+    assert "### netlib_infeasible (netlib)" in markdown
+    # The Run Overview "Problems with results" should count unique
+    # (dataset, problem) pairs, not unique problem names.
+    assert "Problems with results: `2`" in markdown
+    # Both sections should be populated, not the empty fallback.
+    feasible_idx = markdown.index("### netlib_feasible (netlib)")
+    infeasible_idx = markdown.index("### netlib_infeasible (netlib)")
+    feasible_block = markdown[feasible_idx:infeasible_idx]
+    infeasible_block = markdown[infeasible_idx:]
+    assert "No rows for this dataset." not in feasible_block
+    assert "No rows for this dataset." not in infeasible_block
+    # The Run Overview should label each entry with the id (registry name) form.
+    assert "netlib_feasible (netlib), netlib_infeasible (netlib)" in markdown
+
+
+def test_problem_keyed_tables_preserve_dataset_for_shared_names():
+    frame = pd.DataFrame(
+        [
+            {
+                "problem": "p1",
+                "solver_id": "solver_a",
+                "dataset": "ds_a",
+                "status": "optimal",
+                "run_time_seconds": 1.0,
+                "iterations": 10,
+                "objective_value": 1.0,
+                "metadata.n": 5.0,
+                "metadata.m": 3.0,
+            },
+            {
+                "problem": "p1",
+                "solver_id": "solver_a",
+                "dataset": "ds_b",
+                "status": "time_limit",
+                "run_time_seconds": 9.0,
+                "iterations": 90,
+                "objective_value": None,
+                "metadata.n": 200.0,
+                "metadata.m": 100.0,
+            },
+            {
+                "problem": "p1",
+                "solver_id": "solver_b",
+                "dataset": "ds_a",
+                "status": "optimal",
+                "run_time_seconds": 2.0,
+                "iterations": 20,
+                "objective_value": 1.01,
+                "metadata.n": 5.0,
+                "metadata.m": 3.0,
+            },
+        ]
+    )
+
+    dimensions = problem_dimensions(frame).set_index(["dataset", "problem"])
+    # Same problem name in two datasets must be two separate rows, each with
+    # the dimensions from its own dataset.
+    assert dimensions.loc[("ds_a", "p1"), "n"] == pytest.approx(5.0)
+    assert dimensions.loc[("ds_b", "p1"), "n"] == pytest.approx(200.0)
+
+    comparison = problem_solver_comparison(frame)
+    assert list(comparison.columns[:2]) == ["dataset", "problem"]
+    by_pair = comparison.set_index(["dataset", "problem"])
+    # solver_a status must reflect the dataset the row came from, not be
+    # collapsed to whichever row happened to win drop_duplicates.
+    assert by_pair.loc[("ds_a", "p1"), "solver_a__status"] == "optimal"
+    assert by_pair.loc[("ds_b", "p1"), "solver_a__status"] == "time_limit"
+    # solver_b only ran on ds_a; ds_b row should be missing for solver_b.
+    assert by_pair.loc[("ds_a", "p1"), "solver_b__status"] == "optimal"
+    assert pd.isna(by_pair.loc[("ds_b", "p1"), "solver_b__status"])
+
+    matrix = status_matrix(frame)
+    # Row index is (dataset, problem) when the column is present.
+    assert matrix.index.names == ["dataset", "problem"]
+    assert matrix.loc[("ds_a", "p1"), "solver_a"] == "optimal"
+    assert matrix.loc[("ds_b", "p1"), "solver_a"] == "time_limit"
+
+    tables = solver_problem_tables(frame)
+    solver_a_table = tables["solver_a"].set_index(["dataset", "problem"])
+    assert solver_a_table.loc[("ds_a", "p1"), "n"] == pytest.approx(5.0)
+    assert solver_a_table.loc[("ds_b", "p1"), "n"] == pytest.approx(200.0)
+    assert solver_a_table.loc[("ds_a", "p1"), "status"] == "optimal"
+    assert solver_a_table.loc[("ds_b", "p1"), "status"] == "time_limit"
+
+
+def test_profile_speedup_spread_ratio_separate_datasets_with_shared_problem_names():
+    # Two datasets share problem name p1 but have different solver outcomes.
+    # Without dataset-aware keying the pivots collapse them via aggfunc="first"
+    # and: the profile counts only one row instead of two, the speedup
+    # compares across datasets, the spread sees one solver per problem, and
+    # the ratio matrix attaches a ratio from the wrong dataset.
+    frame = pd.DataFrame(
+        [
+            # ds_a/p1: solver_a fast, solver_b slow
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0, "objective_value": 1.0},
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_b",
+             "status": "optimal", "run_time_seconds": 4.0, "objective_value": 1.0},
+            # ds_b/p1: solver_a slow, solver_b fast (opposite of ds_a)
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 8.0, "objective_value": 5.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_b",
+             "status": "optimal", "run_time_seconds": 2.0, "objective_value": 5.5},
+        ]
+    )
+
+    profile = performance_profile(frame, max_value=100.0, n_tau=3)
+    # Two distinct (dataset, problem) rows, each solver wins one, so
+    # rho(tau=1) = 0.5 for both. If keyed only on problem, aggfunc="first"
+    # would keep one row and give 1.0 for the winner and 0.0 for the loser.
+    assert profile["solver_a"].tolist() == pytest.approx([0.5, 1.0, 1.0])
+    assert profile["solver_b"].tolist() == pytest.approx([0.5, 1.0, 1.0])
+
+    speedups = pairwise_speedups(frame).iloc[0]
+    # Two common (dataset, problem) successes, not one.
+    assert speedups["common_successes"] == 2
+    assert speedups["a_wins"] == 1
+    assert speedups["b_wins"] == 1
+    # Winner columns must encode the dataset so callers can locate the row.
+    assert "biggest_a_win_dataset" in speedups
+    assert speedups["biggest_a_win_dataset"] == "ds_a"
+    assert speedups["biggest_a_win_problem"] == "p1"
+    assert speedups["biggest_a_win_speedup"] == pytest.approx(4.0)
+    assert speedups["biggest_b_win_dataset"] == "ds_b"
+    assert speedups["biggest_b_win_problem"] == "p1"
+    assert speedups["biggest_b_win_speedup"] == pytest.approx(4.0)
+
+    spreads = objective_spreads(frame)
+    # Two rows, one per (dataset, problem); with shared-name conflation the
+    # second row would be silently dropped by aggfunc="first".
+    by_pair = spreads.set_index(["dataset", "problem"])
+    assert by_pair.loc[("ds_a", "p1"), "solver_count"] == 2
+    assert by_pair.loc[("ds_b", "p1"), "solver_count"] == 2
+    # Spreads must reflect each dataset's own objective values.
+    assert by_pair.loc[("ds_a", "p1"), "absolute_spread"] == pytest.approx(0.0)
+    assert by_pair.loc[("ds_b", "p1"), "absolute_spread"] == pytest.approx(0.5)
+
+    ratios = performance_ratio_matrix(frame)
+    # MultiIndex (dataset, problem) keeps the ratios from the wrong dataset
+    # from being attached to the wrong row.
+    assert ratios.index.names == ["dataset", "problem"]
+    assert ratios.loc[("ds_a", "p1"), "solver_a"] == pytest.approx(1.0)
+    assert ratios.loc[("ds_a", "p1"), "solver_b"] == pytest.approx(4.0)
+    assert ratios.loc[("ds_b", "p1"), "solver_a"] == pytest.approx(4.0)
+    assert ratios.loc[("ds_b", "p1"), "solver_b"] == pytest.approx(1.0)
+
+
+def test_slowest_solves_includes_dataset_when_present():
+    # Two datasets share problem name p1; without the dataset column the
+    # report has ambiguous rows ("which p1 was the slow one?").
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0,
+             "iterations": 10, "objective_value": 1.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 9.0,
+             "iterations": 90, "objective_value": 5.0},
+        ]
+    )
+    table = slowest_solves(frame)
+    assert "dataset" in table.columns
+    # Output is sorted slowest-first and the slow row must be ds_b/p1.
+    top = table.iloc[0]
+    assert top["dataset"] == "ds_b"
+    assert top["problem"] == "p1"
+    assert top["run_time_seconds"] == pytest.approx(9.0)
+
+    # Legacy frames without a dataset column keep their original shape.
+    legacy = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0,
+             "iterations": 10, "objective_value": 1.0},
+        ]
+    )
+    legacy_table = slowest_solves(legacy)
+    assert "dataset" not in legacy_table.columns
+
+
+def test_failures_with_successful_alternatives_keys_on_dataset_and_problem():
+    # ds_a/p1 has solver_a failing but solver_b succeeding — that's a real
+    # alternative. ds_b/p1 has solver_a failing and solver_b also failing,
+    # so there is NO valid alternative. If grouped by problem only, the
+    # ds_a/p1 success would be incorrectly attributed to the ds_b/p1 failure.
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "time_limit", "run_time_seconds": 9.0, "objective_value": None},
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_b",
+             "status": "optimal", "run_time_seconds": 1.5, "objective_value": 1.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "time_limit", "run_time_seconds": 9.0, "objective_value": None},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_b",
+             "status": "solver_error", "run_time_seconds": None, "objective_value": None},
+        ]
+    )
+    table = failures_with_successful_alternatives(frame)
+    rows = table.set_index(["dataset", "problem", "solver_id"])
+    assert ("ds_a", "p1", "solver_a") in rows.index
+    assert rows.loc[("ds_a", "p1", "solver_a"), "best_success_solver"] == "solver_b"
+    # ds_b/p1 has no successful solver, so the failure must NOT appear here.
+    assert ("ds_b", "p1", "solver_a") not in rows.index
+    assert ("ds_b", "p1", "solver_b") not in rows.index
+
+
+def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Path):
+    # Two datasets share name p1 → 2 distinct (dataset, problem) pairs.
+    # If the denominator counted unique problem names only it would be 1,
+    # which would push cactus fractions above 1.0.
+    from solver_benchmarks.analysis.plots import _unique_problem_count, _write_cactus
+
+    multi = pd.DataFrame(
+        [
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 2.0},
+        ]
+    )
+    assert _unique_problem_count(multi) == 2
+
+    legacy = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p2", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 2.0},
+        ]
+    )
+    assert _unique_problem_count(legacy) == 2
+
+    out_dir = tmp_path / "plots"
+    out_dir.mkdir()
+    path = _write_cactus(multi, out_dir, "run_time_seconds")
+    assert path is not None and path.exists()
+
+
+def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "synthetic_qp",
+            "include": ["one_variable_eq", "one_variable_lp"],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    records = _analysis_frame().to_dict("records")
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+
+    assert "## By Dataset" not in markdown

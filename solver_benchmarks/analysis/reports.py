@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.core import status
+from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.datasets import get_dataset
 
 
@@ -483,6 +484,7 @@ def completion_summary(
     manifest_path = run_dir / "manifest.json"
     columns = [
         "solver_id",
+        "dataset",
         "expected",
         "completed",
         "missing",
@@ -494,34 +496,48 @@ def completion_summary(
         return pd.DataFrame(columns=columns)
 
     config = json.loads(manifest_path.read_text())["config"]
-    expected_problems = _expected_problem_names(config, repo_root=repo_root)
+    expected_by_dataset = _expected_by_dataset(config, repo_root=repo_root)
     solvers = [solver["id"] for solver in config.get("solvers", [])]
 
     rows = []
-    expected_set = set(expected_problems)
+    has_dataset_col = not results.empty and "dataset" in results.columns
     for solver_id in solvers:
-        solver_results = results[results["solver_id"] == solver_id] if not results.empty else results
-        completed_problems = (
-            set(solver_results["problem"]) if not solver_results.empty else set()
+        solver_rows = (
+            results[results["solver_id"] == solver_id]
+            if not results.empty
+            else results
         )
-        duplicate_rows = (
-            int(solver_results.duplicated(["problem", "solver_id"]).sum())
-            if not solver_results.empty
-            else 0
-        )
-        missing = len(expected_set - completed_problems)
-        unexpected = len(completed_problems - expected_set)
-        rows.append(
-            {
-                "solver_id": solver_id,
-                "expected": len(expected_problems),
-                "completed": len(completed_problems),
-                "missing": int(missing),
-                "unexpected": int(unexpected),
-                "duplicate_rows": duplicate_rows,
-                "complete": missing == 0 and unexpected == 0 and duplicate_rows == 0,
-            }
-        )
+        for dataset_name, expected_set in expected_by_dataset.items():
+            if has_dataset_col:
+                dataset_rows = solver_rows[solver_rows["dataset"] == dataset_name]
+            else:
+                # Legacy single-dataset run dirs without a populated dataset
+                # column: every row belongs to the one configured dataset.
+                dataset_rows = solver_rows
+            completed_problems = (
+                set(dataset_rows["problem"]) if not dataset_rows.empty else set()
+            )
+            duplicate_rows = (
+                int(dataset_rows.duplicated(["problem", "solver_id"]).sum())
+                if not dataset_rows.empty
+                else 0
+            )
+            missing = len(expected_set - completed_problems)
+            unexpected = len(completed_problems - expected_set)
+            rows.append(
+                {
+                    "solver_id": solver_id,
+                    "dataset": dataset_name,
+                    "expected": len(expected_set),
+                    "completed": len(completed_problems),
+                    "missing": int(missing),
+                    "unexpected": int(unexpected),
+                    "duplicate_rows": duplicate_rows,
+                    "complete": missing == 0
+                    and unexpected == 0
+                    and duplicate_rows == 0,
+                }
+            )
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -537,22 +553,38 @@ def missing_results(
 
         results = load_results(run_dir)
     manifest_path = run_dir / "manifest.json"
+    columns = ["solver_id", "dataset", "problem"]
     if not manifest_path.exists():
-        return pd.DataFrame(columns=["solver_id", "problem"])
+        return pd.DataFrame(columns=columns)
 
     config = json.loads(manifest_path.read_text())["config"]
-    expected_problems = set(_expected_problem_names(config, repo_root=repo_root))
+    expected_by_dataset = _expected_by_dataset(config, repo_root=repo_root)
+    has_dataset_col = not results.empty and "dataset" in results.columns
     rows = []
     for solver in config.get("solvers", []):
         solver_id = solver["id"]
-        completed = (
-            set(results[results["solver_id"] == solver_id]["problem"])
+        solver_rows = (
+            results[results["solver_id"] == solver_id]
             if not results.empty
-            else set()
+            else results
         )
-        for problem in sorted(expected_problems - completed):
-            rows.append({"solver_id": solver_id, "problem": problem})
-    return pd.DataFrame(rows, columns=["solver_id", "problem"])
+        for dataset_name, expected_set in expected_by_dataset.items():
+            if has_dataset_col:
+                dataset_rows = solver_rows[solver_rows["dataset"] == dataset_name]
+            else:
+                dataset_rows = solver_rows
+            completed = (
+                set(dataset_rows["problem"]) if not dataset_rows.empty else set()
+            )
+            for problem in sorted(expected_set - completed):
+                rows.append(
+                    {
+                        "solver_id": solver_id,
+                        "dataset": dataset_name,
+                        "problem": problem,
+                    }
+                )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def pairwise_speedups(
@@ -564,7 +596,8 @@ def pairwise_speedups(
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
-    columns = [
+    has_dataset = not results.empty and "dataset" in results.columns
+    base_columns = [
         "solver_a",
         "solver_b",
         "common_successes",
@@ -573,19 +606,34 @@ def pairwise_speedups(
         "ties",
         "median_speedup_a_over_b",
         "geomean_speedup_a_over_b",
-        "biggest_a_win_problem",
-        "biggest_a_win_speedup",
-        "biggest_b_win_problem",
-        "biggest_b_win_speedup",
     ]
+    if has_dataset:
+        winner_columns = [
+            "biggest_a_win_dataset",
+            "biggest_a_win_problem",
+            "biggest_a_win_speedup",
+            "biggest_b_win_dataset",
+            "biggest_b_win_problem",
+            "biggest_b_win_speedup",
+        ]
+    else:
+        winner_columns = [
+            "biggest_a_win_problem",
+            "biggest_a_win_speedup",
+            "biggest_b_win_problem",
+            "biggest_b_win_speedup",
+        ]
+    columns = base_columns + winner_columns
     if results.empty or metric not in results:
         return pd.DataFrame(columns=columns)
 
     successful = results[results["status"].isin(success_statuses)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    keys = _problem_keys(successful)
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values=metric,
         aggfunc="first",
@@ -594,32 +642,37 @@ def pairwise_speedups(
     for solver_a, solver_b in combinations(sorted(pivot.columns), 2):
         common = pivot[[solver_a, solver_b]].dropna()
         if common.empty:
-            rows.append(_empty_pairwise_row(solver_a, solver_b))
+            rows.append(_empty_pairwise_row(solver_a, solver_b, has_dataset=has_dataset))
             continue
         speedup_a_over_b = common[solver_b] / common[solver_a]
         a_wins = speedup_a_over_b > 1.0 + tie_rtol
         b_wins = speedup_a_over_b < 1.0 / (1.0 + tie_rtol)
         ties = ~(a_wins | b_wins)
-        biggest_a_problem = speedup_a_over_b.idxmax()
-        biggest_b_problem = speedup_a_over_b.idxmin()
-        rows.append(
-            {
-                "solver_a": solver_a,
-                "solver_b": solver_b,
-                "common_successes": int(len(common)),
-                "a_wins": int(a_wins.sum()),
-                "b_wins": int(b_wins.sum()),
-                "ties": int(ties.sum()),
-                "median_speedup_a_over_b": float(speedup_a_over_b.median()),
-                "geomean_speedup_a_over_b": float(
-                    np.exp(np.mean(np.log(speedup_a_over_b)))
-                ),
-                "biggest_a_win_problem": biggest_a_problem,
-                "biggest_a_win_speedup": float(speedup_a_over_b.loc[biggest_a_problem]),
-                "biggest_b_win_problem": biggest_b_problem,
-                "biggest_b_win_speedup": float(1.0 / speedup_a_over_b.loc[biggest_b_problem]),
-            }
-        )
+        biggest_a_key = speedup_a_over_b.idxmax()
+        biggest_b_key = speedup_a_over_b.idxmin()
+        row = {
+            "solver_a": solver_a,
+            "solver_b": solver_b,
+            "common_successes": int(len(common)),
+            "a_wins": int(a_wins.sum()),
+            "b_wins": int(b_wins.sum()),
+            "ties": int(ties.sum()),
+            "median_speedup_a_over_b": float(speedup_a_over_b.median()),
+            "geomean_speedup_a_over_b": float(
+                np.exp(np.mean(np.log(speedup_a_over_b)))
+            ),
+        }
+        if has_dataset:
+            row["biggest_a_win_dataset"] = biggest_a_key[0]
+            row["biggest_a_win_problem"] = biggest_a_key[1]
+            row["biggest_b_win_dataset"] = biggest_b_key[0]
+            row["biggest_b_win_problem"] = biggest_b_key[1]
+        else:
+            row["biggest_a_win_problem"] = biggest_a_key
+            row["biggest_b_win_problem"] = biggest_b_key
+        row["biggest_a_win_speedup"] = float(speedup_a_over_b.loc[biggest_a_key])
+        row["biggest_b_win_speedup"] = float(1.0 / speedup_a_over_b.loc[biggest_b_key])
+        rows.append(row)
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -630,7 +683,9 @@ def objective_spreads(
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    has_dataset = not results.empty and "dataset" in results.columns
     columns = [
+        *(("dataset",) if has_dataset else ()),
         "problem",
         "solver_count",
         "objective_min",
@@ -648,14 +703,16 @@ def objective_spreads(
         successful["objective_value"], errors="coerce"
     )
     successful = successful[np.isfinite(successful["objective_value"])]
+    keys = _problem_keys(successful)
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values="objective_value",
         aggfunc="first",
     )
     rows = []
-    for problem, row in pivot.iterrows():
+    for key, row in pivot.iterrows():
         values = row.dropna()
         if len(values) < 2:
             continue
@@ -663,9 +720,14 @@ def objective_spreads(
         objective_max = float(values.max())
         reference = max(1.0, abs(float(values.median())))
         absolute_spread = objective_max - objective_min
-        rows.append(
+        record: dict[str, Any] = {}
+        if has_dataset:
+            record["dataset"] = key[0]
+            record["problem"] = key[1]
+        else:
+            record["problem"] = key
+        record.update(
             {
-                "problem": problem,
                 "solver_count": int(len(values)),
                 "objective_min": objective_min,
                 "objective_max": objective_max,
@@ -675,6 +737,7 @@ def objective_spreads(
                 "solver_max": str(values.idxmax()),
             }
         )
+        rows.append(record)
     return pd.DataFrame(rows, columns=columns).sort_values(
         ["relative_spread", "absolute_spread"], ascending=False
     )
@@ -686,8 +749,9 @@ def slowest_solves(
     metric: str = "run_time_seconds",
     limit: int = 25,
 ) -> pd.DataFrame:
+    keys = _problem_keys(results) if not results.empty else ["problem"]
     columns = [
-        "problem",
+        *keys,
         "solver_id",
         "status",
         metric,
@@ -713,8 +777,9 @@ def failures_with_successful_alternatives(
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    keys = _problem_keys(results) if not results.empty else ["problem"]
     columns = [
-        "problem",
+        *keys,
         "solver_id",
         "status",
         "best_success_solver",
@@ -734,16 +799,16 @@ def failures_with_successful_alternatives(
         return pd.DataFrame(columns=columns)
 
     success_metric = metric if metric in successes else "solver_id"
-    best_successes = successes.sort_values(success_metric).groupby("problem").first()
+    best_successes = successes.sort_values(success_metric).groupby(keys).first()
     rows = []
     for _, failure in failures.iterrows():
-        problem = failure["problem"]
-        if problem not in best_successes.index:
+        key = tuple(failure[col] for col in keys) if len(keys) > 1 else failure[keys[0]]
+        if key not in best_successes.index:
             continue
-        best = best_successes.loc[problem]
-        rows.append(
+        best = best_successes.loc[key]
+        row = {col: failure[col] for col in keys}
+        row.update(
             {
-                "problem": problem,
                 "solver_id": failure["solver_id"],
                 "status": failure["status"],
                 "best_success_solver": best["solver_id"],
@@ -752,14 +817,32 @@ def failures_with_successful_alternatives(
                 "error": failure.get("error"),
             }
         )
+        rows.append(row)
     return pd.DataFrame(rows, columns=columns)
+
+
+def _problem_keys(results: pd.DataFrame) -> list[str]:
+    """Return the row-identity columns for problem-keyed tables.
+
+    Multi-dataset runs can have the same ``problem`` name in different
+    datasets (e.g. ``afiro`` in two LP bundles), so any pivot/merge that
+    keys on ``problem`` alone silently collapses them and can attach the
+    wrong dimensions or status. Use ``(dataset, problem)`` whenever the
+    frame carries a ``dataset`` column; fall back to ``("problem",)`` for
+    legacy frames or empty inputs.
+    """
+    if "dataset" in results.columns:
+        return ["dataset", "problem"]
+    return ["problem"]
 
 
 def status_matrix(results: pd.DataFrame) -> pd.DataFrame:
     if results.empty:
         return pd.DataFrame()
+    keys = _problem_keys(results)
+    index = keys[0] if len(keys) == 1 else keys
     return results.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values="status",
         aggfunc="first",
@@ -780,23 +863,36 @@ def problem_solver_comparison(
     if results.empty:
         return pd.DataFrame()
 
-    problems = sorted(results["problem"].dropna().unique())
-    output = pd.DataFrame({"problem": problems})
+    keys = _problem_keys(results)
+    output = (
+        results[keys]
+        .dropna(subset=["problem"])
+        .drop_duplicates()
+        .sort_values(keys)
+        .reset_index(drop=True)
+    )
     dimensions = problem_dimensions(results)
     if not dimensions.empty:
-        output = output.merge(dimensions, on="problem", how="left")
+        output = output.merge(dimensions, on=keys, how="left")
 
     for solver_id in sorted(results["solver_id"].dropna().unique()):
         solver_rows = results[results["solver_id"] == solver_id]
         for field in fields:
             if field not in solver_rows:
                 continue
-            values = solver_rows.pivot_table(
-                index="problem",
-                values=field,
-                aggfunc="first",
+            lookup = (
+                solver_rows.dropna(subset=["problem"])
+                .drop_duplicates(subset=keys)
+                .set_index(keys)[field]
             )
-            output[f"{solver_id}__{field}"] = output["problem"].map(values[field])
+            output_keys = (
+                output[keys[0]]
+                if len(keys) == 1
+                else list(zip(*[output[key] for key in keys]))
+            )
+            output[f"{solver_id}__{field}"] = [
+                lookup.get(key) for key in output_keys
+            ]
     return output
 
 
@@ -804,9 +900,10 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
     if results.empty:
         return {}
     dimensions = problem_dimensions(results)
+    keys = _problem_keys(results)
     tables = {}
     base_columns = [
-        "problem",
+        *keys,
         "problem_kind",
         "status",
         "run_time_seconds",
@@ -821,24 +918,28 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
     ]
     for solver_id, group in results.groupby("solver_id"):
         available = [column for column in base_columns if column in group]
-        table = group[available].sort_values("problem").reset_index(drop=True)
+        table = group[available].sort_values(keys).reset_index(drop=True)
         if not dimensions.empty:
             dimension_columns = dimensions.drop(
-                columns=[column for column in dimensions.columns if column in table and column != "problem"],
+                columns=[
+                    column
+                    for column in dimensions.columns
+                    if column in table and column not in keys
+                ],
                 errors="ignore",
             )
-            table = table.merge(dimension_columns, on="problem", how="left")
+            table = table.merge(dimension_columns, on=keys, how="left")
         tables[str(solver_id)] = table
     return tables
 
 
 def problem_dimensions(results: pd.DataFrame) -> pd.DataFrame:
+    keys = _problem_keys(results)
     if results.empty:
-        return pd.DataFrame(columns=["problem"])
+        return pd.DataFrame(columns=keys)
     dimension_columns = [
         column
         for column in [
-            "dataset",
             "problem_kind",
             "metadata.n",
             "metadata.m",
@@ -850,11 +951,18 @@ def problem_dimensions(results: pd.DataFrame) -> pd.DataFrame:
         if column in results
     ]
     if not dimension_columns:
-        return pd.DataFrame({"problem": sorted(results["problem"].dropna().unique())})
+        unique = (
+            results[keys]
+            .dropna(subset=["problem"])
+            .drop_duplicates()
+            .sort_values(keys)
+            .reset_index(drop=True)
+        )
+        return unique
     dimensions = (
-        results[["problem", *dimension_columns]]
-        .drop_duplicates("problem")
-        .sort_values("problem")
+        results[[*keys, *dimension_columns]]
+        .drop_duplicates(subset=keys)
+        .sort_values(keys)
         .reset_index(drop=True)
     )
     return dimensions.rename(
@@ -882,8 +990,10 @@ def performance_ratio_matrix(
     successful = results[results["status"].isin(success_statuses)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    keys = _problem_keys(successful)
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values=metric,
         aggfunc="first",
@@ -899,8 +1009,8 @@ def safe_filename(value: str) -> str:
     return value.strip("-") or "value"
 
 
-def _empty_pairwise_row(solver_a: str, solver_b: str) -> dict:
-    return {
+def _empty_pairwise_row(solver_a: str, solver_b: str, *, has_dataset: bool = False) -> dict:
+    row = {
         "solver_a": solver_a,
         "solver_b": solver_b,
         "common_successes": 0,
@@ -909,11 +1019,15 @@ def _empty_pairwise_row(solver_a: str, solver_b: str) -> dict:
         "ties": 0,
         "median_speedup_a_over_b": None,
         "geomean_speedup_a_over_b": None,
-        "biggest_a_win_problem": None,
-        "biggest_a_win_speedup": None,
-        "biggest_b_win_problem": None,
-        "biggest_b_win_speedup": None,
     }
+    if has_dataset:
+        row["biggest_a_win_dataset"] = None
+        row["biggest_b_win_dataset"] = None
+    row["biggest_a_win_problem"] = None
+    row["biggest_a_win_speedup"] = None
+    row["biggest_b_win_problem"] = None
+    row["biggest_b_win_speedup"] = None
+    return row
 
 
 def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
@@ -946,17 +1060,40 @@ def _quantile(values: pd.Series, q: float):
     return None if values.empty else float(values.quantile(q))
 
 
-def _expected_problem_names(config: dict, *, repo_root: str | Path | None = None) -> list[str]:
-    dataset_cls = get_dataset(config["dataset"])
-    dataset = dataset_cls(
-        repo_root=repo_root,
-        **config.get("dataset_options", {}),
-    )
-    problems = [problem.name for problem in dataset.list_problems()]
-    include = set(config.get("include") or [])
-    exclude = set(config.get("exclude") or [])
-    if include:
-        problems = [problem for problem in problems if problem in include]
-    if exclude:
-        problems = [problem for problem in problems if problem not in exclude]
-    return problems
+def _expected_by_dataset(
+    config: dict, *, repo_root: str | Path | None = None
+) -> dict[str, set[str]]:
+    """Return ``{dataset_id: set_of_expected_problem_names}`` for a manifest.
+
+    Handles both the new ``datasets:`` list shape and the legacy
+    ``dataset: name`` + ``dataset_options`` shape via
+    ``manifest_dataset_entries``. Keys are dataset *ids* (the per-entry
+    identity stamped into result rows), which equal the registry ``name``
+    unless the config gave the entry an explicit ``id``.
+    """
+    expected: dict[str, set[str]] = {}
+    for entry in manifest_dataset_entries(config):
+        dataset_cls = get_dataset(entry["name"])
+        dataset = dataset_cls(
+            repo_root=repo_root,
+            **entry.get("dataset_options", {}),
+        )
+        problems = [problem.name for problem in dataset.list_problems()]
+        include = set(entry.get("include") or [])
+        exclude = set(entry.get("exclude") or [])
+        if include:
+            problems = [name for name in problems if name in include]
+        if exclude:
+            problems = [name for name in problems if name not in exclude]
+        expected[entry["id"]] = set(problems)
+    return expected
+
+
+def _expected_problem_names(
+    config: dict, *, repo_root: str | Path | None = None
+) -> list[str]:
+    """Backward-compatible: union of expected problems across all datasets."""
+    expected: set[str] = set()
+    for problems in _expected_by_dataset(config, repo_root=repo_root).values():
+        expected |= problems
+    return sorted(expected)

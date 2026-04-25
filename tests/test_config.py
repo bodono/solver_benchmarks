@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 
 from solver_benchmarks.core.config import (
+    DatasetConfig,
     load_run_config,
+    manifest_dataset_entries,
     parse_environment_run_config,
     parse_run_config,
 )
@@ -222,6 +224,271 @@ def test_parse_run_config_rejects_duplicate_sweep_ids():
                 ],
             }
         )
+
+
+def test_parse_run_config_accepts_datasets_list_of_strings(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": ["synthetic_qp", "synthetic_lp"],
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    assert [dataset.name for dataset in config.datasets] == [
+        "synthetic_qp",
+        "synthetic_lp",
+    ]
+    assert all(dataset.dataset_options == {} for dataset in config.datasets)
+
+
+def test_parse_run_config_accepts_datasets_list_of_mappings(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": [
+                    {
+                        "name": "netlib_lp",
+                        "dataset_options": {"variant": "feasible"},
+                        "include": ["afiro"],
+                    },
+                    {
+                        "name": "synthetic_qp",
+                        "exclude": ["one_variable_lp"],
+                    },
+                ],
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    netlib, synthetic = config.datasets
+    assert netlib.name == "netlib_lp"
+    assert netlib.dataset_options == {"variant": "feasible"}
+    assert netlib.include == ["afiro"]
+    assert synthetic.exclude == ["one_variable_lp"]
+    # Run-level include is empty so synthetic falls through to no include filter.
+    include, exclude = config.effective_filters(synthetic)
+    assert include == []
+    assert exclude == ["one_variable_lp"]
+
+
+def test_parse_run_config_rejects_dataset_and_datasets_together(tmp_path: Path):
+    with pytest.raises(ValueError, match="not both"):
+        parse_run_config(
+            {
+                "run": {
+                    "dataset": "synthetic_qp",
+                    "datasets": ["synthetic_lp"],
+                    "output_dir": str(tmp_path / "runs"),
+                },
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_duplicate_dataset_names(tmp_path: Path):
+    with pytest.raises(ValueError, match="Duplicate dataset"):
+        parse_run_config(
+            {
+                "run": {
+                    "datasets": ["synthetic_qp", "synthetic_qp"],
+                    "output_dir": str(tmp_path / "runs"),
+                },
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+
+def test_run_config_dataset_property_errors_for_multiple(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": ["synthetic_qp", "synthetic_lp"],
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    with pytest.raises(ValueError, match="datasets"):
+        _ = config.dataset
+
+
+def test_run_config_dataset_level_include_overrides_run_level(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": [
+                    {"name": "netlib_lp", "include": ["afiro"]},
+                    {"name": "synthetic_qp"},
+                ],
+                "include": ["one_variable_eq"],
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    netlib, synthetic = config.datasets
+    netlib_include, _ = config.effective_filters(netlib)
+    synthetic_include, _ = config.effective_filters(synthetic)
+    assert netlib_include == ["afiro"]
+    assert synthetic_include == ["one_variable_eq"]
+
+
+def test_legacy_dataset_options_apply_as_default_for_datasets_list(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": [
+                    {"name": "netlib_lp"},
+                    {
+                        "name": "maros_meszaros",
+                        "dataset_options": {"override": "yes"},
+                    },
+                ],
+                "dataset_options": {"shared": "value"},
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    netlib, maros = config.datasets
+    assert netlib.dataset_options == {"shared": "value"}
+    assert maros.dataset_options == {"shared": "value", "override": "yes"}
+
+
+def test_manifest_dataset_entries_handles_legacy_and_new_shapes():
+    legacy = manifest_dataset_entries(
+        {
+            "dataset": "synthetic_qp",
+            "dataset_options": {"foo": "bar"},
+            "include": ["one_variable_eq"],
+            "exclude": [],
+        }
+    )
+    assert legacy == [
+        {
+            "id": "synthetic_qp",
+            "name": "synthetic_qp",
+            "dataset_options": {"foo": "bar"},
+            "include": ["one_variable_eq"],
+            "exclude": [],
+        }
+    ]
+
+    multi = manifest_dataset_entries(
+        {
+            "datasets": [
+                {
+                    "name": "netlib_lp",
+                    "dataset_options": {},
+                    "include": ["afiro"],
+                    "exclude": [],
+                },
+                {
+                    "name": "synthetic_qp",
+                    "dataset_options": {},
+                    "include": [],
+                    "exclude": ["bad_problem"],
+                },
+            ],
+            "include": ["fallback"],
+            "exclude": ["global_bad"],
+        }
+    )
+    netlib, synthetic = multi
+    # Dataset-level include is set, so run-level fallback is not applied.
+    assert netlib["include"] == ["afiro"]
+    # Empty dataset-level include falls back to run-level include.
+    assert synthetic["include"] == ["fallback"]
+    # Exclude is unioned across run-level and dataset-level.
+    assert "global_bad" in netlib["exclude"]
+    assert "global_bad" in synthetic["exclude"]
+    assert "bad_problem" in synthetic["exclude"]
+
+
+def test_parse_run_config_allows_same_dataset_twice_with_distinct_ids(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": [
+                    {
+                        "id": "netlib_feasible",
+                        "name": "netlib_lp",
+                        "dataset_options": {"subset": "feasible"},
+                    },
+                    {
+                        "id": "netlib_infeasible",
+                        "name": "netlib_lp",
+                        "dataset_options": {"subset": "infeasible"},
+                    },
+                ],
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    feasible, infeasible = config.datasets
+    assert feasible.id == "netlib_feasible"
+    assert feasible.name == "netlib_lp"
+    assert feasible.dataset_options == {"subset": "feasible"}
+    assert infeasible.id == "netlib_infeasible"
+    assert infeasible.name == "netlib_lp"
+    assert infeasible.dataset_options == {"subset": "infeasible"}
+
+
+def test_parse_run_config_rejects_duplicate_dataset_ids(tmp_path: Path):
+    with pytest.raises(ValueError, match="Duplicate dataset id"):
+        parse_run_config(
+            {
+                "run": {
+                    "datasets": [
+                        {"id": "shared", "name": "netlib_lp"},
+                        {"id": "shared", "name": "synthetic_qp"},
+                    ],
+                    "output_dir": str(tmp_path / "runs"),
+                },
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+
+def test_dataset_config_id_defaults_to_name():
+    dataset = DatasetConfig(name="synthetic_qp")
+    assert dataset.id == "synthetic_qp"
+    explicit = DatasetConfig(name="synthetic_qp", id="qp_run")
+    assert explicit.id == "qp_run"
+    # Name remains the registry key even when id is given.
+    assert explicit.name == "synthetic_qp"
+
+
+def test_manifest_dataset_entries_surfaces_explicit_dataset_id():
+    entries = manifest_dataset_entries(
+        {
+            "datasets": [
+                {
+                    "id": "netlib_feasible",
+                    "name": "netlib_lp",
+                    "dataset_options": {"subset": "feasible"},
+                    "include": [],
+                    "exclude": [],
+                },
+                {
+                    "name": "synthetic_qp",
+                    "dataset_options": {},
+                    "include": [],
+                    "exclude": [],
+                },
+            ],
+        }
+    )
+    assert entries[0]["id"] == "netlib_feasible"
+    assert entries[0]["name"] == "netlib_lp"
+    # Default id == name when no explicit id is given.
+    assert entries[1]["id"] == "synthetic_qp"
 
 
 def test_parse_environment_run_config_rejects_duplicate_solver_ids_across_envs():

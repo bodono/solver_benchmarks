@@ -20,11 +20,28 @@ class SolverConfig:
 
 
 @dataclass(frozen=True)
+class DatasetConfig:
+    name: str
+    dataset_options: dict[str, Any] = field(default_factory=dict)
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+    id: str | None = None
+
+    def __post_init__(self) -> None:
+        # ``id`` is the per-entry identity used for results/resume keys and
+        # artifact directories; ``name`` is the registry lookup. Defaulting
+        # to ``name`` keeps the common single-entry case unchanged while
+        # still allowing two entries that share a registry name to coexist
+        # under different ids.
+        if self.id is None:
+            object.__setattr__(self, "id", self.name)
+
+
+@dataclass(frozen=True)
 class RunConfig:
-    dataset: str
+    datasets: list[DatasetConfig]
     solvers: list[SolverConfig]
     output_dir: Path = Path("runs")
-    dataset_options: dict[str, Any] = field(default_factory=dict)
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     parallelism: int = 1
@@ -34,10 +51,52 @@ class RunConfig:
     auto_prepare_data: bool = False
 
     @property
+    def dataset(self) -> str:
+        """Single-dataset name; raises when configured for multiple datasets.
+
+        Kept as a convenience for the common case so simple call-sites and
+        existing tests do not need to drill into ``datasets[0].name``.
+        Multi-dataset callers must iterate ``self.datasets`` directly.
+        """
+        if len(self.datasets) != 1:
+            raise ValueError(
+                f"RunConfig has {len(self.datasets)} datasets; use `datasets` instead."
+            )
+        return self.datasets[0].name
+
+    @property
+    def dataset_options(self) -> dict[str, Any]:
+        if len(self.datasets) != 1:
+            raise ValueError(
+                f"RunConfig has {len(self.datasets)} datasets; use `datasets` instead."
+            )
+        return dict(self.datasets[0].dataset_options)
+
+    def effective_filters(self, dataset: DatasetConfig) -> tuple[list[str], list[str]]:
+        """Resolve ``(include, exclude)`` to apply for ``dataset``.
+
+        A dataset-level ``include`` replaces the run-level include for that
+        dataset; this lets users say "for netlib only run afiro" while still
+        keeping a different include set for another dataset. Excludes are
+        unioned: a name listed at either level is dropped.
+        """
+        include = list(dataset.include) if dataset.include else list(self.include)
+        exclude = sorted(set(self.exclude) | set(dataset.exclude))
+        return include, exclude
+
+    @property
     def config_hash(self) -> str:
         payload = {
-            "dataset": self.dataset,
-            "dataset_options": self.dataset_options,
+            "datasets": [
+                {
+                    "id": dataset.id,
+                    "name": dataset.name,
+                    "dataset_options": dataset.dataset_options,
+                    "include": dataset.include,
+                    "exclude": dataset.exclude,
+                }
+                for dataset in self.datasets
+            ],
             "solvers": [
                 {
                     "id": solver.id,
@@ -56,8 +115,16 @@ class RunConfig:
 
     def to_manifest(self) -> dict[str, Any]:
         return {
-            "dataset": self.dataset,
-            "dataset_options": self.dataset_options,
+            "datasets": [
+                {
+                    "id": dataset.id,
+                    "name": dataset.name,
+                    "dataset_options": dataset.dataset_options,
+                    "include": dataset.include,
+                    "exclude": dataset.exclude,
+                }
+                for dataset in self.datasets
+            ],
             "output_dir": str(self.output_dir),
             "include": self.include,
             "exclude": self.exclude,
@@ -108,9 +175,7 @@ def load_environment_run_config(path: str | Path) -> EnvironmentRunConfig:
 
 def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunConfig:
     run = raw.get("run", {})
-    dataset = raw.get("dataset") or run.get("dataset")
-    if not dataset:
-        raise ValueError("Config must define run.dataset")
+    datasets = _parse_datasets(raw, run)
 
     solvers = _parse_solver_entries(raw.get("solvers", []), context="solver")
     if not solvers:
@@ -122,13 +187,11 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
 
     include = _listify(run.get("include", raw.get("include", [])))
     exclude = _listify(run.get("exclude", raw.get("exclude", [])))
-    dataset_options = dict(run.get("dataset_options", raw.get("dataset_options", {})))
 
     return RunConfig(
-        dataset=str(dataset),
+        datasets=datasets,
         solvers=solvers,
         output_dir=output_dir,
-        dataset_options=dataset_options,
         include=include,
         exclude=exclude,
         parallelism=int(run.get("parallelism", raw.get("parallelism", 1))),
@@ -192,6 +255,102 @@ def parse_environment_run_config(
         run=parse_run_config(child_raw, base_dir=base_dir),
         environments=environments,
     )
+
+
+def _parse_datasets(raw: dict[str, Any], run: dict[str, Any]) -> list[DatasetConfig]:
+    datasets_raw = run.get("datasets", raw.get("datasets"))
+    single_name = run.get("dataset", raw.get("dataset"))
+
+    if datasets_raw is not None and single_name:
+        raise ValueError(
+            "Config must define either `dataset` (single) or `datasets` (list), not both."
+        )
+
+    if datasets_raw is not None:
+        if not isinstance(datasets_raw, list) or not datasets_raw:
+            raise ValueError("`datasets` must be a non-empty list")
+        return _parse_dataset_entries(datasets_raw, defaults=run, root=raw)
+
+    if not single_name:
+        raise ValueError("Config must define `dataset` or `datasets`")
+
+    dataset_options = dict(run.get("dataset_options", raw.get("dataset_options", {})))
+    return [
+        DatasetConfig(
+            name=str(single_name),
+            dataset_options=dataset_options,
+            include=[],
+            exclude=[],
+        )
+    ]
+
+
+def _parse_dataset_entries(
+    items: list[Any],
+    *,
+    defaults: dict[str, Any],
+    root: dict[str, Any],
+) -> list[DatasetConfig]:
+    default_options = dict(defaults.get("dataset_options", root.get("dataset_options", {})))
+    parsed: list[DatasetConfig] = []
+    seen_ids: set[str] = set()
+    seen_names_no_id: set[str] = set()
+    for entry in items:
+        explicit_id: str | None = None
+        if isinstance(entry, str):
+            name = entry
+            dataset_options: dict[str, Any] = dict(default_options)
+            include: list[str] = []
+            exclude: list[str] = []
+        elif isinstance(entry, dict):
+            name = entry.get("name") or entry.get("dataset")
+            if not name:
+                raise ValueError(
+                    "Every dataset entry must define `name` (or legacy `dataset`)"
+                )
+            raw_id = entry.get("id")
+            explicit_id = str(raw_id) if raw_id is not None else None
+            dataset_options = {
+                **default_options,
+                **dict(entry.get("dataset_options", {})),
+            }
+            include = _listify(entry.get("include", []))
+            exclude = _listify(entry.get("exclude", []))
+        else:
+            raise ValueError(
+                f"Dataset entry must be a string or mapping, got {type(entry).__name__}"
+            )
+        name = str(name)
+        entry_id = explicit_id if explicit_id is not None else name
+        if entry_id in seen_ids:
+            if explicit_id is None:
+                raise ValueError(
+                    f"Duplicate dataset name {name!r}: include each adapter once, "
+                    "or give each occurrence an explicit `id` so its results can be "
+                    "told apart."
+                )
+            raise ValueError(f"Duplicate dataset id in datasets list: {entry_id!r}")
+        # Surface a clearer message when a user lists the same adapter twice
+        # without ids on either entry.
+        if explicit_id is None and name in seen_names_no_id:
+            raise ValueError(
+                f"Duplicate dataset name {name!r}: include each adapter once, "
+                "or give each occurrence an explicit `id` so its results can be "
+                "told apart."
+            )
+        seen_ids.add(entry_id)
+        if explicit_id is None:
+            seen_names_no_id.add(name)
+        parsed.append(
+            DatasetConfig(
+                name=name,
+                dataset_options=dataset_options,
+                include=include,
+                exclude=exclude,
+                id=explicit_id,
+            )
+        )
+    return parsed
 
 
 def _parse_solver_entries(items: list[dict[str, Any]], *, context: str) -> list[SolverConfig]:
@@ -307,3 +466,49 @@ def _listify(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     return [str(v) for v in value]
+
+
+def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize a manifest's dataset section into a list of entries.
+
+    Reads either the new ``datasets: [...]`` shape or the legacy
+    ``dataset: name`` + ``dataset_options`` + ``include`` / ``exclude``
+    shape, and returns a uniform list of dicts with keys
+    ``id``, ``name``, ``dataset_options``, ``include``, ``exclude``. Each
+    entry's ``id`` defaults to its ``name``; the same registry ``name`` may
+    appear multiple times when distinct ids are given. Run-level
+    ``include`` / ``exclude`` are merged in so callers do not need to
+    apply them separately.
+    """
+    run_include = list(config.get("include") or [])
+    run_exclude = list(config.get("exclude") or [])
+    datasets = config.get("datasets")
+    if isinstance(datasets, list) and datasets:
+        out: list[dict[str, Any]] = []
+        for entry in datasets:
+            include = list(entry.get("include") or []) or list(run_include)
+            exclude = sorted({*run_exclude, *(entry.get("exclude") or [])})
+            name = str(entry["name"])
+            entry_id = str(entry.get("id") or name)
+            out.append(
+                {
+                    "id": entry_id,
+                    "name": name,
+                    "dataset_options": dict(entry.get("dataset_options") or {}),
+                    "include": include,
+                    "exclude": exclude,
+                }
+            )
+        return out
+    name = config.get("dataset")
+    if not name:
+        return []
+    return [
+        {
+            "id": str(name),
+            "name": str(name),
+            "dataset_options": dict(config.get("dataset_options") or {}),
+            "include": list(run_include),
+            "exclude": list(run_exclude),
+        }
+    ]

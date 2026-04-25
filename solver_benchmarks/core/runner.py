@@ -14,7 +14,7 @@ import threading
 from types import SimpleNamespace
 
 from solver_benchmarks.core import status
-from solver_benchmarks.core.config import RunConfig, SolverConfig
+from solver_benchmarks.core.config import DatasetConfig, RunConfig, SolverConfig
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
@@ -41,81 +41,101 @@ def run_benchmark(
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     store = ResultStore.create(config, run_dir=run_dir)
-    dataset_cls = get_dataset(config.dataset)
-    dataset = dataset_cls(repo_root=repo_root, **config.dataset_options)
-    if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
-        dataset.prepare_data(problem_names=config.include or None)
-    problems = _filter_problems(dataset.list_problems(), config.include, config.exclude)
-    if not problems:
-        data_status = dataset.data_status() if hasattr(dataset, "data_status") else None
-        message = (
-            data_status.message
-            if data_status is not None
-            else f"Dataset {config.dataset!r} produced no problems."
-        )
-        store.append_event("warning", message, dataset=config.dataset)
     completed = store.completed_keys() if config.resume else set()
 
-    tasks: list[tuple[ProblemSpec, SolverConfig]] = []
-    for solver_config in config.solvers:
-        solver_cls = get_solver(solver_config.solver)
-        if not solver_cls.is_available():
-            message = f"Solver {solver_config.solver!r} is unavailable; skipping {solver_config.id!r}"
-            store.append_event("warning", message, solver_id=solver_config.id)
-            for problem in problems:
-                if _already_done(problem, solver_config, completed):
-                    continue
-                _write_skip(
-                    store,
-                    config,
-                    problem,
-                    solver_config,
-                    message,
-                    environment_id=environment_id,
-                    environment_metadata=environment_metadata,
-                )
+    tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
+    for dataset_config in config.datasets:
+        dataset_cls = get_dataset(dataset_config.name)
+        dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
+        include, exclude = config.effective_filters(dataset_config)
+        if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
+            dataset.prepare_data(problem_names=include or None)
+        problems = _filter_problems(dataset.list_problems(), include, exclude)
+        if not problems:
+            data_status = (
+                dataset.data_status() if hasattr(dataset, "data_status") else None
+            )
+            message = (
+                data_status.message
+                if data_status is not None
+                else f"Dataset {dataset_config.id!r} produced no problems."
+            )
+            store.append_event(
+                "warning", message, dataset=dataset_config.id
+            )
             continue
-        solver = solver_cls(solver_config.settings)
-        for problem in problems:
-            if _already_done(problem, solver_config, completed):
-                continue
-            if not solver.supports(problem.kind):
+
+        for solver_config in config.solvers:
+            solver_cls = get_solver(solver_config.solver)
+            if not solver_cls.is_available():
                 message = (
-                    f"Solver {solver_config.solver!r} does not support "
-                    f"{problem.kind!r} problems; skipping {problem.name!r}"
+                    f"Solver {solver_config.solver!r} is unavailable; skipping "
+                    f"{solver_config.id!r}"
                 )
-                if config.fail_on_unsupported:
-                    raise RuntimeError(message)
                 store.append_event(
                     "warning",
                     message,
                     solver_id=solver_config.id,
-                    problem=problem.name,
-                    problem_kind=problem.kind,
+                    dataset=dataset_config.id,
                 )
-                _write_skip(
-                    store,
-                    config,
-                    problem,
-                    solver_config,
-                    message,
-                    environment_id=environment_id,
-                    environment_metadata=environment_metadata,
-                )
+                for problem in problems:
+                    if _already_done(dataset_config, problem, solver_config, completed):
+                        continue
+                    _write_skip(
+                        store,
+                        config,
+                        dataset_config,
+                        problem,
+                        solver_config,
+                        message,
+                        environment_id=environment_id,
+                        environment_metadata=environment_metadata,
+                    )
                 continue
-            tasks.append((problem, solver_config))
+            solver = solver_cls(solver_config.settings)
+            for problem in problems:
+                if _already_done(dataset_config, problem, solver_config, completed):
+                    continue
+                if not solver.supports(problem.kind):
+                    message = (
+                        f"Solver {solver_config.solver!r} does not support "
+                        f"{problem.kind!r} problems; skipping {problem.name!r}"
+                    )
+                    if config.fail_on_unsupported:
+                        raise RuntimeError(message)
+                    store.append_event(
+                        "warning",
+                        message,
+                        solver_id=solver_config.id,
+                        dataset=dataset_config.id,
+                        problem=problem.name,
+                        problem_kind=problem.kind,
+                    )
+                    _write_skip(
+                        store,
+                        config,
+                        dataset_config,
+                        problem,
+                        solver_config,
+                        message,
+                        environment_id=environment_id,
+                        environment_metadata=environment_metadata,
+                    )
+                    continue
+                tasks.append((dataset_config, problem, solver_config))
 
     if not tasks:
         return store
 
     parallelism = max(1, int(config.parallelism))
     if parallelism == 1:
-        for problem, solver_config in tasks:
+        for dataset_config, problem, solver_config in tasks:
             store.write_result(
                 _run_one(
                     store,
                     config,
                     repo_root,
+                    dataset_config,
                     problem,
                     solver_config,
                     stream_output=stream_output,
@@ -131,13 +151,14 @@ def run_benchmark(
                     store,
                     config,
                     repo_root,
+                    dataset_config,
                     problem,
                     solver_config,
                     stream_output,
                     environment_id,
                     environment_metadata,
                 )
-                for problem, solver_config in tasks
+                for dataset_config, problem, solver_config in tasks
             ]
             for future in as_completed(futures):
                 store.write_result(future.result())
@@ -148,17 +169,21 @@ def _run_one(
     store: ResultStore,
     config: RunConfig,
     repo_root: Path,
+    dataset_config: DatasetConfig,
     problem: ProblemSpec,
     solver_config: SolverConfig,
     stream_output: bool = False,
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
 ) -> ProblemResult:
-    artifacts_dir = store.problem_solver_dir(problem.name, solver_config.id)
+    artifacts_dir = store.problem_solver_dir(
+        dataset_config.id, problem.name, solver_config.id
+    )
     payload = {
         "run_id": store.run_id,
-        "dataset": config.dataset,
-        "dataset_options": config.dataset_options,
+        "dataset": dataset_config.id,
+        "dataset_name": dataset_config.name,
+        "dataset_options": dataset_config.dataset_options,
         "problem": problem.name,
         "problem_kind": problem.kind,
         "solver": {
@@ -194,7 +219,7 @@ def _run_one(
         _emit_progress(stream_output, f"timeout {problem.name} with {solver_config.id}")
         return ProblemResult(
             run_id=store.run_id,
-            dataset=config.dataset,
+            dataset=dataset_config.id,
             problem=problem.name,
             problem_kind=problem.kind,
             solver_id=solver_config.id,
@@ -228,7 +253,7 @@ def _run_one(
     )
     return ProblemResult(
         run_id=store.run_id,
-        dataset=config.dataset,
+        dataset=dataset_config.id,
         problem=problem.name,
         problem_kind=problem.kind,
         solver_id=solver_config.id,
@@ -331,13 +356,19 @@ def _filter_problems(
     return selected
 
 
-def _already_done(problem: ProblemSpec, solver_config: SolverConfig, completed) -> bool:
-    return (problem.name, solver_config.id) in completed
+def _already_done(
+    dataset_config: DatasetConfig,
+    problem: ProblemSpec,
+    solver_config: SolverConfig,
+    completed,
+) -> bool:
+    return (dataset_config.id, problem.name, solver_config.id) in completed
 
 
 def _write_skip(
     store: ResultStore,
     config: RunConfig,
+    dataset_config: DatasetConfig,
     problem: ProblemSpec,
     solver_config: SolverConfig,
     message: str,
@@ -345,11 +376,13 @@ def _write_skip(
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
 ) -> None:
-    artifacts_dir = store.problem_solver_dir(problem.name, solver_config.id)
+    artifacts_dir = store.problem_solver_dir(
+        dataset_config.id, problem.name, solver_config.id
+    )
     store.write_result(
         ProblemResult(
             run_id=store.run_id,
-            dataset=config.dataset,
+            dataset=dataset_config.id,
             problem=problem.name,
             problem_kind=problem.kind,
             solver_id=solver_config.id,
