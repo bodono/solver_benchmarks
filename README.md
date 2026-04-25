@@ -911,6 +911,11 @@ Add tests:
 ## Adding a New Solver
 
 Solver adapters live under `solver_benchmarks/solvers/`.
+Use one module per solver, named `<solver>_adapter.py`; for example, the
+commercial optional adapters live in `gurobi_adapter.py`, `mosek_adapter.py`,
+and `cplex_adapter.py`. Optional adapters should still be importable without the
+optional solver package installed, so keep dependency imports inside
+`is_available()` or `solve()`.
 
 Implement `SolverAdapter`:
 
@@ -963,6 +968,7 @@ Adapter expectations:
 
 - Do not import optional solver packages at module import time if they may be missing.
 - Use `is_available()` for optional dependency checks.
+- Keep solver adapter modules solver-specific rather than grouping unrelated adapters together.
 - Return canonical statuses from `solver_benchmarks.core.status`.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.

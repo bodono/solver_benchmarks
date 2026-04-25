@@ -50,6 +50,15 @@ def test_required_solvers_are_registered():
     assert "cone" in get_solver("clarabel").supported_problem_kinds
 
 
+def test_commercial_adapters_use_solver_specific_modules():
+    from solver_benchmarks.solvers.gurobi_adapter import GurobiSolverAdapter
+    from solver_benchmarks.solvers.mosek_adapter import MosekSolverAdapter
+
+    assert get_solver("gurobi") is GurobiSolverAdapter
+    assert get_solver("mosek") is MosekSolverAdapter
+    assert not list(Path("solver_benchmarks/solvers").glob("legacy_*.py"))
+
+
 def test_synthetic_dataset_loads_qp():
     dataset = get_dataset("synthetic_qp")()
     problems = dataset.list_problems()

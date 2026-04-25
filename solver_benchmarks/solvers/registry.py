@@ -5,8 +5,9 @@ from __future__ import annotations
 from .base import SolverAdapter
 from .clarabel_adapter import ClarabelSolverAdapter
 from .cplex_adapter import CPLEXSolverAdapter
+from .gurobi_adapter import GurobiSolverAdapter
 from .highs_adapter import HighsSolverAdapter
-from .legacy_optional import GurobiSolverAdapter, MosekSolverAdapter
+from .mosek_adapter import MosekSolverAdapter
 from .osqp_adapter import OSQPSolverAdapter
 from .pdlp_adapter import PDLPSolverAdapter
 from .piqp_adapter import PIQPSolverAdapter
