@@ -223,13 +223,14 @@ Notes on the semantics:
 
 - The filter is applied uniformly across every file-backed dataset by the
   runner, after `include` / `exclude` selection.
-- The threshold is the on-disk size of `ProblemSpec.path`. For `.mps.gz` /
-  similar, that's the compressed size — small relative to the parsed
-  problem but a useful proxy.
+- By default the threshold is compared against the on-disk size of
+  `ProblemSpec.path`. For `.mps.gz` / similar, that's the compressed size —
+  small relative to the parsed problem but a useful proxy.
+- Datasets that pack many problems into a single archive (e.g. `sdplib`'s
+  `sdplib.tar`) advertise per-member sizes via `ProblemSpec.metadata`; the
+  runner prefers that over the archive's on-disk size, so the threshold
+  applies to each member individually.
 - The `synthetic` dataset has no backing file and is unaffected.
-- `sdplib` packs many problems into a single `sdplib.tar`. The runner
-  cannot see per-member sizes there, so the dataset filters tar members
-  internally using the same `max_size_mb` value.
 
 ## Supported Solvers
 

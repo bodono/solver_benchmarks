@@ -364,28 +364,41 @@ def _filter_by_size(
 ) -> list[ProblemSpec]:
     """Drop specs whose backing file exceeds ``max_size_mb``.
 
-    Specs without a path (e.g. synthetic problems) and missing files pass
-    through. Tar-backed datasets like SDPLIB share one path across many
-    specs and must filter inside the archive themselves; this runner-level
-    pass only inspects ``ProblemSpec.path`` on disk.
+    For each spec, the size used for comparison is, in order of preference:
+
+    1. ``metadata["size_bytes"]`` if present. Datasets that pack many
+       problems behind a single ``ProblemSpec.path`` (e.g. SDPLIB's tar
+       archive) populate this so the runner can reason about per-member
+       sizes instead of the archive size.
+    2. ``path.stat().st_size`` if ``path`` is a real file on disk.
+
+    Specs without a path or a known size (e.g. synthetic problems) and
+    missing files pass through.
     """
     if max_size_mb is None:
         return list(problems)
     threshold_bytes = float(max_size_mb) * 1.0e6
     selected = []
     for problem in problems:
-        if problem.path is None:
+        size = _spec_size_bytes(problem)
+        if size is None or size <= threshold_bytes:
             selected.append(problem)
-            continue
-        try:
-            size = problem.path.stat().st_size
-        except OSError:
-            selected.append(problem)
-            continue
-        if size > threshold_bytes:
-            continue
-        selected.append(problem)
     return selected
+
+
+def _spec_size_bytes(problem: ProblemSpec) -> int | None:
+    metadata_size = problem.metadata.get("size_bytes") if problem.metadata else None
+    if metadata_size is not None:
+        try:
+            return int(metadata_size)
+        except (TypeError, ValueError):
+            return None
+    if problem.path is None:
+        return None
+    try:
+        return int(problem.path.stat().st_size)
+    except OSError:
+        return None
 
 
 def _already_done(

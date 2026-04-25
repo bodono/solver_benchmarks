@@ -260,9 +260,12 @@ def test_kennington_dataset_round_trips_through_qpsreader(tmp_path: Path):
     assert problem.qp["A"].shape[1] == 2
 
 
-def test_sdplib_dataset_filters_tar_members_by_max_size_mb(tmp_path: Path):
-    """Tar members share one ProblemSpec.path so the runner-level filter
-    can't see per-member sizes. SDPLIB must filter inside the archive."""
+def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):
+    """Tar members share ProblemSpec.path with the whole archive, so
+    SDPLIB must surface per-member sizes via metadata so the runner-level
+    size filter can compare against the member, not the archive."""
+    from solver_benchmarks.core.runner import _filter_by_size
+
     data_root = tmp_path / "problem_classes"
     folder = data_root / "sdplib_data"
     folder.mkdir(parents=True)
@@ -277,13 +280,17 @@ def test_sdplib_dataset_filters_tar_members_by_max_size_mb(tmp_path: Path):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
 
-    dataset = get_dataset("sdplib")(
-        repo_root=tmp_path,
-        data_root=data_root,
-        max_size_mb=1,
-    )
+    dataset = get_dataset("sdplib")(repo_root=tmp_path, data_root=data_root)
+    specs = dataset.list_problems()
 
-    assert [spec.name for spec in dataset.list_problems()] == ["tar_small"]
+    assert [spec.name for spec in specs] == ["tar_large", "tar_small"]
+    sizes = {spec.name: spec.metadata["size_bytes"] for spec in specs}
+    assert sizes == {"tar_small": 10, "tar_large": 1_500_001}
+
+    # The runner-level filter must drop the oversized member even though
+    # the whole sdplib.tar archive (which is the spec.path) is over 1 MB.
+    filtered = _filter_by_size(specs, 1.0)
+    assert [spec.name for spec in filtered] == ["tar_small"]
 
 
 def test_qplib_index_and_subset_filtering(tmp_path: Path):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.sdplib import (
@@ -26,10 +25,6 @@ class SDPLIBDataset(Dataset):
     )
     data_patterns = ("*.jld2", "sdplib.tar")
     prepare_command = "python scripts/prepare_sdplib.py"
-
-    def __init__(self, repo_root: str | Path | None = None, **options: Any):
-        super().__init__(repo_root=repo_root, **options)
-        self.max_size_mb = float(options.get("max_size_mb", float("inf")))
 
     @property
     def folder(self) -> Path:
@@ -57,10 +52,10 @@ class SDPLIBDataset(Dataset):
                     )
                 )
         existing = {spec.name for spec in specs}
-        # Tar members share a single ProblemSpec.path (the archive itself), so
-        # the runner-level max_size_mb filter cannot see per-member sizes.
-        # We must filter inside the archive here.
-        for name in list_sdplib_tar(self.tar_path, max_size_mb=self.max_size_mb):
+        # Tar members share ProblemSpec.path (the archive itself). Surface
+        # the per-member size via metadata["size_bytes"] so the runner-level
+        # size filter can compare against the member, not the whole archive.
+        for name, size_bytes in sorted(list_sdplib_tar(self.tar_path).items()):
             if name in existing:
                 continue
             specs.append(
@@ -69,7 +64,11 @@ class SDPLIBDataset(Dataset):
                     name=name,
                     kind=CONE,
                     path=self.tar_path,
-                    metadata={"source": str(self.tar_path), "format": "tar:jld2"},
+                    metadata={
+                        "source": str(self.tar_path),
+                        "format": "tar:jld2",
+                        "size_bytes": size_bytes,
+                    },
                 )
             )
         return sorted(specs, key=lambda spec: spec.name)
@@ -98,8 +97,9 @@ class SDPLIBDataset(Dataset):
                 "not loaded directly; convert them to the expected JLD2 archive "
                 "or restore problem_classes/sdplib_data/sdplib.tar."
             )
-        names = list_sdplib_tar(self.tar_path) if all_problems else list(problem_names or SDPLIB_DEFAULT_SUBSET)
-        missing = [name for name in names if name not in set(list_sdplib_tar(self.tar_path))]
+        members = list_sdplib_tar(self.tar_path)
+        names = list(members) if all_problems else list(problem_names or SDPLIB_DEFAULT_SUBSET)
+        missing = [name for name in names if name not in members]
         if missing:
             raise RuntimeError(f"Unknown SDPLIB problem(s): {', '.join(missing)}")
         for name in names:

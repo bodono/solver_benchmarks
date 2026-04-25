@@ -9,17 +9,21 @@ import numpy as np
 import scipy.sparse as sp
 
 
-def list_sdplib_tar(tar_path: Path, *, max_size_mb: float | None = None) -> list[str]:
+def list_sdplib_tar(tar_path: Path) -> dict[str, int]:
+    """Return a mapping from problem name to the tar member size in bytes.
+
+    The size is exposed so callers (and the runner-level size filter) can
+    reason about per-member sizes without having to crack open the archive
+    again.
+    """
     if not tar_path.exists():
-        return []
-    max_size_bytes = None if max_size_mb is None else max_size_mb * 1.0e6
+        return {}
     with tarfile.open(tar_path) as archive:
-        return sorted(
-            Path(member.name).stem
+        return {
+            Path(member.name).stem: int(member.size)
             for member in archive
             if member.name.endswith(".jld2")
-            and (max_size_bytes is None or member.size <= max_size_bytes)
-        )
+        }
 
 
 def extract_from_tar(tar_path: Path, name: str, cache_dir: Path) -> Path:

@@ -242,6 +242,34 @@ def test_filter_by_size_drops_oversized_paths_only(tmp_path: Path):
     ]
 
 
+def test_filter_by_size_prefers_metadata_size_over_path_stat(tmp_path: Path):
+    """Datasets that pack many problems into one shared file (e.g. SDPLIB
+    tar members) must be able to advertise per-member sizes via
+    metadata["size_bytes"]; the filter must use those instead of the
+    shared path's size on disk."""
+    archive = tmp_path / "archive.tar"
+    archive.write_bytes(b"x" * 5_000_000)  # 5 MB on disk
+
+    specs = [
+        ProblemSpec(
+            dataset_id="d",
+            name="member_small",
+            kind=QP,
+            path=archive,
+            metadata={"size_bytes": 10},
+        ),
+        ProblemSpec(
+            dataset_id="d",
+            name="member_large",
+            kind=QP,
+            path=archive,
+            metadata={"size_bytes": 1_500_001},
+        ),
+    ]
+
+    assert [spec.name for spec in _filter_by_size(specs, 1.0)] == ["member_small"]
+
+
 def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):
     called = {}
 
