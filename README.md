@@ -197,12 +197,39 @@ Useful dataset options:
 
 | Dataset | Option | Meaning |
 |---|---|---|
+| All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
 | `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
 | `mpc_qpbenchmark` | `subset=default`, `all`, or comma-separated names | Filter downloaded MPC QP `.npz` files. |
 | `cutest_qp` | `subset=default`, `all`, or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
 | `cblib` | `subset=default`, `all`, or comma-separated names | Filter downloaded CBF files. |
 | `cblib` | `include_unsupported=true` | Show downloaded CBF files the parser would otherwise hide. |
+
+### Filtering by file size
+
+Many problem libraries (MIPLIB, NETLIB, QPLIB, CUTEst-QP, ...) include a long
+tail of large instances that take a long time to solve. Set
+`dataset_options.max_size_mb` to drop problems whose backing file exceeds
+the threshold (in megabytes, measured on disk):
+
+```yaml
+run:
+  dataset: miplib
+  dataset_options:
+    max_size_mb: 1.0   # only run instances whose .mps[.gz] is <= 1 MB
+```
+
+Notes on the semantics:
+
+- The filter is applied uniformly across every file-backed dataset by the
+  runner, after `include` / `exclude` selection.
+- The threshold is the on-disk size of `ProblemSpec.path`. For `.mps.gz` /
+  similar, that's the compressed size — small relative to the parsed
+  problem but a useful proxy.
+- The `synthetic` dataset has no backing file and is unaffected.
+- `sdplib` packs many problems into a single `sdplib.tar`. The runner
+  cannot see per-member sizes there, so the dataset filters tar members
+  internally using the same `max_size_mb` value.
 
 ## Supported Solvers
 

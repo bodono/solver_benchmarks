@@ -8,7 +8,7 @@ from solver_benchmarks.core.config import parse_environment_run_config, parse_ru
 from solver_benchmarks.core.env_runner import run_environment_matrix
 from solver_benchmarks.core.problem import CONE, QP, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
-from solver_benchmarks.core.runner import run_benchmark
+from solver_benchmarks.core.runner import _filter_by_size, run_benchmark
 from solver_benchmarks.core.storage import ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
@@ -214,6 +214,32 @@ def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path):
 
     assert len(df) == 1
     assert df.loc[0, "status"] == "skipped_unsupported"
+
+
+def test_filter_by_size_drops_oversized_paths_only(tmp_path: Path):
+    small = tmp_path / "small.bin"
+    large = tmp_path / "large.bin"
+    small.write_bytes(b"x" * 10)
+    large.write_bytes(b"x" * 1_500_001)
+
+    specs = [
+        ProblemSpec(dataset_id="d", name="small", kind=QP, path=small),
+        ProblemSpec(dataset_id="d", name="large", kind=QP, path=large),
+        ProblemSpec(dataset_id="d", name="synth", kind=QP, path=None),
+        ProblemSpec(dataset_id="d", name="missing", kind=QP, path=tmp_path / "nope.bin"),
+    ]
+
+    assert [spec.name for spec in _filter_by_size(specs, None)] == [
+        "small",
+        "large",
+        "synth",
+        "missing",
+    ]
+    assert [spec.name for spec in _filter_by_size(specs, 1.0)] == [
+        "small",
+        "synth",
+        "missing",
+    ]
 
 
 def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):

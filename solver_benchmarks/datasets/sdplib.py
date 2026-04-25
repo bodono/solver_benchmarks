@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.sdplib import (
@@ -25,6 +26,10 @@ class SDPLIBDataset(Dataset):
     )
     data_patterns = ("*.jld2", "sdplib.tar")
     prepare_command = "python scripts/prepare_sdplib.py"
+
+    def __init__(self, repo_root: str | Path | None = None, **options: Any):
+        super().__init__(repo_root=repo_root, **options)
+        self.max_size_mb = float(options.get("max_size_mb", float("inf")))
 
     @property
     def folder(self) -> Path:
@@ -52,7 +57,10 @@ class SDPLIBDataset(Dataset):
                     )
                 )
         existing = {spec.name for spec in specs}
-        for name in list_sdplib_tar(self.tar_path):
+        # Tar members share a single ProblemSpec.path (the archive itself), so
+        # the runner-level max_size_mb filter cannot see per-member sizes.
+        # We must filter inside the archive here.
+        for name in list_sdplib_tar(self.tar_path, max_size_mb=self.max_size_mb):
             if name in existing:
                 continue
             specs.append(

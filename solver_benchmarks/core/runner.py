@@ -51,6 +51,9 @@ def run_benchmark(
         if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
             dataset.prepare_data(problem_names=include or None)
         problems = _filter_problems(dataset.list_problems(), include, exclude)
+        problems = _filter_by_size(
+            problems, dataset_config.dataset_options.get("max_size_mb")
+        )
         if not problems:
             data_status = (
                 dataset.data_status() if hasattr(dataset, "data_status") else None
@@ -351,6 +354,35 @@ def _filter_problems(
         if include_set and problem.name not in include_set:
             continue
         if problem.name in exclude_set:
+            continue
+        selected.append(problem)
+    return selected
+
+
+def _filter_by_size(
+    problems: Iterable[ProblemSpec], max_size_mb: float | None
+) -> list[ProblemSpec]:
+    """Drop specs whose backing file exceeds ``max_size_mb``.
+
+    Specs without a path (e.g. synthetic problems) and missing files pass
+    through. Tar-backed datasets like SDPLIB share one path across many
+    specs and must filter inside the archive themselves; this runner-level
+    pass only inspects ``ProblemSpec.path`` on disk.
+    """
+    if max_size_mb is None:
+        return list(problems)
+    threshold_bytes = float(max_size_mb) * 1.0e6
+    selected = []
+    for problem in problems:
+        if problem.path is None:
+            selected.append(problem)
+            continue
+        try:
+            size = problem.path.stat().st_size
+        except OSError:
+            selected.append(problem)
+            continue
+        if size > threshold_bytes:
             continue
         selected.append(problem)
     return selected

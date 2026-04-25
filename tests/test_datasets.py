@@ -1,4 +1,6 @@
 import gzip
+import io
+import tarfile
 from pathlib import Path
 
 import numpy as np
@@ -256,6 +258,32 @@ def test_kennington_dataset_round_trips_through_qpsreader(tmp_path: Path):
     dataset = get_dataset("kennington")(repo_root=tmp_path, data_root=data_root)
     problem = dataset.load_problem("tiny")
     assert problem.qp["A"].shape[1] == 2
+
+
+def test_sdplib_dataset_filters_tar_members_by_max_size_mb(tmp_path: Path):
+    """Tar members share one ProblemSpec.path so the runner-level filter
+    can't see per-member sizes. SDPLIB must filter inside the archive."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "sdplib_data"
+    folder.mkdir(parents=True)
+
+    with tarfile.open(folder / "sdplib.tar", "w") as archive:
+        for name, size in [
+            ("tar_small.jld2", 10),
+            ("tar_large.jld2", 1_500_001),
+        ]:
+            data = b"x" * size
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+
+    dataset = get_dataset("sdplib")(
+        repo_root=tmp_path,
+        data_root=data_root,
+        max_size_mb=1,
+    )
+
+    assert [spec.name for spec in dataset.list_problems()] == ["tar_small"]
 
 
 def test_qplib_index_and_subset_filtering(tmp_path: Path):
