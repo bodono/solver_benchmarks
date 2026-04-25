@@ -3,6 +3,8 @@ import math
 import sys
 from pathlib import Path
 
+import pytest
+
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.core.config import parse_environment_run_config, parse_run_config
 from solver_benchmarks.core.env_runner import run_environment_matrix
@@ -268,6 +270,30 @@ def test_filter_by_size_prefers_metadata_size_over_path_stat(tmp_path: Path):
     ]
 
     assert [spec.name for spec in _filter_by_size(specs, 1.0)] == ["member_small"]
+
+
+def test_pdlp_linear_cone_accepts_free_zero_cone_key():
+    pytest.importorskip("ortools.linear_solver.linear_solver_pb2")
+
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.solvers.pdlp_adapter import _build_lp_model_from_linear_cone
+
+    cone_problem = {
+        "A": sp.csr_matrix([[1.0], [-1.0]]),
+        "b": np.array([1.0, -1.0]),
+        "q": np.array([1.0]),
+        "cone": {"f": 1, "l": 1},
+    }
+
+    model = _build_lp_model_from_linear_cone(cone_problem)
+
+    assert len(model.constraint) == 2
+    assert model.constraint[0].lower_bound == pytest.approx(1.0)
+    assert model.constraint[0].upper_bound == pytest.approx(1.0)
+    assert not model.constraint[1].HasField("lower_bound")
+    assert model.constraint[1].upper_bound == pytest.approx(-1.0)
 
 
 def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):

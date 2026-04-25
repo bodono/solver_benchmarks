@@ -67,7 +67,7 @@ class PDLPSolverAdapter(SolverAdapter):
     def _solve_linear_cone(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         cone_problem = problem.cone
         cone = dict(cone_problem["cone"])
-        unsupported = set(cone) - {"z", "l"}
+        unsupported = set(cone) - {"f", "z", "l"}
         if unsupported:
             return SolverResult(
                 status=status.SKIPPED_UNSUPPORTED,
@@ -146,7 +146,7 @@ def _build_lp_model_from_linear_cone(cone_problem: dict):
     b = np.asarray(cone_problem["b"], dtype=float)
     c = np.asarray(cone_problem["q"], dtype=float)
     cone = dict(cone_problem["cone"])
-    zero_dim = int(cone.get("z", 0))
+    zero_dim = int(cone.get("z", 0)) + int(cone.get("f", 0))
     nonnegative_dim = int(cone.get("l", 0))
     if zero_dim + nonnegative_dim != a.shape[0]:
         raise ValueError("Linear cone dimensions do not match A rows")

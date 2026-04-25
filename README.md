@@ -221,15 +221,22 @@ run:
 
 Notes on the semantics:
 
-- The filter is applied uniformly across every file-backed dataset by the
-  runner, after `include` / `exclude` selection.
-- By default the threshold is compared against the on-disk size of
-  `ProblemSpec.path`. For `.mps.gz` / similar, that's the compressed size —
-  small relative to the parsed problem but a useful proxy.
-- Datasets that pack many problems into a single archive (e.g. `sdplib`'s
-  `sdplib.tar`) advertise per-member sizes via `ProblemSpec.metadata`; the
-  runner prefers that over the archive's on-disk size, so the threshold
-  applies to each member individually.
+- The filter is applied uniformly across every file-backed dataset. The same
+  visible problem set is used by `bench run`, `bench list problems`,
+  `bench data status`, and analysis commands such as `bench summary`,
+  `bench missing`, and `bench report`.
+- During a run, the filter is applied after `include` / `exclude` selection.
+  `bench data status` reports the visible count after filters and notes when
+  only a subset of locally listed problems is visible.
+- By default the threshold is compared against the on-disk size of the
+  selected `ProblemSpec.path`.
+- Datasets can advertise a more precise comparison size via
+  `ProblemSpec.metadata["size_bytes"]`. The runner and listing/status tools
+  prefer that value when present. This is used for archive-backed datasets
+  such as `sdplib.tar`, where the threshold applies to each archive member,
+  and for MPS datasets that have both `.mps` and `.mps.gz` encodings of the
+  same problem, where the smallest available local encoding is used for the
+  size decision.
 - The `synthetic` dataset has no backing file and is unaffected.
 
 ## Supported Solvers
@@ -523,6 +530,19 @@ bench run configs/maros_meszaros_example.yaml
 bench run configs/multi_dataset_example.yaml
 ```
 
+Bundled benchmark configs:
+
+| Config | Purpose |
+|---|---|
+| `configs/synthetic_smoke.json` | Tiny one-problem smoke run. |
+| `configs/netlib_feasible_example.yaml` | NETLIB feasible subset example. |
+| `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example. |
+| `configs/multi_dataset_example.yaml` | Example of one run spanning several datasets. |
+| `configs/scs_anderson_sweep.yaml` | SCS Anderson acceleration sweep over NETLIB feasible, MIPLIB instances up to 5 MB, Maros-Meszaros, and SDPLIB instances up to 1 MB. Includes `scs_aa_disabled` with `acceleration_lookback: 0`, plus the cross-product `acceleration_lookback: [5, 10, 20]` and `acceleration_interval: [1, 5, 10]`. |
+| `configs/qtqp_refinement_regularization_sweep.yaml` | QTQP sweep over NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Uses `linear_solver: qdldl` and sweeps `max_iterative_refinement_steps: [1, 3, 5, 10, 20]` by `min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]`. |
+| `configs/scs_linear_solver_backend_sweep.yaml` | SCS comparison of `linear_solver: qdldl` versus `linear_solver: accelerate` on the same datasets as the Anderson sweep. |
+| `configs/qtqp_linear_solver_backend_sweep.yaml` | QTQP comparison of `linear_solver: qdldl` versus `linear_solver: accelerate` on NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. |
+
 The command prints the run directory:
 
 ```text
@@ -765,13 +785,13 @@ Discovery commands:
 |---|---|---|
 | `bench list datasets` | none | List registered dataset IDs and descriptions. |
 | `bench list solvers` | none | List registered solver IDs, availability, and supported problem types. |
-| `bench list problems DATASET` | `--repo-root PATH`, `--option key=value`, `--prepare/--no-prepare` default `--no-prepare` | List problems in one dataset. Repeat `--option` for dataset-specific options such as `subset=feasible`. |
+| `bench list problems DATASET` | `--repo-root PATH`, `--option key=value`, `--prepare/--no-prepare` default `--no-prepare` | List visible problems in one dataset. Repeat `--option` for dataset-specific options such as `subset=feasible` or generic filters such as `max_size_mb=5`. |
 
 Data-management commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible, the data path, source, and preparation command. Omit `DATASET` to check all datasets. |
+| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible after options and generic filters, the data path, source, and preparation command. Omit `DATASET` to check all datasets. |
 | `bench data prepare DATASET` | `--repo-root PATH`, `--option key=value`, `--problem NAME`, `--all` default false | Download or prepare missing data for datasets that support automatic preparation. Repeat `--problem` for selected instances. Use `--all` only when you intentionally want every known remote problem. |
 
 Run and analysis commands:
@@ -782,7 +802,7 @@ Run and analysis commands:
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
-| `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, problem)` results relative to the run manifest. |
+| `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default `10.0`, `--max-value VALUE` default `1000.0`, `--success-only` default false | Write shifted geometric means into the run directory. By default failures are penalized with `--max-value`; use `--success-only` for solved-problem-only geomeans. |
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
@@ -1039,12 +1059,15 @@ problem = {
 ```
 
 Current conic support depends on the solver adapter. SCS supports general conic
-data accepted by SCS. PDLP supports only linear zero/nonnegative cones.
+data accepted by SCS. PDLP supports only linear zero/nonnegative cones; zero
+cones may be keyed as either `z` or `f`.
 
 Add tests:
 
 - Dataset is registered.
 - `list_problems()` returns stable, deduplicated problem names.
+- Generic visibility through `visible_problems()` respects shared filters such
+  as `max_size_mb`.
 - A small fixture problem loads with expected dimensions.
 - Unsupported solver combinations skip with a warning.
 
@@ -1150,6 +1173,7 @@ Supported inputs:
 - LP datasets represented as QPs with `P.nnz == 0`, such as NETLIB and MIPLIB
   root LP relaxations.
 - Simple linear conic problems with only zero and nonnegative cones.
+  Zero cones may use either `z` or `f`.
 
 Unsupported inputs:
 
@@ -1194,6 +1218,9 @@ Current tests cover:
 - Dataset and solver registration.
 - Synthetic QP loading.
 - Generic runner result writing and resume behavior.
+- Generic `max_size_mb` filtering across dataset visibility, CLI problem
+  listing, data status, runner selection, and analysis completion/missing
+  calculations.
 - Structured warning events for unsupported combinations.
 - Subprocess stdout/stderr capture.
 - Worker trace serialization.
@@ -1212,6 +1239,7 @@ Current tests cover:
 - Performance profile and shifted geometric mean calculations.
 - CLI `summary`, `profile`, and `geomean` commands.
 - PDLP registration and clean skip behavior when unavailable or given non-LP data.
+- PDLP linear-cone handling for both `z` and `f` zero-cone keys.
 
 GitHub Actions runs additional matrix workflows that install each open-source
 solver in isolation and exercise its adapter via `scripts/ci_solver_smoke.py`,

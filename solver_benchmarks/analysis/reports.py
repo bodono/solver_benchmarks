@@ -14,6 +14,7 @@ import pandas as pd
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.datasets import get_dataset
+from solver_benchmarks.datasets.base import filter_problem_specs_by_size
 
 
 def solver_metrics(
@@ -1078,14 +1079,20 @@ def _expected_by_dataset(
             repo_root=repo_root,
             **entry.get("dataset_options", {}),
         )
-        problems = [problem.name for problem in dataset.list_problems()]
+        specs = dataset.list_problems()
+        problems = [problem.name for problem in specs]
         include = set(entry.get("include") or [])
         exclude = set(entry.get("exclude") or [])
         if include:
             problems = [name for name in problems if name in include]
         if exclude:
             problems = [name for name in problems if name not in exclude]
-        expected[entry["id"]] = set(problems)
+        specs_by_name = {problem.name: problem for problem in specs}
+        filtered_specs = filter_problem_specs_by_size(
+            [specs_by_name[name] for name in problems],
+            entry.get("dataset_options", {}).get("max_size_mb"),
+        )
+        expected[entry["id"]] = {problem.name for problem in filtered_specs}
     return expected
 
 
