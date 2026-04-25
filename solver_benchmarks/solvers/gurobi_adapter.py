@@ -67,7 +67,8 @@ class GurobiSolverAdapter(SolverAdapter):
         for row, col, value in zip(p_mat.row, p_mat.col, p_mat.data):
             objective.add(0.5 * float(value) * variables[row] * variables[col])
         objective.add(grb.LinExpr(q, variables))
-        objective.addConstant(float(qp.get("r", 0.0)))
+        # The ``r`` constant offset is added by ``solver_benchmarks.worker``;
+        # adding it here as well would double-count it for Gurobi solves.
         model.setObjective(objective, grb.GRB.MINIMIZE)
 
         start = time.perf_counter()

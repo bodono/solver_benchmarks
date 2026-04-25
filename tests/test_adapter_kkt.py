@@ -239,6 +239,22 @@ def test_adapter_reports_dual_infeasibility_certificate(solver_name: str, tmp_pa
 
 
 @pytest.mark.parametrize(
+    "solver_name",
+    ["osqp", "scs", "clarabel", "qtqp", "highs", "proxqp", "piqp", "gurobi", "mosek", "cplex"],
+)
+def test_adapter_does_not_add_r_offset_to_reported_objective(solver_name: str, tmp_path: Path):
+    # Regression: every QP adapter must return ``c^T x + 0.5 x^T P x`` (no
+    # offset) — ``solver_benchmarks.worker._reported_objective`` adds ``r``
+    # exactly once. Adding it again inside an adapter would double-count.
+    qp = _small_qp()
+    qp["r"] = 42.0
+    result = _solve(solver_name, qp, tmp_path)
+    assert result.status == status.OPTIMAL, result.status
+    # Optimum of min 0.5(x1^2 + x2^2) + x1 + x2 is x* = (-1, -1), value = -1.
+    assert result.objective_value == pytest.approx(-1.0, abs=1e-4)
+
+
+@pytest.mark.parametrize(
     "phase, errors, expected",
     [
         # sdpapinfo['phasevalue'] is in CLP form — pUNBD = primal unbounded
