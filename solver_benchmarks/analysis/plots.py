@@ -47,6 +47,8 @@ def write_analysis_plots(
         _write_performance_ratio_heatmap(results, output_dir, metric),
         _write_status_heatmap(results, output_dir),
         _write_kkt_residual_boxplot(results, output_dir),
+        _write_kkt_residual_heatmap(results, output_dir),
+        _write_kkt_accuracy_profile(results, output_dir),
     ]
     return [path for path in paths if path is not None]
 
@@ -316,7 +318,11 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
             ax.set_title(f"{label}\n(no data)")
             continue
         drew_any = True
-        ax.boxplot(data, labels=labels, showfliers=True)
+        ax.boxplot(data, labels=labels, showfliers=False)
+        rng = np.random.default_rng(42)
+        for idx, arr in enumerate(data):
+            xs = rng.normal(idx + 1, 0.07, arr.size)
+            ax.scatter(xs, arr, alpha=0.45, s=12, color="#1f77b4", edgecolors="none")
         ax.set_title(label)
         ax.set_ylabel("log10(residual)")
         ax.grid(True, axis="y", alpha=0.25)
@@ -330,6 +336,141 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
 
     fig.suptitle("KKT Residuals on Successful Solves")
     path = output_dir / "kkt_residuals.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+_KKT_RESIDUAL_FIELDS = (
+    ("kkt.primal_res_rel", "primal_res_rel"),
+    ("kkt.dual_res_rel", "dual_res_rel"),
+    ("kkt.comp_slack", "comp_slack"),
+    ("kkt.duality_gap_rel", "duality_gap_rel"),
+)
+
+
+def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
+    available = [(col, label) for col, label in _KKT_RESIDUAL_FIELDS if col in results]
+    if not available:
+        return None
+
+    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    if successful.empty:
+        return None
+
+    pivots: list[tuple[str, pd.DataFrame]] = []
+    for col, label in available:
+        successful[col] = pd.to_numeric(successful[col], errors="coerce")
+        frame = successful[np.isfinite(successful[col]) & (successful[col] > 0.0)]
+        if frame.empty:
+            continue
+        pivot = frame.pivot_table(
+            index="problem",
+            columns="solver_id",
+            values=col,
+            aggfunc="first",
+        ).sort_index()
+        if pivot.empty:
+            continue
+        pivots.append((label, pivot))
+
+    if not pivots:
+        return None
+
+    problem_count = max(len(pivot.index) for _, pivot in pivots)
+    solver_count = max(len(pivot.columns) for _, pivot in pivots)
+    panel_height = min(14, max(3.5, 0.14 * problem_count))
+    panel_width = min(10, max(4.0, 1.2 * solver_count))
+    cols = len(pivots)
+    fig, axes = plt.subplots(
+        1,
+        cols,
+        figsize=(panel_width * cols, panel_height),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad("#e5e7eb")
+    for ax, (label, pivot) in zip(axes.ravel(), pivots):
+        encoded = np.log10(pivot.astype(float))
+        image = ax.imshow(encoded, aspect="auto", cmap=cmap, interpolation="nearest")
+        ax.set_xticks(np.arange(len(pivot.columns)))
+        ax.set_xticklabels(pivot.columns, rotation=45, ha="right")
+        if len(pivot.index) <= 60:
+            ax.set_yticks(np.arange(len(pivot.index)))
+            ax.set_yticklabels(pivot.index)
+        else:
+            ax.set_yticks([])
+            ax.set_ylabel(f"{len(pivot.index)} problems")
+        ax.set_title(label)
+        cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("log10(residual)")
+
+    fig.suptitle("KKT Residual Heatmap (successful solves)")
+    path = output_dir / "kkt_residual_heatmap.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
+    available = [(col, label) for col, label in _KKT_RESIDUAL_FIELDS if col in results]
+    if not available:
+        return None
+
+    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    if successful.empty:
+        return None
+
+    solver_ids = sorted(successful["solver_id"].dropna().unique())
+    if not solver_ids:
+        return None
+
+    problem_totals = {
+        solver_id: int((results["solver_id"] == solver_id).sum())
+        for solver_id in solver_ids
+    }
+    thresholds = np.logspace(-12, 0, 121)
+
+    cols = len(available)
+    fig, axes = plt.subplots(
+        1, cols, figsize=(4.5 * cols, 4.5), constrained_layout=True, squeeze=False
+    )
+    drew_any = False
+    for ax, (col, label) in zip(axes.ravel(), available):
+        per_solver = []
+        for solver_id in solver_ids:
+            series = pd.to_numeric(
+                successful.loc[successful["solver_id"] == solver_id, col], errors="coerce"
+            )
+            series = series[np.isfinite(series)].to_numpy()
+            total = problem_totals.get(solver_id, 0)
+            if total == 0 or series.size == 0:
+                continue
+            series = np.where(series <= 0.0, 1e-16, series)
+            fractions = np.array([(series <= t).sum() / total for t in thresholds])
+            per_solver.append((solver_id, fractions))
+        if not per_solver:
+            ax.set_axis_off()
+            ax.set_title(f"{label}\n(no data)")
+            continue
+        drew_any = True
+        for solver_id, fractions in per_solver:
+            ax.plot(thresholds, fractions, label=solver_id, linewidth=2)
+        ax.set_xscale("log")
+        ax.set_ylim(0.0, 1.02)
+        ax.set_xlabel("residual threshold tau")
+        ax.set_ylabel("fraction with residual <= tau")
+        ax.set_title(label)
+        ax.grid(True, which="both", alpha=0.25)
+        ax.legend(fontsize="small")
+
+    if not drew_any:
+        plt.close(fig)
+        return None
+
+    fig.suptitle("KKT Accuracy Profile (per solver, across all problems)")
+    path = output_dir / "kkt_accuracy_profile.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)
     return path
