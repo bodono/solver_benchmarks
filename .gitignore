@@ -1,6 +1,13 @@
 # Ignore results folder
 #results/*
 
+*.csv
+*.mps
+*.pb
+
+# Benchmark run outputs
+configs/runs/
+
 # Add certain results
 #!results/benchmark_problems/
 #results/benchmark_problems/*
@@ -21,7 +28,7 @@ __pycache__/
 
 # C extensions
 *.so
-
+problem_classes/mittelmann/temperature_ground_truth-easy.hdf5
 # Distribution / packaging
 .Python
 build/

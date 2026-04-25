@@ -1,0 +1,171 @@
+"""MOSEK adapter."""
+
+from __future__ import annotations
+
+from pathlib import Path
+import time
+
+import numpy as np
+import scipy.sparse as sp
+
+from solver_benchmarks.core import status
+from solver_benchmarks.core.problem import QP, ProblemData
+from solver_benchmarks.core.result import SolverResult
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+
+
+class MosekSolverAdapter(SolverAdapter):
+    solver_name = "mosek"
+    supported_problem_kinds = {QP}
+
+    @classmethod
+    def is_available(cls) -> bool:
+        try:
+            import mosek  # noqa: F401
+        except ModuleNotFoundError:
+            return False
+        return True
+
+    def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
+        try:
+            import mosek
+        except ModuleNotFoundError as exc:
+            raise SolverUnavailable("Install with the mosek extra to use MOSEK") from exc
+
+        qp = problem.qp
+        q = np.asarray(qp["q"], dtype=float)
+        p_mat = sp.tril(sp.coo_matrix(qp["P"]), format="coo")
+        a_mat = sp.coo_matrix(qp["A"])
+        n = int(qp.get("n", q.shape[0]))
+        m = int(qp.get("m", a_mat.shape[0]))
+        lower = np.asarray(qp["l"], dtype=float)
+        upper = np.asarray(qp["u"], dtype=float)
+
+        env = mosek.Env()
+        task = env.Task()
+        _configure_mosek(task, env, self.settings, mosek)
+
+        task.appendcons(m)
+        task.appendvars(n)
+        for col, value in enumerate(q):
+            task.putcj(col, float(value))
+            task.putvarbound(col, mosek.boundkey.fr, -np.inf, np.inf)
+
+        task.putaijlist(a_mat.row, a_mat.col, a_mat.data)
+        for row in range(m):
+            bound_key, l_val, u_val = _mosek_bound(lower[row], upper[row], mosek)
+            task.putconbound(row, bound_key, l_val, u_val)
+
+        if p_mat.nnz:
+            task.putqobj(p_mat.row, p_mat.col, p_mat.data)
+        task.putobjsense(mosek.objsense.minimize)
+
+        start = time.perf_counter()
+        try:
+            termination_code = task.optimize()
+        except Exception as exc:
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info={"error": str(exc)},
+            )
+        elapsed = time.perf_counter() - start
+
+        soltype = mosek.soltype.itr
+        raw_status = task.getsolsta(soltype)
+        mapped = _map_mosek_status(raw_status, termination_code, mosek)
+        solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
+        iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
+        objective = task.getprimalobj(soltype) if mapped in status.SOLUTION_PRESENT else None
+        return SolverResult(
+            status=mapped,
+            objective_value=None if objective is None else float(objective),
+            iterations=int(iterations) if iterations is not None else None,
+            run_time_seconds=elapsed,
+            info={
+                "raw_status": str(raw_status),
+                "termination_code": str(termination_code),
+                "solver": "mosek",
+                "solver_reported_runtime": float(solver_reported_runtime),
+            },
+        )
+
+
+def _configure_mosek(task, env, settings: dict, mosek) -> None:
+    settings = settings_with_defaults(settings)
+    if settings.get("verbose"):
+        def streamprinter(text):
+            print(text, end="")
+
+        env.set_Stream(mosek.streamtype.log, streamprinter)
+        task.set_Stream(mosek.streamtype.log, streamprinter)
+    else:
+        task.putintparam(mosek.iparam.log, 0)
+
+    if "time_limit" in settings:
+        task.putdouparam(mosek.dparam.optimizer_max_time, float(settings["time_limit"]))
+    if "time_limit_sec" in settings:
+        task.putdouparam(mosek.dparam.optimizer_max_time, float(settings["time_limit_sec"]))
+
+    ignored = {"verbose", "time_limit", "time_limit_sec", "high_accuracy"}
+    for key, value in settings.items():
+        if key in ignored:
+            continue
+        if isinstance(key, str):
+            _handle_mosek_str_param(task, key.strip(), value)
+        else:
+            _handle_mosek_enum_param(task, key, value, mosek)
+
+
+def _mosek_bound(lower: float, upper: float, mosek):
+    l_val = float(lower) if lower > -1.0e20 else -np.inf
+    u_val = float(upper) if upper < 1.0e20 else np.inf
+    if abs(l_val - u_val) <= 1.0e-10:
+        return mosek.boundkey.fx, l_val, u_val
+    if l_val == -np.inf and u_val == np.inf:
+        return mosek.boundkey.fr, l_val, u_val
+    if l_val == -np.inf:
+        return mosek.boundkey.up, l_val, u_val
+    if u_val == np.inf:
+        return mosek.boundkey.lo, l_val, u_val
+    return mosek.boundkey.ra, l_val, u_val
+
+
+def _map_mosek_status(raw_status, termination_code, mosek) -> str:
+    if termination_code == mosek.rescode.trm_max_time:
+        return status.TIME_LIMIT
+    if termination_code == mosek.rescode.trm_max_iterations:
+        return status.MAX_ITER_REACHED
+    solsta = mosek.solsta
+    mapping = {
+        solsta.optimal: status.OPTIMAL,
+        solsta.integer_optimal: status.OPTIMAL,
+        solsta.prim_and_dual_feas: status.OPTIMAL_INACCURATE,
+        solsta.prim_feas: status.OPTIMAL_INACCURATE,
+        solsta.prim_infeas_cer: status.PRIMAL_INFEASIBLE,
+        solsta.dual_infeas_cer: status.DUAL_INFEASIBLE,
+        solsta.unknown: status.SOLVER_ERROR,
+    }
+    return mapping.get(raw_status, status.SOLVER_ERROR)
+
+
+def _handle_mosek_str_param(task, param: str, value) -> None:
+    if param.startswith("MSK_DPAR_"):
+        task.putnadouparam(param, value)
+    elif param.startswith("MSK_IPAR_"):
+        task.putnaintparam(param, value)
+    elif param.startswith("MSK_SPAR_"):
+        task.putnastrparam(param, value)
+    else:
+        raise ValueError(f"Invalid MOSEK parameter {param!r}")
+
+
+def _handle_mosek_enum_param(task, param, value, mosek) -> None:
+    if isinstance(param, mosek.dparam):
+        task.putdouparam(param, value)
+    elif isinstance(param, mosek.iparam):
+        task.putintparam(param, value)
+    elif isinstance(param, mosek.sparam):
+        task.putstrparam(param, value)
+    else:
+        raise ValueError(f"Invalid MOSEK parameter {param!r}")

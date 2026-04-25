@@ -1,0 +1,131 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  # GitHub Actions schedules are evaluated in UTC and only from the
+  # repository default branch.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,all]"
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Compile Python sources
+        run: python -m compileall -q solver_benchmarks tests problem_classes
+
+      - name: Smoke-test CLI
+        run: python -m solver_benchmarks.cli list solvers
+
+  solver-smoke:
+    name: Solver smoke - ${{ matrix.solver }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - solver: clarabel
+            extra: clarabel
+          - solver: highs
+            extra: highs
+          - solver: osqp
+            extra: osqp
+          - solver: pdlp
+            extra: pdlp
+          - solver: piqp
+            extra: piqp
+          - solver: proxqp
+            extra: proxqp
+          - solver: qtqp
+            extra: qtqp
+          - solver: scs
+            extra: scs
+          - solver: sdpa
+            extra: sdpa
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install solver extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,${{ matrix.extra }}]"
+
+      - name: Run solver smoke benchmark
+        run: python scripts/ci_solver_smoke.py "${{ matrix.solver }}"
+
+  commercial-adapters:
+    name: Commercial adapter registration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      - name: Verify commercial adapters are optional
+        run: |
+          python - <<'PY'
+          from solver_benchmarks.solvers import get_solver
+
+          for name in ("cplex", "gurobi", "mosek"):
+              solver = get_solver(name)
+              assert solver.solver_name == name
+              assert isinstance(solver.is_available(), bool)
+          PY

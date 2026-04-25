@@ -1,0 +1,29 @@
+{
+  "run": {
+    "dataset": "synthetic_qp",
+    "output_dir": "runs",
+    "parallelism": 1,
+    "resume": true,
+    "timeout_seconds": 30
+  },
+  "solvers": [
+    {
+      "id": "scs_default",
+      "solver": "scs",
+      "settings": {
+        "eps_abs": 1e-6,
+        "eps_rel": 1e-6,
+        "max_iters": 1000
+      }
+    },
+    {
+      "id": "osqp_default",
+      "solver": "osqp",
+      "settings": {
+        "eps_abs": 1e-6,
+        "eps_rel": 1e-6,
+        "max_iter": 1000
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+run:
+  dataset: maros_meszaros
+  output_dir: runs
+  parallelism: 2
+  resume: true
+  timeout_seconds: 300
+
+solvers:
+  - id: qtqp_default
+    solver: qtqp
+
+  - id: clarabel_default
+    solver: clarabel

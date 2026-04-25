@@ -3,32 +3,21 @@ import pandas as pd
 import numpy as np
 import scipy.sparse as spa
 import scipy.io as spio
-import cvxpy
 
 
 class QPLIB(object):
     '''
     QPLIB
     '''
-    def __init__(self, file_name, prob_name, create_cvxpy_problem=False):
+    def __init__(self, file_name, prob_name):
         '''
-        Generate Maros problem in QP format and CVXPY format
-
-        NB. By default, the CVXPY problem is not created
+        Generate QPLIB problem in QP format.
         '''
         # Load problem from file
         self._load_qplib_problem(file_name)
 
         self.qp_problem = self._generate_qp_problem()
         self.prob_name = prob_name
-        self._cvxpy_problem = None
-
-
-    @property
-    def cvxpy_problem(self):
-      if self._cvxpy_problem is None:
-        self._cvxpy_problem = self._generate_cvxpy_problem()
-      return self._cvxpy_problem
 
     def _load_qplib_problem(self, filename, verbose=False):
         # minimize or maximize
@@ -349,35 +338,3 @@ class QPLIB(object):
         problem['m'] = self.m
 
         return problem
-
-    def _generate_cvxpy_problem(self):
-        '''
-        Generate QP problem
-        '''
-        u = np.copy(self.u)
-        u[u == np.inf] = 1e9
-        l = np.copy(self.l)
-        l[l == -np.inf] = -1e9
-        x_var = cvxpy.Variable(self.n)
-        objective = .5 * cvxpy.quad_form(x_var, self.P) + self.q * x_var + \
-            self.r
-        constraints = [self.A * x_var <= u, self.A * x_var >= l]
-        problem = cvxpy.Problem(cvxpy.Minimize(objective), constraints)
-
-        return problem
-
-    def revert_cvxpy_solution(self):
-        '''
-        Get QP primal and duar variables from cvxpy solution
-        '''
-
-        variables = self.cvxpy_problem.variables()
-        constraints = self.cvxpy_problem.constraints
-
-        # primal solution
-        x = variables[0].value
-
-        # dual solution
-        y = constraints[0].dual_value - constraints[1].dual_value
-
-        return x, y

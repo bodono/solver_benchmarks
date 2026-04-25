@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solver-benchmarks"
+version = "0.1.0"
+description = "Config-driven benchmark suite for convex optimization solvers."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "h5py>=3.0",
+    "highspy>=1.0",
+    "matplotlib>=3.7",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "PyYAML>=6.0",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+highs = ["highspy>=1.0"]
+scs = ["scs>=3.0"]
+osqp = ["osqp>=0.6"]
+clarabel = ["clarabel>=0.7"]
+qtqp = [
+    "qtqp>=0.0.3; python_version < '3.11'",
+    "qtqp>=0.0.5; python_version >= '3.11'",
+]
+gurobi = ["gurobipy>=11.0"]
+mosek = ["Mosek>=10.0"]
+pdlp = ["ortools>=9.3.0"]
+proxqp = ["proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'"]
+piqp = ["piqp>=0.6.0"]
+sdpa = ["sdpa-python>=0.2.2; python_version < '3.14'"]
+cplex = ["cplex>=22.1"]
+test = ["pytest>=7.0"]
+all = [
+    "scs>=3.0",
+    "osqp>=0.6",
+    "clarabel>=0.7",
+    "qtqp>=0.0.3; python_version < '3.11'",
+    "qtqp>=0.0.5; python_version >= '3.11'",
+    "ortools>=9.3.0",
+    "piqp>=0.6.0",
+    "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
+    "sdpa-python>=0.2.2; python_version < '3.14'",
+    "pytest>=7.0",
+]
+
+[project.scripts]
+bench = "solver_benchmarks.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["solver_benchmarks*", "problem_classes*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]

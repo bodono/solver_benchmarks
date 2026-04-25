@@ -1,0 +1,20 @@
+run:
+  dataset: netlib
+  output_dir: runs
+  dataset_options:
+    subset: feasible
+  parallelism: 1
+  resume: true
+  timeout_seconds: 120
+
+solvers:
+  - id: pdlp_default
+    solver: pdlp
+    settings:
+      time_limit_sec: 120
+
+  - id: scs_default
+    solver: scs
+    settings:
+      max_iters: 100000
+
