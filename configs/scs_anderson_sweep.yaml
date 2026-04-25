@@ -1,0 +1,39 @@
+run:
+  output_dir: runs
+  parallelism: 4
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - id: miplib_under_5mb
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+    - name: maros_meszaros
+    - id: sdplib_under_1mb
+      name: sdplib
+      dataset_options:
+        max_size_mb: 1.0
+
+solvers:
+  - id: scs_aa_disabled
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      acceleration_lookback: 0
+
+  - id: scs_aa
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+    sweep:
+      acceleration_lookback: [5, 10, 20]
+      acceleration_interval: [1, 5, 10]
+    id_template: "scs_aa_lb{acceleration_lookback}_int{acceleration_interval}"

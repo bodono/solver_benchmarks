@@ -1,0 +1,25 @@
+run:
+  output_dir: runs
+  parallelism: 4
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - id: miplib_under_5mb
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+    - name: maros_meszaros
+
+solvers:
+  - id: qtqp_ir_reg
+    solver: qtqp
+    settings:
+      linear_solver: qdldl
+    sweep:
+      max_iterative_refinement_steps: [1, 3, 5, 10, 20]
+      min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]
+    id_template: "qtqp_ir{max_iterative_refinement_steps}_reg{min_static_regularization:g}"
