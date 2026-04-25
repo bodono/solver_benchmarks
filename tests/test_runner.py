@@ -1,9 +1,11 @@
 import json
 import math
+import sys
 from pathlib import Path
 
 from solver_benchmarks.analysis.load import load_results
-from solver_benchmarks.core.config import parse_run_config
+from solver_benchmarks.core.config import parse_environment_run_config, parse_run_config
+from solver_benchmarks.core.env_runner import run_environment_matrix
 from solver_benchmarks.core.problem import CONE, QP, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.runner import run_benchmark
@@ -50,6 +52,8 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
     assert (artifact_dir / "stderr.log").exists()
     assert (artifact_dir / "result.json").exists()
     assert store.results_parquet_path.exists()
+    assert record["metadata"]["runtime"]["python_version"]
+    assert "scs" in record["metadata"]["runtime"]["solver_package_versions"]
 
     run_benchmark(config, run_dir=store.run_dir, repo_root=Path.cwd())
     assert len(results_path.read_text().strip().splitlines()) == 1
@@ -249,3 +253,90 @@ def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):
     run_benchmark(config, repo_root=Path.cwd())
 
     assert called == {"problem_names": ["needed"], "all_problems": False}
+
+
+def test_runner_records_environment_metadata(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "include": ["one_variable_eq"],
+                "parallelism": 1,
+            },
+            "solvers": [
+                {
+                    "id": "scs_env",
+                    "solver": "scs",
+                    "settings": {"verbose": False, "max_iters": 1000},
+                }
+            ],
+        }
+    )
+
+    store = run_benchmark(
+        config,
+        repo_root=Path.cwd(),
+        environment_id="scs_3_2",
+        environment_metadata={"scs": "3.2.0"},
+    )
+    record = json.loads(store.results_jsonl_path.read_text().splitlines()[0])
+
+    assert record["metadata"]["environment_id"] == "scs_3_2"
+    assert record["metadata"]["environment_metadata"] == {"scs": "3.2.0"}
+
+
+def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path: Path):
+    config = parse_environment_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "include": ["one_variable_eq"],
+                "parallelism": 1,
+            },
+            "environments": [
+                {
+                    "id": "current_a",
+                    "python": sys.executable,
+                    "metadata": {"label": "current-a"},
+                    "solvers": [
+                        {
+                            "id": "scs_current_a",
+                            "solver": "scs",
+                            "settings": {"verbose": False, "max_iters": 1000},
+                        }
+                    ],
+                },
+                {
+                    "id": "current_b",
+                    "python": sys.executable,
+                    "metadata": {"label": "current-b"},
+                    "solvers": [
+                        {
+                            "id": "scs_current_b",
+                            "solver": "scs",
+                            "settings": {"verbose": False, "max_iters": 1000},
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    run_dir = run_environment_matrix(
+        config,
+        run_dir=tmp_path / "matrix",
+        repo_root=Path.cwd(),
+        stream_output=False,
+    )
+    df = load_results(run_dir)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+
+    assert set(df["solver_id"]) == {"scs_current_a", "scs_current_b"}
+    assert set(df["metadata.environment_id"]) == {"current_a", "current_b"}
+    assert set(df["status"]) == {"optimal"}
+    assert {solver["id"] for solver in manifest["config"]["solvers"]} == {
+        "scs_current_a",
+        "scs_current_b",
+    }

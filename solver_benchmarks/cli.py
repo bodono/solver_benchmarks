@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import json
 
 import click
 
@@ -21,7 +22,8 @@ from solver_benchmarks.analysis.reports import (
     missing_results,
     solver_metrics,
 )
-from solver_benchmarks.core.config import load_run_config
+from solver_benchmarks.core.config import load_environment_run_config, load_run_config
+from solver_benchmarks.core.env_runner import run_environment_matrix
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.datasets import get_dataset, list_datasets
 from solver_benchmarks.solvers import get_solver, list_solvers
@@ -129,22 +131,53 @@ def data_prepare_cmd(
 @click.option("--run-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option("--prepare-data", is_flag=True, help="Prepare missing dataset data first.")
+@click.option("--environment-id", default=None, help="Optional environment label to record.")
+@click.option("--environment-metadata", default=None, help="JSON metadata for the environment.")
 def run_cmd(
     config_path: Path,
     run_dir: Path | None,
     repo_root: Path | None,
     prepare_data: bool,
+    environment_id: str | None,
+    environment_metadata: str | None,
 ) -> None:
     config = load_run_config(config_path)
     if prepare_data:
         config = replace(config, auto_prepare_data=True)
+    env_metadata = _parse_json_option(environment_metadata)
     store = run_benchmark(
         config,
         run_dir=run_dir,
         repo_root=repo_root,
         stream_output=True,
+        environment_id=environment_id,
+        environment_metadata=env_metadata,
     )
     click.echo(str(store.run_dir))
+
+
+@main.group("env")
+def env_group() -> None:
+    """Run benchmarks across externally managed Python environments."""
+
+
+@env_group.command("run")
+@click.argument("config_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--run-dir", type=click.Path(path_type=Path), default=None)
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def env_run_cmd(
+    config_path: Path,
+    run_dir: Path | None,
+    repo_root: Path | None,
+) -> None:
+    config = load_environment_run_config(config_path)
+    out = run_environment_matrix(
+        config,
+        run_dir=run_dir,
+        repo_root=repo_root,
+        stream_output=True,
+    )
+    click.echo(str(out))
 
 
 @main.command("summary")
@@ -292,6 +325,20 @@ def _coerce(value: str):
         return float(value)
     except ValueError:
         return value
+
+
+def _parse_json_option(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"--environment-metadata must be valid JSON: {exc.msg}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise click.ClickException("--environment-metadata must be a JSON object")
+    return parsed
 
 
 if __name__ == "__main__":

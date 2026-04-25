@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import RunConfig, SolverConfig
+from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.storage import ResultStore, atomic_write_text
@@ -35,6 +36,8 @@ def run_benchmark(
     run_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
     stream_output: bool = False,
+    environment_id: str | None = None,
+    environment_metadata: dict | None = None,
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     store = ResultStore.create(config, run_dir=run_dir)
@@ -62,7 +65,15 @@ def run_benchmark(
             for problem in problems:
                 if _already_done(problem, solver_config, completed):
                     continue
-                _write_skip(store, config, problem, solver_config, message)
+                _write_skip(
+                    store,
+                    config,
+                    problem,
+                    solver_config,
+                    message,
+                    environment_id=environment_id,
+                    environment_metadata=environment_metadata,
+                )
             continue
         solver = solver_cls(solver_config.settings)
         for problem in problems:
@@ -82,7 +93,15 @@ def run_benchmark(
                     problem=problem.name,
                     problem_kind=problem.kind,
                 )
-                _write_skip(store, config, problem, solver_config, message)
+                _write_skip(
+                    store,
+                    config,
+                    problem,
+                    solver_config,
+                    message,
+                    environment_id=environment_id,
+                    environment_metadata=environment_metadata,
+                )
                 continue
             tasks.append((problem, solver_config))
 
@@ -100,6 +119,8 @@ def run_benchmark(
                     problem,
                     solver_config,
                     stream_output=stream_output,
+                    environment_id=environment_id,
+                    environment_metadata=environment_metadata,
                 )
             )
     else:
@@ -113,6 +134,8 @@ def run_benchmark(
                     problem,
                     solver_config,
                     stream_output,
+                    environment_id,
+                    environment_metadata,
                 )
                 for problem, solver_config in tasks
             ]
@@ -128,6 +151,8 @@ def _run_one(
     problem: ProblemSpec,
     solver_config: SolverConfig,
     stream_output: bool = False,
+    environment_id: str | None = None,
+    environment_metadata: dict | None = None,
 ) -> ProblemResult:
     artifacts_dir = store.problem_solver_dir(problem.name, solver_config.id)
     payload = {
@@ -144,6 +169,8 @@ def _run_one(
         },
         "artifacts_dir": str(artifacts_dir),
         "repo_root": str(repo_root),
+        "environment_id": environment_id,
+        "environment_metadata": environment_metadata or {},
     }
     payload_path = artifacts_dir / "payload.json"
     atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
@@ -178,7 +205,12 @@ def _run_one(
             run_time_seconds=float(subprocess_timeout) if subprocess_timeout else None,
             error=f"Subprocess exceeded timeout_seconds={subprocess_timeout}",
             artifact_dir=str(artifacts_dir),
-            metadata=dict(problem.metadata),
+            metadata=_metadata_with_environment(
+                problem,
+                solver_config,
+                environment_id=environment_id,
+                environment_metadata=environment_metadata,
+            ),
         )
 
     worker_result_path = artifacts_dir / "worker_result.json"
@@ -207,7 +239,12 @@ def _run_one(
         run_time_seconds=None,
         error=f"Worker exited with code {completed.returncode}",
         artifact_dir=str(artifacts_dir),
-        metadata=dict(problem.metadata),
+        metadata=_metadata_with_environment(
+            problem,
+            solver_config,
+            environment_id=environment_id,
+            environment_metadata=environment_metadata,
+        ),
     )
 
 
@@ -304,6 +341,9 @@ def _write_skip(
     problem: ProblemSpec,
     solver_config: SolverConfig,
     message: str,
+    *,
+    environment_id: str | None = None,
+    environment_metadata: dict | None = None,
 ) -> None:
     artifacts_dir = store.problem_solver_dir(problem.name, solver_config.id)
     store.write_result(
@@ -320,6 +360,29 @@ def _write_skip(
             run_time_seconds=None,
             error=message,
             artifact_dir=str(artifacts_dir),
-            metadata=dict(problem.metadata),
+            metadata=_metadata_with_environment(
+                problem,
+                solver_config,
+                environment_id=environment_id,
+                environment_metadata=environment_metadata,
+            ),
         )
     )
+
+
+def _metadata_with_environment(
+    problem: ProblemSpec,
+    solver_config: SolverConfig,
+    *,
+    environment_id: str | None,
+    environment_metadata: dict | None,
+) -> dict:
+    metadata = dict(problem.metadata)
+    metadata.update(
+        {
+            "environment_id": environment_id,
+            "environment_metadata": environment_metadata or {},
+            "runtime": runtime_metadata(solver_config.solver),
+        }
+    )
+    return metadata

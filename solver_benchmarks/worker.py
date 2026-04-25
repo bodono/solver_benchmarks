@@ -7,6 +7,7 @@ import argparse
 import json
 import traceback
 
+from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import CONE, QP, cone_dimensions, qp_dimensions
 from solver_benchmarks.core.result import ProblemResult, to_jsonable
 from solver_benchmarks.core import status
@@ -44,6 +45,9 @@ def run_payload(payload: dict) -> ProblemResult:
         metadata = {
             **problem.metadata,
             **_problem_dimensions(problem),
+            "environment_id": payload.get("environment_id"),
+            "environment_metadata": payload.get("environment_metadata", {}),
+            "runtime": runtime_metadata(solver_config["solver"]),
             "solver_extra": to_jsonable(solver_result.extra),
         }
         error = None
@@ -70,19 +74,26 @@ def run_payload(payload: dict) -> ProblemResult:
         )
     except Exception as exc:
         traceback.print_exc()
+        solver_config = payload["solver"]
+        metadata = {
+            "environment_id": payload.get("environment_id"),
+            "environment_metadata": payload.get("environment_metadata", {}),
+            "runtime": runtime_metadata(solver_config["solver"]),
+        }
         return ProblemResult(
             run_id=payload["run_id"],
             dataset=payload["dataset"],
             problem=payload["problem"],
             problem_kind=payload.get("problem_kind", "unknown"),
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
+            solver_id=solver_config["id"],
+            solver=solver_config["solver"],
             status=status.WORKER_ERROR,
             objective_value=None,
             iterations=None,
             run_time_seconds=None,
             error=f"{type(exc).__name__}: {exc}",
             artifact_dir=str(artifacts_dir),
+            metadata=metadata,
         )
 
 

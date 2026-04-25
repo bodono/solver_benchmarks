@@ -292,11 +292,101 @@ Important fields:
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
 | `solvers[].timeout_seconds` | Optional per-solver timeout override. |
+| `solvers[].sweep` | Optional mapping of setting name to a non-empty list of values. Expands to the full Cartesian product. |
+| `solvers[].id_template` | Optional Python format string used to name expanded sweep variants. |
 
 The same solver may appear many times with different `id` and `settings`.
 Solver output is verbose by default and is captured in each solve's
 `stdout.log`/`stderr.log`; set `verbose: false` in a solver's settings to run it
 quietly.
+
+### Hyper-Parameter Sweeps
+
+Use `sweep` when you want to run many variants of the same solver without
+manually writing one solver block per setting combination. Sweeps are expanded
+when the config is loaded; after expansion, every variant is a normal solver
+entry with a concrete `solver_id`, concrete settings, its own logs, and its own
+rows in `results.jsonl` and `results.parquet`.
+
+Example:
+
+```yaml
+solvers:
+  - id: osqp
+    solver: osqp
+    settings:
+      verbose: true
+      max_iter: 100000
+    sweep:
+      eps_abs: [1.0e-4, 1.0e-6, 1.0e-8]
+      eps_rel: [1.0e-4, 1.0e-6]
+    id_template: "osqp_abs{eps_abs:g}_rel{eps_rel:g}"
+```
+
+This expands to six solver variants:
+
+```text
+osqp_abs0.0001_rel0.0001
+osqp_abs0.0001_rel1e-06
+osqp_abs1e-06_rel0.0001
+osqp_abs1e-06_rel1e-06
+osqp_abs1e-08_rel0.0001
+osqp_abs1e-08_rel1e-06
+```
+
+The expansion is the full cross-product of all sweep lists. Values from `sweep`
+override any same-named value in `settings`, so base settings are a convenient
+place for shared configuration and `sweep` should contain only the knobs being
+varied.
+
+If `id_template` is omitted, IDs are generated from the base ID and swept values:
+
+```yaml
+solvers:
+  - id: scs
+    solver: scs
+    settings:
+      max_iters: 20000
+    sweep:
+      eps_abs: [1.0e-4, 1.0e-6]
+      normalize: [true, false]
+```
+
+Generated IDs:
+
+```text
+scs__eps_abs=0.0001__normalize=true
+scs__eps_abs=0.0001__normalize=false
+scs__eps_abs=1e-06__normalize=true
+scs__eps_abs=1e-06__normalize=false
+```
+
+`id_template` uses Python `str.format` with fields from the base solver entry and
+expanded settings. Available fields include `id`, `solver`, and every setting
+name after sweep expansion. Format specifiers work, so `{eps_abs:g}` is useful
+for compact floating-point values.
+
+Sweeps can also be used inside `bench env run` environment configs:
+
+```yaml
+environments:
+  - id: osqp_1_0
+    python: .venvs/osqp-1.0/bin/python
+    metadata:
+      osqp: "1.0.0"
+    solvers:
+      - id: osqp_1_0
+        solver: osqp
+        sweep:
+          eps_abs: [1.0e-4, 1.0e-6]
+          eps_rel: [1.0e-4, 1.0e-6]
+        id_template: "osqp_1_0_abs{eps_abs:g}_rel{eps_rel:g}"
+```
+
+Sweep IDs must be unique after expansion, including across all environments in
+an environment matrix. This is intentional: resume uses `(problem, solver_id)`,
+and duplicate IDs would make two distinct configurations look like the same
+completed solve.
 
 ## Running Benchmarks
 
@@ -359,6 +449,182 @@ Run only specific problems by editing `include`, or list problems first:
 bench list problems netlib --option subset=feasible
 ```
 
+## Comparing Solver Versions
+
+Comparing two versions of the same Python solver should be done with isolated
+Python environments. Do not uninstall and reinstall a solver inside a running
+benchmark process; Python imports and native libraries are process/global state,
+and that approach is brittle. The benchmark supports version comparisons by
+recording runtime metadata for every solve and by providing an environment
+matrix runner that invokes one Python executable per environment.
+
+Every result row records metadata under `metadata.runtime`:
+
+| Field | Meaning |
+|---|---|
+| `metadata.runtime.python_executable` | Python executable used by the solve subprocess. |
+| `metadata.runtime.python_version` | Python version. |
+| `metadata.runtime.platform` | OS/platform string. |
+| `metadata.runtime.solver_package_versions` | Installed package versions relevant to the solver adapter, such as `{"osqp": "1.1.1"}`. |
+| `metadata.environment_id` | Optional user-supplied environment label. |
+| `metadata.environment_metadata` | Optional user-supplied metadata, usually pinned solver versions or environment notes. |
+
+Manual workflow:
+
+```bash
+python3.12 -m venv .venvs/osqp-1.0
+.venvs/osqp-1.0/bin/python -m pip install -e ".[test]" "osqp==1.0.0"
+
+python3.12 -m venv .venvs/osqp-1.1
+.venvs/osqp-1.1/bin/python -m pip install -e ".[test]" "osqp==1.1.1"
+
+.venvs/osqp-1.0/bin/python -m solver_benchmarks.cli run configs/osqp_1_0.yaml \
+  --run-dir runs/osqp_version_compare \
+  --environment-id osqp_1_0 \
+  --environment-metadata '{"osqp":"1.0.0"}'
+
+.venvs/osqp-1.1/bin/python -m solver_benchmarks.cli run configs/osqp_1_1.yaml \
+  --run-dir runs/osqp_version_compare \
+  --environment-id osqp_1_1 \
+  --environment-metadata '{"osqp":"1.1.1"}'
+
+bench report runs/osqp_version_compare
+```
+
+The solver IDs should encode the version, because resume uses
+`(problem, solver_id)`:
+
+```yaml
+solvers:
+  - id: osqp_1_0_default
+    solver: osqp
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+```
+
+Environment matrix workflow:
+
+```yaml
+run:
+  dataset: maros_meszaros
+  output_dir: runs
+  include:
+    - QAFIRO
+    - QPCBLEND
+  parallelism: 1
+  resume: true
+  timeout_seconds: 120
+
+environments:
+  - id: osqp_1_0
+    python: .venvs/osqp-1.0/bin/python
+    install:
+      - "{python} -m pip install -e ."
+      - "{python} -m pip install osqp==1.0.0"
+    metadata:
+      osqp: "1.0.0"
+    solvers:
+      - id: osqp_1_0_default
+        solver: osqp
+        settings:
+          eps_abs: 1.0e-6
+          eps_rel: 1.0e-6
+          max_iter: 100000
+
+  - id: osqp_1_1
+    python: .venvs/osqp-1.1/bin/python
+    install:
+      - "{python} -m pip install -e ."
+      - "{python} -m pip install osqp==1.1.1"
+    metadata:
+      osqp: "1.1.1"
+    solvers:
+      - id: osqp_1_1_default
+        solver: osqp
+        settings:
+          eps_abs: 1.0e-6
+          eps_rel: 1.0e-6
+          max_iter: 100000
+```
+
+Run it with:
+
+```bash
+bench env run configs/osqp_versions.yaml --run-dir runs/osqp_version_compare
+```
+
+`bench env run` deliberately does not create virtual environments. It runs the
+`install` commands you provide and then invokes each configured `python` with
+`python -m solver_benchmarks.cli run ...`. This keeps the benchmark independent
+of a specific environment manager. You can use `venv`, `uv`, conda, Docker, or
+pre-existing paths.
+
+Install commands are executed directly, not through a shell. The runner expands
+`{python}` to the environment's configured Python executable and `{repo_root}` to
+the repository root, then tokenizes the command with shell-like quoting. If you
+need shell features such as `&&`, redirects, or environment-variable expansion,
+wrap them explicitly, for example `bash -lc 'source setup.sh && pip install ...'`.
+The final run manifest records the union of all environment solver variants, so
+`bench missing`, `bench summary`, and `bench report` understand the full
+cross-environment run.
+
+Examples with `uv`:
+
+```yaml
+environments:
+  - id: osqp_1_0
+    python: .venvs/osqp-1.0/bin/python
+    install:
+      - "uv venv .venvs/osqp-1.0 --python 3.12"
+      - "uv pip install --python {python} -e . osqp==1.0.0"
+    metadata:
+      osqp: "1.0.0"
+    solvers:
+      - id: osqp_1_0_default
+        solver: osqp
+```
+
+Examples with conda:
+
+```yaml
+environments:
+  - id: osqp_1_0
+    python: /opt/miniconda3/envs/osqp-1.0/bin/python
+    install:
+      - "conda run -n osqp-1.0 python -m pip install -e . osqp==1.0.0"
+    metadata:
+      osqp: "1.0.0"
+    solvers:
+      - id: osqp_1_0_default
+        solver: osqp
+```
+
+After a version comparison run, normal analysis commands work unchanged:
+
+```bash
+bench summary runs/osqp_version_compare
+bench plot runs/osqp_version_compare
+bench report runs/osqp_version_compare
+```
+
+Because `results.parquet` is flattened, runtime metadata columns can be inspected
+directly with pandas:
+
+```python
+import pandas as pd
+
+df = pd.read_parquet("runs/osqp_version_compare/results.parquet")
+print(df[[
+    "solver_id",
+    "metadata.environment_id",
+    "metadata.runtime.python_version",
+    "metadata.runtime.solver_package_versions.osqp",
+    "status",
+    "run_time_seconds",
+]])
+```
+
 ## CLI Reference
 
 `bench` is the installed console script for `solver_benchmarks.cli`. If the
@@ -387,7 +653,8 @@ Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, problem)` results relative to the run manifest. |
