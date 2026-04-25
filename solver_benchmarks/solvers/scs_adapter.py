@@ -127,6 +127,7 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
 
 
 def _map_scs_status(info: dict) -> str:
+    # Codes from scs/include/glbopts.h.
     status_val = info.get("status_val")
     if status_val == 1:
         return status.OPTIMAL
@@ -136,8 +137,12 @@ def _map_scs_status(info: dict) -> str:
         return status.DUAL_INFEASIBLE
     if status_val == -2:
         return status.PRIMAL_INFEASIBLE
-    if status_val in {-6, -7}:
-        return status.MAX_ITER_REACHED
+    if status_val == -6:
+        return status.DUAL_INFEASIBLE_INACCURATE
+    if status_val == -7:
+        return status.PRIMAL_INFEASIBLE_INACCURATE
+    if status_val in {-3, -4, -5}:
+        return status.SOLVER_ERROR
     text = str(info.get("status", "")).lower()
     if "solved" in text:
         return status.OPTIMAL

@@ -168,6 +168,26 @@ def test_adapter_reports_primal_infeasibility_certificate(solver_name: str, tmp_
     assert witness is not None and witness < 0.0
 
 
+@pytest.mark.parametrize(
+    "status_val, expected",
+    [
+        (1, status.OPTIMAL),
+        (2, status.OPTIMAL_INACCURATE),
+        (-1, status.DUAL_INFEASIBLE),
+        (-2, status.PRIMAL_INFEASIBLE),
+        (-3, status.SOLVER_ERROR),
+        (-4, status.SOLVER_ERROR),
+        (-5, status.SOLVER_ERROR),
+        (-6, status.DUAL_INFEASIBLE_INACCURATE),
+        (-7, status.PRIMAL_INFEASIBLE_INACCURATE),
+    ],
+)
+def test_scs_status_val_mapping(status_val: int, expected: str):
+    from solver_benchmarks.solvers.scs_adapter import _map_scs_status
+
+    assert _map_scs_status({"status_val": status_val, "status": ""}) == expected
+
+
 @pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
 def test_adapter_reports_dual_infeasibility_certificate(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _unbounded_lp(), tmp_path)
