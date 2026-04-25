@@ -9,22 +9,19 @@ solvers:
   - id: osqp_default
     solver: osqp
     settings:
-      eps_abs: 1.0e-6
-      eps_rel: 1.0e-6
       max_iter: 100000
-      polish: true
 
   - id: scs_default
     solver: scs
     settings:
-      eps_abs: 1.0e-4
-      eps_rel: 1.0e-4
       max_iters: 100000
 
   - id: clarabel_default
     solver: clarabel
     settings:
-      max_iter: 200
+      max_iter: 100
 
   - id: qtqp_default
     solver: qtqp
+    settings:
+      max_iter: 100
