@@ -695,6 +695,113 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
     assert "Datasets:" in markdown
 
 
+def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
+    monkeypatch, tmp_path: Path
+):
+    """Two entries with the same registry name but distinct ids must each
+    surface as their own populated h3 section."""
+    from solver_benchmarks.core.problem import QP, ProblemSpec
+    from solver_benchmarks.datasets import registry as dataset_registry
+
+    class _FakeNetlib:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [
+                ProblemSpec(dataset_id="netlib", name="p1", kind=QP),
+                ProblemSpec(dataset_id="netlib", name="p2", kind=QP),
+            ]
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "netlib", _FakeNetlib)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "datasets": [
+                {
+                    "id": "netlib_feasible",
+                    "name": "netlib",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+                {
+                    "id": "netlib_infeasible",
+                    "name": "netlib",
+                    "dataset_options": {},
+                    "include": ["p2"],
+                    "exclude": [],
+                },
+            ],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    records = [
+        {
+            "problem": "p1",
+            "solver_id": "solver_a",
+            "dataset": "netlib_feasible",
+            "status": "optimal",
+            "run_time_seconds": 1.0,
+            "iterations": 10,
+            "objective_value": 1.0,
+        },
+        {
+            "problem": "p1",
+            "solver_id": "solver_b",
+            "dataset": "netlib_feasible",
+            "status": "optimal",
+            "run_time_seconds": 2.0,
+            "iterations": 20,
+            "objective_value": 1.0,
+        },
+        {
+            "problem": "p2",
+            "solver_id": "solver_a",
+            "dataset": "netlib_infeasible",
+            "status": "primal_infeasible",
+            "run_time_seconds": 0.5,
+            "iterations": 5,
+            "objective_value": None,
+        },
+        {
+            "problem": "p2",
+            "solver_id": "solver_b",
+            "dataset": "netlib_infeasible",
+            "status": "primal_infeasible",
+            "run_time_seconds": 0.7,
+            "iterations": 7,
+            "objective_value": None,
+        },
+    ]
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+
+    assert "### netlib_feasible (netlib)" in markdown
+    assert "### netlib_infeasible (netlib)" in markdown
+    # Both sections should be populated, not the empty fallback.
+    feasible_idx = markdown.index("### netlib_feasible (netlib)")
+    infeasible_idx = markdown.index("### netlib_infeasible (netlib)")
+    feasible_block = markdown[feasible_idx:infeasible_idx]
+    infeasible_block = markdown[infeasible_idx:]
+    assert "No rows for this dataset." not in feasible_block
+    assert "No rows for this dataset." not in infeasible_block
+    # The Run Overview should label each entry with the id (registry name) form.
+    assert "netlib_feasible (netlib), netlib_infeasible (netlib)" in markdown
+
+
 def test_problem_keyed_tables_preserve_dataset_for_shared_names():
     frame = pd.DataFrame(
         [

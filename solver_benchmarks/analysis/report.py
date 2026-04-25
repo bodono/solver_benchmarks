@@ -131,11 +131,11 @@ def _render_markdown_report(
     manifest = _load_manifest(run_dir)
     config = manifest.get("config", {})
     dataset_entries = manifest_dataset_entries(config)
-    dataset_names = [entry["name"] for entry in dataset_entries] or [_unknown()]
+    dataset_labels = [_dataset_display_label(entry) for entry in dataset_entries] or [_unknown()]
     dataset_label = (
-        dataset_names[0]
-        if len(dataset_names) == 1
-        else ", ".join(dataset_names)
+        dataset_labels[0]
+        if len(dataset_labels) == 1
+        else ", ".join(dataset_labels)
     )
     lines = [
         "# Benchmark Report",
@@ -325,8 +325,8 @@ def _render_markdown_report(
     )
     lines.extend(_section_table("KKT Certificate Summary", tables.get("kkt_certificate_summary.csv", pd.DataFrame())))
 
-    if len(dataset_names) > 1 and "dataset" in results.columns:
-        lines.extend(_per_dataset_breakdown(results, dataset_names, metric=metric))
+    if len(dataset_entries) > 1 and "dataset" in results.columns:
+        lines.extend(_per_dataset_breakdown(results, dataset_entries, metric=metric))
 
     lines.extend(["## Provenance", ""])
     environment_columns = [
@@ -369,7 +369,7 @@ def _render_markdown_report(
 
 def _per_dataset_breakdown(
     results: pd.DataFrame,
-    dataset_names: list[str],
+    dataset_entries: list[dict],
     *,
     metric: str,
 ) -> list[str]:
@@ -384,12 +384,13 @@ def _per_dataset_breakdown(
         "cross-dataset aggregates over the same rows.",
         "",
     ]
-    for dataset_name in dataset_names:
-        subset = results[results["dataset"] == dataset_name]
+    for entry in dataset_entries:
+        label = _dataset_display_label(entry)
+        subset = results[results["dataset"] == entry["id"]]
         if subset.empty:
-            lines.extend([f"### {dataset_name}", "", "No rows for this dataset.", ""])
+            lines.extend([f"### {label}", "", "No rows for this dataset.", ""])
             continue
-        lines.extend([f"### {dataset_name}", ""])
+        lines.extend([f"### {label}", ""])
         lines.extend(
             _section_table(
                 "Solver Metrics",
@@ -542,3 +543,11 @@ def _manifest_excerpt(manifest: dict) -> dict:
 
 def _unknown() -> str:
     return "unknown"
+
+
+def _dataset_display_label(entry: dict) -> str:
+    entry_id = str(entry.get("id") or entry.get("name") or _unknown())
+    name = str(entry.get("name") or entry_id)
+    if entry_id != name:
+        return f"{entry_id} ({name})"
+    return entry_id
