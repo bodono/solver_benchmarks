@@ -827,6 +827,39 @@ def test_profile_speedup_spread_ratio_separate_datasets_with_shared_problem_name
     assert ratios.loc[("ds_b", "p1"), "solver_b"] == pytest.approx(1.0)
 
 
+def test_slowest_solves_includes_dataset_when_present():
+    # Two datasets share problem name p1; without the dataset column the
+    # report has ambiguous rows ("which p1 was the slow one?").
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0,
+             "iterations": 10, "objective_value": 1.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 9.0,
+             "iterations": 90, "objective_value": 5.0},
+        ]
+    )
+    table = slowest_solves(frame)
+    assert "dataset" in table.columns
+    # Output is sorted slowest-first and the slow row must be ds_b/p1.
+    top = table.iloc[0]
+    assert top["dataset"] == "ds_b"
+    assert top["problem"] == "p1"
+    assert top["run_time_seconds"] == pytest.approx(9.0)
+
+    # Legacy frames without a dataset column keep their original shape.
+    legacy = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0,
+             "iterations": 10, "objective_value": 1.0},
+        ]
+    )
+    legacy_table = slowest_solves(legacy)
+    assert "dataset" not in legacy_table.columns
+
+
 def test_failures_with_successful_alternatives_keys_on_dataset_and_problem():
     # ds_a/p1 has solver_a failing but solver_b succeeding — that's a real
     # alternative. ds_b/p1 has solver_a failing and solver_b also failing,

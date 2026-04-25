@@ -749,8 +749,9 @@ def slowest_solves(
     metric: str = "run_time_seconds",
     limit: int = 25,
 ) -> pd.DataFrame:
+    keys = _problem_keys(results) if not results.empty else ["problem"]
     columns = [
-        "problem",
+        *keys,
         "solver_id",
         "status",
         metric,
