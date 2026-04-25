@@ -6,6 +6,7 @@ from pathlib import Path
 from io import BytesIO
 import gzip
 import re
+import shutil
 import urllib.request
 
 import numpy as np
@@ -201,9 +202,28 @@ def _download_dimacs_problem(name: str, folder: Path) -> Path:
     target = folder / f"{stem}.mat.gz"
     if existing_mat.exists() or target.exists():
         return target if target.exists() else existing_mat
+    bundled = _bundled_dimacs_problem(stem)
+    if bundled is not None:
+        shutil.copyfile(bundled, target)
+        return target
+    last_error = None
     url = f"{DIMACS_BASE_URL}/{stem}.mat.gz"
-    with urllib.request.urlopen(url, timeout=60) as response:
-        content = response.read()
-    gzip.decompress(content)
-    target.write_bytes(content)
-    return target
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            content = response.read()
+        gzip.decompress(content)
+        target.write_bytes(content)
+        return target
+    except OSError as exc:
+        last_error = exc
+    raise RuntimeError(f"Could not download DIMACS problem {name!r}: {last_error}")
+
+
+def _bundled_dimacs_problem(stem: str) -> Path | None:
+    bundled = (
+        Path(__file__).resolve().parents[2]
+        / "problem_classes"
+        / "dimacs_data"
+        / f"{stem}.mat.gz"
+    )
+    return bundled if bundled.exists() else None

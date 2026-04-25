@@ -35,6 +35,7 @@ class CBLIBDataset(Dataset):
     data_source = "external download from https://cblib.zib.de/download/all/"
     data_patterns = ("*.cbf", "*.cbf.gz")
     prepare_command = "python scripts/prepare_cblib.py"
+    automatic_download = True
 
     @property
     def folder(self) -> Path:

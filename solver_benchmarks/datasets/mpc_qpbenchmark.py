@@ -29,6 +29,7 @@ class MPCQPBenchmarkDataset(Dataset):
     data_source = "external download from https://github.com/qpsolvers/mpc_qpbenchmark"
     data_patterns = ("*.npz",)
     prepare_command = "python scripts/prepare_mpc_qpbenchmark.py"
+    automatic_download = True
 
     @property
     def folder(self) -> Path:

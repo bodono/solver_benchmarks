@@ -27,6 +27,7 @@ class Dataset(ABC):
     data_source: str = "bundled in the repository"
     data_patterns: tuple[str, ...] = ()
     prepare_command: str | None = None
+    automatic_download: bool = False
 
     def __init__(self, repo_root: str | Path | None = None, **options: Any):
         self.repo_root = Path(repo_root).resolve() if repo_root else _default_repo_root()
@@ -92,8 +93,10 @@ class Dataset(ABC):
         )
 
     def missing_data_message(self) -> str:
+        if self.automatic_download:
+            return f"No local data found. Run `bench data prepare {self.dataset_id}`."
         if self.prepare_command:
-            return f"No local data found. Run `{self.prepare_command}`."
+            return f"No local data found. Run `{self.prepare_command}` if source data is available."
         return "No local data found and no automatic preparation command is registered."
 
     def prepare_data(

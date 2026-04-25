@@ -42,6 +42,7 @@ class QPLIBDataset(Dataset):
     data_source = "external download from https://qplib.zib.de/qplib/"
     data_patterns = ("QPLIB_*.qplib",)
     prepare_command = "python scripts/prepare_qplib.py"
+    automatic_download = True
 
     @property
     def folder(self) -> Path:

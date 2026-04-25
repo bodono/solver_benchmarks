@@ -4,14 +4,17 @@ import sys
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from solver_benchmarks.analysis.load import load_results
+from solver_benchmarks.cli import main
 from solver_benchmarks.core.config import parse_environment_run_config, parse_run_config
 from solver_benchmarks.core.env_runner import run_environment_matrix
 from solver_benchmarks.core.problem import CONE, QP, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.runner import _filter_by_size, run_benchmark
 from solver_benchmarks.core.storage import ResultStore
+from solver_benchmarks.datasets.base import Dataset
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
 from solver_benchmarks.solvers.base import SolverAdapter
@@ -333,6 +336,125 @@ def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):
     run_benchmark(config, repo_root=Path.cwd())
 
     assert called == {"problem_names": ["needed"], "all_problems": False}
+
+
+def test_auto_prepare_data_honors_subset_all(monkeypatch, tmp_path: Path):
+    called = {}
+
+    class FakeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def prepare_data(self, problem_names=None, all_problems=False):
+            called["problem_names"] = problem_names
+            called["all_problems"] = all_problems
+
+        def list_problems(self):
+            return []
+
+        def data_status(self):
+            return type(
+                "Status",
+                (),
+                {"available": True, "message": "fake dataset has no problems"},
+            )()
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "fake_all", FakeDataset)
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "fake_all",
+                "dataset_options": {"subset": "all"},
+                "output_dir": str(tmp_path / "runs"),
+                "auto_prepare_data": True,
+            },
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    run_benchmark(config, repo_root=Path.cwd())
+
+    assert called == {"problem_names": None, "all_problems": True}
+
+
+def test_run_cli_missing_downloadable_data_reports_exact_commands(
+    monkeypatch,
+    tmp_path: Path,
+):
+    class MissingDownloadDataset(Dataset):
+        dataset_id = "remote_fake"
+        description = "Missing remote fixture."
+        automatic_download = True
+
+        @property
+        def data_dir(self):
+            return self.problem_classes_dir / "remote_fake_data"
+
+        def list_problems(self):
+            return []
+
+        def load_problem(self, name):
+            raise AssertionError("No problem should be loaded")
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "remote_fake", MissingDownloadDataset)
+    config_path = tmp_path / "remote_fake.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "run": {
+                    "dataset": "remote_fake",
+                    "output_dir": str(tmp_path / "runs"),
+                    "include": ["needed"],
+                },
+                "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+            }
+        )
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["run", str(config_path), "--repo-root", str(tmp_path)],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        f"bench data prepare remote_fake --repo-root {tmp_path} --problem needed"
+        in result.output
+    )
+    assert (
+        f"bench run {config_path} --prepare-data --repo-root {tmp_path}"
+        in result.output
+    )
+
+
+def test_data_status_reports_exact_prepare_command(monkeypatch, tmp_path: Path):
+    class MissingDownloadDataset(Dataset):
+        dataset_id = "remote_status_fake"
+        description = "Missing remote fixture."
+        automatic_download = True
+
+        @property
+        def data_dir(self):
+            return self.problem_classes_dir / "remote_status_fake_data"
+
+        def list_problems(self):
+            return []
+
+        def load_problem(self, name):
+            raise AssertionError("No problem should be loaded")
+
+    monkeypatch.setitem(
+        dataset_registry.DATASETS, "remote_status_fake", MissingDownloadDataset
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["data", "status", "remote_status_fake", "--repo-root", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "missing" in result.output
+    assert f"bench data prepare remote_status_fake --repo-root {tmp_path}" in result.output
 
 
 def test_runner_records_environment_metadata(tmp_path: Path):
