@@ -1192,6 +1192,10 @@ Add tests:
 ## PDLP Notes
 
 PDLP uses OR-Tools directly. No CVXPY code or CVXPY reductions are used.
+By default the adapter keeps OR-Tools on the pure PDLP path: Glop presolve,
+feasibility polishing, and the diagonal-QP trust-region helper are disabled
+unless a run config explicitly opts into them. A default PDLP run therefore
+requires only the OR-Tools dependency installed by the `pdlp` extra.
 
 Install:
 
@@ -1216,7 +1220,7 @@ Settings:
 ```yaml
 settings:
   time_limit_sec: 120
-  use_glop: true
+  use_glop: false  # default; set true only to opt into OR-Tools Glop presolve
   parameters_text: |
     termination_criteria {
       eps_optimal_absolute: 1e-6

@@ -221,6 +221,28 @@ def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path):
     assert df.loc[0, "status"] == "skipped_unsupported"
 
 
+def test_pdlp_defaults_do_not_enable_glop_or_polishing():
+    pytest.importorskip("ortools.pdlp.solvers_pb2")
+    from solver_benchmarks.solvers.pdlp_adapter import _pdlp_parameters_from_settings
+
+    parameters = _pdlp_parameters_from_settings({})
+
+    assert not parameters.presolve_options.use_glop
+    assert not parameters.use_feasibility_polishing
+    assert not parameters.apply_feasibility_polishing_after_limits_reached
+    assert not parameters.apply_feasibility_polishing_if_solver_is_interrupted
+    assert not parameters.use_diagonal_qp_trust_region_solver
+
+
+def test_pdlp_glop_presolve_requires_explicit_opt_in():
+    pytest.importorskip("ortools.pdlp.solvers_pb2")
+    from solver_benchmarks.solvers.pdlp_adapter import _pdlp_parameters_from_settings
+
+    parameters = _pdlp_parameters_from_settings({"use_glop": True})
+
+    assert parameters.presolve_options.use_glop
+
+
 def test_filter_by_size_drops_oversized_paths_only(tmp_path: Path):
     small = tmp_path / "small.bin"
     large = tmp_path / "large.bin"
