@@ -13,6 +13,10 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
+from solver_benchmarks.transforms.psd import (
+    cone_row_perm_canonical_to_row_major,
+    cone_vec_row_major_to_canonical,
+)
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 
@@ -70,7 +74,9 @@ class ClarabelSolverAdapter(SolverAdapter):
             "MaxIterations": status.MAX_ITER_REACHED,
             "MaxTime": status.TIME_LIMIT,
         }.get(str(solution.status), status.SOLVER_ERROR)
-        kkt_dict = _compute_kkt(mapped, solution, p, q, a, b, cone_dict)
+        kkt_dict = _compute_kkt(
+            mapped, solution, problem, p, q, a, b, cone_dict
+        )
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(getattr(solution, "obj_val", None)),
@@ -86,22 +92,53 @@ class ClarabelSolverAdapter(SolverAdapter):
         )
 
 
-def _compute_kkt(mapped_status, solution, p, q, a, b, cone_dict):
+def _compute_kkt(mapped_status, solution, problem, p, q, a, b, cone_dict):
     x = getattr(solution, "x", None)
     y = getattr(solution, "z", None)
     s_slack = getattr(solution, "s", None)
     if x is None:
         return None
+
+    # Clarabel returns y, s in row-major lower PSD ordering and the matrices
+    # ``a``/``b`` passed in were already permuted to that ordering. The KKT
+    # helpers expect canonical (col-major lower) layout, so for cone problems
+    # with PSD blocks we rebuild the canonical ``a``/``b`` from the original
+    # problem and permute Clarabel's ``y``/``s`` back.
+    if problem.kind == CONE and "s" in cone_dict:
+        a_canonical = sp.csc_matrix(problem.cone["A"])
+        b_canonical = np.asarray(problem.cone["b"], dtype=float)
+        a_for_kkt = a_canonical
+        b_for_kkt = b_canonical
+        y_for_kkt = (
+            cone_vec_row_major_to_canonical(np.asarray(y, dtype=float), cone_dict)
+            if y is not None
+            else None
+        )
+        s_for_kkt = (
+            cone_vec_row_major_to_canonical(np.asarray(s_slack, dtype=float), cone_dict)
+            if s_slack is not None
+            else None
+        )
+    else:
+        a_for_kkt = a
+        b_for_kkt = b
+        y_for_kkt = np.asarray(y, dtype=float) if y is not None else None
+        s_for_kkt = np.asarray(s_slack, dtype=float) if s_slack is not None else None
+
     if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None or s_slack is None:
+        if y_for_kkt is None or s_for_kkt is None:
             return None
-        return kkt.cone_residuals(p, q, a, b, cone_dict, x, y, s_slack)
+        return kkt.cone_residuals(
+            p, q, a_for_kkt, b_for_kkt, cone_dict, x, y_for_kkt, s_for_kkt
+        )
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
-        if y is None:
+        if y_for_kkt is None:
             return None
-        return kkt.cone_primal_infeasibility_cert(a, b, cone_dict, y)
+        return kkt.cone_primal_infeasibility_cert(
+            a_for_kkt, b_for_kkt, cone_dict, y_for_kkt
+        )
     if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
-        return kkt.cone_dual_infeasibility_cert(p, q, a, cone_dict, x)
+        return kkt.cone_dual_infeasibility_cert(p, q, a_for_kkt, cone_dict, x)
     return None
 
 
@@ -146,6 +183,12 @@ def _cone_data(cone_problem: dict, clarabel):
     if len(keep_rows) != a.shape[0]:
         a = a[keep_rows, :]
         b = b[keep_rows]
+    if "s" in cone_dict:
+        # Convert s-cone rows from canonical col-major lower PSD ordering to
+        # the row-major lower ordering expected by Clarabel's PSDTriangleConeT.
+        row_perm = cone_row_perm_canonical_to_row_major(cone_dict, a.shape[0])
+        a = a[row_perm, :]
+        b = b[row_perm]
     return p, q, sp.csc_matrix(a), b, cones, cone_dict
 
 

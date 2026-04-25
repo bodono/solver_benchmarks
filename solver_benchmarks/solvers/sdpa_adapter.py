@@ -208,12 +208,16 @@ def _append_identity_block(
 
 
 def _psd_triangle_to_full(dim: int) -> sp.csc_matrix:
+    """Map a length-``dim*(dim+1)/2`` PSD triangle vec (canonical col-major
+    lower order with √2 off-diagonal scaling) to its ``dim*dim`` full-matrix
+    vec in column-major order.
+    """
     rows = []
     cols = []
     data = []
     col = 0
-    for i in range(dim):
-        for j in range(i + 1):
+    for j in range(dim):
+        for i in range(j, dim):
             if i == j:
                 rows.append(i + j * dim)
                 cols.append(col)

@@ -75,19 +75,21 @@ def _parse_sparse_matrix(handle, idx: int) -> sp.csc_matrix:
 
 
 def _psd_vec(matrix: sp.spmatrix) -> sp.csc_matrix:
+    """Vectorize a symmetric matrix in col-major lower-triangular order
+    (the canonical PSD vec convention used by SCS and the KKT module)."""
     matrix = sp.tril(matrix, format="coo")
     n = matrix.shape[0]
     idx = []
     data = []
     for i, j, value in zip(matrix.row, matrix.col, matrix.data):
-        flat = _lower_tri_index(int(i), int(j))
+        flat = _col_major_lower_index(int(i), int(j), n)
         scale = np.sqrt(2.0) if i != j else 1.0
         idx.append(flat)
         data.append(scale * float(value))
     return sp.csc_matrix((data, (idx, np.zeros(len(idx), dtype=int))), shape=(n * (n + 1) // 2, 1))
 
 
-def _lower_tri_index(i: int, j: int) -> int:
+def _col_major_lower_index(i: int, j: int, n: int) -> int:
     if i < j:
         i, j = j, i
-    return i * (i + 1) // 2 + j
+    return j * n - j * (j - 1) // 2 + (i - j)

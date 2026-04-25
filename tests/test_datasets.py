@@ -1,3 +1,4 @@
+import gzip
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,23 @@ from solver_benchmarks.datasets import get_dataset, list_datasets
 from solver_benchmarks.datasets import mpc_qpbenchmark as mpc_module
 from solver_benchmarks.datasets import qplib as qplib_module
 from solver_benchmarks.solvers import get_solver, list_solvers
+
+
+_TINY_MPS = """\
+NAME          TINY
+ROWS
+ N  COST
+ L  C1
+COLUMNS
+    X1   COST        1.0   C1   1.0
+    X2   COST        2.0   C1   1.0
+RHS
+    RHS  C1   3.0
+BOUNDS
+ LO BND  X1   0.0
+ LO BND  X2   0.0
+ENDATA
+"""
 
 
 def test_required_datasets_are_registered():
@@ -196,6 +214,48 @@ def test_mpc_prepare_uses_default_small_subset(monkeypatch, tmp_path: Path):
     dataset.prepare_data()
 
     assert [name for name, _ in calls] == list(mpc_module.MPC_QPBENCHMARK_DEFAULT_SUBSET)
+
+
+def test_netlib_dataset_loads_plain_mps_problem(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    (folder / "tiny.mps").write_text(_TINY_MPS)
+
+    dataset = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root)
+    spec = next(spec for spec in dataset.list_problems() if spec.name == "tiny")
+    problem = dataset.load_problem(spec.name)
+
+    assert problem.kind == "qp"
+    assert problem.qp["A"].shape[1] == 2
+    assert problem.qp["q"].tolist() == [1.0, 2.0]
+
+
+def test_netlib_dataset_loads_gzipped_mps_problem(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    (folder / "tiny.mps.gz").write_bytes(gzip.compress(_TINY_MPS.encode()))
+
+    dataset = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("tiny")
+
+    assert problem.kind == "qp"
+    assert problem.qp["A"].shape[1] == 2
+    assert problem.qp["q"].tolist() == [1.0, 2.0]
+
+
+def test_kennington_dataset_round_trips_through_qpsreader(tmp_path: Path):
+    # Regression test for the qpsreader ``.gz`` handling bug — previously
+    # ``.mps.gz`` files were silently treated as missing and loaded as 0x0.
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "kennington"
+    folder.mkdir(parents=True)
+    (folder / "tiny.mps.gz").write_bytes(gzip.compress(_TINY_MPS.encode()))
+
+    dataset = get_dataset("kennington")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("tiny")
+    assert problem.qp["A"].shape[1] == 2
 
 
 def test_qplib_index_and_subset_filtering(tmp_path: Path):

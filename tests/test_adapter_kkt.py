@@ -98,6 +98,31 @@ def _small_cone_lp():
     }
 
 
+def _small_sdp():
+    # min trace(C X) s.t. trace(X) = 1, X in S^2_+, with C = diag(1, 2).
+    # The PSD-cone variables are stored col-major lower:
+    # x = [X[0,0], X[1,0], X[1,1]]. Optimum: X = diag(1, 0), value = 1.
+    a = sp.csc_matrix(
+        np.vstack(
+            [
+                np.array([[1.0, 0.0, 1.0]]),  # trace(X) = 1 (zero cone row)
+                -np.eye(3),                    # -X + S = 0 with S in PSD-triangle
+            ]
+        )
+    )
+    return {
+        "P": None,
+        "q": np.array([1.0, 0.0, 2.0]),  # objective: X[0,0] + 2 X[1,1]
+        "A": a,
+        "b": np.array([1.0, 0.0, 0.0, 0.0]),
+        "r": 0.0,
+        "n": 3,
+        "m": 4,
+        "cone": {"z": 1, "s": [2]},
+        "obj_type": "min",
+    }
+
+
 def _solve(solver_name: str, qp: dict, tmp_path: Path):
     adapter_cls = get_solver(solver_name)
     if not adapter_cls.is_available():
@@ -147,6 +172,19 @@ def test_adapter_reports_kkt_for_small_lp(solver_name: str, tmp_path: Path):
 
 def test_sdpa_reports_kkt_for_small_cone_lp(tmp_path: Path):
     result = _solve_cone("sdpa", _small_cone_lp(), tmp_path)
+    assert result.status == status.OPTIMAL, result.status
+    assert result.objective_value == pytest.approx(1.0, abs=1e-4)
+    assert result.kkt is not None
+    assert result.kkt["primal_res_rel"] < 1e-4
+    assert result.kkt["dual_res_rel"] < 1e-4
+
+
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "sdpa"])
+def test_solvers_agree_on_small_sdp_with_psd_cone(solver_name: str, tmp_path: Path):
+    # Verifies that all conic adapters interpret the canonical PSD triangle vec
+    # (col-major lower with √2 off-diagonal scaling) consistently. Regression
+    # guard against the SDPLIB row-major-lower bug.
+    result = _solve_cone(solver_name, _small_sdp(), tmp_path)
     assert result.status == status.OPTIMAL, result.status
     assert result.objective_value == pytest.approx(1.0, abs=1e-4)
     assert result.kkt is not None
