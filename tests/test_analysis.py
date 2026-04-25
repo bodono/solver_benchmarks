@@ -317,3 +317,48 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
     assert outputs
     assert direct_report_dir / "index.md" in outputs
     assert (direct_report_dir / "slowest_solves_run_time_seconds.csv").exists()
+
+
+def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
+    # Regression: ``_write_kkt_residual_boxplot`` previously saved to
+    # ``kkt_residuals.png`` while the markdown report linked
+    # ``kkt_residual_boxplot.png``, so the boxplot silently never appeared
+    # in the rendered report. Pin every KKT plot's filename to what the
+    # markdown writer expects.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "synthetic_qp",
+            "include": ["one_variable_eq", "one_variable_lp"],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    records = []
+    for entry in _analysis_frame().to_dict("records"):
+        entry = dict(entry)
+        if entry["status"] == "optimal":
+            entry["kkt.primal_res_rel"] = 1.0e-8
+            entry["kkt.dual_res_rel"] = 2.0e-8
+            entry["kkt.comp_slack"] = 3.0e-9
+            entry["kkt.duality_gap_rel"] = 4.0e-9
+        records.append(entry)
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+    for filename, alt_text in [
+        ("kkt_residual_boxplot.png", "KKT Residual Boxplot"),
+        ("kkt_residual_heatmap.png", "KKT Residual Heatmap"),
+        ("kkt_accuracy_profile.png", "KKT Accuracy Profile"),
+    ]:
+        assert (report_dir / filename).exists(), f"missing plot file {filename}"
+        assert f"![{alt_text}]({filename})" in markdown, f"markdown missing {filename}"

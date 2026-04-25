@@ -335,7 +335,7 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
         return None
 
     fig.suptitle("KKT Residuals on Successful Solves")
-    path = output_dir / "kkt_residuals.png"
+    path = output_dir / "kkt_residual_boxplot.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)
     return path
