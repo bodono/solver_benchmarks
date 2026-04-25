@@ -184,22 +184,13 @@ def _build_lp_model_from_linear_cone(cone_problem: dict):
 def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_kkt=None) -> SolverResult:
     from google.protobuf import text_format
     from ortools.linear_solver import linear_solver_pb2
-    from ortools.pdlp import solve_log_pb2, solvers_pb2
+    from ortools.pdlp import solve_log_pb2
     model_builder_helper = _import_model_builder_helper()
 
     settings = settings_with_defaults(settings)
     verbose = bool(settings.pop("verbose"))
     time_limit = settings.pop("time_limit_sec", None)
     time_limit = settings.pop("solver_time_limit_sec", time_limit)
-    parameters_text = settings.pop("parameters_text", None)
-    # Default use_glop=False: Glop's presolver can short-circuit PDLP's
-    # infeasibility detection and returns primal_or_dual_infeasible without
-    # a Farkas certificate. Pure PDLP gives valid certificates.
-    use_glop = bool(settings.pop("use_glop", False))
-    eps_abs = settings.pop("eps_abs", None)
-    eps_rel = settings.pop("eps_rel", None)
-    max_iter = settings.pop("max_iter", None)
-    max_iter = settings.pop("iteration_limit", max_iter)
 
     request = linear_solver_pb2.MPModelRequest(
         model=model,
@@ -209,16 +200,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     if time_limit is not None:
         _set_time_limit(request, float(time_limit))
 
-    parameters = solvers_pb2.PrimalDualHybridGradientParams()
-    parameters.presolve_options.use_glop = use_glop
-    if eps_abs is not None:
-        parameters.termination_criteria.simple_optimality_criteria.eps_optimal_absolute = float(eps_abs)
-    if eps_rel is not None:
-        parameters.termination_criteria.simple_optimality_criteria.eps_optimal_relative = float(eps_rel)
-    if max_iter is not None:
-        parameters.termination_criteria.iteration_limit = int(max_iter)
-    if parameters_text:
-        text_format.Parse(str(parameters_text), parameters)
+    parameters = _pdlp_parameters_from_settings(settings)
     if settings:
         raise ValueError(f"Unsupported PDLP settings: {sorted(settings)}")
 
@@ -264,6 +246,44 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         },
         kkt=kkt_dict,
     )
+
+
+def _pdlp_parameters_from_settings(settings: dict[str, Any]):
+    from google.protobuf import text_format
+    from ortools.pdlp import solvers_pb2
+
+    parameters_text = settings.pop("parameters_text", None)
+    # Keep the default path pure PDLP. In particular, Glop presolve can
+    # short-circuit PDLP's infeasibility detection and return
+    # primal_or_dual_infeasible without a Farkas certificate.
+    use_glop = bool(settings.pop("use_glop", False))
+    eps_abs = settings.pop("eps_abs", None)
+    eps_rel = settings.pop("eps_rel", None)
+    max_iter = settings.pop("max_iter", None)
+    max_iter = settings.pop("iteration_limit", max_iter)
+
+    parameters = solvers_pb2.PrimalDualHybridGradientParams()
+    _apply_pure_pdlp_defaults(parameters)
+    parameters.presolve_options.use_glop = use_glop
+    if eps_abs is not None:
+        criteria = parameters.termination_criteria.simple_optimality_criteria
+        criteria.eps_optimal_absolute = float(eps_abs)
+    if eps_rel is not None:
+        criteria = parameters.termination_criteria.simple_optimality_criteria
+        criteria.eps_optimal_relative = float(eps_rel)
+    if max_iter is not None:
+        parameters.termination_criteria.iteration_limit = int(max_iter)
+    if parameters_text:
+        text_format.Parse(str(parameters_text), parameters)
+    return parameters
+
+
+def _apply_pure_pdlp_defaults(parameters) -> None:
+    parameters.presolve_options.use_glop = False
+    parameters.use_feasibility_polishing = False
+    parameters.apply_feasibility_polishing_after_limits_reached = False
+    parameters.apply_feasibility_polishing_if_solver_is_interrupted = False
+    parameters.use_diagonal_qp_trust_region_solver = False
 
 
 def _qp_kkt(mapped_status, qp, x, y):
