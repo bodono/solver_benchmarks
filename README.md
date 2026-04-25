@@ -383,11 +383,13 @@ Analysis is dataset-aware out of the box:
 - `bench report` includes the cross-dataset aggregate tables exactly as before
   and adds a `## By Dataset` section with per-dataset solver metrics, failure
   rates, shifted geomean, and KKT summary slices.
-- Performance profiles, pairwise speedup tables, objective spreads, and
-  performance-ratio/KKT heatmaps all key on `(dataset, problem)` when more
-  than one dataset is present, so two datasets sharing a problem name (e.g.
-  `afiro`) are never silently collapsed into a single row. Plots and matrices
-  label the combined axis as `dataset/problem`.
+- Performance profiles, pairwise speedup tables, objective spreads,
+  performance-ratio/KKT heatmaps, the failures-with-successful-alternatives
+  table, and the cactus plot denominator all key on `(dataset, problem)`
+  when more than one dataset is present, so two datasets sharing a problem
+  name (e.g. `afiro`) are never silently collapsed into a single row or
+  cross-matched between datasets. Plots and matrices label the combined
+  axis as `dataset/problem`.
 - Manifests record the full `datasets:` list, so older single-dataset runs and
   newer multi-dataset runs are both handled by the same analysis tools.
 
