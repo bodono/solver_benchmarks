@@ -1,0 +1,36 @@
+run:
+  output_dir: runs
+  parallelism: 4
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - id: miplib_under_5mb
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+    - name: maros_meszaros
+    - id: sdplib_under_1mb
+      name: sdplib
+      dataset_options:
+        max_size_mb: 1.0
+
+solvers:
+  - id: scs_qdldl
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      linear_solver: qdldl
+
+  - id: scs_accelerate
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      linear_solver: accelerate
