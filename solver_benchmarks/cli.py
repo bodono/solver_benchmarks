@@ -70,7 +70,7 @@ def list_problems_cmd(
     dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
     if prepare:
         dataset_obj.prepare_data()
-    for spec in dataset_obj.list_problems():
+    for spec in dataset_obj.visible_problems():
         click.echo(f"{spec.name}\t{spec.kind}\t{spec.path or ''}")
 
 

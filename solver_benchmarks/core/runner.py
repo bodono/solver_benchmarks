@@ -20,6 +20,7 @@ from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.storage import ResultStore, atomic_write_text
 from solver_benchmarks.datasets import get_dataset
+from solver_benchmarks.datasets.base import filter_problem_specs_by_size
 from solver_benchmarks.solvers import get_solver
 
 
@@ -51,7 +52,7 @@ def run_benchmark(
         if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
             dataset.prepare_data(problem_names=include or None)
         problems = _filter_problems(dataset.list_problems(), include, exclude)
-        problems = _filter_by_size(
+        problems = filter_problem_specs_by_size(
             problems, dataset_config.dataset_options.get("max_size_mb")
         )
         if not problems:
@@ -362,43 +363,7 @@ def _filter_problems(
 def _filter_by_size(
     problems: Iterable[ProblemSpec], max_size_mb: float | None
 ) -> list[ProblemSpec]:
-    """Drop specs whose backing file exceeds ``max_size_mb``.
-
-    For each spec, the size used for comparison is, in order of preference:
-
-    1. ``metadata["size_bytes"]`` if present. Datasets that pack many
-       problems behind a single ``ProblemSpec.path`` (e.g. SDPLIB's tar
-       archive) populate this so the runner can reason about per-member
-       sizes instead of the archive size.
-    2. ``path.stat().st_size`` if ``path`` is a real file on disk.
-
-    Specs without a path or a known size (e.g. synthetic problems) and
-    missing files pass through.
-    """
-    if max_size_mb is None:
-        return list(problems)
-    threshold_bytes = float(max_size_mb) * 1.0e6
-    selected = []
-    for problem in problems:
-        size = _spec_size_bytes(problem)
-        if size is None or size <= threshold_bytes:
-            selected.append(problem)
-    return selected
-
-
-def _spec_size_bytes(problem: ProblemSpec) -> int | None:
-    metadata_size = problem.metadata.get("size_bytes") if problem.metadata else None
-    if metadata_size is not None:
-        try:
-            return int(metadata_size)
-        except (TypeError, ValueError):
-            return None
-    if problem.path is None:
-        return None
-    try:
-        return int(problem.path.stat().st_size)
-    except OSError:
-        return None
+    return filter_problem_specs_by_size(list(problems), max_size_mb)
 
 
 def _already_done(

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from click.testing import CliRunner
 
+from solver_benchmarks.cli import main
 from solver_benchmarks.datasets import cblib as cblib_module
 from solver_benchmarks.datasets import get_dataset, list_datasets
 from solver_benchmarks.datasets import mpc_qpbenchmark as mpc_module
@@ -291,6 +293,81 @@ def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):
     # the whole sdplib.tar archive (which is the spec.path) is over 1 MB.
     filtered = _filter_by_size(specs, 1.0)
     assert [spec.name for spec in filtered] == ["tar_small"]
+
+
+def test_generic_size_filter_applies_to_dataset_visibility_and_cli(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "sdplib_data"
+    folder.mkdir(parents=True)
+
+    with tarfile.open(folder / "sdplib.tar", "w") as archive:
+        for name, size in [
+            ("tar_small.jld2", 10),
+            ("tar_large.jld2", 1_500_001),
+        ]:
+            data = b"x" * size
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+
+    dataset = get_dataset("sdplib")(
+        repo_root=tmp_path,
+        data_root=data_root,
+        max_size_mb=1.0,
+    )
+    status = dataset.data_status()
+
+    assert [spec.name for spec in dataset.visible_problems()] == ["tar_small"]
+    assert status.available
+    assert status.problem_count == 1
+    assert "1 of 2 problems visible after filters" in status.message
+    with pytest.raises(KeyError):
+        dataset.problem_by_name("tar_large")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "list",
+            "problems",
+            "sdplib",
+            "--repo-root",
+            str(tmp_path),
+            "--option",
+            f"data_root={data_root}",
+            "--option",
+            "max_size_mb=1.0",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "tar_small" in result.output
+    assert "tar_large" not in result.output
+
+
+def test_mps_size_filter_uses_smallest_duplicate_encoding(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "miplib_data"
+    folder.mkdir(parents=True)
+    uncompressed = folder / "dup.mps"
+    compressed = folder / "dup.mps.gz"
+    large_only = folder / "large_only.mps"
+    uncompressed.write_bytes(b"x" * 1_500_001)
+    compressed.write_bytes(gzip.compress(b"x" * 10))
+    large_only.write_bytes(b"x" * 1_500_001)
+
+    dataset = get_dataset("miplib")(
+        repo_root=tmp_path,
+        data_root=data_root,
+        max_size_mb=1.0,
+    )
+    visible = {spec.name: spec for spec in dataset.visible_problems()}
+
+    assert set(visible) == {"dup"}
+    assert visible["dup"].path == uncompressed
+    assert visible["dup"].metadata["size_bytes"] == compressed.stat().st_size
+    assert dataset.problem_by_name("dup").path == uncompressed
+    with pytest.raises(KeyError):
+        dataset.problem_by_name("large_only")
 
 
 def test_qplib_index_and_subset_filtering(tmp_path: Path):

@@ -40,8 +40,22 @@ class Dataset(ABC):
     def load_problem(self, name: str) -> ProblemData:
         raise NotImplementedError
 
+    def visible_problems(self) -> list[ProblemSpec]:
+        """Problems visible after generic dataset options are applied.
+
+        Dataset-specific options such as ``subset`` are handled inside each
+        adapter's ``list_problems`` implementation. Generic options shared
+        across file-backed datasets, currently ``max_size_mb``, are applied
+        here so the runner, CLI listing/status commands, and analysis
+        completion logic all agree on the same expected problem set.
+        """
+        return filter_problem_specs_by_size(
+            self.list_problems(),
+            self.options.get("max_size_mb"),
+        )
+
     def problem_by_name(self, name: str) -> ProblemSpec:
-        for spec in self.list_problems():
+        for spec in self.visible_problems():
             if spec.name == name:
                 return spec
         raise KeyError(f"Problem {name!r} not found in dataset {self.dataset_id!r}")
@@ -51,10 +65,20 @@ class Dataset(ABC):
         return None
 
     def data_status(self) -> DatasetDataStatus:
-        problem_count = len(self.list_problems())
-        available = problem_count > 0 or self.data_dir is None
+        listed = self.list_problems()
+        visible = filter_problem_specs_by_size(
+            listed,
+            self.options.get("max_size_mb"),
+        )
+        problem_count = len(visible)
+        available = bool(listed) or self.data_dir is None
         if available:
-            message = f"{problem_count} problems available."
+            if problem_count == len(listed):
+                message = f"{problem_count} problems available."
+            else:
+                message = (
+                    f"{problem_count} of {len(listed)} problems visible after filters."
+                )
         else:
             message = self.missing_data_message()
         return DatasetDataStatus(
@@ -88,6 +112,41 @@ class Dataset(ABC):
         if explicit:
             return Path(explicit).resolve()
         return self.repo_root / "problem_classes"
+
+
+def filter_problem_specs_by_size(
+    problems: list[ProblemSpec], max_size_mb: Any
+) -> list[ProblemSpec]:
+    """Drop specs whose backing file exceeds ``max_size_mb``.
+
+    The size used for comparison is ``metadata["size_bytes"]`` when present
+    (for archive-backed datasets such as SDPLIB), otherwise the on-disk size
+    of ``ProblemSpec.path``. Specs without a known size pass through.
+    """
+    if max_size_mb is None:
+        return list(problems)
+    threshold_bytes = float(max_size_mb) * 1.0e6
+    return [
+        problem
+        for problem in problems
+        if (size := problem_spec_size_bytes(problem)) is None
+        or size <= threshold_bytes
+    ]
+
+
+def problem_spec_size_bytes(problem: ProblemSpec) -> int | None:
+    metadata_size = problem.metadata.get("size_bytes") if problem.metadata else None
+    if metadata_size is not None:
+        try:
+            return int(metadata_size)
+        except (TypeError, ValueError):
+            return None
+    if problem.path is None:
+        return None
+    try:
+        return int(problem.path.stat().st_size)
+    except OSError:
+        return None
 
 
 def _default_repo_root() -> Path:

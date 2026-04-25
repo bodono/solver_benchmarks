@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 import bz2
 import gzip
 import re
@@ -25,10 +24,6 @@ class MPSLPDataset(Dataset):
     description: str
     data_patterns = ("*.mps", "*.mps.gz")
 
-    def __init__(self, repo_root: str | Path | None = None, **options: Any):
-        super().__init__(repo_root=repo_root, **options)
-        self.max_size_mb = float(options.get("max_size_mb", np.inf))
-
     @property
     def folder(self) -> Path:
         folder = self.options.get("folder", self.problem_folder)
@@ -41,25 +36,25 @@ class MPSLPDataset(Dataset):
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():
             return []
-        paths: dict[str, Path] = {}
+        candidates: dict[str, list[Path]] = {}
         for path in sorted(self.folder.iterdir()):
             name = _mps_name(path)
             if name is None:
                 continue
-            if path.stat().st_size > self.max_size_mb * 1.0e6:
-                continue
-            existing = paths.get(name)
-            if existing is None or (existing.suffix == ".gz" and path.suffix != ".gz"):
-                paths[name] = path
+            candidates.setdefault(name, []).append(path)
         return [
             ProblemSpec(
                 dataset_id=self.dataset_id,
                 name=name,
                 kind=QP,
-                path=path,
-                metadata={"source": str(path), "format": "mps"},
+                path=(path := _preferred_mps_path(paths)),
+                metadata={
+                    "source": str(path),
+                    "format": "mps",
+                    **_mps_candidate_size_metadata(paths),
+                },
             )
-            for name, path in sorted(paths.items())
+            for name, paths in sorted(candidates.items())
         ]
 
     def load_problem(self, name: str) -> ProblemData:
@@ -155,6 +150,25 @@ def _mps_name(path: Path) -> str | None:
     if path.name.endswith(".mps"):
         return path.name[: -len(".mps")]
     return None
+
+
+def _preferred_mps_path(paths: list[Path]) -> Path:
+    for path in paths:
+        if path.name.endswith(".mps"):
+            return path
+    return paths[0]
+
+
+def _mps_candidate_size_metadata(paths: list[Path]) -> dict[str, int]:
+    sizes = []
+    for path in paths:
+        try:
+            sizes.append(path.stat().st_size)
+        except OSError:
+            pass
+    if not sizes:
+        return {}
+    return {"size_bytes": min(sizes)}
 
 
 def _mittelmann_remote_problem_names() -> list[str]:

@@ -17,6 +17,7 @@ from solver_benchmarks.analysis.reports import (
     difficulty_scaling,
     failures_with_successful_alternatives,
     failure_rates,
+    missing_results,
     objective_spreads,
     pairwise_speedups,
     performance_ratio_matrix,
@@ -650,6 +651,53 @@ def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path
     assert by_pair.loc[("solver_b", "ds_b"), "expected"] == 2
     # solver_b only completed p1 and p2 in ds_b (one row each); none missing.
     assert by_pair.loc[("solver_b", "ds_b"), "missing"] == 0
+
+
+def test_completion_summary_honors_dataset_size_filter(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.core.problem import QP, ProblemSpec
+    from solver_benchmarks.datasets import registry as dataset_registry
+
+    class _SizedDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [
+                ProblemSpec(
+                    dataset_id="sized",
+                    name="small",
+                    kind=QP,
+                    metadata={"size_bytes": 10},
+                ),
+                ProblemSpec(
+                    dataset_id="sized",
+                    name="large",
+                    kind=QP,
+                    metadata={"size_bytes": 1_500_001},
+                ),
+            ]
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "sized", _SizedDataset)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "sized",
+            "dataset_options": {"max_size_mb": 1.0},
+            "include": [],
+            "exclude": [],
+            "solvers": [{"id": "solver", "solver": "scs", "settings": {}}],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    (run_dir / "results.jsonl").write_text("")
+
+    completion = completion_summary(run_dir, load_results(run_dir), repo_root=Path.cwd())
+    missing = missing_results(run_dir, load_results(run_dir), repo_root=Path.cwd())
+
+    assert completion.loc[0, "expected"] == 1
+    assert missing["problem"].tolist() == ["small"]
 
 
 def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
