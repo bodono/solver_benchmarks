@@ -708,10 +708,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
             pass
 
         def list_problems(self):
-            return [
-                ProblemSpec(dataset_id="netlib", name="p1", kind=QP),
-                ProblemSpec(dataset_id="netlib", name="p2", kind=QP),
-            ]
+            return [ProblemSpec(dataset_id="netlib", name="p1", kind=QP)]
 
     monkeypatch.setitem(dataset_registry.DATASETS, "netlib", _FakeNetlib)
 
@@ -732,7 +729,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
                     "id": "netlib_infeasible",
                     "name": "netlib",
                     "dataset_options": {},
-                    "include": ["p2"],
+                    "include": ["p1"],
                     "exclude": [],
                 },
             ],
@@ -763,7 +760,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
             "objective_value": 1.0,
         },
         {
-            "problem": "p2",
+            "problem": "p1",
             "solver_id": "solver_a",
             "dataset": "netlib_infeasible",
             "status": "primal_infeasible",
@@ -772,7 +769,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
             "objective_value": None,
         },
         {
-            "problem": "p2",
+            "problem": "p1",
             "solver_id": "solver_b",
             "dataset": "netlib_infeasible",
             "status": "primal_infeasible",
@@ -791,6 +788,9 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
 
     assert "### netlib_feasible (netlib)" in markdown
     assert "### netlib_infeasible (netlib)" in markdown
+    # The Run Overview "Problems with results" should count unique
+    # (dataset, problem) pairs, not unique problem names.
+    assert "Problems with results: `2`" in markdown
     # Both sections should be populated, not the empty fallback.
     feasible_idx = markdown.index("### netlib_feasible (netlib)")
     infeasible_idx = markdown.index("### netlib_infeasible (netlib)")

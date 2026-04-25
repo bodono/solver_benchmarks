@@ -150,7 +150,7 @@ def _render_markdown_report(
         f"- Datasets: `{dataset_label}`",
         f"- Primary metric: `{metric}`",
         f"- Result rows: `{len(results)}`",
-        f"- Problems with results: `{results['problem'].nunique() if 'problem' in results else 0}`",
+        f"- Problems with results: `{_problem_count(results)}`",
         f"- Solver variants: `{results['solver_id'].nunique() if 'solver_id' in results else 0}`",
         f"- Config hash: `{config.get('config_hash', _unknown())}`",
         "",
@@ -543,6 +543,14 @@ def _manifest_excerpt(manifest: dict) -> dict:
 
 def _unknown() -> str:
     return "unknown"
+
+
+def _problem_count(results: pd.DataFrame) -> int:
+    if "problem" not in results.columns:
+        return 0
+    if "dataset" in results.columns:
+        return int(results[["dataset", "problem"]].drop_duplicates().shape[0])
+    return int(results["problem"].nunique())
 
 
 def _dataset_display_label(entry: dict) -> str:
