@@ -30,7 +30,7 @@ def run_payload(payload: dict) -> ProblemResult:
     artifacts_dir = Path(payload["artifacts_dir"])
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     try:
-        dataset_cls = get_dataset(payload["dataset"])
+        dataset_cls = get_dataset(payload.get("dataset_name", payload["dataset"]))
         dataset = dataset_cls(
             repo_root=payload.get("repo_root"),
             **payload.get("dataset_options", {}),

@@ -776,8 +776,9 @@ def failures_with_successful_alternatives(
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    keys = _problem_keys(results) if not results.empty else ["problem"]
     columns = [
-        "problem",
+        *keys,
         "solver_id",
         "status",
         "best_success_solver",
@@ -797,16 +798,16 @@ def failures_with_successful_alternatives(
         return pd.DataFrame(columns=columns)
 
     success_metric = metric if metric in successes else "solver_id"
-    best_successes = successes.sort_values(success_metric).groupby("problem").first()
+    best_successes = successes.sort_values(success_metric).groupby(keys).first()
     rows = []
     for _, failure in failures.iterrows():
-        problem = failure["problem"]
-        if problem not in best_successes.index:
+        key = tuple(failure[col] for col in keys) if len(keys) > 1 else failure[keys[0]]
+        if key not in best_successes.index:
             continue
-        best = best_successes.loc[problem]
-        rows.append(
+        best = best_successes.loc[key]
+        row = {col: failure[col] for col in keys}
+        row.update(
             {
-                "problem": problem,
                 "solver_id": failure["solver_id"],
                 "status": failure["status"],
                 "best_success_solver": best["solver_id"],
@@ -815,6 +816,7 @@ def failures_with_successful_alternatives(
                 "error": failure.get("error"),
             }
         )
+        rows.append(row)
     return pd.DataFrame(rows, columns=columns)
 
 

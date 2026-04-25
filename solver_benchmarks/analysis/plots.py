@@ -118,6 +118,12 @@ def _write_failure_rates(results, output_dir: Path) -> Path | None:
     return path
 
 
+def _unique_problem_count(results: pd.DataFrame) -> int:
+    if "dataset" in results.columns:
+        return max(1, results[["dataset", "problem"]].drop_duplicates().shape[0])
+    return max(1, results["problem"].nunique())
+
+
 def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
     if metric not in results:
         return None
@@ -127,7 +133,7 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
     if successful.empty:
         return None
 
-    problem_count = max(1, results["problem"].nunique())
+    problem_count = _unique_problem_count(results)
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     has_positive = False
     for solver_id, group in successful.groupby("solver_id"):

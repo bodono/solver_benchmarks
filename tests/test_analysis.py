@@ -827,6 +827,64 @@ def test_profile_speedup_spread_ratio_separate_datasets_with_shared_problem_name
     assert ratios.loc[("ds_b", "p1"), "solver_b"] == pytest.approx(1.0)
 
 
+def test_failures_with_successful_alternatives_keys_on_dataset_and_problem():
+    # ds_a/p1 has solver_a failing but solver_b succeeding — that's a real
+    # alternative. ds_b/p1 has solver_a failing and solver_b also failing,
+    # so there is NO valid alternative. If grouped by problem only, the
+    # ds_a/p1 success would be incorrectly attributed to the ds_b/p1 failure.
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "time_limit", "run_time_seconds": 9.0, "objective_value": None},
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_b",
+             "status": "optimal", "run_time_seconds": 1.5, "objective_value": 1.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "time_limit", "run_time_seconds": 9.0, "objective_value": None},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_b",
+             "status": "solver_error", "run_time_seconds": None, "objective_value": None},
+        ]
+    )
+    table = failures_with_successful_alternatives(frame)
+    rows = table.set_index(["dataset", "problem", "solver_id"])
+    assert ("ds_a", "p1", "solver_a") in rows.index
+    assert rows.loc[("ds_a", "p1", "solver_a"), "best_success_solver"] == "solver_b"
+    # ds_b/p1 has no successful solver, so the failure must NOT appear here.
+    assert ("ds_b", "p1", "solver_a") not in rows.index
+    assert ("ds_b", "p1", "solver_b") not in rows.index
+
+
+def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Path):
+    # Two datasets share name p1 → 2 distinct (dataset, problem) pairs.
+    # If the denominator counted unique problem names only it would be 1,
+    # which would push cactus fractions above 1.0.
+    from solver_benchmarks.analysis.plots import _unique_problem_count, _write_cactus
+
+    multi = pd.DataFrame(
+        [
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 2.0},
+        ]
+    )
+    assert _unique_problem_count(multi) == 2
+
+    legacy = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p2", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 2.0},
+        ]
+    )
+    assert _unique_problem_count(legacy) == 2
+
+    out_dir = tmp_path / "plots"
+    out_dir.mkdir()
+    path = _write_cactus(multi, out_dir, "run_time_seconds")
+    assert path is not None and path.exists()
+
+
 def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

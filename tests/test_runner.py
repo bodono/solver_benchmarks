@@ -525,6 +525,80 @@ def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatc
     assert ("infeasible", "shared", "stub_solver") in completed
 
 
+def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_path: Path):
+    """When an entry uses an explicit ``id`` distinct from its registry
+    ``name``, the worker must look the adapter up by ``dataset_name``.
+    Looking up by the entry id (which is not in the registry) would make
+    every solve fail with ``worker_error``."""
+
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import ProblemData
+    from solver_benchmarks.core.result import SolverResult
+    from solver_benchmarks.core import status as status_module
+    from solver_benchmarks.solvers.base import SolverAdapter
+    from solver_benchmarks.worker import run_payload
+
+    seen_dataset_init = []
+
+    class _ConfigurableDataset:
+        def __init__(self, repo_root=None, **options):
+            seen_dataset_init.append(options)
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="configurable", name="tiny", kind=QP)]
+
+        def load_problem(self, name):
+            qp = {
+                "P": sp.csc_matrix(np.array([[1.0]])),
+                "q": np.array([0.0]),
+                "r": 0.0,
+                "A": sp.csc_matrix(np.array([[1.0]])),
+                "l": np.array([0.0]),
+                "u": np.array([0.0]),
+                "n": 1,
+                "m": 1,
+                "obj_type": "min",
+            }
+            return ProblemData("configurable", name, QP, qp)
+
+    class _StubSolver(SolverAdapter):
+        solver_name = "stub"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):
+            return SolverResult(
+                status=status_module.OPTIMAL,
+                objective_value=0.0,
+                iterations=1,
+                run_time_seconds=0.001,
+                info={},
+            )
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "configurable", _ConfigurableDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "stub", _StubSolver)
+
+    artifacts_dir = tmp_path / "artifacts"
+    payload = {
+        "run_id": "run",
+        "dataset": "feasible",          # entry id — NOT a registry key
+        "dataset_name": "configurable", # registry key for the adapter
+        "dataset_options": {"variant": "feasible"},
+        "problem": "tiny",
+        "problem_kind": QP,
+        "solver": {"id": "stub_solver", "solver": "stub", "settings": {}},
+        "artifacts_dir": str(artifacts_dir),
+        "repo_root": str(Path.cwd()),
+    }
+
+    result = run_payload(payload)
+    assert result.status == "optimal", result.error
+    # Result identity preserves the entry id, while the lookup used the name.
+    assert result.dataset == "feasible"
+    assert seen_dataset_init == [{"variant": "feasible"}]
+
+
 def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path: Path):
     config = parse_environment_run_config(
         {
