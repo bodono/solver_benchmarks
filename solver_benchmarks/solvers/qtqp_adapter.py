@@ -66,12 +66,7 @@ class QTQPSolverAdapter(SolverAdapter):
             iterations = None
             info = {}
 
-        mapped = {
-            "solved": status.OPTIMAL,
-            "infeasible": status.PRIMAL_INFEASIBLE,
-            "unbounded": status.DUAL_INFEASIBLE,
-            "failed": status.SOLVER_ERROR,
-        }.get(str(raw_status), status.SOLVER_ERROR)
+        mapped = _map_qtqp_status(raw_status)
         cone_dict: dict = {}
         if z:
             cone_dict["z"] = int(z)
@@ -87,6 +82,17 @@ class QTQPSolverAdapter(SolverAdapter):
             trace=[to_jsonable(row) for row in trace],
             kkt=kkt_dict,
         )
+
+
+def _map_qtqp_status(raw_status) -> str:
+    return {
+        "solved": status.OPTIMAL,
+        "infeasible": status.PRIMAL_INFEASIBLE,
+        "unbounded": status.DUAL_INFEASIBLE,
+        "hit_max_iter": status.MAX_ITER_REACHED,
+        "unfinished": status.SOLVER_ERROR,
+        "failed": status.SOLVER_ERROR,
+    }.get(str(raw_status), status.SOLVER_ERROR)
 
 
 def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):

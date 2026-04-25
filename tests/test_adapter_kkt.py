@@ -226,6 +226,24 @@ def test_scs_status_val_mapping(status_val: int, expected: str):
     assert _map_scs_status({"status_val": status_val, "status": ""}) == expected
 
 
+@pytest.mark.parametrize(
+    "raw_status, expected",
+    [
+        ("solved", status.OPTIMAL),
+        ("infeasible", status.PRIMAL_INFEASIBLE),
+        ("unbounded", status.DUAL_INFEASIBLE),
+        ("hit_max_iter", status.MAX_ITER_REACHED),
+        ("unfinished", status.SOLVER_ERROR),
+        ("failed", status.SOLVER_ERROR),
+        ("totally-unknown", status.SOLVER_ERROR),
+    ],
+)
+def test_qtqp_status_mapping(raw_status: str, expected: str):
+    from solver_benchmarks.solvers.qtqp_adapter import _map_qtqp_status
+
+    assert _map_qtqp_status(raw_status) == expected
+
+
 @pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
 def test_adapter_reports_dual_infeasibility_certificate(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _unbounded_lp(), tmp_path)
