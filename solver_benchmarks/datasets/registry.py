@@ -11,7 +11,7 @@ from .mpc_qpbenchmark import MPCQPBenchmarkDataset
 from .mps import KenningtonDataset, MiplibDataset, MittelmannDataset, NetlibDataset
 from .qplib import QPLIBDataset
 from .sdplib import SDPLIBDataset
-from .synthetic import SyntheticQPDataset
+from .synthetic import SyntheticConeDataset, SyntheticQPDataset
 
 
 DATASETS: dict[str, type[Dataset]] = {
@@ -27,6 +27,7 @@ DATASETS: dict[str, type[Dataset]] = {
     "netlib": NetlibDataset,
     "qplib": QPLIBDataset,
     "sdplib": SDPLIBDataset,
+    "synthetic_cone": SyntheticConeDataset,
     "synthetic_qp": SyntheticQPDataset,
 }
 

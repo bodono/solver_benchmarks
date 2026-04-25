@@ -101,6 +101,7 @@ Current maintained adapters:
 | MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
 | CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
+| Synthetic cone smoke test | `synthetic_cone` | Cone | Tiny deterministic conic LP test problem. |
 
 Check local dataset availability:
 

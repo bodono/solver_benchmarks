@@ -24,6 +24,7 @@ def test_required_datasets_are_registered():
         "mittelmann",
         "sdplib",
         "dimacs",
+        "synthetic_cone",
     }
 
     assert required.issubset(set(list_datasets()))
@@ -58,6 +59,17 @@ def test_synthetic_dataset_loads_qp():
     assert problem.kind == "qp"
     assert problem.qp["P"].shape == (1, 1)
     assert problem.qp["A"].shape == (1, 1)
+
+
+def test_synthetic_cone_dataset_loads_cone():
+    dataset = get_dataset("synthetic_cone")()
+    problems = dataset.list_problems()
+    problem = dataset.load_problem(problems[0].name)
+
+    assert {problem.name for problem in problems} == {"one_variable_cone_lp"}
+    assert problem.kind == "cone"
+    assert problem.cone["A"].shape == (1, 1)
+    assert problem.cone["cone"] == {"l": 1}
 
 
 def test_dataset_data_status_reports_local_problem_counts():
