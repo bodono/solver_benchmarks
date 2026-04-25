@@ -1,6 +1,7 @@
 *.csv
 *.mps
 *.pb
+problem_classes/miplib_data/*.mps.gz
 
 # Benchmark run outputs
 configs/runs/

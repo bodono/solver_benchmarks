@@ -12,6 +12,7 @@ from solver_benchmarks.cli import main
 from solver_benchmarks.datasets import cblib as cblib_module
 from solver_benchmarks.datasets import dimacs as dimacs_module
 from solver_benchmarks.datasets import get_dataset, list_datasets
+from solver_benchmarks.datasets import mps as mps_module
 from solver_benchmarks.datasets import mpc_qpbenchmark as mpc_module
 from solver_benchmarks.datasets import qplib as qplib_module
 from solver_benchmarks.solvers import get_solver, list_solvers
@@ -449,6 +450,59 @@ def test_mps_size_filter_uses_smallest_duplicate_encoding(tmp_path: Path):
     assert dataset.problem_by_name("dup").path == uncompressed
     with pytest.raises(KeyError):
         dataset.problem_by_name("large_only")
+
+
+def test_miplib_prepare_default_downloads_tiny_subset(monkeypatch, tmp_path: Path):
+    calls = []
+
+    def fake_download(name, folder):
+        calls.append((name, folder))
+
+    monkeypatch.setattr(mps_module, "_download_miplib_problem", fake_download)
+    data_root = tmp_path / "problem_classes"
+    dataset = get_dataset("miplib")(repo_root=tmp_path, data_root=data_root)
+
+    dataset.prepare_data()
+
+    assert [name for name, _ in calls] == list(mps_module.MIPLIB_DEFAULT_SUBSET)
+    assert all(folder == data_root / "miplib_data" for _, folder in calls)
+
+
+def test_miplib_prepare_max_size_uses_remote_benchmark_sizes(
+    monkeypatch,
+    tmp_path: Path,
+):
+    calls = []
+    sizes = {
+        "tiny": 999_999,
+        "large": 1_000_001,
+    }
+
+    monkeypatch.setattr(
+        mps_module,
+        "_miplib_remote_problem_names",
+        lambda: ["tiny", "large"],
+    )
+    monkeypatch.setattr(
+        mps_module,
+        "_miplib_remote_size_bytes",
+        lambda name: sizes[name],
+    )
+    monkeypatch.setattr(
+        mps_module,
+        "_download_miplib_problem",
+        lambda name, folder: calls.append((name, folder)),
+    )
+    data_root = tmp_path / "problem_classes"
+    dataset = get_dataset("miplib")(
+        repo_root=tmp_path,
+        data_root=data_root,
+        max_size_mb=1.0,
+    )
+
+    dataset.prepare_data()
+
+    assert [name for name, _ in calls] == ["tiny"]
 
 
 def test_qplib_index_and_subset_filtering(tmp_path: Path):

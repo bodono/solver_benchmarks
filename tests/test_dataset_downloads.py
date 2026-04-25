@@ -17,6 +17,7 @@ pytestmark = pytest.mark.network
     [
         ("cblib", "nb", "cblib_data/nb.cbf.gz"),
         ("kennington", "ken-07", "kennington/ken-07.mps.gz"),
+        ("miplib", "markshare_4_0", "miplib_data/markshare_4_0.mps.gz"),
         ("mittelmann", "qap15", "mittelmann/qap15.mps"),
         ("mpc_qpbenchmark", "LIPMWALK0", "mpc_qpbenchmark_data/LIPMWALK0.npz"),
         ("qplib", "8790", "qplib_data/QPLIB_8790.qplib"),
@@ -77,8 +78,36 @@ def test_external_dataset_prepare_downloads_real_problem_and_uses_cache(
     assert cached_result.exit_code == 0, cached_result.output
 
 
+def test_miplib_prepare_max_size_uses_real_manifest_and_downloads_small_files(
+    tmp_path: Path,
+):
+    data_root = tmp_path / "problem_classes"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "data",
+            "prepare",
+            "miplib",
+            "--repo-root",
+            str(tmp_path),
+            "--option",
+            f"data_root={data_root}",
+            "--option",
+            "max_size_mb=0.001",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    downloaded = list((data_root / "miplib_data").glob("*.mps.gz"))
+    assert downloaded
+    assert all(path.stat().st_size <= 1000 for path in downloaded)
+    assert (data_root / "miplib_data" / "markshare_4_0.mps.gz").exists()
+
+
 def _disable_dataset_network(monkeypatch, dataset_id: str, replacement) -> None:
-    if dataset_id in {"kennington", "mittelmann"}:
+    if dataset_id in {"kennington", "miplib", "mittelmann"}:
         from solver_benchmarks.datasets import mps
 
         monkeypatch.setattr(mps.urllib.request, "urlopen", replacement)

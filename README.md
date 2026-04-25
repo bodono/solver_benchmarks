@@ -93,7 +93,7 @@ Current maintained adapters:
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
 | Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset; prepare script downloads 16 instances. |
 | Liu-Pataki | `liu_pataki` | Cone/SDP | Bundled infeasible and weakly infeasible SeDuMi `.mat` SDP instances; converted to canonical PSD triangle cones. |
-| MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only. |
+| MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only; downloads official MIPLIB 2017 benchmark `.mps.gz` files on request. |
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
 | Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
 | SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files; requires `h5py`. |
@@ -138,6 +138,7 @@ bench data prepare cblib
 bench data prepare mpc_qpbenchmark
 bench data prepare qplib
 bench data prepare kennington
+bench data prepare miplib
 bench data prepare mittelmann
 ```
 
@@ -155,6 +156,7 @@ Default prepared subsets are intentionally small:
 | `mpc_qpbenchmark` | `LIPMWALK0`, `WHLIPBAL0`, `QUADCMPC1` |
 | `qplib` | `8790`, `8515`, `8495` |
 | `kennington` | The 16 standard Kennington LP files. |
+| `miplib` | `markshare_4_0` |
 | `mittelmann` | `qap15` |
 
 DIMACS data is bundled in the repository under `problem_classes/dimacs_data`.
@@ -178,6 +180,7 @@ python scripts/prepare_cblib.py
 python scripts/prepare_mpc_qpbenchmark.py
 python scripts/prepare_qplib.py
 python scripts/prepare_kennington.py
+python scripts/prepare_miplib.py
 python scripts/prepare_mittelmann.py
 python scripts/prepare_sdplib.py
 python scripts/prepare_dimacs.py
@@ -188,7 +191,10 @@ The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
 follows the full CBLIB directory index and may download mixed-integer or
 currently unsupported CBF files; the `cblib` adapter only lists continuous
 linear/SOC instances it can parse. Mittelmann `--all` follows the ASU lptestset
-index. QPLIB `--all` uses `problem_classes/qplib_data/list_convex_qps.txt`.
+index. MIPLIB `--all` follows the official MIPLIB 2017 benchmark v2 instance
+list, and `bench data prepare miplib --option max_size_mb=5` downloads only
+benchmark instances whose compressed `.mps.gz` file is at most 5 MB. QPLIB
+`--all` uses `problem_classes/qplib_data/list_convex_qps.txt`.
 
 Benchmark runs can opt into preparation:
 
