@@ -60,3 +60,6 @@ include = ["solver_benchmarks*", "problem_classes*"]
 testpaths = ["tests"]
 addopts = "-q"
 pythonpath = ["."]
+markers = [
+    "network: tests that contact external dataset hosts",
+]

@@ -111,15 +111,26 @@ bench data status netlib
 ```
 
 Most benchmark data currently used by the suite is bundled under
-`problem_classes/`. External or intentionally-large sources are prepared
-explicitly. The convention is:
+`problem_classes/`, including DIMACS. External or intentionally-large sources
+are prepared explicitly. The convention is:
 
+- `bench run CONFIG` is offline by default. It uses only local data. If
+  requested data from an automatically downloadable dataset is missing, the
+  command exits with an actionable error that includes the exact
+  `bench data prepare ...` command and the equivalent
+  `bench run CONFIG --prepare-data` command.
+- `bench run CONFIG --prepare-data` or `run.auto_prepare_data: true` prepares
+  data implied by the config before solving. If `include` is set, those problem
+  names are prepared. If `dataset_options.subset: all` is set, the dataset's
+  full remote index is prepared. Otherwise the dataset's small default subset is
+  prepared.
 - `bench data prepare DATASET` downloads or extracts a small default subset.
 - `bench data prepare DATASET --problem NAME` prepares one or more named problems.
 - `bench data prepare DATASET --all` opts into the largest known source for that dataset.
-- `bench run CONFIG --prepare-data` calls the dataset's prepare hook before solving.
+- Prepared files are cached under `problem_classes/<dataset>_data` or the
+  dataset-specific cache directory and reused by later runs.
 
-Examples:
+Download-backed examples:
 
 ```bash
 bench data prepare cblib
@@ -127,8 +138,12 @@ bench data prepare mpc_qpbenchmark
 bench data prepare qplib
 bench data prepare kennington
 bench data prepare mittelmann
-bench data prepare sdplib
-bench data prepare dimacs
+```
+
+Running with automatic preparation:
+
+```bash
+bench run configs/my_run.yaml --prepare-data
 ```
 
 Default prepared subsets are intentionally small:
@@ -140,8 +155,19 @@ Default prepared subsets are intentionally small:
 | `qplib` | `8790`, `8515`, `8495` |
 | `kennington` | The 16 standard Kennington LP files. |
 | `mittelmann` | `qap15` |
-| `sdplib` | `arch0`, `control1`, `theta1` extracted from the bundled converted archive. |
-| `dimacs` | `nb`, `filter48_socp`, `qssp30` |
+
+DIMACS data is bundled in the repository under `problem_classes/dimacs_data`.
+`bench data prepare dimacs --problem NAME` can repair a missing local DIMACS
+file from that bundled checkout copy and only falls back to the official
+Challenge host when the requested file is not bundled. `dimacs --all` follows
+the official Challenge index and therefore depends on that external host.
+
+SDPLIB is different from the download-backed datasets above: the maintained
+adapter reads converted `.jld2` files, or extracts them from
+`problem_classes/sdplib_data/sdplib.tar` when that archive is present. It does
+not download and convert the original SDPLIB files automatically. If the
+converted archive is absent, restore `sdplib.tar` or place converted `.jld2`
+files in `problem_classes/sdplib_data`.
 
 Every prepare command also has a heavily-signposted wrapper script under
 `scripts/`:
@@ -161,8 +187,7 @@ The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
 follows the full CBLIB directory index and may download mixed-integer or
 currently unsupported CBF files; the `cblib` adapter only lists continuous
 linear/SOC instances it can parse. Mittelmann `--all` follows the ASU lptestset
-index. DIMACS `--all` follows the official Challenge index. QPLIB `--all` uses
-`problem_classes/qplib_data/list_convex_qps.txt`.
+index. QPLIB `--all` uses `problem_classes/qplib_data/list_convex_qps.txt`.
 
 Benchmark runs can opt into preparation:
 
@@ -791,14 +816,14 @@ Data-management commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible after options and generic filters, the data path, source, and preparation command. Omit `DATASET` to check all datasets. |
+| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible after options and generic filters, the data path, source, exact preparation command when one exists, and status message. Omit `DATASET` to check all datasets. |
 | `bench data prepare DATASET` | `--repo-root PATH`, `--option key=value`, `--problem NAME`, `--all` default false | Download or prepare missing data for datasets that support automatic preparation. Repeat `--problem` for selected instances. Use `--all` only when you intentionally want every known remote problem. |
 
 Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
@@ -1216,11 +1241,17 @@ Current tests cover:
 
 - Config parsing and config hash changes.
 - Dataset and solver registration.
+- Missing external-data errors and `bench data status` output include exact
+  `bench data prepare ...` / `bench run ... --prepare-data` commands.
 - Synthetic QP loading.
 - Generic runner result writing and resume behavior.
 - Generic `max_size_mb` filtering across dataset visibility, CLI problem
   listing, data status, runner selection, and analysis completion/missing
   calculations.
+- Real external dataset download smoke tests for the `bench data prepare`
+  command are marked `network` and run in the scheduled/manual GitHub Actions
+  workflow. The normal PR matrix excludes `network` tests so routine CI remains
+  deterministic.
 - Structured warning events for unsupported combinations.
 - Subprocess stdout/stderr capture.
 - Worker trace serialization.

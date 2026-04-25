@@ -15,6 +15,10 @@ from types import SimpleNamespace
 
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import DatasetConfig, RunConfig, SolverConfig
+from solver_benchmarks.core.data_prepare import (
+    data_prepare_command,
+    data_prepare_selection,
+)
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
@@ -39,6 +43,7 @@ def run_benchmark(
     stream_output: bool = False,
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
+    prepare_data_command: str | None = None,
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     store = ResultStore.create(config, run_dir=run_dir)
@@ -50,7 +55,11 @@ def run_benchmark(
         dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
         include, exclude = config.effective_filters(dataset_config)
         if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
-            dataset.prepare_data(problem_names=include or None)
+            problem_names, all_problems = data_prepare_selection(config, dataset_config)
+            dataset.prepare_data(
+                problem_names=problem_names,
+                all_problems=all_problems,
+            )
         problems = _filter_problems(dataset.list_problems(), include, exclude)
         problems = filter_problem_specs_by_size(
             problems, dataset_config.dataset_options.get("max_size_mb")
@@ -64,6 +73,22 @@ def run_benchmark(
                 if data_status is not None
                 else f"Dataset {dataset_config.id!r} produced no problems."
             )
+            if data_status is not None and not getattr(data_status, "available", True):
+                problem_names, all_problems = data_prepare_selection(
+                    config, dataset_config
+                )
+                message = _missing_data_run_message(
+                    dataset_config,
+                    message,
+                    problem_names=problem_names,
+                    all_problems=all_problems,
+                    repo_root=repo_root,
+                    automatic_download=bool(
+                        getattr(dataset, "automatic_download", False)
+                    ),
+                    prepare_data_command=prepare_data_command,
+                )
+                raise RuntimeError(message)
             store.append_event(
                 "warning", message, dataset=dataset_config.id
             )
@@ -364,6 +389,45 @@ def _filter_by_size(
     problems: Iterable[ProblemSpec], max_size_mb: float | None
 ) -> list[ProblemSpec]:
     return filter_problem_specs_by_size(list(problems), max_size_mb)
+
+
+def _missing_data_run_message(
+    dataset_config: DatasetConfig,
+    status_message: str,
+    *,
+    problem_names: list[str] | None,
+    all_problems: bool,
+    repo_root: Path,
+    automatic_download: bool,
+    prepare_data_command: str | None,
+) -> str:
+    lines = [
+        f"Dataset {dataset_config.id!r} ({dataset_config.name!r}) has no local data.",
+        status_message,
+    ]
+    if automatic_download:
+        lines.extend(
+            [
+                "Prepare the requested dataset data with:",
+                "  "
+                + data_prepare_command(
+                    dataset_config,
+                    problem_names=problem_names,
+                    all_problems=all_problems,
+                    repo_root=repo_root,
+                ),
+            ]
+        )
+        if prepare_data_command:
+            lines.extend(
+                [
+                    "Or rerun this benchmark with data preparation enabled:",
+                    f"  {prepare_data_command}",
+                ]
+            )
+    else:
+        lines.append("This dataset does not have an automatic download command.")
+    return "\n".join(lines)
 
 
 def _already_done(

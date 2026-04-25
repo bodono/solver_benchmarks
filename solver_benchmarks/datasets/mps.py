@@ -98,6 +98,7 @@ class KenningtonDataset(MPSLPDataset):
     problem_folder = "kennington"
     data_source = "external download from https://www.netlib.org/lp/data/kennington/"
     prepare_command = "python scripts/prepare_kennington.py"
+    automatic_download = True
 
     def prepare_data(
         self,
@@ -127,6 +128,7 @@ class MittelmannDataset(MPSLPDataset):
     problem_folder = "mittelmann"
     data_source = "external download from https://plato.asu.edu/ftp/lptestset/"
     prepare_command = "python scripts/prepare_mittelmann.py --problem qap15"
+    automatic_download = True
 
     def prepare_data(
         self,

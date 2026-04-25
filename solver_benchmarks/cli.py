@@ -23,6 +23,11 @@ from solver_benchmarks.analysis.reports import (
     solver_metrics,
 )
 from solver_benchmarks.core.config import load_environment_run_config, load_run_config
+from solver_benchmarks.core.config import DatasetConfig
+from solver_benchmarks.core.data_prepare import (
+    data_prepare_command,
+    run_with_prepare_command,
+)
 from solver_benchmarks.core.env_runner import run_environment_matrix
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.datasets import get_dataset, list_datasets
@@ -92,13 +97,21 @@ def data_status_cmd(
     parsed_options = _parse_options(options)
     for name in names:
         dataset_cls = get_dataset(name)
-        status = dataset_cls(repo_root=repo_root, **parsed_options).data_status()
+        dataset_obj = dataset_cls(repo_root=repo_root, **parsed_options)
+        status = dataset_obj.data_status()
         marker = "available" if status.available else "missing"
         path = str(status.data_dir) if status.data_dir is not None else ""
-        command = status.prepare_command or ""
+        command = (
+            data_prepare_command(
+                DatasetConfig(name=name, dataset_options=parsed_options),
+                repo_root=repo_root,
+            )
+            if getattr(dataset_obj, "automatic_download", False)
+            else status.prepare_command or ""
+        )
         click.echo(
             f"{status.dataset}\t{marker}\t{status.problem_count}\t"
-            f"{path}\t{status.source}\t{command}"
+            f"{path}\t{status.source}\t{command}\t{status.message}"
         )
 
 
@@ -145,14 +158,22 @@ def run_cmd(
     if prepare_data:
         config = replace(config, auto_prepare_data=True)
     env_metadata = _parse_json_option(environment_metadata)
-    store = run_benchmark(
-        config,
-        run_dir=run_dir,
-        repo_root=repo_root,
-        stream_output=True,
-        environment_id=environment_id,
-        environment_metadata=env_metadata,
-    )
+    try:
+        store = run_benchmark(
+            config,
+            run_dir=run_dir,
+            repo_root=repo_root,
+            stream_output=True,
+            environment_id=environment_id,
+            environment_metadata=env_metadata,
+            prepare_data_command=run_with_prepare_command(
+                config_path,
+                run_dir=run_dir,
+                repo_root=repo_root,
+            ),
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(str(store.run_dir))
 
 

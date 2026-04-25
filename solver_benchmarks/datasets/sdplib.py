@@ -104,3 +104,10 @@ class SDPLIBDataset(Dataset):
             raise RuntimeError(f"Unknown SDPLIB problem(s): {', '.join(missing)}")
         for name in names:
             extract_from_tar(self.tar_path, name, self.folder)
+
+    def missing_data_message(self) -> str:
+        return (
+            "SDPLIB data is missing and cannot be downloaded automatically. "
+            f"Restore the converted archive at {self.tar_path}, or place converted "
+            f"`.jld2` files in {self.folder}."
+        )
