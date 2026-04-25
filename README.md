@@ -4,8 +4,8 @@
 
 Config-driven benchmark suite for convex optimization solvers.
 
-The maintained path is the `solver_benchmarks` package and the `bench` CLI. Older
-top-level scripts are legacy entrypoints and should not be extended for new work.
+The maintained entrypoint is the `bench` CLI backed by the `solver_benchmarks`
+package.
 
 ## Goals
 
@@ -92,6 +92,7 @@ Current maintained adapters:
 | Maros-Meszaros | `maros_meszaros` | QP | Loads `.mat` QP files. |
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
 | Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset; prepare script downloads 16 instances. |
+| Liu-Pataki | `liu_pataki` | Cone/SDP | Bundled infeasible and weakly infeasible SeDuMi `.mat` SDP instances; converted to canonical PSD triangle cones. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only. |
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
 | Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
@@ -211,6 +212,7 @@ bench list problems netlib --option subset=feasible
 bench list problems maros_meszaros
 bench list problems qplib
 bench list problems qplib --option subset=ccb
+bench list problems liu_pataki --option classification=weak --option conditioning=messy
 bench list problems mpc_qpbenchmark --option subset=default
 bench list problems cblib
 ```
@@ -225,6 +227,10 @@ Useful dataset options:
 | All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
 | `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
+| `liu_pataki` | `classification=infeas` or `classification=weak` | Select infeasible or weakly infeasible SDP families. |
+| `liu_pataki` | `conditioning=clean` or `conditioning=messy` | Select clean or numerically messier Liu-Pataki instances. |
+| `liu_pataki` | `constraint_count=10` or `constraint_count=20` | Select Liu-Pataki instances by equality count. |
+| `liu_pataki` | `block_dim=10` | Select Liu-Pataki instances by PSD block dimension. |
 | `mpc_qpbenchmark` | `subset=default`, `all`, or comma-separated names | Filter downloaded MPC QP `.npz` files. |
 | `cutest_qp` | `subset=default`, `all`, or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
 | `cblib` | `subset=default`, `all`, or comma-separated names | Filter downloaded CBF files. |

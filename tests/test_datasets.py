@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import scipy.io
 from click.testing import CliRunner
 
 from solver_benchmarks.cli import main
@@ -38,6 +39,7 @@ def test_required_datasets_are_registered():
         "cblib",
         "cutest_qp",
         "kennington",
+        "liu_pataki",
         "maros_meszaros",
         "mpc_qpbenchmark",
         "netlib",
@@ -104,14 +106,74 @@ def test_synthetic_cone_dataset_loads_cone():
     assert problem.cone["cone"] == {"l": 1}
 
 
+def test_liu_pataki_dataset_converts_sedumi_psd_blocks(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "liu_pataki_data"
+    folder.mkdir(parents=True)
+    scipy.io.savemat(
+        folder / "weak_clean_1_2_7.mat",
+        {
+            "A": np.array([[1.0, 2.0, 2.0, 3.0]]),
+            "b": np.array([[5.0]]),
+            "c": np.array([[4.0], [6.0], [6.0], [8.0]]),
+            "K": {"s": np.array([[2]])},
+        },
+    )
+
+    dataset = get_dataset("liu_pataki")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("weak_clean_1_2_7")
+
+    assert problem.kind == "cone"
+    assert problem.cone["cone"] == {"z": 1, "s": [2]}
+    assert problem.cone["q"].tolist() == pytest.approx([4.0, 6.0 * np.sqrt(2.0), 8.0])
+    assert problem.cone["b"].tolist() == pytest.approx([5.0, 0.0, 0.0, 0.0])
+    assert problem.cone["A"].toarray() == pytest.approx(
+        np.array(
+            [
+                [1.0, 2.0 * np.sqrt(2.0), 3.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, -1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ]
+        )
+    )
+    assert problem.metadata["classification"] == "weak"
+    assert problem.metadata["conditioning"] == "clean"
+    assert problem.metadata["constraint_count"] == 1
+    assert problem.metadata["block_dim"] == 2
+    assert problem.metadata["sample_index"] == 7
+
+
+def test_liu_pataki_dataset_filters_bundled_groups():
+    dataset = get_dataset("liu_pataki")(
+        classification="weak",
+        conditioning="messy",
+        constraint_count=20,
+        block_dim=10,
+    )
+
+    problems = dataset.list_problems()
+
+    assert len(problems) == 100
+    assert problems[0].name == "weak_messy_20_10_1"
+    assert problems[-1].name == "weak_messy_20_10_100"
+    assert {spec.metadata["classification"] for spec in problems} == {"weak"}
+    assert {spec.metadata["conditioning"] for spec in problems} == {"messy"}
+    assert {spec.metadata["constraint_count"] for spec in problems} == {20}
+
+
 def test_dataset_data_status_reports_local_problem_counts():
     synthetic = get_dataset("synthetic_qp")()
     dimacs = get_dataset("dimacs")()
+    liu_pataki = get_dataset("liu_pataki")()
 
     assert synthetic.data_status().available
     assert synthetic.data_status().problem_count == 2
     assert dimacs.data_status().available
     assert dimacs.data_status().problem_count > 0
+    assert liu_pataki.data_status().available
+    assert liu_pataki.data_status().problem_count == 800
+
 
 
 def test_cblib_cbf_parser_loads_supported_continuous_problem(tmp_path: Path):
