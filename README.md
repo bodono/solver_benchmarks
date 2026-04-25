@@ -660,7 +660,7 @@ Run and analysis commands:
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, problem)` results relative to the run manifest. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default `10.0`, `--max-value VALUE` default `1000.0`, `--success-only` default false | Write shifted geometric means into the run directory. By default failures are penalized with `--max-value`; use `--success-only` for solved-problem-only geomeans. |
-| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, and failure rates. |
+| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--repo-root PATH` | Write a complete report directory containing CSV tables and PNG plots. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
@@ -804,7 +804,10 @@ bench report runs/<run_id> --metric iterations --output-dir reports/my_run
 - A per-problem cross-solver table, `problem_solver_comparison.csv`, with columns such as `qtqp_default__status`, `qtqp_default__run_time_seconds`, and `qtqp_default__iterations`.
 - Per-solver problem tables under `solver_problem_tables/`, with rows as problems and columns for status, runtime, iterations, objective, artifact path, and problem dimensions when available.
 - Objective-spread and slowest-solve tables.
+- Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
+- KKT-residual summaries (`kkt_summary.csv`, `kkt_certificate_summary.csv`) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack` / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile (fraction of problems whose worst residual is below tau).
+- An auto-generated `README.md` index inside the report directory listing every artifact written.
 
 Programmatic use:
 
@@ -945,16 +948,27 @@ class MySolverAdapter(SolverAdapter):
         except ModuleNotFoundError as exc:
             raise SolverUnavailable("Install my_solver to use this adapter") from exc
 
+        from solver_benchmarks.analysis import kkt
+        from solver_benchmarks.core import status
+
         qp = problem.qp
         result = my_solver.solve(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], **self.settings)
 
+        mapped = status.OPTIMAL  # map raw solver status to a canonical value
+        kkt_dict = None
+        if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+            kkt_dict = kkt.qp_residuals(
+                qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], result.x, result.y
+            )
+
         return SolverResult(
-            status="optimal",
+            status=mapped,
             objective_value=float(result.objective),
             iterations=int(result.iterations),
             run_time_seconds=float(result.runtime),
             info={"raw_status": result.status},
             trace=result.trace,
+            kkt=kkt_dict,
         )
 ```
 
@@ -969,7 +983,8 @@ Adapter expectations:
 - Do not import optional solver packages at module import time if they may be missing.
 - Use `is_available()` for optional dependency checks.
 - Keep solver adapter modules solver-specific rather than grouping unrelated adapters together.
-- Return canonical statuses from `solver_benchmarks.core.status`.
+- Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states.
+- Populate `SolverResult.kkt` whenever the solver returned a primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) on `OPTIMAL` / `OPTIMAL_INACCURATE`, and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate. The KKT plots, summaries, and accuracy profile all read this field.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.
@@ -1045,12 +1060,27 @@ Current tests cover:
 - Structured warning events for unsupported combinations.
 - Subprocess stdout/stderr capture.
 - Worker trace serialization.
-- Real solver smoke coverage for QTQP, SCS, Clarabel, OSQP, and PDLP on a tiny LP.
+- Real solver smoke coverage on a small QP and LP for every open-source adapter
+  (OSQP, SCS, Clarabel, QTQP, HiGHS, ProxQP, PIQP, plus PDLP on the LP), with
+  KKT residuals checked against tight tolerances.
+- SDPA cone smoke coverage on a small linear cone LP with KKT residuals.
+- Primal- and dual-infeasibility certificate checks for SCS, Clarabel, and OSQP
+  against deliberately infeasible/unbounded LPs.
+- Adapter status-mapping unit tests (e.g. `test_scs_status_val_mapping`,
+  `test_sdpa_phase_mapping`) that pin the raw → canonical status translation
+  for every documented solver code.
 - Loading JSONL/Parquet-backed result tables.
 - Solver summary output.
 - Performance profile and shifted geometric mean calculations.
 - CLI `summary`, `profile`, and `geomean` commands.
 - PDLP registration and clean skip behavior when unavailable or given non-LP data.
+
+GitHub Actions runs additional matrix workflows that install each open-source
+solver in isolation and exercise its adapter via `scripts/ci_solver_smoke.py`,
+so a packaging or import regression in one extra cannot hide behind another
+solver's tests. A separate `commercial-adapters` job confirms that the CPLEX,
+Gurobi, and Mosek adapters register and report `is_available() == False`
+without their (proprietary) dependencies installed.
 
 Recommended tests for new contributions:
 
@@ -1083,6 +1113,5 @@ High-value next steps:
 - Richer plotting commands that write PDFs/PNGs, not only CSV profile data.
 - Cross-run comparison commands.
 - Solver environment metadata capture: versions, git SHA, platform, CPU info.
-- More comprehensive status normalization across solvers.
 - Optional exact-solution/reference-objective checking where datasets provide it.
 - Parallel result-write batching for very large runs.
