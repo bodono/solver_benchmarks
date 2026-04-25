@@ -147,6 +147,237 @@ def kkt_summary(
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
 
 
+def claimed_optimal_kkt_thresholds(
+    results: pd.DataFrame,
+    *,
+    success_statuses: set[str] | None = None,
+    residual_fields: tuple[str, ...] = (
+        "kkt.primal_res_rel",
+        "kkt.dual_res_rel",
+        "kkt.duality_gap_rel",
+    ),
+    thresholds: tuple[float, ...] = (1.0e-10, 1.0e-8, 1.0e-6, 1.0e-4, 1.0e-2),
+) -> pd.DataFrame:
+    """Bucket claimed-optimal solves by their worst relative KKT residual.
+
+    For each solver, computes the per-row maximum of the listed relative
+    residual columns on rows whose status indicates a solution is present,
+    then counts how many of those fall at or below each threshold. The
+    ``count_above_max`` column flags claims of optimality whose worst
+    relative residual exceeds the loosest threshold — a quick way to spot
+    solvers labelling dubious solutions as ``optimal``.
+    """
+    if success_statuses is None:
+        success_statuses = set(status.SOLUTION_PRESENT)
+    threshold_columns = [f"count_le_{t:.0e}" for t in thresholds]
+    columns = [
+        "solver_id",
+        "claimed_optimal",
+        "with_residuals",
+        "missing_residuals",
+        "worst_max",
+        "worst_p95",
+        *threshold_columns,
+        "count_above_max",
+    ]
+    if results.empty:
+        return pd.DataFrame(columns=columns)
+    available_fields = [field for field in residual_fields if field in results]
+    if not available_fields:
+        return pd.DataFrame(columns=columns)
+    claimed = results[results["status"].isin(success_statuses)].copy()
+    if claimed.empty:
+        return pd.DataFrame(columns=columns)
+    numeric = claimed[available_fields].apply(pd.to_numeric, errors="coerce")
+    claimed["__worst_kkt__"] = numeric.max(axis=1, skipna=True)
+
+    rows = []
+    for solver_id, group in claimed.groupby("solver_id"):
+        worst = group["__worst_kkt__"].dropna()
+        claimed_optimal = int(len(group))
+        with_residuals = int(worst.size)
+        missing_residuals = claimed_optimal - with_residuals
+        if worst.empty:
+            row = {
+                "solver_id": solver_id,
+                "claimed_optimal": claimed_optimal,
+                "with_residuals": with_residuals,
+                "missing_residuals": missing_residuals,
+                "worst_max": None,
+                "worst_p95": None,
+                "count_above_max": 0,
+                **{column: 0 for column in threshold_columns},
+            }
+        else:
+            row = {
+                "solver_id": solver_id,
+                "claimed_optimal": claimed_optimal,
+                "with_residuals": with_residuals,
+                "missing_residuals": missing_residuals,
+                "worst_max": float(worst.max()),
+                "worst_p95": float(worst.quantile(0.95)),
+                "count_above_max": int((worst > thresholds[-1]).sum()),
+                **{
+                    column: int((worst <= threshold).sum())
+                    for column, threshold in zip(threshold_columns, thresholds)
+                },
+            }
+        rows.append(row)
+    return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
+
+
+def difficulty_scaling(
+    results: pd.DataFrame,
+    *,
+    size_field: str = "metadata.n",
+    metric: str = "run_time_seconds",
+    success_statuses: set[str] | None = None,
+    bin_count: int = 4,
+) -> pd.DataFrame:
+    """Median ``metric`` per solver across problems binned by size.
+
+    Bins are equal-population quantile buckets of ``size_field`` over the
+    set of problems with finite sizes. Each row reports, for one
+    ``(solver, bin)`` pair, the bin's size range, the number of attempts,
+    the number of successes, and the median / p95 of ``metric`` across
+    successful solves.
+    """
+    if success_statuses is None:
+        success_statuses = set(status.SOLUTION_PRESENT)
+    columns = [
+        "solver_id",
+        "size_bin",
+        "size_min",
+        "size_max",
+        "problem_count",
+        "success_count",
+        "median_time",
+        "p95_time",
+    ]
+    if results.empty or size_field not in results or metric not in results:
+        return pd.DataFrame(columns=columns)
+
+    frame = results.copy()
+    frame[size_field] = pd.to_numeric(frame[size_field], errors="coerce")
+    frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
+    sized = frame[np.isfinite(frame[size_field])]
+    if sized.empty:
+        return pd.DataFrame(columns=columns)
+    unique_sizes = sized[size_field].nunique()
+    if unique_sizes < 2:
+        return pd.DataFrame(columns=columns)
+    bins = min(int(bin_count), int(unique_sizes))
+    bin_index = pd.qcut(
+        sized[size_field].astype(float), q=bins, duplicates="drop", labels=False
+    )
+    sized = sized.assign(__bin__=bin_index).dropna(subset=["__bin__"])
+    sized["__bin__"] = sized["__bin__"].astype(int)
+
+    rows = []
+    for (solver_id, bin_id), group in sized.groupby(["solver_id", "__bin__"]):
+        sizes_in_bin = group[size_field].astype(float)
+        successful = group[group["status"].isin(success_statuses)]
+        success_metric = pd.to_numeric(successful[metric], errors="coerce").dropna()
+        rows.append(
+            {
+                "solver_id": solver_id,
+                "size_bin": int(bin_id),
+                "size_min": float(sizes_in_bin.min()),
+                "size_max": float(sizes_in_bin.max()),
+                "problem_count": int(len(group)),
+                "success_count": int(len(successful)),
+                "median_time": float(success_metric.median())
+                if not success_metric.empty
+                else None,
+                "p95_time": float(success_metric.quantile(0.95))
+                if not success_metric.empty
+                else None,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns).sort_values(["solver_id", "size_bin"])
+
+
+def setup_solve_breakdown(
+    results: pd.DataFrame,
+    *,
+    success_statuses: set[str] | None = None,
+) -> pd.DataFrame:
+    """Per-solver setup vs solve time on successful solves.
+
+    Many adapters split ``run_time_seconds`` into ``setup_time_seconds`` (KKT
+    factorization, scaling, internal preprocessing) and
+    ``solve_time_seconds`` (the iterative loop). For QP-style direct-method
+    solvers the setup phase often dominates and a fast ``solve`` time is
+    misleading without that context. Solvers that do not report a split
+    appear with ``with_breakdown = 0`` and null statistics.
+    """
+    if success_statuses is None:
+        success_statuses = set(status.SOLUTION_PRESENT)
+    columns = [
+        "solver_id",
+        "with_breakdown",
+        "setup_median",
+        "solve_median",
+        "total_median",
+        "setup_share_median",
+        "setup_total",
+        "solve_total",
+    ]
+    if results.empty:
+        return pd.DataFrame(columns=columns)
+    if (
+        "setup_time_seconds" not in results
+        or "solve_time_seconds" not in results
+    ):
+        return pd.DataFrame(columns=columns)
+    successful = results[results["status"].isin(success_statuses)].copy()
+    if successful.empty:
+        return pd.DataFrame(columns=columns)
+    successful["setup_time_seconds"] = pd.to_numeric(
+        successful["setup_time_seconds"], errors="coerce"
+    )
+    successful["solve_time_seconds"] = pd.to_numeric(
+        successful["solve_time_seconds"], errors="coerce"
+    )
+
+    rows = []
+    for solver_id, group in successful.groupby("solver_id"):
+        both = group.dropna(subset=["setup_time_seconds", "solve_time_seconds"])
+        if both.empty:
+            rows.append(
+                {
+                    "solver_id": solver_id,
+                    "with_breakdown": 0,
+                    "setup_median": None,
+                    "solve_median": None,
+                    "total_median": None,
+                    "setup_share_median": None,
+                    "setup_total": None,
+                    "solve_total": None,
+                }
+            )
+            continue
+        setup = both["setup_time_seconds"]
+        solve = both["solve_time_seconds"]
+        total = setup + solve
+        share = setup.divide(total.where(total > 0))
+        rows.append(
+            {
+                "solver_id": solver_id,
+                "with_breakdown": int(len(both)),
+                "setup_median": float(setup.median()),
+                "solve_median": float(solve.median()),
+                "total_median": float(total.median()),
+                "setup_share_median": float(share.median())
+                if share.notna().any()
+                else None,
+                "setup_total": float(setup.sum()),
+                "solve_total": float(solve.sum()),
+            }
+        )
+    return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
+
+
 def kkt_certificate_summary(
     results: pd.DataFrame,
     *,

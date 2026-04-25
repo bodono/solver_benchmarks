@@ -12,7 +12,9 @@ from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.plots import write_analysis_plots
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 from solver_benchmarks.analysis.reports import (
+    claimed_optimal_kkt_thresholds,
     completion_summary,
+    difficulty_scaling,
     failure_rates,
     failures_with_successful_alternatives,
     kkt_certificate_summary,
@@ -23,6 +25,7 @@ from solver_benchmarks.analysis.reports import (
     performance_ratio_matrix,
     problem_solver_comparison,
     safe_filename,
+    setup_solve_breakdown,
     slowest_solves,
     solver_metrics,
     solver_problem_tables,
@@ -72,7 +75,10 @@ def write_run_report(
         ),
         "status_matrix.csv": status_matrix(results),
         "kkt_summary.csv": kkt_summary(results),
+        "claimed_optimal_kkt_thresholds.csv": claimed_optimal_kkt_thresholds(results),
         "kkt_certificate_summary.csv": kkt_certificate_summary(results),
+        f"difficulty_scaling_{metric}.csv": difficulty_scaling(results, metric=metric),
+        "setup_solve_breakdown.csv": setup_solve_breakdown(results),
     }
     for name, table in tables.items():
         path = _write_table(output_dir / name, table)
@@ -170,6 +176,26 @@ def _render_markdown_report(
     lines.extend(_section_table("Status Counts", tables.get("status_counts.csv", pd.DataFrame())))
     lines.extend(_section_table("Failure Rates", tables.get("failure_rates.csv", pd.DataFrame())))
 
+    lines.extend(
+        _section_table(
+            "Setup vs Solve Time",
+            tables.get("setup_solve_breakdown.csv", pd.DataFrame()),
+            intro=(
+                "Many adapters split `run_time_seconds` into a setup phase "
+                "(KKT factorization, scaling) and a solve phase (the iterative "
+                "loop). Solvers that do not report a split show "
+                "`with_breakdown = 0`."
+            ),
+        )
+    )
+    lines.extend(
+        _plot_block(
+            output_dir,
+            plot_outputs,
+            [("setup_solve_breakdown.png", "Setup vs Solve Time")],
+        )
+    )
+
     lines.extend(["## Performance Plots", ""])
     lines.extend(
         _plot_block(
@@ -206,6 +232,27 @@ def _render_markdown_report(
         )
     )
     lines.extend(_section_table("Pairwise Speedups", tables.get(f"pairwise_speedups_{metric}.csv", pd.DataFrame())))
+
+    lines.extend(["## Difficulty Scaling", ""])
+    lines.extend(
+        _plot_block(
+            output_dir,
+            plot_outputs,
+            [(f"difficulty_scaling_{metric}.png", "Difficulty Scaling")],
+        )
+    )
+    lines.extend(
+        _section_table(
+            f"Median {metric} by Problem Size",
+            tables.get(f"difficulty_scaling_{metric}.csv", pd.DataFrame()),
+            intro=(
+                "Problems are bucketed into equal-population quantile bins of "
+                "`metadata.n`. Each row reports a solver's median runtime on "
+                "successful solves within that bucket; failures are not "
+                "averaged in."
+            ),
+        )
+    )
 
     lines.extend(["## Problem-Level Views", ""])
     lines.extend(
@@ -255,6 +302,19 @@ def _render_markdown_report(
         )
     )
     lines.extend(_section_table("KKT Summary", tables.get("kkt_summary.csv", pd.DataFrame())))
+    lines.extend(
+        _section_table(
+            "Claimed-Optimal KKT Thresholds",
+            tables.get("claimed_optimal_kkt_thresholds.csv", pd.DataFrame()),
+            intro=(
+                "Counts of claimed-optimal solves whose worst relative KKT "
+                "residual is at or below each threshold. `count_above_max` "
+                "flags claims of optimality with residuals above the loosest "
+                "threshold — solutions that should not have been labelled "
+                "optimal."
+            ),
+        )
+    )
     lines.extend(_section_table("KKT Certificate Summary", tables.get("kkt_certificate_summary.csv", pd.DataFrame())))
 
     lines.extend(["## Provenance", ""])

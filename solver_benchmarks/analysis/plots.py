@@ -17,8 +17,10 @@ import pandas as pd
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 from solver_benchmarks.analysis.reports import (
+    difficulty_scaling,
     failure_rates,
     performance_ratio_matrix,
+    setup_solve_breakdown,
     status_matrix,
 )
 from solver_benchmarks.core import status
@@ -49,6 +51,8 @@ def write_analysis_plots(
         _write_kkt_residual_boxplot(results, output_dir),
         _write_kkt_residual_heatmap(results, output_dir),
         _write_kkt_accuracy_profile(results, output_dir),
+        _write_difficulty_scaling(results, output_dir, metric),
+        _write_setup_solve_breakdown(results, output_dir),
     ]
     return [path for path in paths if path is not None]
 
@@ -471,6 +475,71 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
 
     fig.suptitle("KKT Accuracy Profile (per solver, across all problems)")
     path = output_dir / "kkt_accuracy_profile.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | None:
+    table = difficulty_scaling(results, metric=metric)
+    if table.empty:
+        return None
+    plottable = table.dropna(subset=["median_time"])
+    if plottable.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
+    drew_any = False
+    for solver_id, group in plottable.groupby("solver_id"):
+        ordered = group.sort_values("size_bin")
+        midpoints = 0.5 * (ordered["size_min"] + ordered["size_max"])
+        ax.plot(
+            midpoints,
+            ordered["median_time"],
+            marker="o",
+            linewidth=2,
+            label=str(solver_id),
+        )
+        drew_any = True
+    if not drew_any:
+        plt.close(fig)
+        return None
+    ax.set_xscale("log")
+    if (plottable["median_time"] > 0).any():
+        ax.set_yscale("log")
+    ax.set_xlabel("Problem size (n)")
+    ax.set_ylabel(f"Median {metric} (successes)")
+    ax.set_title(f"Difficulty Scaling ({metric})")
+    ax.grid(True, which="both", alpha=0.25)
+    ax.legend(fontsize="small")
+
+    path = output_dir / f"difficulty_scaling_{metric}.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+def _write_setup_solve_breakdown(results, output_dir: Path) -> Path | None:
+    table = setup_solve_breakdown(results)
+    if table.empty:
+        return None
+    plottable = table.dropna(subset=["setup_median", "solve_median"])
+    if plottable.empty:
+        return None
+    plottable = plottable.sort_values("total_median", ascending=True)
+
+    fig, ax = plt.subplots(figsize=(8, 4), constrained_layout=True)
+    solver_ids = plottable["solver_id"].astype(str).tolist()
+    setup = plottable["setup_median"].to_numpy()
+    solve = plottable["solve_median"].to_numpy()
+    ax.barh(solver_ids, setup, color="#dc2626", label="setup")
+    ax.barh(solver_ids, solve, left=setup, color="#2563eb", label="solve")
+    ax.set_xlabel("Median time per solve (s)")
+    ax.set_title("Setup vs Solve Time (median across successful solves)")
+    ax.grid(True, axis="x", alpha=0.25)
+    ax.legend(loc="lower right", fontsize="small")
+
+    path = output_dir / "setup_solve_breakdown.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)
     return path
