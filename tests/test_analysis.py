@@ -294,6 +294,7 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
         ["report", str(run_dir), "--metric", "run_time_seconds", "--output-dir", str(report_dir)],
     )
     assert report_result.exit_code == 0
+    assert (report_dir / "index.md").exists()
     assert (report_dir / "README.md").exists()
     assert (report_dir / "solver_metrics.csv").exists()
     assert (report_dir / "pairwise_speedups_run_time_seconds.csv").exists()
@@ -302,8 +303,17 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
     assert (report_dir / "objective_spreads.csv").exists()
     assert (report_dir / "solver_problem_tables" / "solver_a.csv").exists()
     assert (report_dir / "status_heatmap.png").exists()
+    report_markdown = (report_dir / "index.md").read_text()
+    assert "# Benchmark Report" in report_markdown
+    assert "## Run Overview" in report_markdown
+    assert "## Solver Metrics" in report_markdown
+    assert "## Performance Plots" in report_markdown
+    assert "![Dolan-More Performance Profile](performance_profile_run_time_seconds.png)" in report_markdown
+    assert "[Cross-solver comparison](problem_solver_comparison.csv)" in report_markdown
+    assert (report_dir / "README.md").read_text() == report_markdown
 
     direct_report_dir = tmp_path / "direct_report"
     outputs = write_run_report(run_dir, output_dir=direct_report_dir, repo_root=Path.cwd())
     assert outputs
+    assert direct_report_dir / "index.md" in outputs
     assert (direct_report_dir / "slowest_solves_run_time_seconds.csv").exists()

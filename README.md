@@ -661,7 +661,7 @@ Run and analysis commands:
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default `10.0`, `--max-value VALUE` default `1000.0`, `--success-only` default false | Write shifted geometric means into the run directory. By default failures are penalized with `--max-value`; use `--success-only` for solved-problem-only geomeans. |
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
-| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--repo-root PATH` | Write a complete report directory containing CSV tables and PNG plots. |
+| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -796,6 +796,7 @@ bench report runs/<run_id> --metric iterations --output-dir reports/my_run
 
 `bench report` writes:
 
+- A generated Markdown report at `index.md`, mirrored to `README.md`, that presents run metadata, completion, solver metrics, status counts, plots, diagnostics, provenance, and links to the full CSV artifacts in a single document.
 - Solver-level metrics, status counts, failure rates, completion, and missing results.
 - Dolan-More performance-profile CSVs and plots.
 - Cactus plots showing the fraction of problems solved under each time/iteration budget.
@@ -807,7 +808,7 @@ bench report runs/<run_id> --metric iterations --output-dir reports/my_run
 - Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
 - KKT-residual summaries (`kkt_summary.csv`, `kkt_certificate_summary.csv`) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack` / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile (fraction of problems whose worst residual is below tau).
-- An auto-generated `README.md` index inside the report directory listing every artifact written.
+- An artifact index listing every CSV and plot written by the report command.
 
 Programmatic use:
 
@@ -1060,6 +1061,7 @@ Current tests cover:
 - Structured warning events for unsupported combinations.
 - Subprocess stdout/stderr capture.
 - Worker trace serialization.
+- Generated Markdown reports from `bench report`.
 - Real solver smoke coverage on a small QP and LP for every open-source adapter
   (OSQP, SCS, Clarabel, QTQP, HiGHS, ProxQP, PIQP, plus PDLP on the LP), with
   KKT residuals checked against tight tolerances.
