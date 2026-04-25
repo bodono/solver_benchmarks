@@ -596,7 +596,8 @@ def pairwise_speedups(
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
-    columns = [
+    has_dataset = not results.empty and "dataset" in results.columns
+    base_columns = [
         "solver_a",
         "solver_b",
         "common_successes",
@@ -605,19 +606,34 @@ def pairwise_speedups(
         "ties",
         "median_speedup_a_over_b",
         "geomean_speedup_a_over_b",
-        "biggest_a_win_problem",
-        "biggest_a_win_speedup",
-        "biggest_b_win_problem",
-        "biggest_b_win_speedup",
     ]
+    if has_dataset:
+        winner_columns = [
+            "biggest_a_win_dataset",
+            "biggest_a_win_problem",
+            "biggest_a_win_speedup",
+            "biggest_b_win_dataset",
+            "biggest_b_win_problem",
+            "biggest_b_win_speedup",
+        ]
+    else:
+        winner_columns = [
+            "biggest_a_win_problem",
+            "biggest_a_win_speedup",
+            "biggest_b_win_problem",
+            "biggest_b_win_speedup",
+        ]
+    columns = base_columns + winner_columns
     if results.empty or metric not in results:
         return pd.DataFrame(columns=columns)
 
     successful = results[results["status"].isin(success_statuses)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    keys = _problem_keys(successful)
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values=metric,
         aggfunc="first",
@@ -626,32 +642,37 @@ def pairwise_speedups(
     for solver_a, solver_b in combinations(sorted(pivot.columns), 2):
         common = pivot[[solver_a, solver_b]].dropna()
         if common.empty:
-            rows.append(_empty_pairwise_row(solver_a, solver_b))
+            rows.append(_empty_pairwise_row(solver_a, solver_b, has_dataset=has_dataset))
             continue
         speedup_a_over_b = common[solver_b] / common[solver_a]
         a_wins = speedup_a_over_b > 1.0 + tie_rtol
         b_wins = speedup_a_over_b < 1.0 / (1.0 + tie_rtol)
         ties = ~(a_wins | b_wins)
-        biggest_a_problem = speedup_a_over_b.idxmax()
-        biggest_b_problem = speedup_a_over_b.idxmin()
-        rows.append(
-            {
-                "solver_a": solver_a,
-                "solver_b": solver_b,
-                "common_successes": int(len(common)),
-                "a_wins": int(a_wins.sum()),
-                "b_wins": int(b_wins.sum()),
-                "ties": int(ties.sum()),
-                "median_speedup_a_over_b": float(speedup_a_over_b.median()),
-                "geomean_speedup_a_over_b": float(
-                    np.exp(np.mean(np.log(speedup_a_over_b)))
-                ),
-                "biggest_a_win_problem": biggest_a_problem,
-                "biggest_a_win_speedup": float(speedup_a_over_b.loc[biggest_a_problem]),
-                "biggest_b_win_problem": biggest_b_problem,
-                "biggest_b_win_speedup": float(1.0 / speedup_a_over_b.loc[biggest_b_problem]),
-            }
-        )
+        biggest_a_key = speedup_a_over_b.idxmax()
+        biggest_b_key = speedup_a_over_b.idxmin()
+        row = {
+            "solver_a": solver_a,
+            "solver_b": solver_b,
+            "common_successes": int(len(common)),
+            "a_wins": int(a_wins.sum()),
+            "b_wins": int(b_wins.sum()),
+            "ties": int(ties.sum()),
+            "median_speedup_a_over_b": float(speedup_a_over_b.median()),
+            "geomean_speedup_a_over_b": float(
+                np.exp(np.mean(np.log(speedup_a_over_b)))
+            ),
+        }
+        if has_dataset:
+            row["biggest_a_win_dataset"] = biggest_a_key[0]
+            row["biggest_a_win_problem"] = biggest_a_key[1]
+            row["biggest_b_win_dataset"] = biggest_b_key[0]
+            row["biggest_b_win_problem"] = biggest_b_key[1]
+        else:
+            row["biggest_a_win_problem"] = biggest_a_key
+            row["biggest_b_win_problem"] = biggest_b_key
+        row["biggest_a_win_speedup"] = float(speedup_a_over_b.loc[biggest_a_key])
+        row["biggest_b_win_speedup"] = float(1.0 / speedup_a_over_b.loc[biggest_b_key])
+        rows.append(row)
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -662,7 +683,9 @@ def objective_spreads(
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    has_dataset = not results.empty and "dataset" in results.columns
     columns = [
+        *(("dataset",) if has_dataset else ()),
         "problem",
         "solver_count",
         "objective_min",
@@ -680,14 +703,16 @@ def objective_spreads(
         successful["objective_value"], errors="coerce"
     )
     successful = successful[np.isfinite(successful["objective_value"])]
+    keys = _problem_keys(successful)
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values="objective_value",
         aggfunc="first",
     )
     rows = []
-    for problem, row in pivot.iterrows():
+    for key, row in pivot.iterrows():
         values = row.dropna()
         if len(values) < 2:
             continue
@@ -695,9 +720,14 @@ def objective_spreads(
         objective_max = float(values.max())
         reference = max(1.0, abs(float(values.median())))
         absolute_spread = objective_max - objective_min
-        rows.append(
+        record: dict[str, Any] = {}
+        if has_dataset:
+            record["dataset"] = key[0]
+            record["problem"] = key[1]
+        else:
+            record["problem"] = key
+        record.update(
             {
-                "problem": problem,
                 "solver_count": int(len(values)),
                 "objective_min": objective_min,
                 "objective_max": objective_max,
@@ -707,6 +737,7 @@ def objective_spreads(
                 "solver_max": str(values.idxmax()),
             }
         )
+        rows.append(record)
     return pd.DataFrame(rows, columns=columns).sort_values(
         ["relative_spread", "absolute_spread"], ascending=False
     )
@@ -956,8 +987,10 @@ def performance_ratio_matrix(
     successful = results[results["status"].isin(success_statuses)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    keys = _problem_keys(successful)
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values=metric,
         aggfunc="first",
@@ -973,8 +1006,8 @@ def safe_filename(value: str) -> str:
     return value.strip("-") or "value"
 
 
-def _empty_pairwise_row(solver_a: str, solver_b: str) -> dict:
-    return {
+def _empty_pairwise_row(solver_a: str, solver_b: str, *, has_dataset: bool = False) -> dict:
+    row = {
         "solver_a": solver_a,
         "solver_b": solver_b,
         "common_successes": 0,
@@ -983,11 +1016,15 @@ def _empty_pairwise_row(solver_a: str, solver_b: str) -> dict:
         "ties": 0,
         "median_speedup_a_over_b": None,
         "geomean_speedup_a_over_b": None,
-        "biggest_a_win_problem": None,
-        "biggest_a_win_speedup": None,
-        "biggest_b_win_problem": None,
-        "biggest_b_win_speedup": None,
     }
+    if has_dataset:
+        row["biggest_a_win_dataset"] = None
+        row["biggest_b_win_dataset"] = None
+    row["biggest_a_win_problem"] = None
+    row["biggest_a_win_speedup"] = None
+    row["biggest_b_win_problem"] = None
+    row["biggest_b_win_speedup"] = None
+    return row
 
 
 def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
@@ -1023,11 +1060,13 @@ def _quantile(values: pd.Series, q: float):
 def _expected_by_dataset(
     config: dict, *, repo_root: str | Path | None = None
 ) -> dict[str, set[str]]:
-    """Return ``{dataset_name: set_of_expected_problem_names}`` for a manifest.
+    """Return ``{dataset_id: set_of_expected_problem_names}`` for a manifest.
 
     Handles both the new ``datasets:`` list shape and the legacy
     ``dataset: name`` + ``dataset_options`` shape via
-    ``manifest_dataset_entries``.
+    ``manifest_dataset_entries``. Keys are dataset *ids* (the per-entry
+    identity stamped into result rows), which equal the registry ``name``
+    unless the config gave the entry an explicit ``id``.
     """
     expected: dict[str, set[str]] = {}
     for entry in manifest_dataset_entries(config):
@@ -1043,7 +1082,7 @@ def _expected_by_dataset(
             problems = [name for name in problems if name in include]
         if exclude:
             problems = [name for name in problems if name not in exclude]
-        expected[entry["name"]] = set(problems)
+        expected[entry["id"]] = set(problems)
     return expected
 
 

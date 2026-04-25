@@ -431,6 +431,100 @@ def test_runner_resume_keys_are_dataset_aware(monkeypatch, tmp_path: Path):
     assert ("ds_b", "shared", "stub_solver") not in completed
 
 
+def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatch, tmp_path: Path):
+    """Same registry name listed twice with distinct ids must produce two
+    independent dataset slots: separate artifact directories, separate
+    resume keys, and distinct ``dataset`` values on each row."""
+
+    seen_options: list[dict] = []
+
+    class _ConfigurableDataset:
+        def __init__(self, repo_root=None, **options):
+            seen_options.append(dict(options))
+            self._variant = options.get("variant", "default")
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id=self._variant, name="shared", kind=QP)]
+
+    class _StubSolver(SolverAdapter):
+        solver_name = "stub"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "configurable", _ConfigurableDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "stub", _StubSolver)
+
+    def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        from types import SimpleNamespace
+
+        payload_path = Path(cmd[-1])
+        payload = json.loads(payload_path.read_text())
+        artifact_dir = Path(payload["artifacts_dir"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        record = ProblemResult(
+            run_id=payload["run_id"],
+            dataset=payload["dataset"],
+            problem=payload["problem"],
+            problem_kind=payload["problem_kind"],
+            solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+            artifact_dir=str(artifact_dir),
+        ).to_record()
+        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
+        stdout_path.write_text("")
+        stderr_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setattr(
+        "solver_benchmarks.core.runner._run_subprocess", _fake_run_subprocess
+    )
+
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": [
+                    {
+                        "id": "feasible",
+                        "name": "configurable",
+                        "dataset_options": {"variant": "feasible"},
+                    },
+                    {
+                        "id": "infeasible",
+                        "name": "configurable",
+                        "dataset_options": {"variant": "infeasible"},
+                    },
+                ],
+                "output_dir": str(tmp_path / "runs"),
+                "parallelism": 1,
+            },
+            "solvers": [{"id": "stub_solver", "solver": "stub", "settings": {}}],
+        }
+    )
+
+    store = run_benchmark(config, repo_root=Path.cwd())
+    df = load_results(store.run_dir)
+
+    # Both variants ran the adapter with their own options.
+    assert {opts.get("variant") for opts in seen_options} == {"feasible", "infeasible"}
+    # Two rows, one per dataset id, even though both share the same problem
+    # name and the same registry adapter.
+    assert sorted(df["dataset"].tolist()) == ["feasible", "infeasible"]
+    assert set(df["problem"]) == {"shared"}
+    # Artifact directories are slugged on the dataset id so they don't collide.
+    assert (store.run_dir / "problems" / "feasible" / "shared" / "stub_solver").exists()
+    assert (store.run_dir / "problems" / "infeasible" / "shared" / "stub_solver").exists()
+    # Resume tracks (id, problem, solver_id), so both entries are independent.
+    completed = store.completed_keys()
+    assert ("feasible", "shared", "stub_solver") in completed
+    assert ("infeasible", "shared", "stub_solver") in completed
+
+
 def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path: Path):
     config = parse_environment_run_config(
         {

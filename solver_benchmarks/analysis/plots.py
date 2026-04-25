@@ -161,8 +161,10 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
     successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    keys = ["dataset", "problem"] if "dataset" in successful.columns else ["problem"]
+    index = keys[0] if len(keys) == 1 else keys
     pivot = successful.pivot_table(
-        index="problem",
+        index=index,
         columns="solver_id",
         values=metric,
         aggfunc="first",
@@ -230,7 +232,7 @@ def _write_status_heatmap(results, output_dir: Path) -> Path | None:
     ax.set_xticklabels(matrix.columns, rotation=45, ha="right")
     if len(matrix.index) <= 60:
         ax.set_yticks(np.arange(len(matrix.index)))
-        ax.set_yticklabels(matrix.index)
+        ax.set_yticklabels(_index_labels(matrix.index))
     else:
         ax.set_yticks([])
         ax.set_ylabel(f"{len(matrix.index)} problems")
@@ -267,7 +269,7 @@ def _write_performance_ratio_heatmap(
     ax.set_xticklabels(ratios.columns, rotation=45, ha="right")
     if len(ratios.index) <= 60:
         ax.set_yticks(np.arange(len(ratios.index)))
-        ax.set_yticklabels(ratios.index)
+        ax.set_yticklabels(_index_labels(ratios.index))
     else:
         ax.set_yticks([])
         ax.set_ylabel(f"{len(ratios.index)} problems")
@@ -363,13 +365,15 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
         return None
 
     pivots: list[tuple[str, pd.DataFrame]] = []
+    keys = ["dataset", "problem"] if "dataset" in successful.columns else ["problem"]
+    pivot_index = keys[0] if len(keys) == 1 else keys
     for col, label in available:
         successful[col] = pd.to_numeric(successful[col], errors="coerce")
         frame = successful[np.isfinite(successful[col]) & (successful[col] > 0.0)]
         if frame.empty:
             continue
         pivot = frame.pivot_table(
-            index="problem",
+            index=pivot_index,
             columns="solver_id",
             values=col,
             aggfunc="first",
@@ -402,7 +406,7 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
         ax.set_xticklabels(pivot.columns, rotation=45, ha="right")
         if len(pivot.index) <= 60:
             ax.set_yticks(np.arange(len(pivot.index)))
-            ax.set_yticklabels(pivot.index)
+            ax.set_yticklabels(_index_labels(pivot.index))
         else:
             ax.set_yticks([])
             ax.set_ylabel(f"{len(pivot.index)} problems")
@@ -543,6 +547,18 @@ def _write_setup_solve_breakdown(results, output_dir: Path) -> Path | None:
     fig.savefig(path, dpi=180)
     plt.close(fig)
     return path
+
+
+def _index_labels(index: pd.Index) -> list[str]:
+    """Render a (possibly MultiIndex) row index as legible tick labels.
+
+    Multi-dataset frames use a ``(dataset, problem)`` MultiIndex so that two
+    datasets sharing a problem name remain distinct rows. Tuples render as
+    ``ds_a/p1`` rather than the default ``('ds_a', 'p1')``.
+    """
+    if isinstance(index, pd.MultiIndex):
+        return ["/".join(str(part) for part in entry) for entry in index]
+    return [str(entry) for entry in index]
 
 
 def _status_palette(statuses: list[str]) -> dict[str, str]:

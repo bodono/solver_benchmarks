@@ -765,6 +765,68 @@ def test_problem_keyed_tables_preserve_dataset_for_shared_names():
     assert solver_a_table.loc[("ds_b", "p1"), "status"] == "time_limit"
 
 
+def test_profile_speedup_spread_ratio_separate_datasets_with_shared_problem_names():
+    # Two datasets share problem name p1 but have different solver outcomes.
+    # Without dataset-aware keying the pivots collapse them via aggfunc="first"
+    # and: the profile counts only one row instead of two, the speedup
+    # compares across datasets, the spread sees one solver per problem, and
+    # the ratio matrix attaches a ratio from the wrong dataset.
+    frame = pd.DataFrame(
+        [
+            # ds_a/p1: solver_a fast, solver_b slow
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 1.0, "objective_value": 1.0},
+            {"problem": "p1", "dataset": "ds_a", "solver_id": "solver_b",
+             "status": "optimal", "run_time_seconds": 4.0, "objective_value": 1.0},
+            # ds_b/p1: solver_a slow, solver_b fast (opposite of ds_a)
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_a",
+             "status": "optimal", "run_time_seconds": 8.0, "objective_value": 5.0},
+            {"problem": "p1", "dataset": "ds_b", "solver_id": "solver_b",
+             "status": "optimal", "run_time_seconds": 2.0, "objective_value": 5.5},
+        ]
+    )
+
+    profile = performance_profile(frame, max_value=100.0, n_tau=3)
+    # Two distinct (dataset, problem) rows, each solver wins one, so
+    # rho(tau=1) = 0.5 for both. If keyed only on problem, aggfunc="first"
+    # would keep one row and give 1.0 for the winner and 0.0 for the loser.
+    assert profile["solver_a"].tolist() == pytest.approx([0.5, 1.0, 1.0])
+    assert profile["solver_b"].tolist() == pytest.approx([0.5, 1.0, 1.0])
+
+    speedups = pairwise_speedups(frame).iloc[0]
+    # Two common (dataset, problem) successes, not one.
+    assert speedups["common_successes"] == 2
+    assert speedups["a_wins"] == 1
+    assert speedups["b_wins"] == 1
+    # Winner columns must encode the dataset so callers can locate the row.
+    assert "biggest_a_win_dataset" in speedups
+    assert speedups["biggest_a_win_dataset"] == "ds_a"
+    assert speedups["biggest_a_win_problem"] == "p1"
+    assert speedups["biggest_a_win_speedup"] == pytest.approx(4.0)
+    assert speedups["biggest_b_win_dataset"] == "ds_b"
+    assert speedups["biggest_b_win_problem"] == "p1"
+    assert speedups["biggest_b_win_speedup"] == pytest.approx(4.0)
+
+    spreads = objective_spreads(frame)
+    # Two rows, one per (dataset, problem); with shared-name conflation the
+    # second row would be silently dropped by aggfunc="first".
+    by_pair = spreads.set_index(["dataset", "problem"])
+    assert by_pair.loc[("ds_a", "p1"), "solver_count"] == 2
+    assert by_pair.loc[("ds_b", "p1"), "solver_count"] == 2
+    # Spreads must reflect each dataset's own objective values.
+    assert by_pair.loc[("ds_a", "p1"), "absolute_spread"] == pytest.approx(0.0)
+    assert by_pair.loc[("ds_b", "p1"), "absolute_spread"] == pytest.approx(0.5)
+
+    ratios = performance_ratio_matrix(frame)
+    # MultiIndex (dataset, problem) keeps the ratios from the wrong dataset
+    # from being attached to the wrong row.
+    assert ratios.index.names == ["dataset", "problem"]
+    assert ratios.loc[("ds_a", "p1"), "solver_a"] == pytest.approx(1.0)
+    assert ratios.loc[("ds_a", "p1"), "solver_b"] == pytest.approx(4.0)
+    assert ratios.loc[("ds_b", "p1"), "solver_a"] == pytest.approx(4.0)
+    assert ratios.loc[("ds_b", "p1"), "solver_b"] == pytest.approx(1.0)
+
+
 def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

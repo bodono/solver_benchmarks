@@ -280,7 +280,7 @@ Important fields:
 | Field | Meaning |
 |---|---|
 | `run.dataset` | Dataset ID from `bench list datasets`. Use `datasets` instead to run several. |
-| `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
+| `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `id`, `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
 | `run.output_dir` | Root directory for immutable runs. |
 | `run.dataset_options` | Dataset-specific options, such as `subset: feasible`. Treated as defaults for entries in `datasets`. |
 | `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. |
@@ -337,18 +337,44 @@ solvers:
 Behavior:
 
 - Each entry can be a bare dataset ID string or a mapping with `name`,
-  `dataset_options`, `include`, and `exclude`. Names must be unique within a
-  config.
+  optional `id`, `dataset_options`, `include`, and `exclude`. Each entry must
+  have a unique identity within a config: by default that is `name`, but you
+  can set `id` to disambiguate two entries that share an adapter (see below).
 - Run-level `dataset_options` are applied as defaults; entries can override or
   extend them per dataset.
 - Run-level `include` is used as a fallback only for datasets whose own
   `include` is unset, so per-dataset selections do not bleed across datasets.
 - Run-level `exclude` is unioned with each entry's `exclude`.
-- Resume keys are `(dataset, problem, solver_id)`, so two datasets that share a
-  problem name (e.g. `afiro` in NETLIB and a hand-crafted dataset) never get
-  conflated.
-- Every result row is tagged with its `dataset`, and the run directory groups
-  per-solve artifacts under `problems/<dataset>/<problem>/<solver_id>/`.
+- Resume keys are `(dataset, problem, solver_id)` where `dataset` is the
+  entry's `id`, so two datasets that share a problem name (e.g. `afiro` in
+  NETLIB and a hand-crafted dataset) never get conflated.
+- Every result row is tagged with its `dataset` (the entry `id`), and the run
+  directory groups per-solve artifacts under
+  `problems/<dataset>/<problem>/<solver_id>/`.
+
+Reusing the same adapter with different options requires an explicit `id` per
+entry. Without an `id`, two entries with the same `name` would collide on the
+duplicate-name check. For example, to run NETLIB feasible and infeasible
+subsets side-by-side in one run:
+
+```yaml
+run:
+  output_dir: runs
+  datasets:
+    - name: netlib
+      id: netlib_feasible
+      dataset_options:
+        subset: feasible
+    - name: netlib
+      id: netlib_infeasible
+      dataset_options:
+        subset: infeasible
+```
+
+The two entries share the `netlib` adapter but produce independent slots in
+the result table, separate `problems/<id>/...` artifact directories, and
+distinct rows in the per-dataset analysis. `id` defaults to `name` when not
+set, so single-entry and ordinary multi-entry configs are unchanged.
 
 Analysis is dataset-aware out of the box:
 
@@ -357,6 +383,11 @@ Analysis is dataset-aware out of the box:
 - `bench report` includes the cross-dataset aggregate tables exactly as before
   and adds a `## By Dataset` section with per-dataset solver metrics, failure
   rates, shifted geomean, and KKT summary slices.
+- Performance profiles, pairwise speedup tables, objective spreads, and
+  performance-ratio/KKT heatmaps all key on `(dataset, problem)` when more
+  than one dataset is present, so two datasets sharing a problem name (e.g.
+  `afiro`) are never silently collapsed into a single row. Plots and matrices
+  label the combined axis as `dataset/problem`.
 - Manifests record the full `datasets:` list, so older single-dataset runs and
   newer multi-dataset runs are both handled by the same analysis tools.
 

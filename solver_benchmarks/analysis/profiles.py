@@ -25,13 +25,20 @@ def performance_profile(
     ``r[p, s] = metric[p, s] / min_s metric[p, s]`` after assigning
     ``max_value`` to unsuccessful solves. The returned curve is
     ``rho_s(tau) = fraction of problems with r[p, s] <= tau``.
+
+    Multi-dataset frames are pivoted on ``(dataset, problem)`` so that two
+    datasets sharing a problem name (e.g. ``afiro`` in two LP bundles)
+    contribute as two separate problems instead of being collapsed by
+    ``aggfunc="first"``.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     if results.empty:
         return pd.DataFrame()
-    pivot = results.pivot_table(index="problem", columns="solver_id", values=metric, aggfunc="first")
-    status_pivot = results.pivot_table(index="problem", columns="solver_id", values="status", aggfunc="first")
+    keys = ["dataset", "problem"] if "dataset" in results.columns else ["problem"]
+    index = keys[0] if len(keys) == 1 else keys
+    pivot = results.pivot_table(index=index, columns="solver_id", values=metric, aggfunc="first")
+    status_pivot = results.pivot_table(index=index, columns="solver_id", values="status", aggfunc="first")
     values = pivot.copy()
     for solver_id in values.columns:
         failed = ~status_pivot[solver_id].isin(success_statuses)

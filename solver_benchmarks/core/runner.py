@@ -58,10 +58,10 @@ def run_benchmark(
             message = (
                 data_status.message
                 if data_status is not None
-                else f"Dataset {dataset_config.name!r} produced no problems."
+                else f"Dataset {dataset_config.id!r} produced no problems."
             )
             store.append_event(
-                "warning", message, dataset=dataset_config.name
+                "warning", message, dataset=dataset_config.id
             )
             continue
 
@@ -76,7 +76,7 @@ def run_benchmark(
                     "warning",
                     message,
                     solver_id=solver_config.id,
-                    dataset=dataset_config.name,
+                    dataset=dataset_config.id,
                 )
                 for problem in problems:
                     if _already_done(dataset_config, problem, solver_config, completed):
@@ -107,7 +107,7 @@ def run_benchmark(
                         "warning",
                         message,
                         solver_id=solver_config.id,
-                        dataset=dataset_config.name,
+                        dataset=dataset_config.id,
                         problem=problem.name,
                         problem_kind=problem.kind,
                     )
@@ -177,11 +177,12 @@ def _run_one(
     environment_metadata: dict | None = None,
 ) -> ProblemResult:
     artifacts_dir = store.problem_solver_dir(
-        dataset_config.name, problem.name, solver_config.id
+        dataset_config.id, problem.name, solver_config.id
     )
     payload = {
         "run_id": store.run_id,
-        "dataset": dataset_config.name,
+        "dataset": dataset_config.id,
+        "dataset_name": dataset_config.name,
         "dataset_options": dataset_config.dataset_options,
         "problem": problem.name,
         "problem_kind": problem.kind,
@@ -218,7 +219,7 @@ def _run_one(
         _emit_progress(stream_output, f"timeout {problem.name} with {solver_config.id}")
         return ProblemResult(
             run_id=store.run_id,
-            dataset=dataset_config.name,
+            dataset=dataset_config.id,
             problem=problem.name,
             problem_kind=problem.kind,
             solver_id=solver_config.id,
@@ -252,7 +253,7 @@ def _run_one(
     )
     return ProblemResult(
         run_id=store.run_id,
-        dataset=dataset_config.name,
+        dataset=dataset_config.id,
         problem=problem.name,
         problem_kind=problem.kind,
         solver_id=solver_config.id,
@@ -361,7 +362,7 @@ def _already_done(
     solver_config: SolverConfig,
     completed,
 ) -> bool:
-    return (dataset_config.name, problem.name, solver_config.id) in completed
+    return (dataset_config.id, problem.name, solver_config.id) in completed
 
 
 def _write_skip(
@@ -376,12 +377,12 @@ def _write_skip(
     environment_metadata: dict | None = None,
 ) -> None:
     artifacts_dir = store.problem_solver_dir(
-        dataset_config.name, problem.name, solver_config.id
+        dataset_config.id, problem.name, solver_config.id
     )
     store.write_result(
         ProblemResult(
             run_id=store.run_id,
-            dataset=dataset_config.name,
+            dataset=dataset_config.id,
             problem=problem.name,
             problem_kind=problem.kind,
             solver_id=solver_config.id,

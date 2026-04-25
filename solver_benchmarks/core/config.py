@@ -25,6 +25,16 @@ class DatasetConfig:
     dataset_options: dict[str, Any] = field(default_factory=dict)
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
+    id: str | None = None
+
+    def __post_init__(self) -> None:
+        # ``id`` is the per-entry identity used for results/resume keys and
+        # artifact directories; ``name`` is the registry lookup. Defaulting
+        # to ``name`` keeps the common single-entry case unchanged while
+        # still allowing two entries that share a registry name to coexist
+        # under different ids.
+        if self.id is None:
+            object.__setattr__(self, "id", self.name)
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,7 @@ class RunConfig:
         payload = {
             "datasets": [
                 {
+                    "id": dataset.id,
                     "name": dataset.name,
                     "dataset_options": dataset.dataset_options,
                     "include": dataset.include,
@@ -106,6 +117,7 @@ class RunConfig:
         return {
             "datasets": [
                 {
+                    "id": dataset.id,
                     "name": dataset.name,
                     "dataset_options": dataset.dataset_options,
                     "include": dataset.include,
@@ -281,8 +293,10 @@ def _parse_dataset_entries(
 ) -> list[DatasetConfig]:
     default_options = dict(defaults.get("dataset_options", root.get("dataset_options", {})))
     parsed: list[DatasetConfig] = []
-    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    seen_names_no_id: set[str] = set()
     for entry in items:
+        explicit_id: str | None = None
         if isinstance(entry, str):
             name = entry
             dataset_options: dict[str, Any] = dict(default_options)
@@ -294,6 +308,8 @@ def _parse_dataset_entries(
                 raise ValueError(
                     "Every dataset entry must define `name` (or legacy `dataset`)"
                 )
+            raw_id = entry.get("id")
+            explicit_id = str(raw_id) if raw_id is not None else None
             dataset_options = {
                 **default_options,
                 **dict(entry.get("dataset_options", {})),
@@ -305,15 +321,33 @@ def _parse_dataset_entries(
                 f"Dataset entry must be a string or mapping, got {type(entry).__name__}"
             )
         name = str(name)
-        if name in seen:
-            raise ValueError(f"Duplicate dataset name in datasets list: {name!r}")
-        seen.add(name)
+        entry_id = explicit_id if explicit_id is not None else name
+        if entry_id in seen_ids:
+            if explicit_id is None:
+                raise ValueError(
+                    f"Duplicate dataset name {name!r}: include each adapter once, "
+                    "or give each occurrence an explicit `id` so its results can be "
+                    "told apart."
+                )
+            raise ValueError(f"Duplicate dataset id in datasets list: {entry_id!r}")
+        # Surface a clearer message when a user lists the same adapter twice
+        # without ids on either entry.
+        if explicit_id is None and name in seen_names_no_id:
+            raise ValueError(
+                f"Duplicate dataset name {name!r}: include each adapter once, "
+                "or give each occurrence an explicit `id` so its results can be "
+                "told apart."
+            )
+        seen_ids.add(entry_id)
+        if explicit_id is None:
+            seen_names_no_id.add(name)
         parsed.append(
             DatasetConfig(
                 name=name,
                 dataset_options=dataset_options,
                 include=include,
                 exclude=exclude,
+                id=explicit_id,
             )
         )
     return parsed
@@ -440,7 +474,9 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
     Reads either the new ``datasets: [...]`` shape or the legacy
     ``dataset: name`` + ``dataset_options`` + ``include`` / ``exclude``
     shape, and returns a uniform list of dicts with keys
-    ``name``, ``dataset_options``, ``include``, ``exclude``. Run-level
+    ``id``, ``name``, ``dataset_options``, ``include``, ``exclude``. Each
+    entry's ``id`` defaults to its ``name``; the same registry ``name`` may
+    appear multiple times when distinct ids are given. Run-level
     ``include`` / ``exclude`` are merged in so callers do not need to
     apply them separately.
     """
@@ -452,9 +488,12 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
         for entry in datasets:
             include = list(entry.get("include") or []) or list(run_include)
             exclude = sorted({*run_exclude, *(entry.get("exclude") or [])})
+            name = str(entry["name"])
+            entry_id = str(entry.get("id") or name)
             out.append(
                 {
-                    "name": str(entry["name"]),
+                    "id": entry_id,
+                    "name": name,
                     "dataset_options": dict(entry.get("dataset_options") or {}),
                     "include": include,
                     "exclude": exclude,
@@ -466,6 +505,7 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
         return []
     return [
         {
+            "id": str(name),
             "name": str(name),
             "dataset_options": dict(config.get("dataset_options") or {}),
             "include": list(run_include),

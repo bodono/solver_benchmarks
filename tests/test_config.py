@@ -371,6 +371,7 @@ def test_manifest_dataset_entries_handles_legacy_and_new_shapes():
     )
     assert legacy == [
         {
+            "id": "synthetic_qp",
             "name": "synthetic_qp",
             "dataset_options": {"foo": "bar"},
             "include": ["one_variable_eq"],
@@ -407,6 +408,87 @@ def test_manifest_dataset_entries_handles_legacy_and_new_shapes():
     assert "global_bad" in netlib["exclude"]
     assert "global_bad" in synthetic["exclude"]
     assert "bad_problem" in synthetic["exclude"]
+
+
+def test_parse_run_config_allows_same_dataset_twice_with_distinct_ids(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": [
+                    {
+                        "id": "netlib_feasible",
+                        "name": "netlib_lp",
+                        "dataset_options": {"subset": "feasible"},
+                    },
+                    {
+                        "id": "netlib_infeasible",
+                        "name": "netlib_lp",
+                        "dataset_options": {"subset": "infeasible"},
+                    },
+                ],
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    feasible, infeasible = config.datasets
+    assert feasible.id == "netlib_feasible"
+    assert feasible.name == "netlib_lp"
+    assert feasible.dataset_options == {"subset": "feasible"}
+    assert infeasible.id == "netlib_infeasible"
+    assert infeasible.name == "netlib_lp"
+    assert infeasible.dataset_options == {"subset": "infeasible"}
+
+
+def test_parse_run_config_rejects_duplicate_dataset_ids(tmp_path: Path):
+    with pytest.raises(ValueError, match="Duplicate dataset id"):
+        parse_run_config(
+            {
+                "run": {
+                    "datasets": [
+                        {"id": "shared", "name": "netlib_lp"},
+                        {"id": "shared", "name": "synthetic_qp"},
+                    ],
+                    "output_dir": str(tmp_path / "runs"),
+                },
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+
+def test_dataset_config_id_defaults_to_name():
+    dataset = DatasetConfig(name="synthetic_qp")
+    assert dataset.id == "synthetic_qp"
+    explicit = DatasetConfig(name="synthetic_qp", id="qp_run")
+    assert explicit.id == "qp_run"
+    # Name remains the registry key even when id is given.
+    assert explicit.name == "synthetic_qp"
+
+
+def test_manifest_dataset_entries_surfaces_explicit_dataset_id():
+    entries = manifest_dataset_entries(
+        {
+            "datasets": [
+                {
+                    "id": "netlib_feasible",
+                    "name": "netlib_lp",
+                    "dataset_options": {"subset": "feasible"},
+                    "include": [],
+                    "exclude": [],
+                },
+                {
+                    "name": "synthetic_qp",
+                    "dataset_options": {},
+                    "include": [],
+                    "exclude": [],
+                },
+            ],
+        }
+    )
+    assert entries[0]["id"] == "netlib_feasible"
+    assert entries[0]["name"] == "netlib_lp"
+    # Default id == name when no explicit id is given.
+    assert entries[1]["id"] == "synthetic_qp"
 
 
 def test_parse_environment_run_config_rejects_duplicate_solver_ids_across_envs():

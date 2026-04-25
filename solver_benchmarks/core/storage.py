@@ -26,15 +26,17 @@ def make_run_id(config: RunConfig) -> str:
 
 
 def _datasets_slug(config: RunConfig) -> str:
-    names = [dataset.name for dataset in config.datasets] or ["run"]
-    if len(names) == 1:
-        return slugify(names[0])
+    # Use entry ids (default: name) so two entries pointing at the same
+    # adapter still produce distinct slugs in the run directory name.
+    ids = [dataset.id for dataset in config.datasets] or ["run"]
+    if len(ids) == 1:
+        return slugify(ids[0])
     # Multi-dataset: use a deterministic, slug-friendly join. Cap the
     # length so unusual configs (many datasets) do not produce wildly
     # long directory names; the config hash already disambiguates.
-    joined = "+".join(slugify(name) for name in names)
+    joined = "+".join(slugify(entry_id) for entry_id in ids)
     if len(joined) > 64:
-        return f"multi-{len(names)}"
+        return f"multi-{len(ids)}"
     return joined
 
 
