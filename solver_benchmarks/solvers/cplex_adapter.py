@@ -151,7 +151,8 @@ def _map_cplex_status(raw_status: int, model) -> str:
     }
     for name, canonical in [
         ("optimal_infeasible", status.OPTIMAL_INACCURATE),
-        ("abort_obj_limit", status.TIME_LIMIT),
+        ("num_best", status.OPTIMAL_INACCURATE),
+        ("abort_dettime_limit", status.TIME_LIMIT),
     ]:
         if hasattr(sol_status, name):
             mapping[getattr(sol_status, name)] = canonical

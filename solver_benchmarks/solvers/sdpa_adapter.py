@@ -258,9 +258,13 @@ def _map_sdpa_status(sdpap_info, sdpa_info, options: dict, tol: float) -> str:
         if max(primal_error, dual_error, gap) <= tol:
             return status.OPTIMAL
         return status.OPTIMAL_INACCURATE
-    if phase in {"pINF_dFEAS", "pUNBD"}:
+    # CLP-form (sdpapinfo) phasevalue convention. By LP duality, primal unbounded
+    # (pUNBD) implies dual infeasible, and dual unbounded (dUNBD) implies primal
+    # infeasible. sdpap.py flips SDPA's internal labels into this CLP convention
+    # (see GET_PRIMAL_STATUS_FROM_DUAL in the sdpap source).
+    if phase in {"pINF_dFEAS", "dUNBD"}:
         return status.PRIMAL_INFEASIBLE
-    if phase in {"pFEAS_dINF", "dUNBD"}:
+    if phase in {"pFEAS_dINF", "pUNBD"}:
         return status.DUAL_INFEASIBLE
     if phase == "pdINF":
         return status.PRIMAL_OR_DUAL_INFEASIBLE

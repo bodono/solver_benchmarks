@@ -198,3 +198,32 @@ def test_adapter_reports_dual_infeasibility_certificate(solver_name: str, tmp_pa
     assert result.kkt is not None
     assert result.kkt.get("certificate") == "dual_infeasible"
     assert result.kkt.get("qtx") is not None and result.kkt["qtx"] < 0.0
+
+
+@pytest.mark.parametrize(
+    "phase, errors, expected",
+    [
+        # sdpapinfo['phasevalue'] is in CLP form — pUNBD = primal unbounded
+        # = dual infeasible; dUNBD = dual unbounded = primal infeasible.
+        ("pdOPT", 0.0, status.OPTIMAL),
+        ("pdFEAS", 0.0, status.OPTIMAL),
+        ("pdFEAS", 1.0, status.OPTIMAL_INACCURATE),
+        ("pINF_dFEAS", 0.0, status.PRIMAL_INFEASIBLE),
+        ("pFEAS_dINF", 0.0, status.DUAL_INFEASIBLE),
+        ("pUNBD", 0.0, status.DUAL_INFEASIBLE),
+        ("dUNBD", 0.0, status.PRIMAL_INFEASIBLE),
+        ("pdINF", 0.0, status.PRIMAL_OR_DUAL_INFEASIBLE),
+        ("noINFO", 0.0, status.SOLVER_ERROR),
+    ],
+)
+def test_sdpa_phase_mapping(phase: str, errors: float, expected: str):
+    from solver_benchmarks.solvers.sdpa_adapter import _map_sdpa_status
+
+    sdpap_info = {
+        "phasevalue": phase,
+        "primalError": errors,
+        "dualError": errors,
+        "dualityGap": errors,
+    }
+    sdpa_info = {"iteration": 0}
+    assert _map_sdpa_status(sdpap_info, sdpa_info, {"maxIteration": 100}, 1.0e-5) == expected

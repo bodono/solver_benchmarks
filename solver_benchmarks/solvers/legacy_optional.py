@@ -197,14 +197,23 @@ def _configure_gurobi(model, settings: dict, grb) -> None:
 
 
 def _map_gurobi_status(raw_status: int, grb) -> str:
-    return {
+    mapping = {
         grb.GRB.OPTIMAL: status.OPTIMAL,
         grb.GRB.INFEASIBLE: status.PRIMAL_INFEASIBLE,
         grb.GRB.UNBOUNDED: status.DUAL_INFEASIBLE,
         grb.GRB.INF_OR_UNBD: status.PRIMAL_OR_DUAL_INFEASIBLE,
         grb.GRB.ITERATION_LIMIT: status.MAX_ITER_REACHED,
         grb.GRB.TIME_LIMIT: status.TIME_LIMIT,
-    }.get(raw_status, status.SOLVER_ERROR)
+        grb.GRB.SUBOPTIMAL: status.OPTIMAL_INACCURATE,
+    }
+    # WORK_LIMIT and NODE_LIMIT exist only in newer Gurobi releases.
+    for name, canonical in [
+        ("WORK_LIMIT", status.TIME_LIMIT),
+        ("NODE_LIMIT", status.MAX_ITER_REACHED),
+    ]:
+        if hasattr(grb.GRB, name):
+            mapping[getattr(grb.GRB, name)] = canonical
+    return mapping.get(raw_status, status.SOLVER_ERROR)
 
 
 def _configure_mosek(task, env, settings: dict, mosek) -> None:
@@ -250,14 +259,19 @@ def _mosek_bound(lower: float, upper: float, mosek):
 def _map_mosek_status(raw_status, termination_code, mosek) -> str:
     if termination_code == mosek.rescode.trm_max_time:
         return status.TIME_LIMIT
-    return {
-        mosek.solsta.optimal: status.OPTIMAL,
-        mosek.solsta.integer_optimal: status.OPTIMAL,
-        mosek.solsta.prim_feas: status.OPTIMAL_INACCURATE,
-        mosek.solsta.prim_infeas_cer: status.PRIMAL_INFEASIBLE,
-        mosek.solsta.dual_infeas_cer: status.DUAL_INFEASIBLE,
-        mosek.solsta.unknown: status.SOLVER_ERROR,
-    }.get(raw_status, status.SOLVER_ERROR)
+    if termination_code == mosek.rescode.trm_max_iterations:
+        return status.MAX_ITER_REACHED
+    solsta = mosek.solsta
+    mapping = {
+        solsta.optimal: status.OPTIMAL,
+        solsta.integer_optimal: status.OPTIMAL,
+        solsta.prim_and_dual_feas: status.OPTIMAL_INACCURATE,
+        solsta.prim_feas: status.OPTIMAL_INACCURATE,
+        solsta.prim_infeas_cer: status.PRIMAL_INFEASIBLE,
+        solsta.dual_infeas_cer: status.DUAL_INFEASIBLE,
+        solsta.unknown: status.SOLVER_ERROR,
+    }
+    return mapping.get(raw_status, status.SOLVER_ERROR)
 
 
 def _handle_mosek_str_param(task, param: str, value) -> None:
