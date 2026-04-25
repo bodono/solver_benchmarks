@@ -10,7 +10,7 @@ top-level scripts are legacy entrypoints and should not be extended for new work
 ## Goals
 
 - Configure solver variants from files, including many settings for the same solver.
-- Run named datasets or selected individual problems.
+- Run named datasets or selected individual problems, optionally combining several datasets in a single run.
 - Skip unsupported solver/problem combinations with structured warnings.
 - Execute each solve in a subprocess for crash isolation, stdout/stderr capture, and timeouts.
 - Resume interrupted runs without duplicating completed solves.
@@ -279,13 +279,14 @@ Important fields:
 
 | Field | Meaning |
 |---|---|
-| `run.dataset` | Dataset ID from `bench list datasets`. |
+| `run.dataset` | Dataset ID from `bench list datasets`. Use `datasets` instead to run several. |
+| `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
 | `run.output_dir` | Root directory for immutable runs. |
-| `run.dataset_options` | Dataset-specific options, such as `subset: feasible`. |
-| `run.include` | Optional list of problem names to run. Empty means all. |
-| `run.exclude` | Optional list of problem names to skip. |
+| `run.dataset_options` | Dataset-specific options, such as `subset: feasible`. Treated as defaults for entries in `datasets`. |
+| `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. |
+| `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. |
 | `run.parallelism` | Number of concurrent subprocess solves. |
-| `run.resume` | If true, completed `(problem, solver_id)` pairs are not rerun. |
+| `run.resume` | If true, completed `(dataset, problem, solver_id)` triples are not rerun. |
 | `run.timeout_seconds` | Default subprocess timeout per solve. |
 | `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths. |
@@ -299,6 +300,68 @@ The same solver may appear many times with different `id` and `settings`.
 Solver output is verbose by default and is captured in each solve's
 `stdout.log`/`stderr.log`; set `verbose: false` in a solver's settings to run it
 quietly.
+
+### Multi-Dataset Runs
+
+A single run can solve the same set of solver variants across several datasets.
+List the datasets under `run.datasets` instead of `run.dataset`:
+
+```yaml
+run:
+  output_dir: runs
+  parallelism: 4
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - name: netlib
+      dataset_options:
+        subset: feasible
+      include:
+        - afiro
+        - sc50a
+    - name: maros_meszaros
+      exclude:
+        - HUES-MOD
+    - synthetic_qp
+
+solvers:
+  - id: scs_default
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+  - id: clarabel_default
+    solver: clarabel
+```
+
+Behavior:
+
+- Each entry can be a bare dataset ID string or a mapping with `name`,
+  `dataset_options`, `include`, and `exclude`. Names must be unique within a
+  config.
+- Run-level `dataset_options` are applied as defaults; entries can override or
+  extend them per dataset.
+- Run-level `include` is used as a fallback only for datasets whose own
+  `include` is unset, so per-dataset selections do not bleed across datasets.
+- Run-level `exclude` is unioned with each entry's `exclude`.
+- Resume keys are `(dataset, problem, solver_id)`, so two datasets that share a
+  problem name (e.g. `afiro` in NETLIB and a hand-crafted dataset) never get
+  conflated.
+- Every result row is tagged with its `dataset`, and the run directory groups
+  per-solve artifacts under `problems/<dataset>/<problem>/<solver_id>/`.
+
+Analysis is dataset-aware out of the box:
+
+- `bench summary` and `bench missing` report one row per `(solver, dataset)`
+  pair, so an interrupted run is easy to diagnose.
+- `bench report` includes the cross-dataset aggregate tables exactly as before
+  and adds a `## By Dataset` section with per-dataset solver metrics, failure
+  rates, shifted geomean, and KKT summary slices.
+- Manifests record the full `datasets:` list, so older single-dataset runs and
+  newer multi-dataset runs are both handled by the same analysis tools.
+
+The legacy `run.dataset: <name>` shape is still accepted for single-dataset
+runs and is treated as a one-entry `datasets` list internally.
 
 ### Hyper-Parameter Sweeps
 
@@ -396,6 +459,7 @@ Run a config:
 bench run configs/synthetic_smoke.json
 bench run configs/netlib_feasible_example.yaml
 bench run configs/maros_meszaros_example.yaml
+bench run configs/multi_dataset_example.yaml
 ```
 
 The command prints the run directory:
@@ -410,7 +474,7 @@ Resume a run:
 bench run configs/netlib_feasible_example.yaml --run-dir runs/<run_id>
 ```
 
-If `resume: true`, already completed `(problem, solver_id)` pairs in
+If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
 `results.jsonl` are skipped. New solver variants or newly included problems are
 appended.
 
@@ -438,10 +502,10 @@ Then run:
 bench run configs/my_run.yaml --run-dir runs/<run_id>
 ```
 
-The resume key is exactly `(problem, solver_id)`. If you change solver settings
-but keep the same `id`, the old rows are treated as complete and will not be
-rerun. Use a new `id` whenever settings change, such as `clarabel_tight` instead
-of reusing `clarabel_default`.
+The resume key is exactly `(dataset, problem, solver_id)`. If you change solver
+settings but keep the same `id`, the old rows are treated as complete and will
+not be rerun. Use a new `id` whenever settings change, such as `clarabel_tight`
+instead of reusing `clarabel_default`.
 
 Run only specific problems by editing `include`, or list problems first:
 
@@ -684,15 +748,22 @@ runs/synthetic_qp_d5939d8c1f2d_20260424T101304Z/
   results.jsonl
   results.parquet
   problems/
-    one_variable_eq/
-      scs_default/
-        payload.json
-        stdout.log
-        stderr.log
-        worker_result.json
-        result.json
-        trace.jsonl
+    synthetic_qp/
+      one_variable_eq/
+        scs_default/
+          payload.json
+          stdout.log
+          stderr.log
+          worker_result.json
+          result.json
+          trace.jsonl
 ```
+
+For multi-dataset runs, the slug at the front of the run directory is a
+deduplicated `+`-joined list of dataset IDs (truncated to `multi-N` for very
+many datasets). Per-solve artifacts always live under
+`problems/<dataset>/<problem>/<solver_id>/`, so two datasets that share a
+problem name remain isolated on disk.
 
 Files:
 
@@ -752,7 +823,10 @@ bench missing runs/<run_id>
 
 `bench summary` includes solver-level runtime and iteration aggregates, status
 counts, and completion counts. The completion table is the fastest way to detect
-an interrupted run: every solver should have `missing = 0` and `complete = True`.
+an interrupted run: every `(solver, dataset)` row should have `missing = 0` and
+`complete = True`. For multi-dataset runs, `bench summary` and `bench missing`
+emit one row per `(solver, dataset)` pair so an interrupted dataset is easy to
+spot.
 
 Generate a Dolan-More performance-profile CSV:
 
@@ -808,6 +882,7 @@ bench report runs/<run_id> --metric iterations --output-dir reports/my_run
 - Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
 - KKT-residual summaries (`kkt_summary.csv`, `kkt_certificate_summary.csv`) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack` / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile (fraction of problems whose worst residual is below tau).
+- For multi-dataset runs, a `## By Dataset` section that re-emits the headline tables (solver metrics, failure rates, shifted geomean, KKT summary) sliced per dataset. The cross-dataset aggregates above the section remain the primary view.
 - An artifact index listing every CSV and plot written by the report command.
 
 Programmatic use:

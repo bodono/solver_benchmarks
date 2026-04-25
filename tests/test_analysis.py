@@ -556,3 +556,166 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
     ]:
         assert (report_dir / filename).exists(), f"missing plot file {filename}"
         assert f"![{alt_text}]({filename})" in markdown, f"markdown missing {filename}"
+
+
+def _multi_dataset_records(dataset_a: str, dataset_b: str) -> list[dict]:
+    base = []
+    for problem, solver, dataset, status_str, run_time, obj in [
+        ("p1", "solver_a", dataset_a, "optimal", 1.0, 1.0),
+        ("p1", "solver_b", dataset_a, "optimal", 2.0, 1.0),
+        ("p1", "solver_a", dataset_b, "optimal", 0.5, 0.5),
+        ("p1", "solver_b", dataset_b, "time_limit", 9.0, None),
+        ("p2", "solver_a", dataset_b, "optimal", 0.8, 1.5),
+        ("p2", "solver_b", dataset_b, "optimal", 0.6, 1.5),
+    ]:
+        base.append(
+            {
+                "problem": problem,
+                "solver_id": solver,
+                "dataset": dataset,
+                "status": status_str,
+                "run_time_seconds": run_time,
+                "iterations": 10,
+                "objective_value": obj,
+            }
+        )
+    return base
+
+
+def _register_fake_datasets(monkeypatch, dataset_a: str, dataset_b: str):
+    from solver_benchmarks.core.problem import QP, ProblemSpec
+    from solver_benchmarks.datasets import registry as dataset_registry
+
+    class _FakeA:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id=dataset_a, name="p1", kind=QP)]
+
+    class _FakeB:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [
+                ProblemSpec(dataset_id=dataset_b, name="p1", kind=QP),
+                ProblemSpec(dataset_id=dataset_b, name="p2", kind=QP),
+            ]
+
+    monkeypatch.setitem(dataset_registry.DATASETS, dataset_a, _FakeA)
+    monkeypatch.setitem(dataset_registry.DATASETS, dataset_b, _FakeB)
+
+
+def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path):
+    _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "datasets": [
+                {
+                    "name": "ds_a",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+                {
+                    "name": "ds_b",
+                    "dataset_options": {},
+                    "include": ["p1", "p2"],
+                    "exclude": [],
+                },
+            ],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in _multi_dataset_records("ds_a", "ds_b"):
+            handle.write(json.dumps(record) + "\n")
+
+    completion = completion_summary(run_dir, load_results(run_dir), repo_root=Path.cwd())
+    by_pair = completion.set_index(["solver_id", "dataset"])
+
+    assert by_pair.loc[("solver_a", "ds_a"), "expected"] == 1
+    assert by_pair.loc[("solver_a", "ds_a"), "missing"] == 0
+    assert by_pair.loc[("solver_a", "ds_b"), "expected"] == 2
+    assert by_pair.loc[("solver_a", "ds_b"), "completed"] == 2
+    assert by_pair.loc[("solver_b", "ds_b"), "expected"] == 2
+    # solver_b only completed p1 and p2 in ds_b (one row each); none missing.
+    assert by_pair.loc[("solver_b", "ds_b"), "missing"] == 0
+
+
+def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
+    _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "datasets": [
+                {
+                    "name": "ds_a",
+                    "dataset_options": {},
+                    "include": ["p1"],
+                    "exclude": [],
+                },
+                {
+                    "name": "ds_b",
+                    "dataset_options": {},
+                    "include": ["p1", "p2"],
+                    "exclude": [],
+                },
+            ],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in _multi_dataset_records("ds_a", "ds_b"):
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+
+    assert "## By Dataset" in markdown
+    # Per-dataset h3 sections should exist for each dataset.
+    assert "ds_a" in markdown and "ds_b" in markdown
+    # The Run Overview should list both datasets.
+    assert "Datasets:" in markdown
+
+
+def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "synthetic_qp",
+            "include": ["one_variable_eq", "one_variable_lp"],
+            "solvers": [
+                {"id": "solver_a", "solver": "scs", "settings": {}},
+                {"id": "solver_b", "solver": "scs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    records = _analysis_frame().to_dict("records")
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in records:
+            handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    markdown = (report_dir / "index.md").read_text()
+
+    assert "## By Dataset" not in markdown

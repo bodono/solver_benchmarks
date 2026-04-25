@@ -6,7 +6,12 @@ import sys
 import numpy as np
 import scipy.sparse as sp
 
-from solver_benchmarks.core.config import RunConfig, SolverConfig, parse_run_config
+from solver_benchmarks.core.config import (
+    DatasetConfig,
+    RunConfig,
+    SolverConfig,
+    parse_run_config,
+)
 from solver_benchmarks.core.problem import CONE, QP, ProblemData, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult, SolverResult
 from solver_benchmarks.core.runner import _run_one, _run_subprocess, run_benchmark
@@ -58,8 +63,9 @@ def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch,
 
 
 def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path):
+    dataset_config = DatasetConfig(name="synthetic_qp")
     config = RunConfig(
-        dataset="synthetic_qp",
+        datasets=[dataset_config],
         output_dir=tmp_path / "runs",
         solvers=[SolverConfig(id="fake_solver", solver="scs")],
         timeout_seconds=10,
@@ -105,7 +111,7 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess)
 
-    result = _run_one(store, config, Path.cwd(), problem, solver)
+    result = _run_one(store, config, Path.cwd(), dataset_config, problem, solver)
     artifact_dir = Path(result.artifact_dir)
 
     assert result.status == "optimal"

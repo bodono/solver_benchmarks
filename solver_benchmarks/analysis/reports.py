@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.core import status
+from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.datasets import get_dataset
 
 
@@ -483,6 +484,7 @@ def completion_summary(
     manifest_path = run_dir / "manifest.json"
     columns = [
         "solver_id",
+        "dataset",
         "expected",
         "completed",
         "missing",
@@ -494,34 +496,48 @@ def completion_summary(
         return pd.DataFrame(columns=columns)
 
     config = json.loads(manifest_path.read_text())["config"]
-    expected_problems = _expected_problem_names(config, repo_root=repo_root)
+    expected_by_dataset = _expected_by_dataset(config, repo_root=repo_root)
     solvers = [solver["id"] for solver in config.get("solvers", [])]
 
     rows = []
-    expected_set = set(expected_problems)
+    has_dataset_col = not results.empty and "dataset" in results.columns
     for solver_id in solvers:
-        solver_results = results[results["solver_id"] == solver_id] if not results.empty else results
-        completed_problems = (
-            set(solver_results["problem"]) if not solver_results.empty else set()
+        solver_rows = (
+            results[results["solver_id"] == solver_id]
+            if not results.empty
+            else results
         )
-        duplicate_rows = (
-            int(solver_results.duplicated(["problem", "solver_id"]).sum())
-            if not solver_results.empty
-            else 0
-        )
-        missing = len(expected_set - completed_problems)
-        unexpected = len(completed_problems - expected_set)
-        rows.append(
-            {
-                "solver_id": solver_id,
-                "expected": len(expected_problems),
-                "completed": len(completed_problems),
-                "missing": int(missing),
-                "unexpected": int(unexpected),
-                "duplicate_rows": duplicate_rows,
-                "complete": missing == 0 and unexpected == 0 and duplicate_rows == 0,
-            }
-        )
+        for dataset_name, expected_set in expected_by_dataset.items():
+            if has_dataset_col:
+                dataset_rows = solver_rows[solver_rows["dataset"] == dataset_name]
+            else:
+                # Legacy single-dataset run dirs without a populated dataset
+                # column: every row belongs to the one configured dataset.
+                dataset_rows = solver_rows
+            completed_problems = (
+                set(dataset_rows["problem"]) if not dataset_rows.empty else set()
+            )
+            duplicate_rows = (
+                int(dataset_rows.duplicated(["problem", "solver_id"]).sum())
+                if not dataset_rows.empty
+                else 0
+            )
+            missing = len(expected_set - completed_problems)
+            unexpected = len(completed_problems - expected_set)
+            rows.append(
+                {
+                    "solver_id": solver_id,
+                    "dataset": dataset_name,
+                    "expected": len(expected_set),
+                    "completed": len(completed_problems),
+                    "missing": int(missing),
+                    "unexpected": int(unexpected),
+                    "duplicate_rows": duplicate_rows,
+                    "complete": missing == 0
+                    and unexpected == 0
+                    and duplicate_rows == 0,
+                }
+            )
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -537,22 +553,38 @@ def missing_results(
 
         results = load_results(run_dir)
     manifest_path = run_dir / "manifest.json"
+    columns = ["solver_id", "dataset", "problem"]
     if not manifest_path.exists():
-        return pd.DataFrame(columns=["solver_id", "problem"])
+        return pd.DataFrame(columns=columns)
 
     config = json.loads(manifest_path.read_text())["config"]
-    expected_problems = set(_expected_problem_names(config, repo_root=repo_root))
+    expected_by_dataset = _expected_by_dataset(config, repo_root=repo_root)
+    has_dataset_col = not results.empty and "dataset" in results.columns
     rows = []
     for solver in config.get("solvers", []):
         solver_id = solver["id"]
-        completed = (
-            set(results[results["solver_id"] == solver_id]["problem"])
+        solver_rows = (
+            results[results["solver_id"] == solver_id]
             if not results.empty
-            else set()
+            else results
         )
-        for problem in sorted(expected_problems - completed):
-            rows.append({"solver_id": solver_id, "problem": problem})
-    return pd.DataFrame(rows, columns=["solver_id", "problem"])
+        for dataset_name, expected_set in expected_by_dataset.items():
+            if has_dataset_col:
+                dataset_rows = solver_rows[solver_rows["dataset"] == dataset_name]
+            else:
+                dataset_rows = solver_rows
+            completed = (
+                set(dataset_rows["problem"]) if not dataset_rows.empty else set()
+            )
+            for problem in sorted(expected_set - completed):
+                rows.append(
+                    {
+                        "solver_id": solver_id,
+                        "dataset": dataset_name,
+                        "problem": problem,
+                    }
+                )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def pairwise_speedups(
@@ -946,17 +978,38 @@ def _quantile(values: pd.Series, q: float):
     return None if values.empty else float(values.quantile(q))
 
 
-def _expected_problem_names(config: dict, *, repo_root: str | Path | None = None) -> list[str]:
-    dataset_cls = get_dataset(config["dataset"])
-    dataset = dataset_cls(
-        repo_root=repo_root,
-        **config.get("dataset_options", {}),
-    )
-    problems = [problem.name for problem in dataset.list_problems()]
-    include = set(config.get("include") or [])
-    exclude = set(config.get("exclude") or [])
-    if include:
-        problems = [problem for problem in problems if problem in include]
-    if exclude:
-        problems = [problem for problem in problems if problem not in exclude]
-    return problems
+def _expected_by_dataset(
+    config: dict, *, repo_root: str | Path | None = None
+) -> dict[str, set[str]]:
+    """Return ``{dataset_name: set_of_expected_problem_names}`` for a manifest.
+
+    Handles both the new ``datasets:`` list shape and the legacy
+    ``dataset: name`` + ``dataset_options`` shape via
+    ``manifest_dataset_entries``.
+    """
+    expected: dict[str, set[str]] = {}
+    for entry in manifest_dataset_entries(config):
+        dataset_cls = get_dataset(entry["name"])
+        dataset = dataset_cls(
+            repo_root=repo_root,
+            **entry.get("dataset_options", {}),
+        )
+        problems = [problem.name for problem in dataset.list_problems()]
+        include = set(entry.get("include") or [])
+        exclude = set(entry.get("exclude") or [])
+        if include:
+            problems = [name for name in problems if name in include]
+        if exclude:
+            problems = [name for name in problems if name not in exclude]
+        expected[entry["name"]] = set(problems)
+    return expected
+
+
+def _expected_problem_names(
+    config: dict, *, repo_root: str | Path | None = None
+) -> list[str]:
+    """Backward-compatible: union of expected problems across all datasets."""
+    expected: set[str] = set()
+    for problems in _expected_by_dataset(config, repo_root=repo_root).values():
+        expected |= problems
+    return sorted(expected)

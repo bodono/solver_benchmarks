@@ -21,8 +21,21 @@ from .result import ProblemResult, to_jsonable
 
 def make_run_id(config: RunConfig) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dataset = slugify(config.dataset)
+    dataset = _datasets_slug(config)
     return f"{dataset}_{config.config_hash}_{stamp}"
+
+
+def _datasets_slug(config: RunConfig) -> str:
+    names = [dataset.name for dataset in config.datasets] or ["run"]
+    if len(names) == 1:
+        return slugify(names[0])
+    # Multi-dataset: use a deterministic, slug-friendly join. Cap the
+    # length so unusual configs (many datasets) do not produce wildly
+    # long directory names; the config hash already disambiguates.
+    joined = "+".join(slugify(name) for name in names)
+    if len(joined) > 64:
+        return f"multi-{len(names)}"
+    return joined
 
 
 def slugify(value: str) -> str:
@@ -77,21 +90,41 @@ class ResultStore:
             )
         atomic_write_text(self.manifest_path, json.dumps(to_jsonable(manifest), indent=2))
 
-    def problem_solver_dir(self, problem: str, solver_id: str) -> Path:
-        path = self.run_dir / "problems" / slugify(problem) / slugify(solver_id)
+    def problem_solver_dir(
+        self, dataset: str, problem: str, solver_id: str
+    ) -> Path:
+        path = (
+            self.run_dir
+            / "problems"
+            / slugify(dataset)
+            / slugify(problem)
+            / slugify(solver_id)
+        )
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def completed_keys(self) -> set[tuple[str, str]]:
+    def completed_keys(self) -> set[tuple[str, str, str]]:
+        """Resume keys are ``(dataset, problem, solver_id)`` tuples.
+
+        Including the dataset name avoids collisions when two datasets
+        share a problem name (e.g. ``afiro`` in NETLIB vs another LP
+        bundle), so resume cannot conflate them.
+        """
         if not self.results_jsonl_path.exists():
             return set()
-        keys: set[tuple[str, str]] = set()
+        keys: set[tuple[str, str, str]] = set()
         with self.results_jsonl_path.open() as handle:
             for line in handle:
                 if not line.strip():
                     continue
                 record = json.loads(line)
-                keys.add((str(record["problem"]), str(record["solver_id"])))
+                keys.add(
+                    (
+                        str(record.get("dataset", "")),
+                        str(record["problem"]),
+                        str(record["solver_id"]),
+                    )
+                )
         return keys
 
     def append_event(self, level: str, message: str, **fields: Any) -> None:

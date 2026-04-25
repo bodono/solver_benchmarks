@@ -31,6 +31,7 @@ from solver_benchmarks.analysis.reports import (
     solver_problem_tables,
     status_matrix,
 )
+from solver_benchmarks.core.config import manifest_dataset_entries
 
 
 def write_run_report(
@@ -129,6 +130,13 @@ def _render_markdown_report(
 ) -> str:
     manifest = _load_manifest(run_dir)
     config = manifest.get("config", {})
+    dataset_entries = manifest_dataset_entries(config)
+    dataset_names = [entry["name"] for entry in dataset_entries] or [_unknown()]
+    dataset_label = (
+        dataset_names[0]
+        if len(dataset_names) == 1
+        else ", ".join(dataset_names)
+    )
     lines = [
         "# Benchmark Report",
         "",
@@ -139,7 +147,7 @@ def _render_markdown_report(
         "## Run Overview",
         "",
         f"- Run directory: `{run_dir}`",
-        f"- Dataset: `{config.get('dataset', _unknown())}`",
+        f"- Datasets: `{dataset_label}`",
         f"- Primary metric: `{metric}`",
         f"- Result rows: `{len(results)}`",
         f"- Problems with results: `{results['problem'].nunique() if 'problem' in results else 0}`",
@@ -317,6 +325,9 @@ def _render_markdown_report(
     )
     lines.extend(_section_table("KKT Certificate Summary", tables.get("kkt_certificate_summary.csv", pd.DataFrame())))
 
+    if len(dataset_names) > 1 and "dataset" in results.columns:
+        lines.extend(_per_dataset_breakdown(results, dataset_names, metric=metric))
+
     lines.extend(["## Provenance", ""])
     environment_columns = [
         column
@@ -356,6 +367,60 @@ def _render_markdown_report(
     return "\n".join(lines)
 
 
+def _per_dataset_breakdown(
+    results: pd.DataFrame,
+    dataset_names: list[str],
+    *,
+    metric: str,
+) -> list[str]:
+    """Emit headline tables (solver_metrics, failure_rates, geomean, KKT)
+    once per dataset so a multi-dataset run can be read both as the
+    aggregated tables above and as per-dataset slices.
+    """
+    lines = [
+        "## By Dataset",
+        "",
+        "Headline tables sliced per dataset. The sections above are the",
+        "cross-dataset aggregates over the same rows.",
+        "",
+    ]
+    for dataset_name in dataset_names:
+        subset = results[results["dataset"] == dataset_name]
+        if subset.empty:
+            lines.extend([f"### {dataset_name}", "", "No rows for this dataset.", ""])
+            continue
+        lines.extend([f"### {dataset_name}", ""])
+        lines.extend(
+            _section_table(
+                "Solver Metrics",
+                solver_metrics(subset),
+                level=4,
+            )
+        )
+        lines.extend(
+            _section_table(
+                "Failure Rates",
+                failure_rates(subset),
+                level=4,
+            )
+        )
+        lines.extend(
+            _section_table(
+                f"Shifted Geomean ({metric})",
+                shifted_geomean(subset, metric=metric),
+                level=4,
+            )
+        )
+        lines.extend(
+            _section_table(
+                "KKT Summary",
+                kkt_summary(subset),
+                level=4,
+            )
+        )
+    return lines
+
+
 def _section_table(
     title: str,
     table: pd.DataFrame,
@@ -363,8 +428,10 @@ def _section_table(
     intro: str | None = None,
     max_rows: int = 20,
     max_cols: int = 12,
+    level: int = 2,
 ) -> list[str]:
-    lines = [f"## {title}", ""]
+    heading = "#" * max(1, min(level, 6))
+    lines = [f"{heading} {title}", ""]
     if intro:
         lines.extend([intro, ""])
     if table.empty:
@@ -465,8 +532,7 @@ def _manifest_excerpt(manifest: dict) -> dict:
     return {
         "run_id": manifest.get("run_id"),
         "created_at_utc": manifest.get("created_at_utc"),
-        "dataset": config.get("dataset"),
-        "dataset_options": config.get("dataset_options", {}),
+        "datasets": manifest_dataset_entries(config),
         "include": config.get("include", []),
         "exclude": config.get("exclude", []),
         "config_hash": config.get("config_hash"),
