@@ -1,7 +1,7 @@
 {
   "run": {
     "dataset": "synthetic_qp",
-    "output_dir": "runs",
+    "output_dir": "results",
     "parallelism": 1,
     "resume": true,
     "timeout_seconds": 30

@@ -316,7 +316,7 @@ Minimal example:
 run:
   name: netlib_feasible_smoke
   dataset: netlib
-  output_dir: runs
+  output_dir: results
   dataset_options:
     subset: feasible
   include:
@@ -355,7 +355,7 @@ Important fields:
 | `run.name` | Optional human-readable run label. If omitted for CLI runs, the config filename stem is used. Run directories use `<run_name>_<YYYY-MM-DD>_<HH-MM-SS>_UTC`. |
 | `run.dataset` | Dataset ID from `bench list datasets`. Use `datasets` instead to run several. |
 | `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `id`, `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
-| `run.output_dir` | Root directory for immutable runs. |
+| `run.output_dir` | Root directory for immutable runs. Relative paths are resolved under the repository root, not next to the config file. Defaults to `results`. |
 | `run.dataset_options` | Dataset-specific options, such as `subset: feasible`. Treated as defaults for entries in `datasets`. |
 | `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. |
 | `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. |
@@ -383,7 +383,7 @@ List the datasets under `run.datasets` instead of `run.dataset`:
 
 ```yaml
 run:
-  output_dir: runs
+  output_dir: results
   parallelism: 4
   resume: true
   timeout_seconds: 300
@@ -434,7 +434,7 @@ subsets side-by-side in one run:
 
 ```yaml
 run:
-  output_dir: runs
+  output_dir: results
   datasets:
     - name: netlib
       id: netlib_feasible
@@ -588,13 +588,13 @@ Bundled benchmark configs:
 The command prints the run directory:
 
 ```text
-runs/netlib_feasible_example_2026-04-26_14-03-27_UTC
+results/netlib_feasible_example_2026-04-26_14-03-27_UTC
 ```
 
 Resume a run:
 
 ```bash
-bench run configs/netlib_feasible_example.yaml --run-dir runs/<run_id>
+bench run configs/netlib_feasible_example.yaml --run-dir results/<run_id>
 ```
 
 If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
@@ -622,7 +622,7 @@ solvers:
 Then run:
 
 ```bash
-bench run configs/my_run.yaml --run-dir runs/<run_id>
+bench run configs/my_run.yaml --run-dir results/<run_id>
 ```
 
 The resume key is exactly `(dataset, problem, solver_id)`. If you change solver
@@ -666,16 +666,16 @@ python3.12 -m venv .venvs/osqp-1.1
 .venvs/osqp-1.1/bin/python -m pip install -e ".[test]" "osqp==1.1.1"
 
 .venvs/osqp-1.0/bin/python -m solver_benchmarks.cli run configs/osqp_1_0.yaml \
-  --run-dir runs/osqp_version_compare \
+  --run-dir results/osqp_version_compare \
   --environment-id osqp_1_0 \
   --environment-metadata '{"osqp":"1.0.0"}'
 
 .venvs/osqp-1.1/bin/python -m solver_benchmarks.cli run configs/osqp_1_1.yaml \
-  --run-dir runs/osqp_version_compare \
+  --run-dir results/osqp_version_compare \
   --environment-id osqp_1_1 \
   --environment-metadata '{"osqp":"1.1.1"}'
 
-bench report runs/osqp_version_compare
+bench report results/osqp_version_compare
 ```
 
 The solver IDs should encode the version, because resume uses
@@ -695,7 +695,7 @@ Environment matrix workflow:
 ```yaml
 run:
   dataset: maros_meszaros
-  output_dir: runs
+  output_dir: results
   include:
     - QAFIRO
     - QPCBLEND
@@ -738,7 +738,7 @@ environments:
 Run it with:
 
 ```bash
-bench env run configs/osqp_versions.yaml --run-dir runs/osqp_version_compare
+bench env run configs/osqp_versions.yaml --run-dir results/osqp_version_compare
 ```
 
 `bench env run` deliberately does not create virtual environments. It runs the
@@ -790,9 +790,9 @@ environments:
 After a version comparison run, normal analysis commands work unchanged:
 
 ```bash
-bench summary runs/osqp_version_compare
-bench plot runs/osqp_version_compare
-bench report runs/osqp_version_compare
+bench summary results/osqp_version_compare
+bench plot results/osqp_version_compare
+bench report results/osqp_version_compare
 ```
 
 Because `results.parquet` is flattened, runtime metadata columns can be inspected
@@ -801,7 +801,7 @@ directly with pandas:
 ```python
 import pandas as pd
 
-df = pd.read_parquet("runs/osqp_version_compare/results.parquet")
+df = pd.read_parquet("results/osqp_version_compare/results.parquet")
 print(df[[
     "solver_id",
     "metadata.environment_id",
@@ -873,7 +873,7 @@ the per-solve log files remain separated and are the authoritative logs.
 Every run is immutable by default:
 
 ```text
-runs/netlib_feasible_example_2026-04-26_14-03-27_UTC/
+results/netlib_feasible_example_2026-04-26_14-03-27_UTC/
   manifest.json
   run_config.yaml
   events.jsonl
@@ -949,9 +949,9 @@ Solver-specific traces:
 Summary by solver/status:
 
 ```bash
-bench summary runs/<run_id>
-bench failures runs/<run_id>
-bench missing runs/<run_id>
+bench summary results/<run_id>
+bench failures results/<run_id>
+bench missing results/<run_id>
 ```
 
 `bench summary` includes solver-level runtime and iteration aggregates, status
@@ -964,8 +964,8 @@ spot.
 Generate a Dolan-More performance-profile CSV:
 
 ```bash
-bench profile runs/<run_id>
-bench profile runs/<run_id> --metric iterations
+bench profile results/<run_id>
+bench profile results/<run_id> --metric iterations
 ```
 
 The Dolan-More profile uses `r[p, s] = metric[p, s] / min_s metric[p, s]` and
@@ -975,9 +975,9 @@ are assigned the failure penalty before ratios are computed.
 Generate shifted geometric means:
 
 ```bash
-bench geomean runs/<run_id>
-bench geomean runs/<run_id> --metric iterations
-bench geomean runs/<run_id> --success-only
+bench geomean results/<run_id>
+bench geomean results/<run_id> --metric iterations
+bench geomean results/<run_id> --success-only
 ```
 
 The default `bench geomean` output is a penalized shifted geometric mean for
@@ -990,15 +990,15 @@ default failure penalty is `1000` seconds and can be changed with `--max-value`.
 Generate PNG plots:
 
 ```bash
-bench plot runs/<run_id>
-bench plot runs/<run_id> --metric iterations
+bench plot results/<run_id>
+bench plot results/<run_id> --metric iterations
 ```
 
 Generate a complete report directory:
 
 ```bash
-bench report runs/<run_id>
-bench report runs/<run_id> --metric iterations --output-dir reports/my_run
+bench report results/<run_id>
+bench report results/<run_id> --metric iterations --output-dir reports/my_run
 ```
 
 `bench report` writes:
@@ -1024,8 +1024,8 @@ Programmatic use:
 from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 
-df = load_results("runs/<run_id>")
-summary = solver_summary("runs/<run_id>")
+df = load_results("results/<run_id>")
+summary = solver_summary("results/<run_id>")
 profile = performance_profile(df, metric="run_time_seconds")
 geomean = shifted_geomean(df, metric="run_time_seconds")
 ```
@@ -1322,12 +1322,10 @@ Recommended tests for new contributions:
 
 ## Development Notes
 
-Run output under `runs/` is intentionally not part of source code. Keep large
+Run output under `results/` is intentionally not part of source code. Keep large
 generated outputs out of commits unless there is a deliberate benchmark-results
-artifact policy.
-
-The old `results/` tree was removed during the refactor. New analysis should use
-run directories and `solver_benchmarks.analysis`.
+artifact policy. New analysis should use run directories and
+`solver_benchmarks.analysis`.
 
 The maintained package should avoid CVXPY imports. If a legacy parser still has
 a CVXPY helper method, ensure the import is lazy and not used by the maintained

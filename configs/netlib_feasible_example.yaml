@@ -1,6 +1,6 @@
 run:
   dataset: netlib
-  output_dir: runs
+  output_dir: results
   dataset_options:
     subset: feasible
   parallelism: 1
