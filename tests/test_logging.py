@@ -141,6 +141,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     assert "2 queued" in captured.err
     assert "progress 1/2 (50.00%)" in captured.err
     assert "progress 2/2 (100.00%)" in captured.err
+    assert captured.err.count("progress 2/2 (100.00%)") == 1
     assert "queued_done 2/2" in captured.err
     assert "last fake_dataset/p2 fake_solver: optimal" in captured.err
 
@@ -152,10 +153,13 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     assert [event["message"] for event in events] == [
         "benchmark_plan",
         "benchmark_progress",
+        "benchmark_progress",
         "benchmark_complete",
     ]
     assert events[0]["total_expected"] == 2
     assert events[0]["queued"] == 2
+    assert events[1]["completed_this_run"] == 1
+    assert events[2]["completed_this_run"] == 2
     assert events[-1]["completed_total"] == 2
     assert events[-1]["completed_this_run"] == 2
     assert events[-1]["last_problem"] == "p2"

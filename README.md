@@ -857,8 +857,8 @@ When run from the CLI, `bench run` streams solver stdout/stderr to the terminal
 and writes the same output to each solve's `stdout.log`/`stderr.log`. It also
 prints progress lines such as `[bench] starting ...` and `[bench] finished ...`.
 At the start of a run it prints the number of planned solves, already-complete
-resume hits, skipped rows, queued rows, and parallelism. As results are written,
-it also prints aggregate progress with completed/total counts, percentage,
+resume hits, skipped rows, queued rows, and parallelism. After every result is
+written, it prints aggregate progress with completed/total counts, percentage,
 elapsed time, solves/second, ETA, and the last completed `(dataset, problem,
 solver)` tuple. The same aggregate snapshots are recorded as structured
 `benchmark_plan`, `benchmark_progress`, and `benchmark_complete` events in

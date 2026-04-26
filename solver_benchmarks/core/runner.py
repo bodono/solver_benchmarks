@@ -35,8 +35,6 @@ from solver_benchmarks.solvers import get_solver
 # limit return a partial result (status, iterations, residuals) instead of
 # being killed mid-return.
 SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
-PROGRESS_LOG_INTERVAL_SECONDS = 60.0
-PROGRESS_LOG_FRACTION = 0.01
 
 
 def run_benchmark(
@@ -242,8 +240,6 @@ class _ProgressReporter:
         self.parallelism = int(parallelism)
         self.completed_this_run = 0
         self.started_at = time.monotonic()
-        self.last_emit_at = self.started_at
-        self.next_fraction = PROGRESS_LOG_FRACTION
         self.last_result: ProblemResult | None = None
         self._final_emitted = False
 
@@ -269,31 +265,20 @@ class _ProgressReporter:
     def record_result(self, result: ProblemResult) -> None:
         self.completed_this_run += 1
         self.last_result = result
-        if self._should_emit_progress():
-            self._emit_progress_snapshot("benchmark_progress")
+        self._emit_progress_snapshot("benchmark_progress")
 
     def emit_final(self) -> None:
         if self._final_emitted:
             return
         self._final_emitted = True
-        self._emit_progress_snapshot("benchmark_complete")
+        self._emit_progress_snapshot(
+            "benchmark_complete",
+            print_terminal=self.completed_this_run == 0,
+        )
 
-    def _should_emit_progress(self) -> bool:
-        if self.completed_this_run >= self.queued:
-            return False
-        if self.completed_this_run == 1 and self.queued > 1:
-            return True
-        now = time.monotonic()
-        if now - self.last_emit_at >= PROGRESS_LOG_INTERVAL_SECONDS:
-            return True
-        fraction = self._completed_total() / self.total_expected if self.total_expected else 1.0
-        if fraction >= self.next_fraction:
-            while self.next_fraction <= fraction:
-                self.next_fraction += PROGRESS_LOG_FRACTION
-            return True
-        return False
-
-    def _emit_progress_snapshot(self, message: str) -> None:
+    def _emit_progress_snapshot(
+        self, message: str, *, print_terminal: bool = True
+    ) -> None:
         now = time.monotonic()
         elapsed = max(0.0, now - self.started_at)
         completed_total = self._completed_total()
@@ -327,7 +312,6 @@ class _ProgressReporter:
                 }
             )
         self.store.append_event("info", message, **fields)
-        self.last_emit_at = now
 
         last = ""
         if self.last_result is not None:
@@ -338,16 +322,17 @@ class _ProgressReporter:
             )
         rate_text = f"{rate:.2f} solves/s" if rate is not None else "unknown"
         eta_text = _format_duration(eta) if eta is not None else "unknown"
-        _emit_progress(
-            self.stream_output,
-            (
-                f"progress {completed_total}/{self.total_expected} "
-                f"({percent:.2f}%) | queued_done "
-                f"{self.completed_this_run}/{self.queued} | elapsed "
-                f"{_format_duration(elapsed)} | rate {rate_text} | eta {eta_text}"
-                f"{last}"
-            ),
-        )
+        if print_terminal:
+            _emit_progress(
+                self.stream_output,
+                (
+                    f"progress {completed_total}/{self.total_expected} "
+                    f"({percent:.2f}%) | queued_done "
+                    f"{self.completed_this_run}/{self.queued} | elapsed "
+                    f"{_format_duration(elapsed)} | rate {rate_text} | eta {eta_text}"
+                    f"{last}"
+                ),
+            )
 
     def _completed_total(self) -> int:
         return (
