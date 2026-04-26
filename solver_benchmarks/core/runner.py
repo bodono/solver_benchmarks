@@ -8,9 +8,11 @@ from pathlib import Path
 from typing import Iterable
 
 import json
+import math
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 from solver_benchmarks.core import status
@@ -33,6 +35,8 @@ from solver_benchmarks.solvers import get_solver
 # limit return a partial result (status, iterations, residuals) instead of
 # being killed mid-return.
 SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
+PROGRESS_LOG_INTERVAL_SECONDS = 60.0
+PROGRESS_LOG_FRACTION = 0.01
 
 
 def run_benchmark(
@@ -53,6 +57,8 @@ def run_benchmark(
     completed = store.completed_keys() if config.resume else set()
 
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
+    already_complete = 0
+    skipped_during_planning = 0
     for dataset_config in config.datasets:
         dataset_cls = get_dataset(dataset_config.name)
         dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
@@ -112,6 +118,7 @@ def run_benchmark(
                 )
                 for problem in problems:
                     if _already_done(dataset_config, problem, solver_config, completed):
+                        already_complete += 1
                         continue
                     _write_skip(
                         store,
@@ -123,10 +130,12 @@ def run_benchmark(
                         environment_id=environment_id,
                         environment_metadata=environment_metadata,
                     )
+                    skipped_during_planning += 1
                 continue
             solver = solver_cls(solver_config.settings)
             for problem in problems:
                 if _already_done(dataset_config, problem, solver_config, completed):
+                    already_complete += 1
                     continue
                 if not solver.supports(problem.kind):
                     message = (
@@ -153,28 +162,40 @@ def run_benchmark(
                         environment_id=environment_id,
                         environment_metadata=environment_metadata,
                     )
+                    skipped_during_planning += 1
                     continue
                 tasks.append((dataset_config, problem, solver_config))
 
+    parallelism = max(1, int(config.parallelism))
+    progress = _ProgressReporter(
+        store=store,
+        stream_output=stream_output,
+        total_expected=already_complete + skipped_during_planning + len(tasks),
+        already_complete=already_complete,
+        skipped_during_planning=skipped_during_planning,
+        queued=len(tasks),
+        parallelism=parallelism,
+    )
+    progress.emit_plan()
     if not tasks:
+        progress.emit_final()
         return store
 
-    parallelism = max(1, int(config.parallelism))
     if parallelism == 1:
         for dataset_config, problem, solver_config in tasks:
-            store.write_result(
-                _run_one(
-                    store,
-                    config,
-                    repo_root,
-                    dataset_config,
-                    problem,
-                    solver_config,
-                    stream_output=stream_output,
-                    environment_id=environment_id,
-                    environment_metadata=environment_metadata,
-                )
+            result = _run_one(
+                store,
+                config,
+                repo_root,
+                dataset_config,
+                problem,
+                solver_config,
+                stream_output=stream_output,
+                environment_id=environment_id,
+                environment_metadata=environment_metadata,
             )
+            store.write_result(result)
+            progress.record_result(result)
     else:
         with ThreadPoolExecutor(max_workers=parallelism) as executor:
             futures = [
@@ -193,8 +214,147 @@ def run_benchmark(
                 for dataset_config, problem, solver_config in tasks
             ]
             for future in as_completed(futures):
-                store.write_result(future.result())
+                result = future.result()
+                store.write_result(result)
+                progress.record_result(result)
+    progress.emit_final()
     return store
+
+
+class _ProgressReporter:
+    def __init__(
+        self,
+        *,
+        store: ResultStore,
+        stream_output: bool,
+        total_expected: int,
+        already_complete: int,
+        skipped_during_planning: int,
+        queued: int,
+        parallelism: int,
+    ) -> None:
+        self.store = store
+        self.stream_output = stream_output
+        self.total_expected = int(total_expected)
+        self.already_complete = int(already_complete)
+        self.skipped_during_planning = int(skipped_during_planning)
+        self.queued = int(queued)
+        self.parallelism = int(parallelism)
+        self.completed_this_run = 0
+        self.started_at = time.monotonic()
+        self.last_emit_at = self.started_at
+        self.next_fraction = PROGRESS_LOG_FRACTION
+        self.last_result: ProblemResult | None = None
+        self._final_emitted = False
+
+    def emit_plan(self) -> None:
+        fields = {
+            "total_expected": self.total_expected,
+            "already_complete": self.already_complete,
+            "skipped_during_planning": self.skipped_during_planning,
+            "queued": self.queued,
+            "parallelism": self.parallelism,
+        }
+        self.store.append_event("info", "benchmark_plan", **fields)
+        _emit_progress(
+            self.stream_output,
+            (
+                f"planned {self.total_expected} solves: "
+                f"{self.already_complete} already complete, "
+                f"{self.skipped_during_planning} skipped during planning, "
+                f"{self.queued} queued, parallelism={self.parallelism}"
+            ),
+        )
+
+    def record_result(self, result: ProblemResult) -> None:
+        self.completed_this_run += 1
+        self.last_result = result
+        if self._should_emit_progress():
+            self._emit_progress_snapshot("benchmark_progress")
+
+    def emit_final(self) -> None:
+        if self._final_emitted:
+            return
+        self._final_emitted = True
+        self._emit_progress_snapshot("benchmark_complete")
+
+    def _should_emit_progress(self) -> bool:
+        if self.completed_this_run >= self.queued:
+            return False
+        if self.completed_this_run == 1 and self.queued > 1:
+            return True
+        now = time.monotonic()
+        if now - self.last_emit_at >= PROGRESS_LOG_INTERVAL_SECONDS:
+            return True
+        fraction = self._completed_total() / self.total_expected if self.total_expected else 1.0
+        if fraction >= self.next_fraction:
+            while self.next_fraction <= fraction:
+                self.next_fraction += PROGRESS_LOG_FRACTION
+            return True
+        return False
+
+    def _emit_progress_snapshot(self, message: str) -> None:
+        now = time.monotonic()
+        elapsed = max(0.0, now - self.started_at)
+        completed_total = self._completed_total()
+        percent = (
+            100.0 * completed_total / self.total_expected
+            if self.total_expected
+            else 100.0
+        )
+        rate = self.completed_this_run / elapsed if elapsed > 0.0 else None
+        remaining = max(0, self.queued - self.completed_this_run)
+        eta = remaining / rate if rate and rate > 0.0 else None
+        fields = {
+            "completed_total": completed_total,
+            "total_expected": self.total_expected,
+            "already_complete": self.already_complete,
+            "skipped_during_planning": self.skipped_during_planning,
+            "completed_this_run": self.completed_this_run,
+            "queued": self.queued,
+            "elapsed_seconds": elapsed,
+            "rate_solves_per_second": rate,
+            "eta_seconds": eta,
+            "parallelism": self.parallelism,
+        }
+        if self.last_result is not None:
+            fields.update(
+                {
+                    "last_dataset": self.last_result.dataset,
+                    "last_problem": self.last_result.problem,
+                    "last_solver_id": self.last_result.solver_id,
+                    "last_status": self.last_result.status,
+                }
+            )
+        self.store.append_event("info", message, **fields)
+        self.last_emit_at = now
+
+        last = ""
+        if self.last_result is not None:
+            last = (
+                " | last "
+                f"{self.last_result.dataset}/{self.last_result.problem} "
+                f"{self.last_result.solver_id}: {self.last_result.status}"
+            )
+        rate_text = f"{rate:.2f} solves/s" if rate is not None else "unknown"
+        eta_text = _format_duration(eta) if eta is not None else "unknown"
+        _emit_progress(
+            self.stream_output,
+            (
+                f"progress {completed_total}/{self.total_expected} "
+                f"({percent:.2f}%) | queued_done "
+                f"{self.completed_this_run}/{self.queued} | elapsed "
+                f"{_format_duration(elapsed)} | rate {rate_text} | eta {eta_text}"
+                f"{last}"
+            ),
+        )
+
+    def _completed_total(self) -> int:
+        return (
+            self.already_complete
+            + self.skipped_during_planning
+            + self.completed_this_run
+        )
 
 
 def _run_one(
@@ -308,6 +468,18 @@ def _run_one(
 def _emit_progress(enabled: bool, message: str) -> None:
     if enabled:
         print(f"[bench] {message}", file=sys.stderr, flush=True)
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return "unknown"
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours < 24:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _run_subprocess(
