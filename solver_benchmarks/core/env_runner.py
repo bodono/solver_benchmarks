@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from solver_benchmarks.core.config import EnvironmentConfig, EnvironmentRunConfig
-from solver_benchmarks.core.storage import ResultStore
+from solver_benchmarks.core.storage import ResultStore, make_run_id
 
 
 def run_environment_matrix(
@@ -19,6 +19,7 @@ def run_environment_matrix(
     run_dir: Path | None = None,
     repo_root: Path | None = None,
     stream_output: bool = True,
+    source_config_path: Path | None = None,
 ) -> Path:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     combined_config = replace(
@@ -30,17 +31,20 @@ def run_environment_matrix(
         ],
     )
     if run_dir is None:
-        from solver_benchmarks.core.storage import _datasets_slug
-
-        run_dir = (
-            combined_config.output_dir
-            / f"{_datasets_slug(combined_config)}_{combined_config.config_hash}_env"
+        env_name = (
+            f"{combined_config.name}_env"
+            if combined_config.name is not None
+            else "environment_run"
         )
+        named_config = replace(combined_config, name=env_name)
+        run_dir = combined_config.output_dir / make_run_id(named_config)
         if not run_dir.is_absolute():
             run_dir = repo_root / run_dir
     run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     store = ResultStore.create(combined_config, run_dir=run_dir)
+    if source_config_path is not None:
+        store.copy_source_config(source_config_path, name="environment_config")
 
     for environment in config.environments:
         _install_environment(

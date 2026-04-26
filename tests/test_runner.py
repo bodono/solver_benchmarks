@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -66,6 +67,42 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
     df = load_results(store.run_dir)
     assert len(df) == 1
     assert df.loc[0, "solver_id"] == "scs_smoke"
+
+
+def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path):
+    config_path = tmp_path / "named_smoke_run.yaml"
+    config_text = """
+run:
+  dataset: synthetic_qp
+  output_dir: runs
+  include:
+    - one_variable_eq
+solvers:
+  - id: scs_smoke
+    solver: scs
+    settings:
+      verbose: false
+      max_iters: 1000
+"""
+    config_path.write_text(config_text)
+
+    result = CliRunner().invoke(
+        main,
+        ["run", str(config_path), "--repo-root", str(Path.cwd())],
+    )
+
+    assert result.exit_code == 0, result.output
+    run_dir = Path(result.output.strip().splitlines()[-1])
+    assert run_dir.parent == tmp_path / "runs"
+    assert re.fullmatch(
+        r"named_smoke_run_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC",
+        run_dir.name,
+    )
+    assert (run_dir / "run_config.yaml").read_text() == config_text
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["config"]["name"] == "named_smoke_run"
+    assert manifest["config"]["config_hash"] not in run_dir.name
+    assert "synthetic_qp" not in run_dir.name
 
 
 def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):

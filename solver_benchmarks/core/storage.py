@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import shutil
 import tempfile
 
 import pandas as pd
@@ -20,20 +21,19 @@ from .result import ProblemResult, to_jsonable
 
 
 def make_run_id(config: RunConfig) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dataset = _datasets_slug(config)
-    return f"{dataset}_{config.config_hash}_{stamp}"
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
+    run_name = config.name or _datasets_slug(config)
+    return f"{slugify(run_name)}_{stamp}"
 
 
 def _datasets_slug(config: RunConfig) -> str:
-    # Use entry ids (default: name) so two entries pointing at the same
-    # adapter still produce distinct slugs in the run directory name.
+    # Programmatic callers can omit RunConfig.name. Fall back to entry ids
+    # (default: name) so those runs still get a meaningful label.
     ids = [dataset.id for dataset in config.datasets] or ["run"]
     if len(ids) == 1:
         return slugify(ids[0])
-    # Multi-dataset: use a deterministic, slug-friendly join. Cap the
-    # length so unusual configs (many datasets) do not produce wildly
-    # long directory names; the config hash already disambiguates.
+    # Multi-dataset fallback: use a deterministic, slug-friendly join. Cap
+    # the length so unusual configs do not produce wildly long names.
     joined = "+".join(slugify(entry_id) for entry_id in ids)
     if len(joined) > 64:
         return f"multi-{len(ids)}"
@@ -55,6 +55,12 @@ class ResultStore:
         if run_dir is None:
             run_id = make_run_id(config)
             root = config.output_dir / run_id
+            base_run_id = run_id
+            suffix = 2
+            while root.exists():
+                run_id = f"{base_run_id}_{suffix}"
+                root = config.output_dir / run_id
+                suffix += 1
         else:
             root = Path(run_dir).resolve()
             run_id = root.name
@@ -91,6 +97,16 @@ class ResultStore:
                 "created_at_utc", manifest["created_at_utc"]
             )
         atomic_write_text(self.manifest_path, json.dumps(to_jsonable(manifest), indent=2))
+
+    def copy_source_config(self, config_path: str | Path, *, name: str = "run_config") -> Path:
+        source = Path(config_path)
+        suffix = source.suffix or ".txt"
+        target = self.run_dir / f"{slugify(name)}{suffix}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f".{target.name}.tmp")
+        shutil.copyfile(source, tmp)
+        os.replace(tmp, target)
+        return target
 
     def problem_solver_dir(
         self, dataset: str, problem: str, solver_id: str
