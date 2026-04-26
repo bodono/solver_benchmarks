@@ -232,6 +232,9 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
         },
     }
     (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    (run_dir / "run_config.yaml").write_text(
+        "run:\n  dataset: synthetic_qp\nsolvers:\n  - id: solver_a\n    solver: scs\n"
+    )
     records = _analysis_frame().to_dict("records")
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in records:
@@ -310,10 +313,19 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
     assert (report_dir / "status_heatmap.png").exists()
     report_markdown = (report_dir / "index.md").read_text()
     assert "# Benchmark Report" in report_markdown
-    assert "## Run Overview" in report_markdown
+    assert "## Executive Summary" in report_markdown
+    assert "### Run Scope" in report_markdown
+    assert "## Headline Solver Performance" in report_markdown
+    assert "## Software and Runtime" in report_markdown
     assert "## Solver Metrics" in report_markdown
     assert "## Performance Plots" in report_markdown
-    assert "![Dolan-More Performance Profile](performance_profile_run_time_seconds.png)" in report_markdown
+    assert (
+        '<img src="performance_profile_run_time_seconds.png" '
+        'alt="Dolan-More Performance Profile" width="680">'
+    ) in report_markdown
+    assert "### Exact Source Config" in report_markdown
+    assert "```yaml\nrun:\n  dataset: synthetic_qp" in report_markdown
+    assert "solver_benchmarks version" in report_markdown
     assert "[Cross-solver comparison](problem_solver_comparison.csv)" in report_markdown
     assert (report_dir / "README.md").read_text() == report_markdown
 
@@ -511,8 +523,14 @@ def test_report_includes_new_analysis_sections(tmp_path: Path):
     assert "## Setup vs Solve Time" in markdown
     assert "## Difficulty Scaling" in markdown
     assert "## Claimed-Optimal KKT Thresholds" in markdown
-    assert "![Difficulty Scaling](difficulty_scaling_run_time_seconds.png)" in markdown
-    assert "![Setup vs Solve Time](setup_solve_breakdown.png)" in markdown
+    assert (
+        '<img src="difficulty_scaling_run_time_seconds.png" '
+        'alt="Difficulty Scaling" width="680">'
+    ) in markdown
+    assert (
+        '<img src="setup_solve_breakdown.png" '
+        'alt="Setup vs Solve Time" width="680">'
+    ) in markdown
 
 
 def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
@@ -557,7 +575,9 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
         ("kkt_accuracy_profile.png", "KKT Accuracy Profile"),
     ]:
         assert (report_dir / filename).exists(), f"missing plot file {filename}"
-        assert f"![{alt_text}]({filename})" in markdown, f"markdown missing {filename}"
+        assert (
+            f'<img src="{filename}" alt="{alt_text}" width="680">' in markdown
+        ), f"markdown missing {filename}"
 
 
 def _multi_dataset_records(dataset_a: str, dataset_b: str) -> list[dict]:
@@ -739,8 +759,8 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
     assert "## By Dataset" in markdown
     # Per-dataset h3 sections should exist for each dataset.
     assert "ds_a" in markdown and "ds_b" in markdown
-    # The Run Overview should list both datasets.
-    assert "Datasets:" in markdown
+    # The Run Scope should list both datasets.
+    assert "| Datasets | ds_a, ds_b |" in markdown
 
 
 def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
@@ -836,9 +856,9 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
 
     assert "### netlib_feasible (netlib)" in markdown
     assert "### netlib_infeasible (netlib)" in markdown
-    # The Run Overview "Problems with results" should count unique
+    # The Run Scope "Problems with results" should count unique
     # (dataset, problem) pairs, not unique problem names.
-    assert "Problems with results: `2`" in markdown
+    assert "| Problems with results | 2 |" in markdown
     # Both sections should be populated, not the empty fallback.
     feasible_idx = markdown.index("### netlib_feasible (netlib)")
     infeasible_idx = markdown.index("### netlib_infeasible (netlib)")
@@ -846,7 +866,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
     infeasible_block = markdown[infeasible_idx:]
     assert "No rows for this dataset." not in feasible_block
     assert "No rows for this dataset." not in infeasible_block
-    # The Run Overview should label each entry with the id (registry name) form.
+    # The Run Scope should label each entry with the id (registry name) form.
     assert "netlib_feasible (netlib), netlib_infeasible (netlib)" in markdown
 
 
