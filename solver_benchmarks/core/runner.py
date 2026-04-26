@@ -48,6 +48,7 @@ def run_benchmark(
     run_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
     stream_output: bool = False,
+    stream_solver_output: bool | None = None,
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
     prepare_data_command: str | None = None,
@@ -55,6 +56,8 @@ def run_benchmark(
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     config = resolve_output_dir(config, repo_root)
+    if stream_solver_output is None:
+        stream_solver_output = stream_output
     store = ResultStore.create(config, run_dir=run_dir)
     if source_config_path is not None:
         store.copy_source_config(source_config_path)
@@ -195,6 +198,7 @@ def run_benchmark(
                 problem,
                 solver_config,
                 stream_output=stream_output,
+                stream_solver_output=stream_solver_output,
                 environment_id=environment_id,
                 environment_metadata=environment_metadata,
             )
@@ -214,6 +218,7 @@ def run_benchmark(
                     stream_output,
                     environment_id,
                     environment_metadata,
+                    stream_solver_output,
                 )
                 for dataset_config, problem, solver_config in tasks
             ]
@@ -362,7 +367,10 @@ def _run_one(
     stream_output: bool = False,
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
+    stream_solver_output: bool | None = None,
 ) -> ProblemResult:
+    if stream_solver_output is None:
+        stream_solver_output = stream_output
     artifacts_dir = store.problem_solver_dir(
         dataset_config.id, problem.name, solver_config.id
     )
@@ -400,7 +408,7 @@ def _run_one(
         timeout=subprocess_timeout,
         stdout_path=artifacts_dir / "stdout.log",
         stderr_path=artifacts_dir / "stderr.log",
-        stream_output=stream_output,
+        stream_output=stream_solver_output,
     )
     if completed.timed_out:
         _emit_progress(stream_output, f"timeout {problem.name} with {solver_config.id}")

@@ -107,7 +107,9 @@ solvers:
     assert "synthetic_qp" not in run_dir.name
 
 
-def test_run_cli_can_override_solver_verbose(monkeypatch, tmp_path: Path):
+def test_run_cli_can_disable_solver_streaming_without_changing_settings(
+    monkeypatch, tmp_path: Path
+):
     config_path = tmp_path / "verbose_override.yaml"
     config_path.write_text(
         """
@@ -129,20 +131,69 @@ solvers:
 
     def fake_run_benchmark(config, **kwargs):
         seen["settings"] = [solver.settings for solver in config.solvers]
+        seen["stream_output"] = kwargs["stream_output"]
+        seen["stream_solver_output"] = kwargs["stream_solver_output"]
         return SimpleNamespace(run_dir=tmp_path / "runs" / "fake_run")
 
     monkeypatch.setattr("solver_benchmarks.cli.run_benchmark", fake_run_benchmark)
 
     result = CliRunner().invoke(
         main,
-        ["run", str(config_path), "--no-solver-verbose"],
+        ["run", str(config_path), "--no-stream-output"],
     )
 
     assert result.exit_code == 0, result.output
     assert seen["settings"] == [
-        {"verbose": False},
-        {"max_iter": 10, "verbose": False},
+        {"verbose": True},
+        {"max_iter": 10},
     ]
+    assert seen["stream_output"] is True
+    assert seen["stream_solver_output"] is False
+
+
+def test_env_run_cli_can_disable_solver_streaming(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "env_stream_override.yaml"
+    config_path.write_text(
+        """
+run:
+  dataset: synthetic_qp
+  output_dir: runs
+environments:
+  - id: current
+    python: python
+    solvers:
+      - id: scs_current
+        solver: scs
+        settings:
+          verbose: true
+"""
+    )
+    seen = {}
+
+    def fake_run_environment_matrix(config, **kwargs):
+        seen["settings"] = [
+            solver.settings
+            for environment in config.environments
+            for solver in environment.solvers
+        ]
+        seen["stream_output"] = kwargs["stream_output"]
+        seen["stream_solver_output"] = kwargs["stream_solver_output"]
+        return tmp_path / "runs" / "fake_env_run"
+
+    monkeypatch.setattr(
+        "solver_benchmarks.cli.run_environment_matrix",
+        fake_run_environment_matrix,
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["env", "run", str(config_path), "--no-stream-output"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["settings"] == [{"verbose": True}]
+    assert seen["stream_output"] is True
+    assert seen["stream_solver_output"] is False
 
 
 def test_run_benchmark_resolves_relative_output_dir_under_repo_root(

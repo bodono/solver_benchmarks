@@ -85,6 +85,8 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
         def solve(self, problem, artifacts_dir):  # pragma: no cover
             raise AssertionError("Subprocess is stubbed in this test")
 
+    subprocess_stream_flags = []
+
     def fake_run_subprocess(
         cmd,
         *,
@@ -94,6 +96,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
         stderr_path,
         stream_output,
     ):
+        subprocess_stream_flags.append(stream_output)
         payload = json.loads(Path(cmd[-1]).read_text())
         artifact_dir = Path(payload["artifacts_dir"])
         record = ProblemResult(
@@ -133,7 +136,12 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd(), stream_output=True)
+    store = run_benchmark(
+        config,
+        repo_root=Path.cwd(),
+        stream_output=True,
+        stream_solver_output=False,
+    )
     captured = capsys.readouterr()
 
     assert "[bench] planned 2 solves" in captured.err
@@ -144,6 +152,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     assert captured.err.count("progress 2/2 (100.00%)") == 1
     assert "queued_done 2/2" in captured.err
     assert "last fake_dataset/p2 fake_solver: optimal in 0.010s" in captured.err
+    assert subprocess_stream_flags == [False, False]
 
     events = [
         json.loads(line)
