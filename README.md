@@ -373,8 +373,8 @@ Important fields:
 The same solver may appear many times with different `id` and `settings`.
 Solver output is verbose by default and is captured in each solve's
 `stdout.log`/`stderr.log`; set `verbose: false` in a solver's settings to run it
-quietly, or pass `--no-solver-verbose` to `bench run` to override every solver
-variant from the command line while keeping benchmark progress messages visible.
+quietly. To keep full solver output in the log files without printing it to the
+terminal, pass `--no-stream-output` to `bench run`.
 
 ### Multi-Dataset Runs
 
@@ -840,8 +840,8 @@ Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--solver-verbose` / `--no-solver-verbose`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. The solver verbose flag overrides every solver variant's `settings.verbose`; use `--no-solver-verbose` to suppress solver iteration logs while retaining benchmark progress. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
-| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--solver-verbose` / `--no-solver-verbose` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. The solver verbose flag overrides every environment solver variant's `settings.verbose`. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
@@ -854,9 +854,11 @@ Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
 each solver reports.
 
-When run from the CLI, `bench run` streams solver stdout/stderr to the terminal
-and writes the same output to each solve's `stdout.log`/`stderr.log`. It also
-prints progress lines such as `[bench] starting ...` and `[bench] finished ...`.
+When run from the CLI, `bench run` writes solver stdout/stderr to each solve's
+`stdout.log`/`stderr.log`. By default it also streams that solver output to the
+terminal; pass `--no-stream-output` to keep the log files without printing
+solver output live. It also prints progress lines such as `[bench] starting ...`
+and `[bench] finished ...`.
 At the start of a run it prints the number of planned solves, already-complete
 resume hits, skipped rows, queued rows, and parallelism. After every result is
 written, it prints aggregate progress with completed/total counts, percentage,

@@ -23,9 +23,12 @@ def run_environment_matrix(
     run_dir: Path | None = None,
     repo_root: Path | None = None,
     stream_output: bool = True,
+    stream_solver_output: bool | None = None,
     source_config_path: Path | None = None,
 ) -> Path:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
+    if stream_solver_output is None:
+        stream_solver_output = stream_output
     combined_config = replace(
         config.run,
         solvers=[
@@ -75,6 +78,8 @@ def run_environment_matrix(
             "--environment-metadata",
             json.dumps(environment.metadata, sort_keys=True),
         ]
+        if not stream_solver_output:
+            cmd.append("--no-stream-output")
         if stream_output:
             print(f"[bench env] running {environment.id}: {' '.join(cmd)}", file=sys.stderr)
         try:

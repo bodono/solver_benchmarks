@@ -24,9 +24,6 @@ from solver_benchmarks.analysis.reports import (
 )
 from solver_benchmarks.core.config import (
     DatasetConfig,
-    EnvironmentRunConfig,
-    RunConfig,
-    SolverConfig,
     load_environment_run_config,
     load_run_config,
 )
@@ -153,11 +150,13 @@ def data_prepare_cmd(
 @click.option("--environment-id", default=None, help="Optional environment label to record.")
 @click.option("--environment-metadata", default=None, help="JSON metadata for the environment.")
 @click.option(
-    "--solver-verbose/--no-solver-verbose",
-    default=None,
+    "--stream-output/--no-stream-output",
+    "stream_solver_output",
+    default=True,
+    show_default=True,
     help=(
-        "Override settings.verbose for every solver. "
-        "Use --no-solver-verbose to hide solver iteration logs while keeping benchmark progress."
+        "Tee solver stdout/stderr to the terminal. "
+        "--no-stream-output still writes per-solve stdout.log/stderr.log."
     ),
 )
 def run_cmd(
@@ -167,10 +166,9 @@ def run_cmd(
     prepare_data: bool,
     environment_id: str | None,
     environment_metadata: str | None,
-    solver_verbose: bool | None,
+    stream_solver_output: bool,
 ) -> None:
     config = load_run_config(config_path)
-    config = _with_solver_verbose_override(config, solver_verbose)
     if prepare_data:
         config = replace(config, auto_prepare_data=True)
     env_metadata = _parse_json_option(environment_metadata)
@@ -180,6 +178,7 @@ def run_cmd(
             run_dir=run_dir,
             repo_root=repo_root,
             stream_output=True,
+            stream_solver_output=stream_solver_output,
             environment_id=environment_id,
             environment_metadata=env_metadata,
             prepare_data_command=run_with_prepare_command(
@@ -204,26 +203,28 @@ def env_group() -> None:
 @click.option("--run-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option(
-    "--solver-verbose/--no-solver-verbose",
-    default=None,
+    "--stream-output/--no-stream-output",
+    "stream_solver_output",
+    default=True,
+    show_default=True,
     help=(
-        "Override settings.verbose for every solver. "
-        "Use --no-solver-verbose to hide solver iteration logs while keeping benchmark progress."
+        "Tee solver stdout/stderr to the terminal. "
+        "--no-stream-output still writes per-solve stdout.log/stderr.log."
     ),
 )
 def env_run_cmd(
     config_path: Path,
     run_dir: Path | None,
     repo_root: Path | None,
-    solver_verbose: bool | None,
+    stream_solver_output: bool,
 ) -> None:
     config = load_environment_run_config(config_path)
-    config = _with_environment_solver_verbose_override(config, solver_verbose)
     out = run_environment_matrix(
         config,
         run_dir=run_dir,
         repo_root=repo_root,
         stream_output=True,
+        stream_solver_output=stream_solver_output,
         source_config_path=config_path,
     )
     click.echo(str(out))
@@ -374,46 +375,6 @@ def _coerce(value: str):
         return float(value)
     except ValueError:
         return value
-
-
-def _with_solver_verbose_override(
-    config: RunConfig, solver_verbose: bool | None
-) -> RunConfig:
-    if solver_verbose is None:
-        return config
-    return replace(
-        config,
-        solvers=_solver_verbose_overrides(config.solvers, solver_verbose),
-    )
-
-
-def _with_environment_solver_verbose_override(
-    config: EnvironmentRunConfig, solver_verbose: bool | None
-) -> EnvironmentRunConfig:
-    if solver_verbose is None:
-        return config
-    return replace(
-        config,
-        run=_with_solver_verbose_override(config.run, solver_verbose),
-        environments=[
-            replace(
-                environment,
-                solvers=_solver_verbose_overrides(
-                    environment.solvers, solver_verbose
-                ),
-            )
-            for environment in config.environments
-        ],
-    )
-
-
-def _solver_verbose_overrides(
-    solvers: list[SolverConfig], solver_verbose: bool
-) -> list[SolverConfig]:
-    return [
-        replace(solver, settings={**solver.settings, "verbose": solver_verbose})
-        for solver in solvers
-    ]
 
 
 def _parse_json_option(value: str | None) -> dict:
