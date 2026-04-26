@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import bz2
 import gzip
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +77,51 @@ def test_readMpsLp_bz2(tmp_path: Path):
     a, c, l, u = qpsreader.readMpsLp(str(bz2_path))
     assert c.shape == (2,)
     assert a.shape[1] == 2
+
+
+def test_readMpsLp_accepts_highs_warning_with_populated_model(monkeypatch, tmp_path: Path):
+    class FakeStatus:
+        kOk = "ok"
+        kWarning = "warning"
+        kError = "error"
+
+    class FakeMatrix:
+        num_row_ = 1
+        num_col_ = 1
+        value_ = [1.0]
+        index_ = [0]
+        start_ = [0, 1]
+
+    class FakeLp:
+        num_col_ = 1
+        a_matrix_ = FakeMatrix()
+        col_cost_ = [1.0]
+        col_lower_ = [0.0]
+        col_upper_ = [1.0e30]
+        row_lower_ = [-1.0e30]
+        row_upper_ = [1.0]
+
+    class FakeHighs:
+        def silent(self):
+            pass
+
+        def readModel(self, filename):
+            return FakeStatus.kWarning
+
+        def getLp(self):
+            return FakeLp()
+
+    fake_highspy = types.SimpleNamespace(Highs=FakeHighs, HighsStatus=FakeStatus)
+    monkeypatch.setitem(sys.modules, "highspy", fake_highspy)
+
+    path = tmp_path / "warning.mps"
+    path.write_text(_TINY_MPS)
+    a, c, l, u = qpsreader._read_uncompressed_mps(str(path))
+
+    assert a.shape == (2, 1)
+    assert c.tolist() == [1.0]
+    assert l.tolist() == [-1.0e30, 0.0]
+    assert u.tolist() == [1.0, 1.0e30]
 
 
 def test_readMpsLp_missing_file_raises(tmp_path: Path):
