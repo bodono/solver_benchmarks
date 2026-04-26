@@ -29,7 +29,11 @@ from solver_benchmarks.analysis.reports import (
     solver_problem_tables,
     status_matrix,
 )
-from solver_benchmarks.analysis.report import write_run_report
+from solver_benchmarks.analysis.report import (
+    _section_table,
+    _sort_report_table,
+    write_run_report,
+)
 from solver_benchmarks.cli import main
 
 
@@ -97,6 +101,87 @@ def test_default_failure_penalty_is_one_thousand_seconds():
     assert DEFAULT_FAILURE_PENALTY == 1000.0
     assert values["solver_a"] == pytest.approx((1.0 * 1000.0) ** 0.5)
     assert set(geomean["max_value"]) == {1000.0}
+
+
+def test_report_truncated_table_note_links_full_csv():
+    table = pd.DataFrame(
+        {
+            "solver_id": [f"solver_{idx:02d}" for idx in range(25)],
+            "run_time_seconds": list(range(25)),
+        }
+    )
+
+    markdown = "\n".join(
+        _section_table(
+            "Long Table",
+            table,
+            max_rows=20,
+            source_link="long_table.csv",
+        )
+    )
+
+    assert "Showing first 20 rows" in markdown
+    assert "See [full CSV](long_table.csv) for the full table." in markdown
+
+
+def test_report_table_sorting_prioritizes_useful_extremes():
+    solver_metrics_table = pd.DataFrame(
+        [
+            {
+                "solver_id": "failed",
+                "success_rate": 0.5,
+                "failure_rate": 0.5,
+                "run_time_median_seconds": 0.1,
+                "run_time_total_seconds": 0.1,
+            },
+            {
+                "solver_id": "slow",
+                "success_rate": 1.0,
+                "failure_rate": 0.0,
+                "run_time_median_seconds": 10.0,
+                "run_time_total_seconds": 10.0,
+            },
+            {
+                "solver_id": "fast",
+                "success_rate": 1.0,
+                "failure_rate": 0.0,
+                "run_time_median_seconds": 1.0,
+                "run_time_total_seconds": 1.0,
+            },
+        ]
+    )
+    sorted_metrics = _sort_report_table(
+        "solver_metrics.csv",
+        solver_metrics_table,
+        metric="run_time_seconds",
+    )
+
+    assert sorted_metrics["solver_id"].tolist() == ["fast", "slow", "failed"]
+
+    slowest = _sort_report_table(
+        "slowest_solves_run_time_seconds.csv",
+        pd.DataFrame(
+            [
+                {"problem": "small", "run_time_seconds": 1.0},
+                {"problem": "large", "run_time_seconds": 100.0},
+                {"problem": "medium", "run_time_seconds": 10.0},
+            ]
+        ),
+        metric="run_time_seconds",
+    )
+    assert slowest["problem"].tolist() == ["large", "medium", "small"]
+
+    kkt = _sort_report_table(
+        "kkt_summary.csv",
+        pd.DataFrame(
+            [
+                {"solver_id": "good", "kkt_missing": 0, "primal_res_rel_max": 1.0e-8},
+                {"solver_id": "bad", "kkt_missing": 0, "primal_res_rel_max": 1.0e-2},
+            ]
+        ),
+        metric="run_time_seconds",
+    )
+    assert kkt["solver_id"].tolist() == ["bad", "good"]
 
 
 def test_shifted_geomean_can_use_successful_solves_only():
@@ -576,7 +661,7 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
     ]:
         assert (report_dir / filename).exists(), f"missing plot file {filename}"
         assert (
-            f'<img src="{filename}" alt="{alt_text}" width="680">' in markdown
+            f'<img src="{filename}" alt="{alt_text}" width="920">' in markdown
         ), f"markdown missing {filename}"
 
 

@@ -37,6 +37,7 @@ from solver_benchmarks.core.config import manifest_dataset_entries
 
 
 PLOT_IMAGE_WIDTH = 680
+KKT_PLOT_IMAGE_WIDTH = 920
 
 
 def write_run_report(
@@ -86,12 +87,17 @@ def write_run_report(
         f"difficulty_scaling_{metric}.csv": difficulty_scaling(results, metric=metric),
         "setup_solve_breakdown.csv": setup_solve_breakdown(results),
     }
+    tables = {
+        name: _sort_report_table(name, table, metric=metric)
+        for name, table in tables.items()
+    }
     for name, table in tables.items():
         path = _write_table(output_dir / name, table)
         if path is not None:
             outputs.append(path)
     solver_tables_dir = output_dir / "solver_problem_tables"
     for solver_id, table in solver_problem_tables(results).items():
+        table = _sort_solver_problem_table(table)
         path = _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", table)
         if path is not None:
             outputs.append(path)
@@ -222,6 +228,7 @@ def _render_markdown_report(
         _section_table(
             "Completion",
             tables.get("completion.csv", pd.DataFrame()),
+            source_link="completion.csv",
             intro=(
                 "Use this first to confirm the run is complete. `missing = 0`, "
                 "`unexpected = 0`, and `duplicate_rows = 0` are the expected clean state."
@@ -232,19 +239,33 @@ def _render_markdown_report(
         _section_table(
             "Solver Metrics",
             tables.get("solver_metrics.csv", pd.DataFrame()),
+            source_link="solver_metrics.csv",
             intro=(
                 "Only accurate `optimal` solves count as successes. Inaccurate, "
                 "timeout, skipped, and error statuses count as failures."
             ),
         )
     )
-    lines.extend(_section_table("Status Counts", tables.get("status_counts.csv", pd.DataFrame())))
-    lines.extend(_section_table("Failure Rates", tables.get("failure_rates.csv", pd.DataFrame())))
+    lines.extend(
+        _section_table(
+            "Status Counts",
+            tables.get("status_counts.csv", pd.DataFrame()),
+            source_link="status_counts.csv",
+        )
+    )
+    lines.extend(
+        _section_table(
+            "Failure Rates",
+            tables.get("failure_rates.csv", pd.DataFrame()),
+            source_link="failure_rates.csv",
+        )
+    )
 
     lines.extend(
         _section_table(
             "Setup vs Solve Time",
             tables.get("setup_solve_breakdown.csv", pd.DataFrame()),
+            source_link="setup_solve_breakdown.csv",
             intro=(
                 "Many adapters split `run_time_seconds` into a setup phase "
                 "(KKT factorization, scaling) and a solve phase (the iterative "
@@ -278,6 +299,7 @@ def _render_markdown_report(
         _section_table(
             "Shifted Geomean",
             tables.get(f"shifted_geomean_{metric}.csv", pd.DataFrame()),
+            source_link=f"shifted_geomean_{metric}.csv",
             intro="Penalized shifted geomeans assign non-successful solves the configured failure penalty.",
         )
     )
@@ -285,6 +307,7 @@ def _render_markdown_report(
         _section_table(
             "Shifted Geomean, Successful Solves Only",
             tables.get(f"shifted_geomean_{metric}_success_only.csv", pd.DataFrame()),
+            source_link=f"shifted_geomean_{metric}_success_only.csv",
         )
     )
 
@@ -296,7 +319,13 @@ def _render_markdown_report(
             [(f"pairwise_scatter_{metric}.png", "Pairwise Solver Scatter")],
         )
     )
-    lines.extend(_section_table("Pairwise Speedups", tables.get(f"pairwise_speedups_{metric}.csv", pd.DataFrame())))
+    lines.extend(
+        _section_table(
+            "Pairwise Speedups",
+            tables.get(f"pairwise_speedups_{metric}.csv", pd.DataFrame()),
+            source_link=f"pairwise_speedups_{metric}.csv",
+        )
+    )
 
     lines.extend(["## Difficulty Scaling", ""])
     lines.extend(
@@ -310,6 +339,7 @@ def _render_markdown_report(
         _section_table(
             f"Median {metric} by Problem Size",
             tables.get(f"difficulty_scaling_{metric}.csv", pd.DataFrame()),
+            source_link=f"difficulty_scaling_{metric}.csv",
             intro=(
                 "Problems are bucketed into equal-population quantile bins of "
                 "`metadata.n`. Each row reports a solver's median runtime on "
@@ -334,15 +364,23 @@ def _render_markdown_report(
         _section_table(
             "Slowest Solves",
             tables.get(f"slowest_solves_{metric}.csv", pd.DataFrame()),
+            source_link=f"slowest_solves_{metric}.csv",
         )
     )
     lines.extend(
         _section_table(
             "Failures With Successful Alternatives",
             tables.get(f"failures_with_successful_alternatives_{metric}.csv", pd.DataFrame()),
+            source_link=f"failures_with_successful_alternatives_{metric}.csv",
         )
     )
-    lines.extend(_section_table("Objective Spreads", tables.get("objective_spreads.csv", pd.DataFrame())))
+    lines.extend(
+        _section_table(
+            "Objective Spreads",
+            tables.get("objective_spreads.csv", pd.DataFrame()),
+            source_link="objective_spreads.csv",
+        )
+    )
     lines.extend(
         [
             "Full problem-level tables:",
@@ -364,13 +402,21 @@ def _render_markdown_report(
                 ("kkt_residual_heatmap.png", "KKT Residual Heatmap"),
                 ("kkt_accuracy_profile.png", "KKT Accuracy Profile"),
             ],
+            width=KKT_PLOT_IMAGE_WIDTH,
         )
     )
-    lines.extend(_section_table("KKT Summary", tables.get("kkt_summary.csv", pd.DataFrame())))
+    lines.extend(
+        _section_table(
+            "KKT Summary",
+            tables.get("kkt_summary.csv", pd.DataFrame()),
+            source_link="kkt_summary.csv",
+        )
+    )
     lines.extend(
         _section_table(
             "Claimed-Optimal KKT Thresholds",
             tables.get("claimed_optimal_kkt_thresholds.csv", pd.DataFrame()),
+            source_link="claimed_optimal_kkt_thresholds.csv",
             intro=(
                 "Counts of claimed-optimal solves whose worst relative KKT "
                 "residual is at or below each threshold. `count_above_max` "
@@ -380,7 +426,13 @@ def _render_markdown_report(
             ),
         )
     )
-    lines.extend(_section_table("KKT Certificate Summary", tables.get("kkt_certificate_summary.csv", pd.DataFrame())))
+    lines.extend(
+        _section_table(
+            "KKT Certificate Summary",
+            tables.get("kkt_certificate_summary.csv", pd.DataFrame()),
+            source_link="kkt_certificate_summary.csv",
+        )
+    )
 
     if len(dataset_entries) > 1 and "dataset" in results.columns:
         lines.extend(_per_dataset_breakdown(results, dataset_entries, metric=metric))
@@ -453,28 +505,44 @@ def _per_dataset_breakdown(
         lines.extend(
             _section_table(
                 "Solver Metrics",
-                solver_metrics(subset),
+                _sort_report_table(
+                    "solver_metrics.csv",
+                    solver_metrics(subset),
+                    metric=metric,
+                ),
                 level=4,
             )
         )
         lines.extend(
             _section_table(
                 "Failure Rates",
-                failure_rates(subset),
+                _sort_report_table(
+                    "failure_rates.csv",
+                    failure_rates(subset),
+                    metric=metric,
+                ),
                 level=4,
             )
         )
         lines.extend(
             _section_table(
                 f"Shifted Geomean ({metric})",
-                shifted_geomean(subset, metric=metric),
+                _sort_report_table(
+                    f"shifted_geomean_{metric}.csv",
+                    shifted_geomean(subset, metric=metric),
+                    metric=metric,
+                ),
                 level=4,
             )
         )
         lines.extend(
             _section_table(
                 "KKT Summary",
-                kkt_summary(subset),
+                _sort_report_table(
+                    "kkt_summary.csv",
+                    kkt_summary(subset),
+                    metric=metric,
+                ),
                 level=4,
             )
         )
@@ -489,6 +557,7 @@ def _section_table(
     max_rows: int = 20,
     max_cols: int = 12,
     level: int = 2,
+    source_link: str | None = None,
 ) -> list[str]:
     heading = "#" * max(1, min(level, 6))
     lines = [f"{heading} {title}", ""]
@@ -497,9 +566,273 @@ def _section_table(
     if table.empty:
         lines.extend(["No rows for this section.", ""])
         return lines
-    lines.extend(_dataframe_to_markdown(table, max_rows=max_rows, max_cols=max_cols))
+    lines.extend(
+        _dataframe_to_markdown(
+            table,
+            max_rows=max_rows,
+            max_cols=max_cols,
+            source_link=source_link,
+        )
+    )
     lines.append("")
     return lines
+
+
+def _sort_report_table(
+    name: str,
+    table: pd.DataFrame,
+    *,
+    metric: str,
+) -> pd.DataFrame:
+    if table.empty:
+        return table
+    if name == "solver_metrics.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("success_rate", False),
+                ("failure_rate", True),
+                ("run_time_median_seconds", True),
+                ("run_time_total_seconds", True),
+                ("solver_id", True),
+            ],
+        )
+    if name == "completion.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("missing", False),
+                ("unexpected", False),
+                ("duplicate_rows", False),
+                ("complete", True),
+                ("solver_id", True),
+                ("dataset", True),
+            ],
+        )
+    if name == "status_counts.csv":
+        return _sort_by_columns(
+            table,
+            [("count", False), ("solver_id", True), ("status", True)],
+        )
+    if name == "failure_rates.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("failure_rate", False),
+                ("failure_count", False),
+                ("success_rate", True),
+                ("solver_id", True),
+            ],
+        )
+    if name == "missing_results.csv":
+        return _sort_by_columns(table, _problem_sort_columns(prefix_solver=True))
+    if name.startswith(f"shifted_geomean_{metric}"):
+        return _sort_by_columns(
+            table,
+            [
+                (metric, True),
+                ("failure_count", True),
+                ("success_count", False),
+                ("solver_id", True),
+            ],
+        )
+    if name == f"pairwise_speedups_{metric}.csv":
+        return _sort_pairwise_speedups(table)
+    if name == f"performance_ratios_{metric}.csv":
+        return _sort_by_row_numeric_max(table, ascending=False)
+    if name == "problem_solver_comparison.csv":
+        return _sort_problem_solver_comparison(table, metric=metric)
+    if name == "objective_spreads.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("relative_spread", False),
+                ("absolute_spread", False),
+                ("solver_count", False),
+                *_problem_sort_columns(),
+            ],
+        )
+    if name == f"slowest_solves_{metric}.csv":
+        return _sort_by_columns(table, [(metric, False), *_problem_sort_columns()])
+    if name == f"failures_with_successful_alternatives_{metric}.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("status", True),
+                (f"best_success_{metric}", True),
+                ("solver_id", True),
+                *_problem_sort_columns(),
+            ],
+        )
+    if name == "kkt_summary.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("kkt_missing", False),
+                ("primal_res_rel_max", False),
+                ("dual_res_rel_max", False),
+                ("duality_gap_rel_max", False),
+                ("comp_slack_max", False),
+                ("kkt_count", True),
+                ("solver_id", True),
+            ],
+        )
+    if name == "claimed_optimal_kkt_thresholds.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("count_above_max", False),
+                ("worst_max", False),
+                ("worst_p95", False),
+                ("missing_residuals", False),
+                ("solver_id", True),
+            ],
+        )
+    if name == "kkt_certificate_summary.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("cert_invalid", False),
+                ("Aty_rel_max", False),
+                ("Px_rel_max", False),
+                ("cert_valid", True),
+                ("solver_id", True),
+            ],
+        )
+    if name == f"difficulty_scaling_{metric}.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("size_bin", True),
+                ("median_time", True),
+                ("p95_time", True),
+                ("success_count", False),
+                ("solver_id", True),
+            ],
+        )
+    if name == "setup_solve_breakdown.csv":
+        return _sort_by_columns(
+            table,
+            [
+                ("total_median", True),
+                ("solve_median", True),
+                ("setup_median", True),
+                ("with_breakdown", False),
+                ("solver_id", True),
+            ],
+        )
+    if name == "status_matrix.csv":
+        return table.sort_index()
+    return _sort_by_columns(table, _problem_sort_columns(prefix_solver=True))
+
+
+def _sort_solver_problem_table(table: pd.DataFrame) -> pd.DataFrame:
+    if table.empty:
+        return table
+    status_rank = None
+    if "status" in table:
+        status_rank = table["status"].eq("optimal").astype(int)
+    frame = table.copy()
+    if status_rank is not None:
+        frame["__status_rank__"] = status_rank
+    sort_order = [
+        ("__status_rank__", True),
+        ("run_time_seconds", False),
+        *_problem_sort_columns(),
+    ]
+    return _sort_by_columns(frame, sort_order).drop(
+        columns=["__status_rank__"],
+        errors="ignore",
+    )
+
+
+def _sort_by_columns(
+    table: pd.DataFrame,
+    order: list[tuple[str, bool]],
+) -> pd.DataFrame:
+    columns = [column for column, _ in order if column in table]
+    if not columns:
+        return table
+    ascending = [ascending for column, ascending in order if column in table]
+    reset_index = isinstance(table.index, pd.RangeIndex)
+    sorted_table = table.sort_values(
+        columns,
+        ascending=ascending,
+        kind="mergesort",
+        na_position="last",
+    )
+    if reset_index:
+        return sorted_table.reset_index(drop=True)
+    return sorted_table
+
+
+def _sort_by_row_numeric_max(
+    table: pd.DataFrame,
+    *,
+    ascending: bool,
+) -> pd.DataFrame:
+    numeric = table.apply(lambda column: pd.to_numeric(column, errors="coerce"))
+    if numeric.empty:
+        return table
+    fill_value = math.inf if ascending else -math.inf
+    order = numeric.max(axis=1).fillna(fill_value).sort_values(
+        ascending=ascending,
+        kind="mergesort",
+    )
+    return table.loc[order.index]
+
+
+def _sort_pairwise_speedups(table: pd.DataFrame) -> pd.DataFrame:
+    column = "geomean_speedup_a_over_b"
+    if column not in table:
+        return _sort_by_columns(table, [("solver_a", True), ("solver_b", True)])
+    frame = table.copy()
+    speedup = pd.to_numeric(frame[column], errors="coerce")
+    frame["__effect_size__"] = speedup.map(
+        lambda value: abs(math.log(value)) if value and math.isfinite(value) else None
+    )
+    sorted_table = _sort_by_columns(
+        frame,
+        [
+            ("__effect_size__", False),
+            ("common_successes", False),
+            ("solver_a", True),
+            ("solver_b", True),
+        ],
+    )
+    return sorted_table.drop(columns=["__effect_size__"], errors="ignore")
+
+
+def _sort_problem_solver_comparison(
+    table: pd.DataFrame,
+    *,
+    metric: str,
+) -> pd.DataFrame:
+    metric_columns = [
+        column for column in table.columns if str(column).endswith(f"__{metric}")
+    ]
+    if not metric_columns:
+        return _sort_by_columns(table, _problem_sort_columns())
+    frame = table.copy()
+    frame["__max_solver_metric__"] = frame[metric_columns].apply(
+        lambda column: pd.to_numeric(column, errors="coerce"),
+    ).max(axis=1)
+    sorted_table = _sort_by_columns(
+        frame,
+        [("__max_solver_metric__", False), *_problem_sort_columns()],
+    )
+    return sorted_table.drop(columns=["__max_solver_metric__"], errors="ignore")
+
+
+def _problem_sort_columns(
+    *,
+    prefix_solver: bool = False,
+) -> list[tuple[str, bool]]:
+    columns = []
+    if prefix_solver:
+        columns.append(("solver_id", True))
+    columns.extend([("dataset", True), ("problem", True)])
+    return columns
 
 
 def _executive_summary_text(
@@ -822,6 +1155,7 @@ def _dataframe_to_markdown(
     *,
     max_rows: int,
     max_cols: int,
+    source_link: str | None = None,
 ) -> list[str]:
     frame = table.copy()
     if not isinstance(frame.index, pd.RangeIndex):
@@ -848,10 +1182,17 @@ def _dataframe_to_markdown(
             [
                 "",
                 f"Showing first {len(frame)} rows and {len(frame.columns)} columns "
-                f"of {total_rows} rows and {total_cols} columns. See the linked CSV for the full table.",
+                f"of {total_rows} rows and {total_cols} columns. "
+                f"{_full_table_note(source_link)}",
             ]
         )
     return rows
+
+
+def _full_table_note(source_link: str | None) -> str:
+    if source_link:
+        return f"See [full CSV]({source_link}) for the full table."
+    return "See the linked CSV for the full table."
 
 
 def _plot_block(
