@@ -53,13 +53,116 @@ def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch,
     )
 
     store = run_benchmark(config, repo_root=Path.cwd())
-    event = json.loads(store.events_path.read_text().strip())
+    events = [
+        json.loads(line)
+        for line in store.events_path.read_text().splitlines()
+        if line.strip()
+    ]
+    event = next(item for item in events if item["level"] == "warning")
 
     assert event["level"] == "warning"
     assert event["solver_id"] == "fake_qp_skip"
     assert event["problem"] == "cone_problem"
     assert event["problem_kind"] == "cone"
     assert "does not support" in event["message"]
+
+
+def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, capsys):
+    class FakeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [
+                ProblemSpec(dataset_id="fake_dataset", name="p1", kind=QP),
+                ProblemSpec(dataset_id="fake_dataset", name="p2", kind=QP),
+            ]
+
+    class FakeSolver(SolverAdapter):
+        solver_name = "fake_solver"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError("Subprocess is stubbed in this test")
+
+    def fake_run_subprocess(
+        cmd,
+        *,
+        cwd,
+        timeout,
+        stdout_path,
+        stderr_path,
+        stream_output,
+    ):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        artifact_dir = Path(payload["artifacts_dir"])
+        record = ProblemResult(
+            run_id=payload["run_id"],
+            dataset=payload["dataset"],
+            problem=payload["problem"],
+            problem_kind=payload["problem_kind"],
+            solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+            artifact_dir=str(artifact_dir),
+        ).to_record()
+        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
+        stdout_path.write_text("")
+        stderr_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "fake_dataset", FakeDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "fake_solver", FakeSolver)
+    monkeypatch.setattr(
+        "solver_benchmarks.core.runner._run_subprocess",
+        fake_run_subprocess,
+    )
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "fake_dataset",
+                "output_dir": str(tmp_path / "runs"),
+                "parallelism": 1,
+            },
+            "solvers": [
+                {"id": "fake_solver", "solver": "fake_solver", "settings": {}}
+            ],
+        }
+    )
+
+    store = run_benchmark(config, repo_root=Path.cwd(), stream_output=True)
+    captured = capsys.readouterr()
+
+    assert "[bench] planned 2 solves" in captured.err
+    assert "0 already complete" in captured.err
+    assert "2 queued" in captured.err
+    assert "progress 1/2 (50.00%)" in captured.err
+    assert "progress 2/2 (100.00%)" in captured.err
+    assert captured.err.count("progress 2/2 (100.00%)") == 1
+    assert "queued_done 2/2" in captured.err
+    assert "last fake_dataset/p2 fake_solver: optimal" in captured.err
+
+    events = [
+        json.loads(line)
+        for line in store.events_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert [event["message"] for event in events] == [
+        "benchmark_plan",
+        "benchmark_progress",
+        "benchmark_progress",
+        "benchmark_complete",
+    ]
+    assert events[0]["total_expected"] == 2
+    assert events[0]["queued"] == 2
+    assert events[1]["completed_this_run"] == 1
+    assert events[2]["completed_this_run"] == 2
+    assert events[-1]["completed_total"] == 2
+    assert events[-1]["completed_this_run"] == 2
+    assert events[-1]["last_problem"] == "p2"
 
 
 def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path):
