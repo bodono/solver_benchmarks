@@ -55,7 +55,8 @@ def _read_uncompressed_mps(filename: str):
     with contextlib.suppress(Exception):
         h.silent()
     read_status = h.readModel(str(filename))
-    if read_status != highspy.HighsStatus.kOk:
+    warning_status = getattr(highspy.HighsStatus, "kWarning", None)
+    if read_status not in (highspy.HighsStatus.kOk, warning_status):
         raise RuntimeError(
             f"HiGHS failed to read MPS file {filename!r} (status={read_status!r})"
         )
