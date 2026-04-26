@@ -22,8 +22,14 @@ from solver_benchmarks.analysis.reports import (
     missing_results,
     solver_metrics,
 )
-from solver_benchmarks.core.config import load_environment_run_config, load_run_config
-from solver_benchmarks.core.config import DatasetConfig
+from solver_benchmarks.core.config import (
+    DatasetConfig,
+    EnvironmentRunConfig,
+    RunConfig,
+    SolverConfig,
+    load_environment_run_config,
+    load_run_config,
+)
 from solver_benchmarks.core.data_prepare import (
     data_prepare_command,
     run_with_prepare_command,
@@ -146,6 +152,14 @@ def data_prepare_cmd(
 @click.option("--prepare-data", is_flag=True, help="Prepare missing dataset data first.")
 @click.option("--environment-id", default=None, help="Optional environment label to record.")
 @click.option("--environment-metadata", default=None, help="JSON metadata for the environment.")
+@click.option(
+    "--solver-verbose/--no-solver-verbose",
+    default=None,
+    help=(
+        "Override settings.verbose for every solver. "
+        "Use --no-solver-verbose to hide solver iteration logs while keeping benchmark progress."
+    ),
+)
 def run_cmd(
     config_path: Path,
     run_dir: Path | None,
@@ -153,8 +167,10 @@ def run_cmd(
     prepare_data: bool,
     environment_id: str | None,
     environment_metadata: str | None,
+    solver_verbose: bool | None,
 ) -> None:
     config = load_run_config(config_path)
+    config = _with_solver_verbose_override(config, solver_verbose)
     if prepare_data:
         config = replace(config, auto_prepare_data=True)
     env_metadata = _parse_json_option(environment_metadata)
@@ -187,12 +203,22 @@ def env_group() -> None:
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--run-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--solver-verbose/--no-solver-verbose",
+    default=None,
+    help=(
+        "Override settings.verbose for every solver. "
+        "Use --no-solver-verbose to hide solver iteration logs while keeping benchmark progress."
+    ),
+)
 def env_run_cmd(
     config_path: Path,
     run_dir: Path | None,
     repo_root: Path | None,
+    solver_verbose: bool | None,
 ) -> None:
     config = load_environment_run_config(config_path)
+    config = _with_environment_solver_verbose_override(config, solver_verbose)
     out = run_environment_matrix(
         config,
         run_dir=run_dir,
@@ -348,6 +374,46 @@ def _coerce(value: str):
         return float(value)
     except ValueError:
         return value
+
+
+def _with_solver_verbose_override(
+    config: RunConfig, solver_verbose: bool | None
+) -> RunConfig:
+    if solver_verbose is None:
+        return config
+    return replace(
+        config,
+        solvers=_solver_verbose_overrides(config.solvers, solver_verbose),
+    )
+
+
+def _with_environment_solver_verbose_override(
+    config: EnvironmentRunConfig, solver_verbose: bool | None
+) -> EnvironmentRunConfig:
+    if solver_verbose is None:
+        return config
+    return replace(
+        config,
+        run=_with_solver_verbose_override(config.run, solver_verbose),
+        environments=[
+            replace(
+                environment,
+                solvers=_solver_verbose_overrides(
+                    environment.solvers, solver_verbose
+                ),
+            )
+            for environment in config.environments
+        ],
+    )
+
+
+def _solver_verbose_overrides(
+    solvers: list[SolverConfig], solver_verbose: bool
+) -> list[SolverConfig]:
+    return [
+        replace(solver, settings={**solver.settings, "verbose": solver_verbose})
+        for solver in solvers
+    ]
 
 
 def _parse_json_option(value: str | None) -> dict:

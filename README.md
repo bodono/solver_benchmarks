@@ -373,7 +373,8 @@ Important fields:
 The same solver may appear many times with different `id` and `settings`.
 Solver output is verbose by default and is captured in each solve's
 `stdout.log`/`stderr.log`; set `verbose: false` in a solver's settings to run it
-quietly.
+quietly, or pass `--no-solver-verbose` to `bench run` to override every solver
+variant from the command line while keeping benchmark progress messages visible.
 
 ### Multi-Dataset Runs
 
@@ -839,8 +840,8 @@ Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
-| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--solver-verbose` / `--no-solver-verbose`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. The solver verbose flag overrides every solver variant's `settings.verbose`; use `--no-solver-verbose` to suppress solver iteration logs while retaining benchmark progress. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--solver-verbose` / `--no-solver-verbose` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. The solver verbose flag overrides every environment solver variant's `settings.verbose`. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
@@ -860,7 +861,8 @@ At the start of a run it prints the number of planned solves, already-complete
 resume hits, skipped rows, queued rows, and parallelism. After every result is
 written, it prints aggregate progress with completed/total counts, percentage,
 elapsed time, solves/second, ETA, and the last completed `(dataset, problem,
-solver)` tuple. The same aggregate snapshots are recorded as structured
+solver)` tuple with its run time. The same aggregate snapshots are recorded as
+structured
 `benchmark_plan`, `benchmark_progress`, and `benchmark_complete` events in
 `events.jsonl`.
 With `parallelism > 1`, live solver output from different workers can interleave;

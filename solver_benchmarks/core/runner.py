@@ -309,6 +309,9 @@ class _ProgressReporter:
                     "last_problem": self.last_result.problem,
                     "last_solver_id": self.last_result.solver_id,
                     "last_status": self.last_result.status,
+                    "last_run_time_seconds": self.last_result.run_time_seconds,
+                    "last_setup_time_seconds": self.last_result.setup_time_seconds,
+                    "last_solve_time_seconds": self.last_result.solve_time_seconds,
                 }
             )
         self.store.append_event("info", message, **fields)
@@ -318,7 +321,8 @@ class _ProgressReporter:
             last = (
                 " | last "
                 f"{self.last_result.dataset}/{self.last_result.problem} "
-                f"{self.last_result.solver_id}: {self.last_result.status}"
+                f"{self.last_result.solver_id}: {self.last_result.status} "
+                f"in {_format_short_seconds(self.last_result.run_time_seconds)}"
             )
         rate_text = f"{rate:.2f} solves/s" if rate is not None else "unknown"
         eta_text = _format_duration(eta) if eta is not None else "unknown"
@@ -465,6 +469,19 @@ def _format_duration(seconds: float | None) -> str:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     days, hours = divmod(hours, 24)
     return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _format_short_seconds(seconds: float | None) -> str:
+    if seconds is None or not math.isfinite(seconds):
+        return "unknown"
+    seconds = max(0.0, float(seconds))
+    if seconds < 1.0:
+        return f"{seconds:.3f}s"
+    if seconds < 10.0:
+        return f"{seconds:.2f}s"
+    if seconds < 100.0:
+        return f"{seconds:.1f}s"
+    return _format_duration(seconds)
 
 
 def _run_subprocess(
