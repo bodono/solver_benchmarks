@@ -143,7 +143,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     assert "progress 2/2 (100.00%)" in captured.err
     assert captured.err.count("progress 2/2 (100.00%)") == 1
     assert "queued_done 2/2" in captured.err
-    assert "last fake_dataset/p2 fake_solver: optimal" in captured.err
+    assert "last fake_dataset/p2 fake_solver: optimal in 0.010s" in captured.err
 
     events = [
         json.loads(line)
@@ -163,6 +163,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     assert events[-1]["completed_total"] == 2
     assert events[-1]["completed_this_run"] == 2
     assert events[-1]["last_problem"] == "p2"
+    assert events[-1]["last_run_time_seconds"] == 0.01
 
 
 def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path):

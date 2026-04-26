@@ -3,6 +3,7 @@ import math
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -103,6 +104,44 @@ solvers:
     assert manifest["config"]["name"] == "named_smoke_run"
     assert manifest["config"]["config_hash"] not in run_dir.name
     assert "synthetic_qp" not in run_dir.name
+
+
+def test_run_cli_can_override_solver_verbose(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "verbose_override.yaml"
+    config_path.write_text(
+        """
+run:
+  dataset: synthetic_qp
+  output_dir: runs
+solvers:
+  - id: scs_smoke
+    solver: scs
+    settings:
+      verbose: true
+  - id: qtqp_smoke
+    solver: qtqp
+    settings:
+      max_iter: 10
+"""
+    )
+    seen = {}
+
+    def fake_run_benchmark(config, **kwargs):
+        seen["settings"] = [solver.settings for solver in config.solvers]
+        return SimpleNamespace(run_dir=tmp_path / "runs" / "fake_run")
+
+    monkeypatch.setattr("solver_benchmarks.cli.run_benchmark", fake_run_benchmark)
+
+    result = CliRunner().invoke(
+        main,
+        ["run", str(config_path), "--no-solver-verbose"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["settings"] == [
+        {"verbose": False},
+        {"max_iter": 10, "verbose": False},
+    ]
 
 
 def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
