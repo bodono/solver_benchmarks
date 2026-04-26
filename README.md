@@ -314,6 +314,7 @@ Minimal example:
 
 ```yaml
 run:
+  name: netlib_feasible_smoke
   dataset: netlib
   output_dir: runs
   dataset_options:
@@ -351,6 +352,7 @@ Important fields:
 
 | Field | Meaning |
 |---|---|
+| `run.name` | Optional human-readable run label. If omitted for CLI runs, the config filename stem is used. Run directories use `<run_name>_<YYYY-MM-DD>_<HH-MM-SS>_UTC`. |
 | `run.dataset` | Dataset ID from `bench list datasets`. Use `datasets` instead to run several. |
 | `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `id`, `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
 | `run.output_dir` | Root directory for immutable runs. |
@@ -585,7 +587,7 @@ Bundled benchmark configs:
 The command prints the run directory:
 
 ```text
-runs/synthetic_qp_d5939d8c1f2d_20260424T101304Z
+runs/netlib_feasible_example_2026-04-26_14-03-27_UTC
 ```
 
 Resume a run:
@@ -837,8 +839,8 @@ Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
-| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
@@ -862,8 +864,9 @@ the per-solve log files remain separated and are the authoritative logs.
 Every run is immutable by default:
 
 ```text
-runs/synthetic_qp_d5939d8c1f2d_20260424T101304Z/
+runs/netlib_feasible_example_2026-04-26_14-03-27_UTC/
   manifest.json
+  run_config.yaml
   events.jsonl
   results.jsonl
   results.parquet
@@ -879,17 +882,18 @@ runs/synthetic_qp_d5939d8c1f2d_20260424T101304Z/
           trace.jsonl
 ```
 
-For multi-dataset runs, the slug at the front of the run directory is a
-deduplicated `+`-joined list of dataset IDs (truncated to `multi-N` for very
-many datasets). Per-solve artifacts always live under
-`problems/<dataset>/<problem>/<solver_id>/`, so two datasets that share a
-problem name remain isolated on disk.
+Run directory names come from `run.name` or, for CLI runs without an explicit
+name, the config filename stem. The content hash is still recorded in
+`manifest.json`, but is not part of the directory name. Per-solve artifacts
+always live under `problems/<dataset>/<problem>/<solver_id>/`, so two datasets
+that share a problem name remain isolated on disk.
 
 Files:
 
 | File | Purpose |
 |---|---|
 | `manifest.json` | Run metadata, normalized config, config hash, creation time. |
+| `run_config.yaml` / `run_config.json` | Exact source config file passed to `bench run`, copied into the run directory before solving. |
 | `events.jsonl` | Structured warnings/events, including unavailable solvers and unsupported combinations. |
 | `results.jsonl` | One JSON record per completed or skipped solve. Human-readable and append-friendly. |
 | `results.parquet` | Flattened results table for pandas/Arrow analysis. Rewritten after each result. |

@@ -50,6 +50,43 @@ def test_parse_run_config_supports_auto_prepare_data(tmp_path: Path):
     assert config.auto_prepare_data
 
 
+def test_load_run_config_uses_config_stem_as_default_run_name(tmp_path: Path):
+    config_path = tmp_path / "scs_anderson_sweep.yaml"
+    config_path.write_text(
+        """
+run:
+  dataset: synthetic_qp
+solvers:
+  - id: scs
+    solver: scs
+    settings: {}
+"""
+    )
+
+    config = load_run_config(config_path)
+
+    assert config.name == "scs_anderson_sweep"
+
+
+def test_explicit_run_name_overrides_config_stem(tmp_path: Path):
+    config_path = tmp_path / "file_name.yaml"
+    config_path.write_text(
+        """
+run:
+  name: publication_sweep
+  dataset: synthetic_qp
+solvers:
+  - id: scs
+    solver: scs
+    settings: {}
+"""
+    )
+
+    config = load_run_config(config_path)
+
+    assert config.name == "publication_sweep"
+
+
 def test_config_hash_changes_with_solver_settings(tmp_path: Path):
     first = parse_run_config(
         {
@@ -67,6 +104,23 @@ def test_config_hash_changes_with_solver_settings(tmp_path: Path):
     assert first.config_hash != second.config_hash
 
 
+def test_config_hash_ignores_run_name(tmp_path: Path):
+    first = parse_run_config(
+        {
+            "run": {"name": "first", "dataset": "synthetic_qp", "output_dir": str(tmp_path)},
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {"eps_abs": 1e-4}}],
+        }
+    )
+    second = parse_run_config(
+        {
+            "run": {"name": "second", "dataset": "synthetic_qp", "output_dir": str(tmp_path)},
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {"eps_abs": 1e-4}}],
+        }
+    )
+
+    assert first.config_hash == second.config_hash
+
+
 def test_solver_settings_are_verbose_by_default():
     assert settings_with_defaults({})["verbose"] is True
     assert settings_with_defaults({"eps_abs": 1.0e-6})["verbose"] is True
@@ -74,7 +128,12 @@ def test_solver_settings_are_verbose_by_default():
 
 
 def test_example_configs_do_not_opt_out_of_verbose_by_default():
-    for config_path in Path("configs").glob("*.*"):
+    config_paths = [
+        *Path("configs").glob("*.json"),
+        *Path("configs").glob("*.yaml"),
+        *Path("configs").glob("*.yml"),
+    ]
+    for config_path in config_paths:
         config = load_run_config(config_path)
         assert all(
             solver.settings.get("verbose", True) is not False

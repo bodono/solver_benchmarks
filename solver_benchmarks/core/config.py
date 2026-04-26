@@ -41,6 +41,7 @@ class DatasetConfig:
 class RunConfig:
     datasets: list[DatasetConfig]
     solvers: list[SolverConfig]
+    name: str | None = None
     output_dir: Path = Path("runs")
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
@@ -115,6 +116,7 @@ class RunConfig:
 
     def to_manifest(self) -> dict[str, Any]:
         return {
+            "name": self.name,
             "datasets": [
                 {
                     "id": dataset.id,
@@ -163,13 +165,13 @@ class EnvironmentRunConfig:
 
 def load_run_config(path: str | Path) -> RunConfig:
     path = Path(path)
-    raw = _load_mapping(path)
+    raw = _with_default_run_name(_load_mapping(path), path.stem)
     return parse_run_config(raw, base_dir=path.parent)
 
 
 def load_environment_run_config(path: str | Path) -> EnvironmentRunConfig:
     path = Path(path)
-    raw = _load_mapping(path)
+    raw = _with_default_run_name(_load_mapping(path), path.stem)
     return parse_environment_run_config(raw, base_dir=path.parent)
 
 
@@ -191,6 +193,7 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
     return RunConfig(
         datasets=datasets,
         solvers=solvers,
+        name=_optional_string(run.get("name", raw.get("name"))),
         output_dir=output_dir,
         include=include,
         exclude=exclude,
@@ -458,6 +461,26 @@ def _load_mapping(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Config {path} did not parse to a mapping")
     return data
+
+
+def _with_default_run_name(raw: dict[str, Any], default_name: str) -> dict[str, Any]:
+    if raw.get("name") is not None:
+        return raw
+    run = raw.get("run")
+    if isinstance(run, dict) and run.get("name") is not None:
+        return raw
+    updated = dict(raw)
+    updated_run = dict(run) if isinstance(run, dict) else {}
+    updated_run["name"] = default_name
+    updated["run"] = updated_run
+    return updated
+
+
+def _optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _listify(value: Any) -> list[str]:

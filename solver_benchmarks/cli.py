@@ -171,6 +171,7 @@ def run_cmd(
                 run_dir=run_dir,
                 repo_root=repo_root,
             ),
+            source_config_path=config_path,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -197,6 +198,7 @@ def env_run_cmd(
         run_dir=run_dir,
         repo_root=repo_root,
         stream_output=True,
+        source_config_path=config_path,
     )
     click.echo(str(out))
 

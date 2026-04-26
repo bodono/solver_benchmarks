@@ -44,9 +44,12 @@ def run_benchmark(
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
     prepare_data_command: str | None = None,
+    source_config_path: str | Path | None = None,
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
     store = ResultStore.create(config, run_dir=run_dir)
+    if source_config_path is not None:
+        store.copy_source_config(source_config_path)
     completed = store.completed_keys() if config.resume else set()
 
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
