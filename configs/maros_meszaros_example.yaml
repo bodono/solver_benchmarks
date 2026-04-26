@@ -1,6 +1,6 @@
 run:
   dataset: maros_meszaros
-  output_dir: runs
+  output_dir: results
   include:
     - AUG2D
     - CVXQP1_S

@@ -9,7 +9,11 @@ import shlex
 import subprocess
 import sys
 
-from solver_benchmarks.core.config import EnvironmentConfig, EnvironmentRunConfig
+from solver_benchmarks.core.config import (
+    EnvironmentConfig,
+    EnvironmentRunConfig,
+    resolve_output_dir,
+)
 from solver_benchmarks.core.storage import ResultStore, make_run_id
 
 
@@ -30,6 +34,7 @@ def run_environment_matrix(
             for solver in environment.solvers
         ],
     )
+    combined_config = resolve_output_dir(combined_config, repo_root)
     if run_dir is None:
         env_name = (
             f"{combined_config.name}_env"
@@ -38,8 +43,6 @@ def run_environment_matrix(
         )
         named_config = replace(combined_config, name=env_name)
         run_dir = combined_config.output_dir / make_run_id(named_config)
-        if not run_dir.is_absolute():
-            run_dir = repo_root / run_dir
     run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     store = ResultStore.create(combined_config, run_dir=run_dir)

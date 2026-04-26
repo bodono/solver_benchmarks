@@ -16,7 +16,12 @@ import time
 from types import SimpleNamespace
 
 from solver_benchmarks.core import status
-from solver_benchmarks.core.config import DatasetConfig, RunConfig, SolverConfig
+from solver_benchmarks.core.config import (
+    DatasetConfig,
+    RunConfig,
+    SolverConfig,
+    resolve_output_dir,
+)
 from solver_benchmarks.core.data_prepare import (
     data_prepare_command,
     data_prepare_selection,
@@ -49,6 +54,7 @@ def run_benchmark(
     source_config_path: str | Path | None = None,
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
+    config = resolve_output_dir(config, repo_root)
     store = ResultStore.create(config, run_dir=run_dir)
     if source_config_path is not None:
         store.copy_source_config(source_config_path)

@@ -72,10 +72,11 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
 
 def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path):
     config_path = tmp_path / "named_smoke_run.yaml"
-    config_text = """
+    output_dir = tmp_path / "runs"
+    config_text = f"""
 run:
   dataset: synthetic_qp
-  output_dir: runs
+  output_dir: {output_dir}
   include:
     - one_variable_eq
 solvers:
@@ -94,7 +95,7 @@ solvers:
 
     assert result.exit_code == 0, result.output
     run_dir = Path(result.output.strip().splitlines()[-1])
-    assert run_dir.parent == tmp_path / "runs"
+    assert run_dir.parent == output_dir
     assert re.fullmatch(
         r"named_smoke_run_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC",
         run_dir.name,
@@ -142,6 +143,33 @@ solvers:
         {"verbose": False},
         {"max_iter": 10, "verbose": False},
     ]
+
+
+def test_run_benchmark_resolves_relative_output_dir_under_repo_root(
+    monkeypatch, tmp_path: Path
+):
+    class EmptyDataset(Dataset):
+        dataset_id = "empty_for_output_dir"
+
+        def list_problems(self):
+            return []
+
+        def load_problem(self, name):
+            raise KeyError(name)
+
+    monkeypatch.setitem(
+        dataset_registry.DATASETS, "empty_for_output_dir", EmptyDataset
+    )
+    config = parse_run_config(
+        {
+            "run": {"dataset": "empty_for_output_dir", "output_dir": "results"},
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    store = run_benchmark(config, repo_root=tmp_path)
+
+    assert store.run_dir.parent == tmp_path / "results"
 
 
 def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):

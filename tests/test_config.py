@@ -8,6 +8,7 @@ from solver_benchmarks.core.config import (
     manifest_dataset_entries,
     parse_environment_run_config,
     parse_run_config,
+    resolve_output_dir,
 )
 from solver_benchmarks.solvers.base import settings_with_defaults
 
@@ -66,6 +67,39 @@ solvers:
     config = load_run_config(config_path)
 
     assert config.name == "scs_anderson_sweep"
+
+
+def test_relative_output_dir_is_repo_root_relative(tmp_path: Path):
+    config_path = tmp_path / "configs" / "relative_output.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        """
+run:
+  dataset: synthetic_qp
+  output_dir: results
+solvers:
+  - id: scs
+    solver: scs
+    settings: {}
+"""
+    )
+
+    config = load_run_config(config_path)
+    resolved = resolve_output_dir(config, tmp_path)
+
+    assert config.output_dir == Path("results")
+    assert resolved.output_dir == (tmp_path / "results").resolve()
+
+
+def test_default_output_dir_is_results():
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp"},
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    assert config.output_dir == Path("results")
 
 
 def test_explicit_run_name_overrides_config_stem(tmp_path: Path):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -42,7 +42,7 @@ class RunConfig:
     datasets: list[DatasetConfig]
     solvers: list[SolverConfig]
     name: str | None = None
-    output_dir: Path = Path("runs")
+    output_dir: Path = Path("results")
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
     parallelism: int = 1
@@ -183,9 +183,7 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
     if not solvers:
         raise ValueError("Config must define at least one solver")
 
-    output_dir = Path(run.get("output_dir", raw.get("output_dir", "runs")))
-    if base_dir is not None and not output_dir.is_absolute():
-        output_dir = (base_dir / output_dir).resolve()
+    output_dir = Path(run.get("output_dir", raw.get("output_dir", "results")))
 
     include = _listify(run.get("include", raw.get("include", [])))
     exclude = _listify(run.get("exclude", raw.get("exclude", [])))
@@ -206,6 +204,16 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
         auto_prepare_data=bool(
             run.get("auto_prepare_data", raw.get("auto_prepare_data", False))
         ),
+    )
+
+
+def resolve_output_dir(config: RunConfig, root: str | Path) -> RunConfig:
+    """Resolve a relative run output directory under the benchmark repo root."""
+    if config.output_dir.is_absolute():
+        return config
+    return replace(
+        config,
+        output_dir=(Path(root).resolve() / config.output_dir).resolve(),
     )
 
 

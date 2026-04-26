@@ -1,5 +1,5 @@
 run:
-  output_dir: runs
+  output_dir: results
   parallelism: 4
   resume: true
   timeout_seconds: 300
