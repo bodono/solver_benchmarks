@@ -144,13 +144,14 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     )
     captured = capsys.readouterr()
 
-    assert "[bench] planned 2 solves" in captured.err
+    assert "[bench] planned 2 total solves" in captured.err
     assert "0 already complete" in captured.err
     assert "2 queued" in captured.err
     assert "progress 1/2 (50.00%)" in captured.err
     assert "progress 2/2 (100.00%)" in captured.err
     assert captured.err.count("progress 2/2 (100.00%)") == 1
-    assert "queued_done 2/2" in captured.err
+    assert "this_run 2/2" in captured.err
+    assert "eta_remaining" in captured.err
     assert "last fake_dataset/p2 fake_solver: optimal in 0.010s" in captured.err
     assert subprocess_stream_flags == [False, False]
 
@@ -169,10 +170,132 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
     assert events[0]["queued"] == 2
     assert events[1]["completed_this_run"] == 1
     assert events[2]["completed_this_run"] == 2
+    assert events[-1]["remaining_queued"] == 0
+    assert "eta_remaining_seconds" in events[-1]
     assert events[-1]["completed_total"] == 2
     assert events[-1]["completed_this_run"] == 2
     assert events[-1]["last_problem"] == "p2"
     assert events[-1]["last_run_time_seconds"] == 0.01
+
+
+def test_resume_progress_uses_total_expected_denominator(
+    monkeypatch, tmp_path: Path, capsys
+):
+    class FakeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [
+                ProblemSpec(dataset_id="fake_resume", name="p1", kind=QP),
+                ProblemSpec(dataset_id="fake_resume", name="p2", kind=QP),
+            ]
+
+    class FakeSolver(SolverAdapter):
+        solver_name = "fake_solver"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError("Subprocess is stubbed in this test")
+
+    subprocess_payloads = []
+
+    def fake_run_subprocess(
+        cmd,
+        *,
+        cwd,
+        timeout,
+        stdout_path,
+        stderr_path,
+        stream_output,
+    ):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        subprocess_payloads.append(payload)
+        artifact_dir = Path(payload["artifacts_dir"])
+        record = ProblemResult(
+            run_id=payload["run_id"],
+            dataset=payload["dataset"],
+            problem=payload["problem"],
+            problem_kind=payload["problem_kind"],
+            solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.02,
+            artifact_dir=str(artifact_dir),
+        ).to_record()
+        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
+        stdout_path.write_text("")
+        stderr_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "fake_resume", FakeDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "fake_solver", FakeSolver)
+    monkeypatch.setattr(
+        "solver_benchmarks.core.runner._run_subprocess",
+        fake_run_subprocess,
+    )
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "fake_resume",
+                "output_dir": str(tmp_path / "runs"),
+                "parallelism": 1,
+                "resume": True,
+            },
+            "solvers": [
+                {"id": "fake_solver", "solver": "fake_solver", "settings": {}}
+            ],
+        }
+    )
+    seed_store = ResultStore.create(config, run_dir=tmp_path / "resume_run")
+    seed_store.write_result(
+        ProblemResult(
+            run_id=seed_store.run_id,
+            dataset="fake_resume",
+            problem="p1",
+            problem_kind=QP,
+            solver_id="fake_solver",
+            solver="fake_solver",
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+        )
+    )
+
+    store = run_benchmark(
+        config,
+        run_dir=seed_store.run_dir,
+        repo_root=Path.cwd(),
+        stream_output=True,
+    )
+    captured = capsys.readouterr()
+
+    assert store.run_dir == seed_store.run_dir
+    assert [payload["problem"] for payload in subprocess_payloads] == ["p2"]
+    assert "[bench] planned 2 total solves" in captured.err
+    assert "1 already complete" in captured.err
+    assert "1 queued" in captured.err
+    assert "progress 2/2 (100.00%)" in captured.err
+    assert "this_run 1/1" in captured.err
+    assert "eta_remaining" in captured.err
+
+    events = [
+        json.loads(line)
+        for line in store.events_path.read_text().splitlines()
+        if line.strip()
+    ]
+    progress_event = next(
+        event for event in events if event["message"] == "benchmark_progress"
+    )
+    assert progress_event["completed_total"] == 2
+    assert progress_event["total_expected"] == 2
+    assert progress_event["already_complete"] == 1
+    assert progress_event["completed_this_run"] == 1
+    assert progress_event["queued"] == 1
+    assert progress_event["remaining_queued"] == 0
 
 
 def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path):
