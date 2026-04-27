@@ -862,11 +862,13 @@ and `[bench] finished ...`.
 At the start of a run it prints the number of planned solves, already-complete
 resume hits, skipped rows, queued rows, and parallelism. After every result is
 written, it prints aggregate progress with completed/total counts, percentage,
-elapsed time, solves/second, ETA, and the last completed `(dataset, problem,
-solver)` tuple with its run time. The same aggregate snapshots are recorded as
-structured
-`benchmark_plan`, `benchmark_progress`, and `benchmark_complete` events in
-`events.jsonl`.
+this-run completion counts, elapsed time, solves/second, remaining-work ETA, and
+the last completed `(dataset, problem, solver)` tuple with its run time. On a
+resumed run, the main `progress X/Y` count includes rows completed by earlier
+invocations, while `this_run X/Y` and `eta_remaining` only describe the work
+queued for the current invocation. The same aggregate snapshots are recorded as
+structured `benchmark_plan`, `benchmark_progress`, and `benchmark_complete`
+events in `events.jsonl`.
 With `parallelism > 1`, live solver output from different workers can interleave;
 the per-solve log files remain separated and are the authoritative logs.
 

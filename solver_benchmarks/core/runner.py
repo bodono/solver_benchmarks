@@ -266,7 +266,7 @@ class _ProgressReporter:
         _emit_progress(
             self.stream_output,
             (
-                f"planned {self.total_expected} solves: "
+                f"planned {self.total_expected} total solves: "
                 f"{self.already_complete} already complete, "
                 f"{self.skipped_during_planning} skipped during planning, "
                 f"{self.queued} queued, parallelism={self.parallelism}"
@@ -308,9 +308,10 @@ class _ProgressReporter:
             "skipped_during_planning": self.skipped_during_planning,
             "completed_this_run": self.completed_this_run,
             "queued": self.queued,
+            "remaining_queued": remaining,
             "elapsed_seconds": elapsed,
             "rate_solves_per_second": rate,
-            "eta_seconds": eta,
+            "eta_remaining_seconds": eta,
             "parallelism": self.parallelism,
         }
         if self.last_result is not None:
@@ -342,9 +343,10 @@ class _ProgressReporter:
                 self.stream_output,
                 (
                     f"progress {completed_total}/{self.total_expected} "
-                    f"({percent:.2f}%) | queued_done "
+                    f"({percent:.2f}%) | this_run "
                     f"{self.completed_this_run}/{self.queued} | elapsed "
-                    f"{_format_duration(elapsed)} | rate {rate_text} | eta {eta_text}"
+                    f"{_format_duration(elapsed)} | rate {rate_text} "
+                    f"| eta_remaining {eta_text}"
                     f"{last}"
                 ),
             )
