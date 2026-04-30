@@ -6,11 +6,59 @@ import bz2
 import contextlib
 import gzip
 import os
+import re
 import tempfile
+import warnings
 from pathlib import Path
 
 import numpy as np
 from scipy import sparse
+
+# QPS quadratic objective sections. Files using any of these encode a
+# quadratic term that HiGHS' getLp() drops silently; we warn so the
+# caller knows the loaded LP is missing the Q matrix.
+_QUADRATIC_SECTION_RE = re.compile(
+    r"^\s*(QSECTION|QMATRIX|QUADOBJ)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+class QuadraticDataIgnoredWarning(UserWarning):
+    """Raised when an MPS file contains quadratic data that we cannot represent."""
+
+
+def _opener_for(path: Path):
+    suffix = "".join(path.suffixes[-2:]).lower() if path.suffixes else ""
+    if suffix.endswith(".gz") or path.suffix.lower() == ".gz":
+        return gzip.open
+    if suffix.endswith(".bz2") or path.suffix.lower() == ".bz2":
+        return bz2.open
+    return None
+
+
+def _check_for_quadratic_sections(path: Path) -> None:
+    """Warn if the MPS file declares a quadratic objective section.
+
+    HiGHS' getLp() returns only the linear part, so a QSECTION-containing
+    file would otherwise load with a silently-zero Hessian.
+    """
+    opener = _opener_for(path) or open
+    try:
+        with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        # Fail open: the caller will surface a more useful error from
+        # the actual readModel() call.
+        return
+    if _QUADRATIC_SECTION_RE.search(text):
+        warnings.warn(
+            f"MPS file {path} declares a quadratic objective section "
+            "(QSECTION/QMATRIX/QUADOBJ); the loaded model will only "
+            "contain the linear part because HiGHS getLp() ignores the "
+            "quadratic terms. Use a QPS-aware loader to preserve them.",
+            QuadraticDataIgnoredWarning,
+            stacklevel=3,
+        )
 
 
 def readMpsLp(filename):
@@ -22,6 +70,7 @@ def readMpsLp(filename):
     """
 
     path = Path(filename)
+    _check_for_quadratic_sections(path)
     suffix = "".join(path.suffixes[-2:]).lower() if path.suffixes else ""
 
     if suffix.endswith(".gz") or path.suffix.lower() == ".gz":

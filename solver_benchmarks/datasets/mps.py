@@ -17,7 +17,7 @@ import scipy.sparse as sp
 import problem_classes.qpsreader as qpsreader
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 
-from .base import Dataset
+from .base import Dataset, atomic_write_bytes
 
 
 class MPSLPDataset(Dataset):
@@ -263,12 +263,13 @@ def _download_miplib_problem(name: str, folder: Path) -> None:
     target = folder / filename
     if target.exists():
         return
+    folder.mkdir(parents=True, exist_ok=True)
     url = _miplib_problem_url(filename)
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             compressed = response.read()
         _validate_gzip_payload(compressed, name)
-        target.write_bytes(compressed)
+        atomic_write_bytes(target, compressed)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"Could not download MIPLIB problem {name!r}: {exc}") from exc
 
@@ -300,6 +301,7 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
     target = folder / f"{stem}.mps"
     if target.exists():
         return
+    folder.mkdir(parents=True, exist_ok=True)
     candidates = [f"{stem}.mps.bz2", f"{stem}.bz2"]
     last_error = None
     for filename in candidates:
@@ -307,7 +309,7 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
         try:
             with urllib.request.urlopen(url, timeout=60) as response:
                 compressed = response.read()
-            target.write_bytes(bz2.decompress(compressed))
+            atomic_write_bytes(target, bz2.decompress(compressed))
             return
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             last_error = exc
@@ -343,13 +345,16 @@ def _download_kennington_problem(name: str, folder: Path) -> None:
     target = folder / f"{stem}.mps.gz"
     if target.exists():
         return
+    folder.mkdir(parents=True, exist_ok=True)
     url = f"https://www.netlib.org/lp/data/kennington/{stem}.gz"
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             compressed = response.read()
         # Validate that NETLIB served a gzip stream before writing it under .mps.gz.
-        gzip.decompress(compressed)
-        target.write_bytes(compressed)
+        # Streaming probe avoids holding the full decompressed payload in memory.
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as probe:
+            probe.read(1)
+        atomic_write_bytes(target, compressed)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"Could not download Kennington problem {name!r}: {exc}") from exc
 

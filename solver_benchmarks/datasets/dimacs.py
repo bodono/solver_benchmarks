@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import gzip
+import io
 import re
-import shutil
 import urllib.request
 from io import BytesIO
 from pathlib import Path
@@ -16,7 +16,7 @@ import scipy.sparse.linalg
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset
+from .base import Dataset, atomic_write_bytes
 
 DIMACS_BASE_URL = "https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances"
 DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")
@@ -104,7 +104,14 @@ def _read_dimacs(path: Path) -> dict:
     if free_rows:
         a_free = raw_a[free_rows, :] - raw_a[dropped_rows, :]
         b_free = b[free_rows] - b[dropped_rows]
-        if np.linalg.norm(b_free) > 0 or sp.linalg.norm(a_free) > 0:
+        # Use a small tolerance instead of an exact-zero comparison: the
+        # subtraction of equal entries in finite precision can produce
+        # tiny numerical residues which would otherwise spuriously
+        # promote upper/lower row pairs into "free" rows.
+        residual_tol = 1.0e-12
+        a_residual = float(sp.linalg.norm(a_free)) if a_free.nnz else 0.0
+        b_residual = float(np.linalg.norm(b_free)) if b_free.size else 0.0
+        if b_residual > residual_tol or a_residual > residual_tol:
             a = sp.vstack((a_free, raw_a[rows_to_keep, :]), format="csc")
             b = np.hstack((b_free, b[rows_to_keep]))
             cone["f"] = int(cone.get("f", 0) + len(b_free))
@@ -202,17 +209,21 @@ def _download_dimacs_problem(name: str, folder: Path) -> Path:
     target = folder / f"{stem}.mat.gz"
     if existing_mat.exists() or target.exists():
         return target if target.exists() else existing_mat
+    folder.mkdir(parents=True, exist_ok=True)
     bundled = _bundled_dimacs_problem(stem)
     if bundled is not None:
-        shutil.copyfile(bundled, target)
+        # Atomically place the bundled copy so a partial copyfile cannot
+        # leave a corrupt file at `target`.
+        atomic_write_bytes(target, bundled.read_bytes())
         return target
     last_error = None
     url = f"{DIMACS_BASE_URL}/{stem}.mat.gz"
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             content = response.read()
-        gzip.decompress(content)
-        target.write_bytes(content)
+        with gzip.GzipFile(fileobj=io.BytesIO(content)) as probe:
+            probe.read(1)
+        atomic_write_bytes(target, content)
         return target
     except OSError as exc:
         last_error = exc

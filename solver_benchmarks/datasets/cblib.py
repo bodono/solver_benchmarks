@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import io
 import re
 import urllib.request
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset
+from .base import Dataset, atomic_write_bytes
 
 CBLIB_BASE_URL = "https://cblib.zib.de/download/all"
 CBLIB_DEFAULT_SUBSET = (
@@ -124,8 +125,13 @@ def download_cblib_problem(name: str, folder: Path) -> Path:
     url = f"{CBLIB_BASE_URL}/{stem}.cbf.gz"
     with urllib.request.urlopen(url, timeout=60) as response:
         compressed = response.read()
-    gzip.decompress(compressed)
-    target.write_bytes(compressed)
+    # Sanity-check the gzip stream so we don't atomically commit a payload
+    # that would explode at parse time. Peek a single byte; this validates
+    # the header without holding the full decompressed body in memory.
+    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as probe:
+        probe.read(1)
+    folder.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(target, compressed)
     return target
 
 

@@ -85,4 +85,3 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
-"problem_classes/qplib.py" = ["F841"]  # parsed-but-unused infinity sentinel; refactored in PR 4

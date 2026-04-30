@@ -523,3 +523,57 @@ def test_qplib_index_and_subset_filtering(tmp_path: Path):
     assert qplib_module.qplib_index(folder) == {"8790": "ccb", "8495": "dcl"}
     assert {spec.name for spec in all_dataset.list_problems()} == {"8790", "8495"}
     assert [spec.name for spec in ccb_dataset.list_problems()] == ["8790"]
+
+
+def _write_minimal_qplib(path: Path, *, direction: str = "minimize") -> None:
+    """Write a tiny QPLIB-format file for a 1-D max problem ``-(x-1)^2``."""
+    body = "\n".join(
+        [
+            "TINY",
+            "QCB",
+            direction,
+            "1 variables",
+            "0 constraints",
+            "1 quadratic objective",
+            "1 1 -2.0",  # P = -2 in lower-tri (x^2 coefficient = -1, doubled by 1/2 conv)
+            "0.0",  # q default
+            "1",  # 1 non-default q
+            "1 2.0",  # q[1] = 2.0
+            "-1.0",  # r = -1
+            "1.0e30",  # infty marker
+            "0.0",  # lx default
+            "0",  # 0 non-default lx
+            "0.0",  # ux default
+            "0",
+            "0.0",  # x0 default
+            "0",
+            "0.0",  # y0 default
+            "0",
+            "0.0",  # w0 default
+            "0",
+            "",
+        ]
+    )
+    path.write_text(body)
+
+
+def test_qplib_loader_negates_max_data_and_reports_min_obj_type(tmp_path: Path):
+    """A max-form QPLIB file must be loaded as min-form so the worker
+    does not double-negate the reported objective value."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n9999\n")
+    _write_minimal_qplib(folder / "QPLIB_9999.qplib", direction="maximize")
+
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("9999")
+
+    qp = problem.qp
+    # obj_type is min-form so the worker leaves the reported objective alone.
+    assert qp["obj_type"] == "min"
+    # Original direction is preserved as metadata for reporting.
+    assert problem.metadata.get("original_obj_type") == "max"
+    # Quadratic + linear data was negated; constant offset r flipped sign.
+    assert qp["r"] == 1.0  # original r = -1, negated for min form
+    assert qp["q"][0] == -2.0  # original q[0] = 2, negated
