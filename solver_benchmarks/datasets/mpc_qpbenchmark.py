@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.cones import INF_BOUND
-from .base import Dataset
 
+from .base import Dataset
 
 MPC_QPBENCHMARK_API_URL = (
     "https://api.github.com/repos/qpsolvers/mpc_qpbenchmark/contents/data"

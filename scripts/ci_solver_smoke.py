@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
 import tempfile
+from pathlib import Path
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import parse_run_config
 from solver_benchmarks.core.runner import run_benchmark
-
 
 SETTINGS = {
     "clarabel": {"verbose": False},

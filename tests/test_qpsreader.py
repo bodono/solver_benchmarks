@@ -13,7 +13,6 @@ import pytest
 
 from problem_classes import qpsreader
 
-
 _TINY_MPS = """\
 NAME          TINY
 ROWS

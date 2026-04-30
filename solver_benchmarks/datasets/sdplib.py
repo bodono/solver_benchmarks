@@ -10,8 +10,8 @@ from solver_benchmarks.transforms.sdplib import (
     list_sdplib_tar,
     read_sdplib_jld2,
 )
-from .base import Dataset
 
+from .base import Dataset
 
 SDPLIB_DEFAULT_SUBSET = ("arch0", "control1", "theta1")
 

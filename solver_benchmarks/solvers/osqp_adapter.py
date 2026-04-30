@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
@@ -12,6 +12,7 @@ from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
+
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 

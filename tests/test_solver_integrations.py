@@ -1,5 +1,5 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -8,7 +8,6 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.config import parse_run_config
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.solvers import get_solver
-
 
 OPEN_SOURCE_SOLVERS = {
     "highs": {"verbose": False},
@@ -57,13 +56,14 @@ if sys.version_info < (3, 14):
     }
 
 
-def test_all_open_source_solvers_solve_synthetic_lp(tmp_path: Path):
+def test_all_open_source_solvers_solve_synthetic_lp(tmp_path: Path, repo_root: Path):
     missing = [
         solver_name
         for solver_name in OPEN_SOURCE_SOLVERS
         if not get_solver(solver_name).is_available()
     ]
-    assert not missing, f"Missing solver extras: {', '.join(missing)}"
+    if missing:
+        pytest.skip(f"Missing solver extras: {', '.join(missing)}")
 
     config = parse_run_config(
         {
@@ -85,7 +85,7 @@ def test_all_open_source_solvers_solve_synthetic_lp(tmp_path: Path):
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     df = load_results(store.run_dir)
 
     assert set(df["solver_id"]) == set(OPEN_SOURCE_SOLVERS)
@@ -95,13 +95,14 @@ def test_all_open_source_solvers_solve_synthetic_lp(tmp_path: Path):
         assert record["objective_value"] == pytest.approx(1.0, abs=1.0e-4)
 
 
-def test_open_source_cone_solvers_solve_synthetic_cone_lp(tmp_path: Path):
+def test_open_source_cone_solvers_solve_synthetic_cone_lp(tmp_path: Path, repo_root: Path):
     missing = [
         solver_name
         for solver_name in OPEN_SOURCE_CONE_SOLVERS
         if not get_solver(solver_name).is_available()
     ]
-    assert not missing, f"Missing solver extras: {', '.join(missing)}"
+    if missing:
+        pytest.skip(f"Missing solver extras: {', '.join(missing)}")
 
     config = parse_run_config(
         {
@@ -123,7 +124,7 @@ def test_open_source_cone_solvers_solve_synthetic_cone_lp(tmp_path: Path):
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     df = load_results(store.run_dir)
 
     assert set(df["solver_id"]) == set(OPEN_SOURCE_CONE_SOLVERS)

@@ -1,8 +1,7 @@
-import scipy.sparse as spa
 import scipy.io as spio
 
 
-class MarosMeszaros(object):
+class MarosMeszaros:
     '''
     Maros Meszaros
     '''

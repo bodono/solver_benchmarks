@@ -7,8 +7,8 @@ benchmark suite represents LP datasets through the same QP dictionary format.
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -18,8 +18,8 @@ from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
+from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 INF_BOUND = 1.0e20
 
@@ -31,8 +31,8 @@ class PDLPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         try:
-            import ortools
             import google.protobuf  # noqa: F401
+            import ortools
             _import_model_builder_helper()
         except ModuleNotFoundError:
             return False

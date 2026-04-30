@@ -15,7 +15,6 @@ slices of cone matrices.
 from __future__ import annotations
 
 import numpy as np
-import scipy.sparse as sp
 
 
 def col_major_to_row_major_perm(n: int) -> np.ndarray:

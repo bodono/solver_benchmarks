@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import html
 import json
 import math
+from pathlib import Path
 
 import pandas as pd
 
@@ -34,7 +34,6 @@ from solver_benchmarks.analysis.reports import (
     status_matrix,
 )
 from solver_benchmarks.core.config import manifest_dataset_entries
-
 
 PLOT_IMAGE_WIDTH = 680
 KKT_PLOT_IMAGE_WIDTH = 920
@@ -991,7 +990,7 @@ def _metric_aggregates(results: pd.DataFrame, metric: str) -> pd.DataFrame:
         return pd.DataFrame()
     values = results[["solver_id", metric]].copy()
     values[metric] = pd.to_numeric(values[metric], errors="coerce")
-    grouped = values.groupby("solver_id", dropna=False)[metric]
+    grouped = values.groupby("solver_id", dropna=False, observed=True)[metric]
     return grouped.agg(["median", "sum", "max"]).reset_index().rename(
         columns={
             "median": f"median_{metric}",

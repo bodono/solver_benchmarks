@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from itertools import combinations
 import math
+from itertools import combinations
+from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -136,7 +136,7 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
     problem_count = _unique_problem_count(results)
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     has_positive = False
-    for solver_id, group in successful.groupby("solver_id"):
+    for solver_id, group in successful.groupby("solver_id", observed=True):
         values = np.sort(group[metric].to_numpy())
         if len(values) == 0:
             continue
@@ -500,7 +500,7 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
 
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     drew_any = False
-    for solver_id, group in plottable.groupby("solver_id"):
+    for solver_id, group in plottable.groupby("solver_id", observed=True):
         ordered = group.sort_values("size_bin")
         midpoints = 0.5 * (ordered["size_min"] + ordered["size_max"])
         ax.plot(

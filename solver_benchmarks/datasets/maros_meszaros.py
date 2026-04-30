@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from problem_classes.maros_meszaros import MarosMeszaros
-
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
+
 from .base import Dataset
 
 

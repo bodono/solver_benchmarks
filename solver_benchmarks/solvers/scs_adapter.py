@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import csv
 import time
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
@@ -14,6 +14,7 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dual
+
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 

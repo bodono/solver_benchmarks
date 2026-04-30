@@ -16,13 +16,13 @@ from solver_benchmarks.core.problem import CONE, QP, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.runner import _filter_by_size, run_benchmark
 from solver_benchmarks.core.storage import ResultStore
-from solver_benchmarks.datasets.base import Dataset
 from solver_benchmarks.datasets import registry as dataset_registry
+from solver_benchmarks.datasets.base import Dataset
 from solver_benchmarks.solvers import registry as solver_registry
 from solver_benchmarks.solvers.base import SolverAdapter
 
 
-def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
+def test_runner_writes_results_logs_and_resumes(tmp_path: Path, repo_root: Path):
     config = parse_run_config(
         {
             "run": {
@@ -47,7 +47,7 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     results_path = store.results_jsonl_path
     rows = results_path.read_text().strip().splitlines()
 
@@ -62,7 +62,7 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
     assert record["metadata"]["runtime"]["python_version"]
     assert "scs" in record["metadata"]["runtime"]["solver_package_versions"]
 
-    run_benchmark(config, run_dir=store.run_dir, repo_root=Path.cwd())
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
     assert len(results_path.read_text().strip().splitlines()) == 1
 
     df = load_results(store.run_dir)
@@ -70,7 +70,7 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path):
     assert df.loc[0, "solver_id"] == "scs_smoke"
 
 
-def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path):
+def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path, repo_root: Path):
     config_path = tmp_path / "named_smoke_run.yaml"
     output_dir = tmp_path / "runs"
     config_text = f"""
@@ -90,7 +90,7 @@ solvers:
 
     result = CliRunner().invoke(
         main,
-        ["run", str(config_path), "--repo-root", str(Path.cwd())],
+        ["run", str(config_path), "--repo-root", str(repo_root)],
     )
 
     assert result.exit_code == 0, result.output
@@ -317,7 +317,7 @@ def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
     assert df.loc[df["problem"] == "p2", "objective_value"].isna().all()
 
 
-def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path):
+def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path, repo_root: Path):
     class FakeConeDataset:
         def __init__(self, repo_root=None, **options):
             pass
@@ -347,7 +347,7 @@ def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path):
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     df = load_results(store.run_dir)
 
     assert len(df) == 1
@@ -356,7 +356,7 @@ def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path):
     assert store.events_path.exists()
 
 
-def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path):
+def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path, repo_root: Path):
     config = parse_run_config(
         {
             "run": {
@@ -369,7 +369,7 @@ def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path):
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     df = load_results(store.run_dir)
 
     assert len(df) == 1
@@ -476,7 +476,7 @@ def test_pdlp_linear_cone_accepts_free_zero_cone_key():
     assert model.constraint[1].upper_bound == pytest.approx(-1.0)
 
 
-def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):
+def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path, repo_root: Path):
     called = {}
 
     class FakeDataset:
@@ -510,12 +510,12 @@ def test_auto_prepare_data_invokes_dataset_prepare(monkeypatch, tmp_path: Path):
         }
     )
 
-    run_benchmark(config, repo_root=Path.cwd())
+    run_benchmark(config, repo_root=repo_root)
 
     assert called == {"problem_names": ["needed"], "all_problems": False}
 
 
-def test_auto_prepare_data_honors_subset_all(monkeypatch, tmp_path: Path):
+def test_auto_prepare_data_honors_subset_all(monkeypatch, tmp_path: Path, repo_root: Path):
     called = {}
 
     class FakeDataset:
@@ -549,7 +549,7 @@ def test_auto_prepare_data_honors_subset_all(monkeypatch, tmp_path: Path):
         }
     )
 
-    run_benchmark(config, repo_root=Path.cwd())
+    run_benchmark(config, repo_root=repo_root)
 
     assert called == {"problem_names": None, "all_problems": True}
 
@@ -634,7 +634,7 @@ def test_data_status_reports_exact_prepare_command(monkeypatch, tmp_path: Path):
     assert f"bench data prepare remote_status_fake --repo-root {tmp_path}" in result.output
 
 
-def test_runner_records_environment_metadata(tmp_path: Path):
+def test_runner_records_environment_metadata(tmp_path: Path, repo_root: Path):
     config = parse_run_config(
         {
             "run": {
@@ -655,7 +655,7 @@ def test_runner_records_environment_metadata(tmp_path: Path):
 
     store = run_benchmark(
         config,
-        repo_root=Path.cwd(),
+        repo_root=repo_root,
         environment_id="scs_3_2",
         environment_metadata={"scs": "3.2.0"},
     )
@@ -665,7 +665,7 @@ def test_runner_records_environment_metadata(tmp_path: Path):
     assert record["metadata"]["environment_metadata"] == {"scs": "3.2.0"}
 
 
-def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path):
+def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path, repo_root: Path):
     class _FakeDatasetA:
         def __init__(self, repo_root=None, **options):
             pass
@@ -735,7 +735,7 @@ def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path):
             "solvers": [{"id": "stub_solver", "solver": "stub", "settings": {}}],
         }
     )
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     df = load_results(store.run_dir)
 
     # Three problems total across the two datasets.
@@ -810,7 +810,7 @@ def test_runner_resume_keys_are_dataset_aware(monkeypatch, tmp_path: Path):
     assert ("ds_b", "shared", "stub_solver") not in completed
 
 
-def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatch, tmp_path: Path):
+def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatch, tmp_path: Path, repo_root: Path):
     """Same registry name listed twice with distinct ids must produce two
     independent dataset slots: separate artifact directories, separate
     resume keys, and distinct ``dataset`` values on each row."""
@@ -886,7 +886,7 @@ def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatc
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     df = load_results(store.run_dir)
 
     # Both variants ran the adapter with their own options.
@@ -904,7 +904,7 @@ def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatc
     assert ("infeasible", "shared", "stub_solver") in completed
 
 
-def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_path: Path):
+def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_path: Path, repo_root: Path):
     """When an entry uses an explicit ``id`` distinct from its registry
     ``name``, the worker must look the adapter up by ``dataset_name``.
     Looking up by the entry id (which is not in the registry) would make
@@ -913,9 +913,9 @@ def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_pa
     import numpy as np
     import scipy.sparse as sp
 
+    from solver_benchmarks.core import status as status_module
     from solver_benchmarks.core.problem import ProblemData
     from solver_benchmarks.core.result import SolverResult
-    from solver_benchmarks.core import status as status_module
     from solver_benchmarks.solvers.base import SolverAdapter
     from solver_benchmarks.worker import run_payload
 
@@ -968,7 +968,7 @@ def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_pa
         "problem_kind": QP,
         "solver": {"id": "stub_solver", "solver": "stub", "settings": {}},
         "artifacts_dir": str(artifacts_dir),
-        "repo_root": str(Path.cwd()),
+        "repo_root": str(repo_root),
     }
 
     result = run_payload(payload)
@@ -978,7 +978,7 @@ def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_pa
     assert seen_dataset_init == [{"variant": "feasible"}]
 
 
-def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path: Path):
+def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path: Path, repo_root: Path):
     config = parse_environment_run_config(
         {
             "run": {
@@ -1019,7 +1019,7 @@ def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path:
     run_dir = run_environment_matrix(
         config,
         run_dir=tmp_path / "matrix",
-        repo_root=Path.cwd(),
+        repo_root=repo_root,
         stream_output=False,
     )
     df = load_results(run_dir)

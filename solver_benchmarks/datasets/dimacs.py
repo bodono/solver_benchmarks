@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from io import BytesIO
 import gzip
 import re
 import shutil
 import urllib.request
+from io import BytesIO
+from pathlib import Path
 
 import numpy as np
 import scipy.io
@@ -15,8 +15,8 @@ import scipy.sparse as sp
 import scipy.sparse.linalg
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
-from .base import Dataset
 
+from .base import Dataset
 
 DIMACS_BASE_URL = "https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances"
 DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")

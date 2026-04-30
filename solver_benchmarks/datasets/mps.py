@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import bz2
 import gzip
 import io
@@ -10,13 +9,14 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
 
 import problem_classes.qpsreader as qpsreader
-
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
+
 from .base import Dataset
 
 

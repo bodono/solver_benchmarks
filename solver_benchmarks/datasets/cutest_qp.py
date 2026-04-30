@@ -10,9 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
+
 from .base import Dataset
 from .mpc_qpbenchmark import read_mpc_qpbenchmark_npz
-
 
 CUTEST_QP_DEFAULT_SUBSET = (
     "HS35",

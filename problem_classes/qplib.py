@@ -1,11 +1,11 @@
 import linecache
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 import scipy.sparse as spa
-import scipy.io as spio
 
 
-class QPLIB(object):
+class QPLIB:
     '''
     QPLIB
     '''

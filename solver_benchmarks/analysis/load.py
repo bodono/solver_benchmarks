@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -25,5 +25,9 @@ def solver_summary(run_dir: str | Path) -> pd.DataFrame:
     df = load_results(run_dir)
     if df.empty:
         return df
-    grouped = df.groupby(["solver_id", "status"], dropna=False).size().reset_index(name="count")
+    grouped = (
+        df.groupby(["solver_id", "status"], dropna=False, observed=True)
+        .size()
+        .reset_index(name="count")
+    )
     return grouped.sort_values(["solver_id", "status"])

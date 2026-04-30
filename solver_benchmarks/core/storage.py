@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
-
 import json
 import math
 import os
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -51,7 +50,7 @@ class ResultStore:
     run_id: str
 
     @classmethod
-    def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> "ResultStore":
+    def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> ResultStore:
         if run_dir is None:
             run_id = make_run_id(config)
             root = config.output_dir / run_id

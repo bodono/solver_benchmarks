@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
-import math
 import numpy as np
 
 
