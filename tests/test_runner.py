@@ -14,10 +14,10 @@ from solver_benchmarks.core.config import parse_environment_run_config, parse_ru
 from solver_benchmarks.core.env_runner import run_environment_matrix
 from solver_benchmarks.core.problem import CONE, QP, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
-from solver_benchmarks.core.runner import _filter_by_size, run_benchmark
+from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.core.storage import ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
-from solver_benchmarks.datasets.base import Dataset
+from solver_benchmarks.datasets.base import Dataset, filter_problem_specs_by_size
 from solver_benchmarks.solvers import registry as solver_registry
 from solver_benchmarks.solvers.base import SolverAdapter
 
@@ -260,6 +260,9 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
             run_time_seconds=0.2,
         )
     )
+    # Parquet writes are amortized across rapid successive
+    # write_result calls; force the final rewrite as run_benchmark does.
+    store.flush_parquet()
 
     records = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
     df = load_results(store.run_dir)
@@ -398,7 +401,7 @@ def test_pdlp_glop_presolve_requires_explicit_opt_in():
     assert parameters.presolve_options.use_glop
 
 
-def test_filter_by_size_drops_oversized_paths_only(tmp_path: Path):
+def testfilter_problem_specs_by_size_drops_oversized_paths_only(tmp_path: Path):
     small = tmp_path / "small.bin"
     large = tmp_path / "large.bin"
     small.write_bytes(b"x" * 10)
@@ -411,20 +414,20 @@ def test_filter_by_size_drops_oversized_paths_only(tmp_path: Path):
         ProblemSpec(dataset_id="d", name="missing", kind=QP, path=tmp_path / "nope.bin"),
     ]
 
-    assert [spec.name for spec in _filter_by_size(specs, None)] == [
+    assert [spec.name for spec in filter_problem_specs_by_size(specs, None)] == [
         "small",
         "large",
         "synth",
         "missing",
     ]
-    assert [spec.name for spec in _filter_by_size(specs, 1.0)] == [
+    assert [spec.name for spec in filter_problem_specs_by_size(specs, 1.0)] == [
         "small",
         "synth",
         "missing",
     ]
 
 
-def test_filter_by_size_prefers_metadata_size_over_path_stat(tmp_path: Path):
+def testfilter_problem_specs_by_size_prefers_metadata_size_over_path_stat(tmp_path: Path):
     """Datasets that pack many problems into one shared file (e.g. SDPLIB
     tar members) must be able to advertise per-member sizes via
     metadata["size_bytes"]; the filter must use those instead of the
@@ -449,7 +452,7 @@ def test_filter_by_size_prefers_metadata_size_over_path_stat(tmp_path: Path):
         ),
     ]
 
-    assert [spec.name for spec in _filter_by_size(specs, 1.0)] == ["member_small"]
+    assert [spec.name for spec in filter_problem_specs_by_size(specs, 1.0)] == ["member_small"]
 
 
 def test_pdlp_linear_cone_accepts_free_zero_cone_key():

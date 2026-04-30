@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,13 @@ import pandas as pd
 
 from .config import RunConfig
 from .result import ProblemResult, to_jsonable
+
+logger = logging.getLogger(__name__)
+
+# Minimum interval between parquet rewrites in `write_result`. Tight loops
+# of fast solves now do at most one rewrite per second, instead of one per
+# solve. The final rewrite is still forced via `flush_parquet`.
+_PARQUET_REWRITE_INTERVAL_SECONDS = 1.0
 
 
 def make_run_id(config: RunConfig) -> str:
@@ -48,22 +58,34 @@ def slugify(value: str) -> str:
 class ResultStore:
     run_dir: Path
     run_id: str
+    # Per-store lock and bookkeeping for the write paths. Using `field`
+    # with a default factory keeps `cls(root, run_id)` calls compatible.
+    _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    _last_parquet_rewrite: float = field(default=0.0, repr=False, compare=False)
 
     @classmethod
     def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> ResultStore:
         if run_dir is None:
             run_id = make_run_id(config)
-            root = config.output_dir / run_id
             base_run_id = run_id
+            root = config.output_dir / run_id
             suffix = 2
-            while root.exists():
-                run_id = f"{base_run_id}_{suffix}"
-                root = config.output_dir / run_id
-                suffix += 1
+            # Use mkdir(exist_ok=False) inside a retry loop so two
+            # concurrent `bench run` invocations cannot both pick the
+            # same suffix and stomp on each other.
+            while True:
+                try:
+                    root.parent.mkdir(parents=True, exist_ok=True)
+                    root.mkdir(exist_ok=False)
+                    break
+                except FileExistsError:
+                    run_id = f"{base_run_id}_{suffix}"
+                    root = config.output_dir / run_id
+                    suffix += 1
         else:
             root = Path(run_dir).resolve()
             run_id = root.name
-        root.mkdir(parents=True, exist_ok=True)
+            root.mkdir(parents=True, exist_ok=True)
         store = cls(root, run_id)
         store.write_manifest(config)
         return store
@@ -125,21 +147,39 @@ class ResultStore:
 
         Including the dataset name avoids collisions when two datasets
         share a problem name (e.g. ``afiro`` in NETLIB vs another LP
-        bundle), so resume cannot conflate them.
+        bundle), so resume cannot conflate them. Tolerant of partially
+        written / unparseable JSONL lines (skips with a warning).
         """
         if not self.results_jsonl_path.exists():
             return set()
         keys: set[tuple[str, str, str]] = set()
         with self.results_jsonl_path.open() as handle:
-            for line in handle:
+            for lineno, line in enumerate(handle, start=1):
                 if not line.strip():
                     continue
-                record = json.loads(line)
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Skipping unparseable line %d in %s",
+                        lineno,
+                        self.results_jsonl_path,
+                    )
+                    continue
+                problem = record.get("problem")
+                solver_id = record.get("solver_id")
+                if problem is None or solver_id is None:
+                    logger.warning(
+                        "Skipping line %d in %s: missing required keys",
+                        lineno,
+                        self.results_jsonl_path,
+                    )
+                    continue
                 keys.add(
                     (
                         str(record.get("dataset", "")),
-                        str(record["problem"]),
-                        str(record["solver_id"]),
+                        str(problem),
+                        str(solver_id),
                     )
                 )
         return keys
@@ -151,8 +191,11 @@ class ResultStore:
             "message": message,
             **fields,
         }
-        with self.events_path.open("a") as handle:
-            handle.write(json.dumps(to_jsonable(record), sort_keys=True) + "\n")
+        line = json.dumps(to_jsonable(record), sort_keys=True) + "\n"
+        # Lock the append so concurrent emitters can't interleave bytes
+        # mid-line beyond the OS PIPE_BUF guarantee.
+        with self._write_lock, self.events_path.open("a") as handle:
+            handle.write(line)
 
     def write_result(self, result: ProblemResult) -> None:
         record = result.to_record()
@@ -160,57 +203,104 @@ class ResultStore:
         if artifact_dir is not None:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
-        with self.results_jsonl_path.open("a") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
-        self.rewrite_parquet()
+        line = json.dumps(record, sort_keys=True) + "\n"
+        with self._write_lock:
+            with self.results_jsonl_path.open("a") as handle:
+                handle.write(line)
+            now = time.monotonic()
+            # Amortize parquet rewrites: avoid the O(N^2) cost of
+            # re-serializing all completed records on every solve.
+            if now - self._last_parquet_rewrite >= _PARQUET_REWRITE_INTERVAL_SECONDS:
+                self._rewrite_parquet_locked()
+                self._last_parquet_rewrite = now
+
+    def flush_parquet(self) -> None:
+        """Force a parquet rewrite. Call at end of run."""
+        with self._write_lock:
+            self._rewrite_parquet_locked()
+            self._last_parquet_rewrite = time.monotonic()
 
     def rewrite_parquet(self) -> None:
+        with self._write_lock:
+            self._rewrite_parquet_locked()
+            self._last_parquet_rewrite = time.monotonic()
+
+    def _rewrite_parquet_locked(self) -> None:
         if not self.results_jsonl_path.exists():
             return
-        records = []
+        records: list[dict] = []
         with self.results_jsonl_path.open() as handle:
-            records = [json.loads(line) for line in handle if line.strip()]
+            for lineno, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    # A torn last line shouldn't kill the run; the next
+                    # rewrite (or a manual `bench` step) can recover once
+                    # the line is whole.
+                    logger.warning(
+                        "Skipping unparseable line %d in %s while rewriting parquet",
+                        lineno,
+                        self.results_jsonl_path,
+                    )
         if not records:
             return
         df = pd.json_normalize(records)
         df = normalize_table_for_parquet(df)
         tmp = self.results_parquet_path.with_suffix(".parquet.tmp")
-        df.to_parquet(tmp, index=False)
-        os.replace(tmp, self.results_parquet_path)
+        try:
+            df.to_parquet(tmp, index=False)
+            os.replace(tmp, self.results_parquet_path)
+        except Exception:
+            # Don't leave a half-written .parquet.tmp behind.
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+
+_NUMERIC_COLUMNS: tuple[str, ...] = (
+    "objective_value",
+    "iterations",
+    "run_time_seconds",
+    "setup_time_seconds",
+    "solve_time_seconds",
+)
+
+_NONFINITE_STRINGS = {
+    "nan",
+    "NaN",
+    "NAN",
+    "inf",
+    "Inf",
+    "INF",
+    "+inf",
+    "+Inf",
+    "+INF",
+    "-inf",
+    "-Inf",
+    "-INF",
+    "Infinity",
+    "+Infinity",
+    "-Infinity",
+}
 
 
 def normalize_table_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
-    normalized = normalized.replace(
-        {
-            "nan": None,
-            "NaN": None,
-            "NAN": None,
-            "inf": None,
-            "Inf": None,
-            "INF": None,
-            "+inf": None,
-            "+Inf": None,
-            "+INF": None,
-            "-inf": None,
-            "-Inf": None,
-            "-INF": None,
-            "Infinity": None,
-            "+Infinity": None,
-            "-Infinity": None,
-        }
-    )
-    for column in [
-        "objective_value",
-        "iterations",
-        "run_time_seconds",
-        "setup_time_seconds",
-        "solve_time_seconds",
-    ]:
+    # Restrict the string-NaN scrub to numeric columns so a problem named
+    # "nan" or a free-text error message containing "inf" is not silently
+    # nulled out.
+    for column in _NUMERIC_COLUMNS:
         if column not in normalized:
             continue
-        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-        normalized[column] = normalized[column].map(_finite_or_none)
+        col = normalized[column]
+        if col.dtype == object:
+            col = col.map(lambda v: None if isinstance(v, str) and v in _NONFINITE_STRINGS else v)
+        col = pd.to_numeric(col, errors="coerce")
+        normalized[column] = col.map(_finite_or_none)
     return normalized
 
 
@@ -225,9 +315,25 @@ def _finite_or_none(value):
 
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w", dir=path.parent, delete=False, encoding="utf-8"
-    ) as handle:
-        handle.write(text)
-        tmp_name = handle.name
-    os.replace(tmp_name, path)
+    tmp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=path.parent, delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(text)
+            handle.flush()
+            # Force the data to disk before the rename so a power loss
+            # cannot leave the rename visible with a zero-length payload.
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+            tmp_name = handle.name
+        os.replace(tmp_name, path)
+        tmp_name = None
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass

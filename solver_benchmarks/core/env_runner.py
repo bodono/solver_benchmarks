@@ -52,12 +52,28 @@ def run_environment_matrix(
     if source_config_path is not None:
         store.copy_source_config(source_config_path, name="environment_config")
 
+    failures: list[tuple[str, str]] = []
     for environment in config.environments:
-        _install_environment(
-            environment,
-            repo_root=repo_root,
-            stream_output=stream_output,
-        )
+        try:
+            _install_environment(
+                environment,
+                repo_root=repo_root,
+                stream_output=stream_output,
+            )
+        except subprocess.CalledProcessError as exc:
+            message = (
+                f"environment {environment.id} install failed: "
+                f"{' '.join(map(str, exc.cmd))} -> exit {exc.returncode}"
+            )
+            store.append_event(
+                "error",
+                "environment_install_failed",
+                environment_id=environment.id,
+                returncode=exc.returncode,
+            )
+            print(f"[bench env] {message}", file=sys.stderr)
+            failures.append((environment.id, "install"))
+            continue
         child_config = replace(combined_config, solvers=environment.solvers)
         child_path = run_dir / f"{environment.id}_config.json"
         child_path.write_text(
@@ -84,8 +100,26 @@ def run_environment_matrix(
             print(f"[bench env] running {environment.id}: {' '.join(cmd)}", file=sys.stderr)
         try:
             subprocess.run(cmd, cwd=repo_root, check=True)
+        except subprocess.CalledProcessError as exc:
+            message = (
+                f"environment {environment.id} run failed: exit {exc.returncode}"
+            )
+            store.append_event(
+                "error",
+                "environment_run_failed",
+                environment_id=environment.id,
+                returncode=exc.returncode,
+            )
+            print(f"[bench env] {message}", file=sys.stderr)
+            failures.append((environment.id, "run"))
         finally:
             store.write_manifest(combined_config)
+    if failures:
+        # Surface any per-environment failures as a single error after
+        # the matrix has finished, so the partial results are still
+        # written to disk and inspectable.
+        labels = ", ".join(f"{env_id} ({phase})" for env_id, phase in failures)
+        raise RuntimeError(f"environment matrix had failures: {labels}")
     return run_dir
 
 

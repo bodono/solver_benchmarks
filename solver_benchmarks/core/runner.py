@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
+import os
+import signal
 import subprocess
 import sys
 import threading
@@ -212,10 +215,10 @@ def run_benchmark(
                     dataset_config,
                     problem,
                     solver_config,
-                    stream_output,
-                    environment_id,
-                    environment_metadata,
-                    stream_solver_output,
+                    stream_output=stream_output,
+                    stream_solver_output=stream_solver_output,
+                    environment_id=environment_id,
+                    environment_metadata=environment_metadata,
                 )
                 for dataset_config, problem, solver_config in tasks
             ]
@@ -223,6 +226,10 @@ def run_benchmark(
                 result = future.result()
                 store.write_result(result)
                 progress.record_result(result)
+    # Force a final parquet rewrite so the on-disk parquet always
+    # reflects the complete jsonl, even when interim writes were
+    # amortized via the rate limit.
+    store.flush_parquet()
     progress.emit_final()
     return store
 
@@ -393,12 +400,18 @@ def _run_one(
     }
     payload_path = artifacts_dir / "payload.json"
     atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
-    configured_timeout = solver_config.timeout_seconds or config.timeout_seconds
-    subprocess_timeout = (
-        float(configured_timeout) + SUBPROCESS_TIMEOUT_GRACE_SECONDS
-        if configured_timeout
-        else None
-    )
+    # Distinguish "no timeout configured" (None) from "explicitly disabled"
+    # (0). A solver-level None means "fall back to the run-level setting";
+    # any other numeric value (including 0, which means no limit) takes
+    # precedence over the global default.
+    if solver_config.timeout_seconds is not None:
+        configured_timeout = solver_config.timeout_seconds
+    else:
+        configured_timeout = config.timeout_seconds
+    if configured_timeout is None or configured_timeout <= 0:
+        subprocess_timeout: float | None = None
+    else:
+        subprocess_timeout = float(configured_timeout) + SUBPROCESS_TIMEOUT_GRACE_SECONDS
     cmd = [sys.executable, "-m", "solver_benchmarks.worker", "--payload", str(payload_path)]
     _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
     completed = _run_subprocess(
@@ -434,8 +447,16 @@ def _run_one(
 
     worker_result_path = artifacts_dir / "worker_result.json"
     if completed.returncode == 0 and worker_result_path.exists():
-        record = json.loads(worker_result_path.read_text())
-        result = ProblemResult(**record)
+        result = _load_worker_result(
+            worker_result_path,
+            store=store,
+            dataset_config=dataset_config,
+            problem=problem,
+            solver_config=solver_config,
+            artifacts_dir=artifacts_dir,
+            environment_id=environment_id,
+            environment_metadata=environment_metadata,
+        )
         _emit_progress(
             stream_output,
             f"finished {problem.name} with {solver_config.id}: {result.status}",
@@ -457,6 +478,66 @@ def _run_one(
         iterations=None,
         run_time_seconds=None,
         error=f"Worker exited with code {completed.returncode}",
+        artifact_dir=str(artifacts_dir),
+        metadata=_metadata_with_environment(
+            problem,
+            solver_config,
+            environment_id=environment_id,
+            environment_metadata=environment_metadata,
+        ),
+    )
+
+
+def _load_worker_result(
+    path: Path,
+    *,
+    store: ResultStore,
+    dataset_config: DatasetConfig,
+    problem: ProblemSpec,
+    solver_config: SolverConfig,
+    artifacts_dir: Path,
+    environment_id: str | None,
+    environment_metadata: dict | None,
+) -> ProblemResult:
+    """Parse a worker_result.json into a ProblemResult.
+
+    Tolerates partial writes (truncated JSON), schema drift (unknown
+    keys are dropped, missing keys fall back to defaults), and unparseable
+    payloads, surfacing them as WORKER_ERROR rather than crashing the
+    whole benchmark.
+    """
+    error: str | None = None
+    record: dict | None = None
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        error = f"Could not read worker_result.json: {exc}"
+    else:
+        try:
+            record = json.loads(text)
+        except json.JSONDecodeError as exc:
+            error = f"Could not parse worker_result.json: {exc}"
+    if record is not None:
+        known = {field.name for field in dataclasses.fields(ProblemResult)}
+        unknown = set(record) - known
+        if unknown:
+            record = {key: value for key, value in record.items() if key in known}
+        try:
+            return ProblemResult(**record)
+        except TypeError as exc:
+            error = f"Could not construct ProblemResult: {exc}"
+    return ProblemResult(
+        run_id=store.run_id,
+        dataset=dataset_config.id,
+        problem=problem.name,
+        problem_kind=problem.kind,
+        solver_id=solver_config.id,
+        solver=solver_config.solver,
+        status=status.WORKER_ERROR,
+        objective_value=None,
+        iterations=None,
+        run_time_seconds=None,
+        error=error,
         artifact_dir=str(artifacts_dir),
         metadata=_metadata_with_environment(
             problem,
@@ -497,6 +578,13 @@ def _format_short_seconds(seconds: float | None) -> str:
     return _format_duration(seconds)
 
 
+# Time budget after a SIGTERM-equivalent before we escalate to SIGKILL on
+# the whole process group. The first phase gives the worker a chance to
+# flush its pending writes; the second phase guarantees we move on.
+_KILL_GRACE_SECONDS = 5.0
+_FINAL_WAIT_SECONDS = 5.0
+
+
 def _run_subprocess(
     cmd: list[str],
     *,
@@ -508,15 +596,30 @@ def _run_subprocess(
 ):
     stdout_chunks: list[str] = []
     stderr_chunks: list[str] = []
-    with stdout_path.open("w") as stdout_log, stderr_path.open("w") as stderr_log:
-        process = subprocess.Popen(
-            cmd,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
+    # Line-buffered open so the on-disk log reflects in-progress output if
+    # the worker is killed mid-line (prior bufsize=1 referred only to the
+    # child pipes).
+    stdout_log = stdout_path.open("w", buffering=1)
+    stderr_log = stderr_path.open("w", buffering=1)
+    threads: list[threading.Thread] = []
+    process: subprocess.Popen | None = None
+    try:
+        # Run the worker in its own session/process group so we can kill
+        # any helper processes the solver may have spawned.
+        popen_kwargs: dict = {
+            "cwd": cwd,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+        }
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        else:
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        process = subprocess.Popen(cmd, **popen_kwargs)
         assert process.stdout is not None
         assert process.stderr is not None
         threads = [
@@ -538,10 +641,21 @@ def _run_subprocess(
             returncode = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            process.kill()
-            returncode = process.wait()
+            returncode = _terminate_process(process)
+    finally:
+        # Always drain pipes (so we don't lose the final partial line)
+        # and close the log files. Bound the join so a wedged tee thread
+        # doesn't hang the runner.
         for thread in threads:
-            thread.join()
+            thread.join(timeout=_FINAL_WAIT_SECONDS)
+        try:
+            stdout_log.close()
+        except OSError:
+            pass
+        try:
+            stderr_log.close()
+        except OSError:
+            pass
     return SimpleNamespace(
         returncode=returncode,
         stdout="".join(stdout_chunks),
@@ -550,14 +664,53 @@ def _run_subprocess(
     )
 
 
+def _terminate_process(process: subprocess.Popen) -> int:
+    """Kill the process group and return the exit code.
+
+    Always returns a returncode (using -SIGKILL as a last resort) rather
+    than blocking forever on ``wait()``.
+    """
+    if os.name == "posix":
+        try:
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            pgid = None
+        if pgid is not None:
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                return process.wait(timeout=_KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+    process.kill()
+    try:
+        return process.wait(timeout=_FINAL_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return -signal.SIGKILL
+
+
 def _tee_stream(source, log_file, sink, chunks: list[str], stream_output: bool) -> None:
-    for line in source:
-        chunks.append(line)
-        log_file.write(line)
-        log_file.flush()
-        if stream_output:
-            sink.write(line)
-            sink.flush()
+    try:
+        for line in source:
+            chunks.append(line)
+            try:
+                log_file.write(line)
+            except ValueError:
+                # log_file was closed by the parent during teardown.
+                break
+            if stream_output:
+                sink.write(line)
+                sink.flush()
+    finally:
+        try:
+            source.close()
+        except (OSError, ValueError):
+            pass
 
 
 def _filter_problems(
@@ -573,12 +726,6 @@ def _filter_problems(
             continue
         selected.append(problem)
     return selected
-
-
-def _filter_by_size(
-    problems: Iterable[ProblemSpec], max_size_mb: float | None
-) -> list[ProblemSpec]:
-    return filter_problem_specs_by_size(list(problems), max_size_mb)
 
 
 def _missing_data_run_message(

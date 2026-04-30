@@ -352,7 +352,7 @@ def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):
     """Tar members share ProblemSpec.path with the whole archive, so
     SDPLIB must surface per-member sizes via metadata so the runner-level
     size filter can compare against the member, not the archive."""
-    from solver_benchmarks.core.runner import _filter_by_size
+    from solver_benchmarks.datasets.base import filter_problem_specs_by_size
 
     data_root = tmp_path / "problem_classes"
     folder = data_root / "sdplib_data"
@@ -377,7 +377,7 @@ def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):
 
     # The runner-level filter must drop the oversized member even though
     # the whole sdplib.tar archive (which is the spec.path) is over 1 MB.
-    filtered = _filter_by_size(specs, 1.0)
+    filtered = filter_problem_specs_by_size(specs, 1.0)
     assert [spec.name for spec in filtered] == ["tar_small"]
 
 
