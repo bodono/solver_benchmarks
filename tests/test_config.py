@@ -603,3 +603,110 @@ def test_parse_environment_run_config_rejects_duplicate_solver_ids_across_envs()
                 ],
             }
         )
+
+
+def test_parse_run_config_rejects_invalid_solver_id_charset():
+    with pytest.raises(ValueError, match="contains characters outside"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp"},
+                "solvers": [{"id": "scs/oops", "solver": "scs"}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_negative_timeout():
+    with pytest.raises(ValueError, match=">= 0"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp", "timeout_seconds": -1},
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_non_numeric_timeout():
+    with pytest.raises(ValueError, match="must be a number or null"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp"},
+                "solvers": [
+                    {"id": "scs", "solver": "scs", "timeout_seconds": "fast"}
+                ],
+            }
+        )
+
+
+def test_parse_run_config_rejects_non_scalar_default_sweep_value():
+    with pytest.raises(ValueError, match="non-scalar"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp"},
+                "solvers": [
+                    {
+                        "id": "scs",
+                        "solver": "scs",
+                        "sweep": {"settings": [{"a": 1}, {"a": 2}]},
+                    }
+                ],
+            }
+        )
+
+
+def test_parse_run_config_allows_non_scalar_sweep_with_id_template():
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp"},
+            "solvers": [
+                {
+                    "id": "scs",
+                    "solver": "scs",
+                    "sweep": {"weights": [[1, 0], [0, 1]]},
+                    "id_template": "scs_w{weights[0]}_{weights[1]}",
+                }
+            ],
+        }
+    )
+    assert [solver.id for solver in config.solvers] == ["scs_w1_0", "scs_w0_1"]
+
+
+def test_parse_run_config_deepcopies_nested_sweep_settings():
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp"},
+            "solvers": [
+                {
+                    "id": "scs",
+                    "solver": "scs",
+                    "settings": {"nested": {"key": "value"}},
+                    "sweep": {"eps_abs": [1.0e-4, 1.0e-6]},
+                    "id_template": "scs_{eps_abs:g}",
+                }
+            ],
+        }
+    )
+    a, b = config.solvers
+    # Mutating one expanded entry's nested settings must not bleed into
+    # the other; deep copy isolates them.
+    a.settings["nested"]["mutated"] = True
+    assert "mutated" not in b.settings["nested"]
+
+
+def test_config_hash_is_independent_of_path_object_vs_string(tmp_path: Path):
+    first = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path)},
+            "solvers": [
+                {"id": "scs", "solver": "scs", "settings": {"path": Path("a")}},
+            ],
+        }
+    )
+    second = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path)},
+            "solvers": [
+                {"id": "scs", "solver": "scs", "settings": {"path": "a"}},
+            ],
+        }
+    )
+    assert first.config_hash == second.config_hash
