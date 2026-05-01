@@ -5,6 +5,7 @@ from __future__ import annotations
 from .base import SolverAdapter
 from .clarabel_adapter import ClarabelSolverAdapter
 from .cplex_adapter import CPLEXSolverAdapter
+from .cvxopt_adapter import CVXOPTSolverAdapter
 from .ecos_adapter import ECOSSolverAdapter
 from .gurobi_adapter import GurobiSolverAdapter
 from .highs_adapter import HighsSolverAdapter
@@ -20,6 +21,7 @@ from .sdpa_adapter import SDPASolverAdapter
 SOLVERS: dict[str, type[SolverAdapter]] = {
     "clarabel": ClarabelSolverAdapter,
     "cplex": CPLEXSolverAdapter,
+    "cvxopt": CVXOPTSolverAdapter,
     "ecos": ECOSSolverAdapter,
     "gurobi": GurobiSolverAdapter,
     "highs": HighsSolverAdapter,
