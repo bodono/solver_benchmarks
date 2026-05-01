@@ -61,6 +61,27 @@ def test_pop_threads_rejects_negative():
         pop_threads({"threads": -1})
 
 
+def test_pop_threads_rejects_bool():
+    # ``bool`` is a subclass of ``int``; a YAML ``threads: true`` would
+    # otherwise silently become ``threads = 1``.
+    with pytest.raises(ValueError, match="must be an integer"):
+        pop_threads({"threads": True})
+    with pytest.raises(ValueError, match="must be an integer"):
+        pop_threads({"threads": False})
+
+
+def test_pop_threads_rejects_non_integer_float():
+    # ``int(1.9)`` would silently truncate to 1; the helper should
+    # refuse rather than guessing the user's intent.
+    with pytest.raises(ValueError, match="must be an integer"):
+        pop_threads({"threads": 1.9})
+
+
+def test_pop_threads_accepts_integer_valued_float():
+    # ``threads: 4.0`` (e.g. parsed from a JSON number) is unambiguous.
+    assert pop_threads({"threads": 4.0}) == 4
+
+
 def test_mark_time_limit_ignored_records_value():
     info: dict = {}
     mark_time_limit_ignored(info, 30.0)

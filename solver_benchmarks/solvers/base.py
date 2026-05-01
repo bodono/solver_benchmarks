@@ -101,20 +101,44 @@ def pop_threads(settings: dict[str, Any]) -> int | None:
     backend exposes a thread count knob should pass the result through
     to the solver-specific option (e.g. ``Threads`` for Gurobi,
     ``MSK_IPAR_NUM_THREADS`` for MOSEK, ``threads`` for HiGHS).
+
+    Booleans and non-integral floats are rejected explicitly. Without
+    that, ``int(True)`` would silently become ``1`` and ``int(1.9)``
+    would silently truncate to ``1`` even though the error message
+    promises an integer.
     """
     resolved: int | None = None
     for key in THREADS_KEYS:
         value = settings.pop(key, None)
         if resolved is None and value is not None:
-            try:
-                resolved = int(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"Setting {key!r} must be an integer (got {value!r})"
-                ) from exc
+            resolved = _coerce_threads(key, value)
     if resolved is not None and resolved < 0:
         raise ValueError(f"threads must be >= 0 (got {resolved})")
     return resolved
+
+
+def _coerce_threads(key: str, value: Any) -> int:
+    # ``bool`` is a subclass of ``int``; reject it explicitly so YAML
+    # ``threads: true`` doesn't quietly become ``threads = 1``.
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Setting {key!r} must be an integer (got {value!r})"
+        )
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(
+                f"Setting {key!r} must be an integer (got {value!r})"
+            )
+        return int(value)
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Setting {key!r} must be an integer (got {value!r})"
+        ) from exc
+    return coerced
 
 
 def mark_threads_ignored(info: dict[str, Any], threads: int | None) -> None:

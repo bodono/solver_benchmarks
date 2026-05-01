@@ -21,6 +21,7 @@ from solver_benchmarks.transforms.psd import (
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    mark_threads_ignored,
     pop_threads,
     pop_time_limit,
     settings_with_defaults,
@@ -61,18 +62,29 @@ class ClarabelSolverAdapter(SolverAdapter):
         normalized_settings = settings_with_defaults(self.settings)
         # Translate the cross-adapter aliases into Clarabel's native
         # knobs: time_limit_sec/time_limit -> time_limit (Clarabel
-        # exposes it directly), threads -> threads (sparse cones only).
+        # exposes it directly), threads -> max_threads/threads
+        # (whichever the installed Clarabel build exposes).
         time_limit = pop_time_limit(normalized_settings)
         threads = pop_threads(normalized_settings)
         if time_limit is not None:
             normalized_settings["time_limit"] = float(time_limit)
-        if threads is not None and threads >= 1:
-            # Clarabel uses `max_threads`/`threads` depending on
-            # version; setattr with hasattr handles either.
-            for attr in ("max_threads", "threads"):
-                normalized_settings.setdefault(attr, threads)
-
         settings = clarabel.DefaultSettings()
+        threads_ignored = False
+        if threads is not None and threads >= 1:
+            # Probe the real DefaultSettings instance: Clarabel renamed
+            # the knob across versions and some builds expose neither.
+            # Injecting an attribute that does not exist on the actual
+            # object would later trip the "Invalid Clarabel settings"
+            # validation below.
+            available = [
+                attr for attr in ("max_threads", "threads")
+                if hasattr(settings, attr)
+            ]
+            for attr in available:
+                normalized_settings.setdefault(attr, threads)
+            if not available:
+                threads_ignored = True
+
         settings.verbose = bool(normalized_settings.get("verbose"))
         unknown_keys: list[str] = []
         for key, value in normalized_settings.items():
@@ -104,17 +116,20 @@ class ClarabelSolverAdapter(SolverAdapter):
         kkt_dict = _compute_kkt(
             mapped, solution, problem, p, q, a, b, cone_dict
         )
+        info: dict = {
+            "raw_status": str(solution.status),
+            "r_prim": getattr(solution, "r_prim", None),
+            "r_dual": getattr(solution, "r_dual", None),
+            "solve_time": getattr(solution, "solve_time", None),
+        }
+        if threads_ignored:
+            mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(getattr(solution, "obj_val", None)),
             iterations=_maybe_int(getattr(solution, "iterations", None)),
             run_time_seconds=elapsed,
-            info={
-                "raw_status": str(solution.status),
-                "r_prim": getattr(solution, "r_prim", None),
-                "r_dual": getattr(solution, "r_dual", None),
-                "solve_time": getattr(solution, "solve_time", None),
-            },
+            info=info,
             kkt=kkt_dict,
         )
 
