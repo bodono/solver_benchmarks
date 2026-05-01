@@ -206,17 +206,21 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
         output_dir=output_dir,
         include=include,
         exclude=exclude,
-        parallelism=int(run.get("parallelism", raw.get("parallelism", 1))),
-        resume=bool(run.get("resume", raw.get("resume", True))),
+        parallelism=_validate_parallelism(
+            run.get("parallelism", raw.get("parallelism", 1))
+        ),
+        resume=_validate_bool(run.get("resume", raw.get("resume", True)), "run.resume"),
         timeout_seconds=_validate_timeout(
             run.get("timeout_seconds", raw.get("timeout_seconds")),
             context="run.timeout_seconds",
         ),
-        fail_on_unsupported=bool(
-            run.get("fail_on_unsupported", raw.get("fail_on_unsupported", False))
+        fail_on_unsupported=_validate_bool(
+            run.get("fail_on_unsupported", raw.get("fail_on_unsupported", False)),
+            "run.fail_on_unsupported",
         ),
-        auto_prepare_data=bool(
-            run.get("auto_prepare_data", raw.get("auto_prepare_data", False))
+        auto_prepare_data=_validate_bool(
+            run.get("auto_prepare_data", raw.get("auto_prepare_data", False)),
+            "run.auto_prepare_data",
         ),
     )
 
@@ -591,6 +595,39 @@ def _validate_identifier(value: str, *, context: str) -> None:
             "use only those characters so the id round-trips through "
             "filesystem paths and CSV column names."
         )
+
+
+def _validate_parallelism(value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"run.parallelism must be an integer >= 1, got bool: {value!r}")
+    if isinstance(value, int):
+        coerced = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"run.parallelism must be an integer >= 1, got {value!r}")
+        coerced = int(value)
+    else:
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"run.parallelism must be an integer >= 1, got {value!r}"
+            ) from exc
+    if coerced < 1:
+        raise ValueError(f"run.parallelism must be >= 1, got {coerced!r}")
+    return coerced
+
+
+def _validate_bool(value: Any, context: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    raise ValueError(f"{context} must be a boolean, got {value!r}")
 
 
 def _validate_timeout(value: Any, *, context: str) -> float | None:

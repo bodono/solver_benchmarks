@@ -51,6 +51,55 @@ def test_parse_run_config_supports_auto_prepare_data(tmp_path: Path):
     assert config.auto_prepare_data
 
 
+def test_parse_run_config_parses_string_booleans(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "resume": "false",
+                "fail_on_unsupported": "false",
+                "auto_prepare_data": "true",
+            },
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        }
+    )
+
+    assert config.resume is False
+    assert config.fail_on_unsupported is False
+    assert config.auto_prepare_data is True
+
+
+def test_parse_run_config_rejects_invalid_boolean_strings():
+    with pytest.raises(ValueError, match="run.resume must be a boolean"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp", "resume": "sometimes"},
+                "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_bool_parallelism():
+    with pytest.raises(ValueError, match="run.parallelism"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp", "parallelism": True},
+                "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_non_positive_parallelism():
+    with pytest.raises(ValueError, match="run.parallelism"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp", "parallelism": 0},
+                "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+            }
+        )
+
+
 def test_load_run_config_uses_config_stem_as_default_run_name(tmp_path: Path):
     config_path = tmp_path / "scs_anderson_sweep.yaml"
     config_path.write_text(
