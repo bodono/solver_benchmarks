@@ -131,10 +131,12 @@ def _build_lp_model_from_qp(qp: dict):
         for nz_index in range(start, end):
             constraint.var_index.append(int(a.indices[nz_index]))
             constraint.coefficient.append(float(a.data[nz_index]))
-        if lower > -INF_BOUND:
-            constraint.lower_bound = lower
-        if upper < INF_BOUND:
-            constraint.upper_bound = upper
+        # Always set BOTH bounds. MPConstraintProto's proto3 default is
+        # 0 for lower_bound and upper_bound, so a one-sided constraint
+        # ``Ax <= u`` whose lower_bound we leave unset would silently
+        # become ``0 <= Ax <= u`` instead of ``-inf <= Ax <= u``.
+        constraint.lower_bound = lower if lower > -INF_BOUND else -np.inf
+        constraint.upper_bound = upper if upper < INF_BOUND else np.inf
         model.constraint.append(constraint)
     return model
 
@@ -176,6 +178,9 @@ def _build_lp_model_from_linear_cone(cone_problem: dict):
             constraint.upper_bound = float(b[row_index])
         else:
             # SCS-style data has A x + s = b, s >= 0, hence A x <= b.
+            # Always set lower_bound explicitly so the proto3 default
+            # of 0 cannot leak through and silently impose Ax >= 0.
+            constraint.lower_bound = -np.inf
             constraint.upper_bound = float(b[row_index])
         model.constraint.append(constraint)
     return model
@@ -375,6 +380,20 @@ def _map_status(solve_log) -> str:
         termination.TERMINATION_REASON_KKT_MATRIX_PASS_LIMIT,
     }:
         return status.MAX_ITER_REACHED
+    # Reasons added in newer ortools versions; getattr keeps the
+    # mapping forward-compatible without crashing on older builds.
+    interrupted = getattr(termination, "TERMINATION_REASON_INTERRUPTED_BY_USER", None)
+    numerical = getattr(termination, "TERMINATION_REASON_NUMERICAL_ERROR", None)
+    invalid_problem = getattr(termination, "TERMINATION_REASON_INVALID_PROBLEM", None)
+    invalid_param = getattr(termination, "TERMINATION_REASON_INVALID_PARAMETER", None)
+    if interrupted is not None and reason == interrupted:
+        return status.TIME_LIMIT
+    if numerical is not None and reason == numerical:
+        return status.SOLVER_ERROR
+    if invalid_problem is not None and reason == invalid_problem:
+        return status.SOLVER_ERROR
+    if invalid_param is not None and reason == invalid_param:
+        return status.SOLVER_ERROR
     return status.SOLVER_ERROR
 
 

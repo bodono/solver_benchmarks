@@ -530,9 +530,15 @@ def test_pdlp_linear_cone_accepts_free_zero_cone_key():
     model = _build_lp_model_from_linear_cone(cone_problem)
 
     assert len(model.constraint) == 2
+    # Equality row: lower == upper == b.
     assert model.constraint[0].lower_bound == pytest.approx(1.0)
     assert model.constraint[0].upper_bound == pytest.approx(1.0)
-    assert not model.constraint[1].HasField("lower_bound")
+    # Nonneg row: Ax <= b. lower_bound MUST be set explicitly because
+    # MPConstraintProto's proto3 default is 0 — leaving it unset would
+    # silently turn the half-line into 0 <= Ax <= b. -inf is the
+    # canonical "no lower bound" marker.
+    import math
+    assert math.isinf(model.constraint[1].lower_bound) and model.constraint[1].lower_bound < 0
     assert model.constraint[1].upper_bound == pytest.approx(-1.0)
 
 

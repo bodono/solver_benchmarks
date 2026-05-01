@@ -10,7 +10,13 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    mark_time_limit_ignored,
+    pop_time_limit,
+    settings_with_defaults,
+)
 from .qp_split import combine_qp_duals, split_qp_for_range_constraints
 
 
@@ -35,7 +41,14 @@ class ProxQPSolverAdapter(SolverAdapter):
         qp = problem.qp
         p, q, aeq, b, g, h_l, h_u, eq_idx, ineq_idx = split_qp_for_range_constraints(qp)
         settings = settings_with_defaults(self.settings)
-        use_dense = bool(settings.pop("dense", False) or settings.pop("backend", "") == "dense")
+        # Pop both keys unconditionally so an explicit dense=True does
+        # not leak "backend" into the **settings forwarded to ProxQP.
+        dense_flag = settings.pop("dense", False)
+        backend_value = settings.pop("backend", "")
+        use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
+        # ProxQP has no native time-limit knob; record the configured
+        # limit on info so callers know it was ignored.
+        time_limit = pop_time_limit(settings)
         settings.setdefault("compute_timings", True)
         start = time.perf_counter()
         if use_dense:
@@ -82,6 +95,7 @@ class ProxQPSolverAdapter(SolverAdapter):
                 y,
             )
         info = _info_dict(result.info)
+        mark_time_limit_ignored(info, time_limit)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(info.get("objValue")),
@@ -96,13 +110,25 @@ class ProxQPSolverAdapter(SolverAdapter):
 
 def _map_proxqp_status(raw_status, proxsuite) -> str:
     proxqp = proxsuite.proxqp
-    return {
+    mapping = {
         proxqp.PROXQP_SOLVED: status.OPTIMAL,
         proxqp.PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE: status.OPTIMAL_INACCURATE,
         proxqp.PROXQP_MAX_ITER_REACHED: status.MAX_ITER_REACHED,
         proxqp.PROXQP_PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE,
         proxqp.PROXQP_DUAL_INFEASIBLE: status.DUAL_INFEASIBLE,
-    }.get(raw_status, status.SOLVER_ERROR)
+    }
+    # Newer ProxSuite versions added inaccurate variants of the
+    # infeasibility statuses. getattr keeps us forward-compatible.
+    primal_inaccurate = getattr(proxqp, "PROXQP_PRIMAL_INFEASIBLE_INACCURATE", None)
+    dual_inaccurate = getattr(proxqp, "PROXQP_DUAL_INFEASIBLE_INACCURATE", None)
+    not_run = getattr(proxqp, "PROXQP_NOT_RUN", None)
+    if primal_inaccurate is not None:
+        mapping[primal_inaccurate] = status.PRIMAL_INFEASIBLE_INACCURATE
+    if dual_inaccurate is not None:
+        mapping[dual_inaccurate] = status.DUAL_INFEASIBLE_INACCURATE
+    if not_run is not None:
+        mapping[not_run] = status.SOLVER_ERROR
+    return mapping.get(raw_status, status.SOLVER_ERROR)
 
 
 def _info_dict(info) -> dict:

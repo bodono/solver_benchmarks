@@ -42,60 +42,90 @@ class GurobiSolverAdapter(SolverAdapter):
         lower = _finite_bounds(qp["l"], -grb.GRB.INFINITY, lower=True)
         upper = _finite_bounds(qp["u"], grb.GRB.INFINITY, lower=False)
 
-        model = grb.Model(f"{problem.dataset_id}/{problem.name}")
-        _configure_gurobi(model, self.settings, grb)
-
-        variables = [model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY) for _ in range(n)]
-        model.update()
-
-        for row in range(m):
-            start, end = a_mat.indptr[row], a_mat.indptr[row + 1]
-            expr = grb.LinExpr(a_mat.data[start:end], [variables[j] for j in a_mat.indices[start:end]])
-            l_val = lower[row]
-            u_val = upper[row]
-            if l_val <= -grb.GRB.INFINITY and u_val >= grb.GRB.INFINITY:
-                continue
-            if abs(l_val - u_val) <= 1.0e-10:
-                model.addConstr(expr == u_val)
-            elif l_val <= -grb.GRB.INFINITY:
-                model.addConstr(expr <= u_val)
-            elif u_val >= grb.GRB.INFINITY:
-                model.addConstr(expr >= l_val)
-            else:
-                model.addRange(expr, l_val, u_val)
-
-        objective = grb.QuadExpr()
-        for row, col, value in zip(p_mat.row, p_mat.col, p_mat.data):
-            objective.add(0.5 * float(value) * variables[row] * variables[col])
-        objective.add(grb.LinExpr(q, variables))
-        # The ``r`` constant offset is added by ``solver_benchmarks.worker``;
-        # adding it here as well would double-count it for Gurobi solves.
-        model.setObjective(objective, grb.GRB.MINIMIZE)
-
-        start = time.perf_counter()
+        # Hold the env so we can dispose() it after solve, releasing the
+        # Gurobi license token deterministically across long batch runs.
+        env = grb.Env()
         try:
-            model.optimize()
-        except Exception as exc:
-            return SolverResult(
-                status=status.SOLVER_ERROR,
-                run_time_seconds=time.perf_counter() - start,
-                info={"error": str(exc)},
-            )
-        elapsed = time.perf_counter() - start
+            model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
+            try:
+                _configure_gurobi(model, self.settings, grb)
 
-        mapped = _map_gurobi_status(model.Status, grb)
-        return SolverResult(
-            status=mapped,
-            objective_value=float(model.ObjVal) if mapped in status.SOLUTION_PRESENT else None,
-            iterations=_maybe_int(getattr(model, "BarIterCount", None) or getattr(model, "IterCount", None)),
-            run_time_seconds=elapsed,
-            info={
-                "raw_status": int(model.Status),
-                "solver": "gurobi",
-                "version": ".".join(str(part) for part in grb.gurobi.version()),
-                "solver_reported_runtime": _maybe_float(getattr(model, "Runtime", None)),
-            },
-        )
+                variables = [
+                    model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY)
+                    for _ in range(n)
+                ]
+                model.update()
+
+                for row in range(m):
+                    start, end = a_mat.indptr[row], a_mat.indptr[row + 1]
+                    expr = grb.LinExpr(
+                        a_mat.data[start:end],
+                        [variables[j] for j in a_mat.indices[start:end]],
+                    )
+                    l_val = lower[row]
+                    u_val = upper[row]
+                    if l_val <= -grb.GRB.INFINITY and u_val >= grb.GRB.INFINITY:
+                        continue
+                    if abs(l_val - u_val) <= 1.0e-10:
+                        model.addConstr(expr == u_val)
+                    elif l_val <= -grb.GRB.INFINITY:
+                        model.addConstr(expr <= u_val)
+                    elif u_val >= grb.GRB.INFINITY:
+                        model.addConstr(expr >= l_val)
+                    else:
+                        model.addRange(expr, l_val, u_val)
+
+                objective = grb.QuadExpr()
+                for row, col, value in zip(p_mat.row, p_mat.col, p_mat.data):
+                    objective.add(0.5 * float(value) * variables[row] * variables[col])
+                objective.add(grb.LinExpr(q, variables))
+                # The ``r`` constant offset is added by ``solver_benchmarks.worker``;
+                # adding it here as well would double-count it for Gurobi solves.
+                model.setObjective(objective, grb.GRB.MINIMIZE)
+
+                start = time.perf_counter()
+                try:
+                    model.optimize()
+                except Exception as exc:
+                    return SolverResult(
+                        status=status.SOLVER_ERROR,
+                        run_time_seconds=time.perf_counter() - start,
+                        info={"error": str(exc)},
+                    )
+                elapsed = time.perf_counter() - start
+
+                mapped = _map_gurobi_status(model.Status, grb)
+                # Gurobi exposes ObjVal for any status that has a feasible
+                # solution; include OPTIMAL_INACCURATE / SUBOPTIMAL for
+                # consistency with PIQP/ProxQP/SCS.
+                objective_present = mapped in status.SOLUTION_PRESENT or (
+                    mapped == status.OPTIMAL_INACCURATE
+                )
+                return SolverResult(
+                    status=mapped,
+                    objective_value=(
+                        float(model.ObjVal) if objective_present else None
+                    ),
+                    iterations=_maybe_int(
+                        getattr(model, "BarIterCount", None)
+                        or getattr(model, "IterCount", None)
+                    ),
+                    run_time_seconds=elapsed,
+                    info={
+                        "raw_status": int(model.Status),
+                        "solver": "gurobi",
+                        "version": ".".join(str(part) for part in grb.gurobi.version()),
+                        "solver_reported_runtime": _maybe_float(
+                            getattr(model, "Runtime", None)
+                        ),
+                    },
+                )
+            finally:
+                # Releases the C-level Model storage. Without this, long
+                # batch runs accumulate models held by the env until GC.
+                model.dispose()
+        finally:
+            env.dispose()
 
 
 def _finite_bounds(values, inf_value: float, *, lower: bool) -> np.ndarray:

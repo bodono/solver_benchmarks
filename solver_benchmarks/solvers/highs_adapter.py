@@ -126,10 +126,26 @@ def _configure_highs(solver, settings: dict) -> None:
     for source, target in [
         ("time_limit_sec", "time_limit"),
         ("time_limit", "time_limit"),
-        ("max_iter", "simplex_iteration_limit"),
     ]:
         if source in settings:
             solver.setOptionValue(target, settings.pop(source))
+    if "max_iter" in settings:
+        # HiGHS uses a separate iteration cap per algorithm. Forward
+        # the user's max_iter to all of them so an LP solved by IPM,
+        # a QP solved by the QP code, or a PDLP run is also capped.
+        max_iter = settings.pop("max_iter")
+        for option in (
+            "simplex_iteration_limit",
+            "ipm_iteration_limit",
+            "qp_iteration_limit",
+            "pdlp_iteration_limit",
+        ):
+            try:
+                solver.setOptionValue(option, max_iter)
+            except Exception:
+                # Older highspy versions lack one of these options;
+                # ignore so the available ones still take effect.
+                pass
     for key, value in settings.items():
         solver.setOptionValue(key, value)
 
@@ -153,6 +169,20 @@ def _map_highs_status(model_status, highspy) -> str:
         model.kIterationLimit: status.MAX_ITER_REACHED,
         model.kTimeLimit: status.TIME_LIMIT,
     }
+    # Optional model statuses depending on highspy build. Use getattr so
+    # the mapping works across versions.
+    for attr_name, canonical in (
+        ("kInterrupt", status.TIME_LIMIT),
+        ("kModelEmpty", status.SOLVER_ERROR),
+        ("kPresolveError", status.SOLVER_ERROR),
+        ("kSolveError", status.SOLVER_ERROR),
+        ("kPostsolveError", status.SOLVER_ERROR),
+        ("kMemoryLimit", status.SOLVER_ERROR),
+        ("kSolutionLimit", status.MAX_ITER_REACHED),
+    ):
+        attr = getattr(model, attr_name, None)
+        if attr is not None:
+            mapping[attr] = canonical
     return mapping.get(model_status, status.SOLVER_ERROR)
 
 
