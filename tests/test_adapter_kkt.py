@@ -145,7 +145,7 @@ def _solve_cone(solver_name: str, cone_problem: dict, tmp_path: Path):
     return adapter.solve(problem, artifacts)
 
 
-@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "highs", "proxqp", "piqp"])
+@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "highs", "proxqp", "piqp", "ecos"])
 def test_adapter_reports_kkt_for_small_qp(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _small_qp(), tmp_path)
     assert result.status == status.OPTIMAL, result.status

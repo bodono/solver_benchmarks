@@ -1,13 +1,29 @@
 """ECOS adapter.
 
 ECOS is an interior-point solver for linear, second-order, and
-exponential cone problems. It does not natively support quadratic
-objectives — the adapter accepts QPs only when ``P`` is zero (so the
-problem is really an LP) and passes them through after the standard
-QP→nonneg-cone transform; QPs with non-zero ``P`` return
-``SKIPPED_UNSUPPORTED`` rather than being secretly reformulated, so
-the benchmark stays honest about which solvers can take which
-problem shapes.
+exponential cone problems. ECOS does not natively support quadratic
+objectives — but every convex QP with PSD ``P`` admits a standard
+SOCP epigraph reformulation, which the adapter applies automatically
+so users can run ECOS against QP datasets like Maros-Meszaros.
+
+QP → SOCP reformulation (epigraph trick):
+
+    QP: minimize  ½ x'Px + q'x  subject to  l ≤ Ax ≤ u
+
+becomes (with ``P = R'R`` via Cholesky / eigendecomposition for
+rank-deficient ``P``):
+
+    SOCP: minimize  t + q'x  subject to  l ≤ Ax ≤ u
+                                          (u, v, Rx) in std SOC of dim k+2
+
+where ``u = t/√2 + 1/√2``, ``v = t/√2 - 1/√2``. The std SOC means
+``u² ≥ v² + ‖Rx‖²``, which after the substitution reduces to
+``2t ≥ ‖Rx‖² = x'Px`` — exactly the QP epigraph constraint
+``t ≥ ½ x'Px``. At the optimum ``t = ½ x'Px``, so we report the
+actual ``½ x'Px + q'x`` as the objective rather than the surrogate
+``t + q'x`` (numerically these agree to within solver tolerance,
+but reporting the actual avoids drift when comparing to other
+solvers).
 
 ECOS' native data form is::
 
@@ -68,20 +84,22 @@ class ECOSSolverAdapter(SolverAdapter):
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
 
+        # QP-as-SOCP marker: when set, ``socp_state`` carries the
+        # data needed to recover the original-x and report the actual
+        # ½ x'Px + q'x objective rather than the surrogate t + q'x.
+        socp_state: dict | None = None
         if problem.kind == QP:
             qp = problem.qp
             if _qp_has_nonzero_p(qp):
-                return SolverResult(
-                    status=status.SKIPPED_UNSUPPORTED,
-                    info={
-                        "reason": (
-                            "ECOS does not support quadratic objectives natively; "
-                            "use SCS, Clarabel, or a QP-capable solver for QPs with "
-                            "non-zero P."
-                        )
-                    },
-                )
-            data, dims, cone_dict = _qp_lp_to_ecos(qp)
+                try:
+                    data, dims, cone_dict, socp_state = _qp_to_ecos_via_socp(qp)
+                except _SOCPReformulationError as exc:
+                    return SolverResult(
+                        status=status.SKIPPED_UNSUPPORTED,
+                        info={"reason": str(exc)},
+                    )
+            else:
+                data, dims, cone_dict = _qp_lp_to_ecos(qp)
         else:
             data, dims, cone_dict = _cone_to_ecos(problem.cone)
             if isinstance(data, SolverResult):
@@ -110,10 +128,39 @@ class ECOSSolverAdapter(SolverAdapter):
         objective_present = (
             mapped in status.SOLUTION_PRESENT or mapped == status.OPTIMAL_INACCURATE
         )
-        objective = (
-            _maybe_float(info.get("pcost")) if objective_present else None
-        )
-        kkt_dict = _compute_kkt(problem, mapped, raw, dims, cone_dict)
+        if socp_state is not None:
+            # Augmented variables x_full = [x_orig, t]. ECOS may
+            # return without a primal vector (max-iter, numerical
+            # error, infeasibility certificate); guard every read of
+            # ``raw['x']`` so non-solution statuses don't crash the
+            # adapter. Pre-fix we unconditionally indexed
+            # ``raw['x'][n_x]`` here.
+            socp_state["raw_full"] = raw
+            info["socp_reformulation"] = True
+            full_x = raw.get("x")
+            full_x_arr = (
+                np.asarray(full_x, dtype=float) if full_x is not None else None
+            )
+            n_x = int(socp_state["n_x"])
+            if full_x_arr is not None and full_x_arr.size > n_x:
+                info["socp_t_value"] = _maybe_float(full_x_arr[n_x])
+            raw = _strip_socp_aux_from_solution(raw, n_x)
+            stripped_x = raw.get("x")
+            if (
+                objective_present
+                and stripped_x is not None
+                and np.asarray(stripped_x).size == n_x
+            ):
+                objective = _qp_objective_value(
+                    problem.qp, np.asarray(stripped_x, dtype=float)
+                )
+            else:
+                objective = None
+        else:
+            objective = (
+                _maybe_float(info.get("pcost")) if objective_present else None
+            )
+        kkt_dict = _compute_kkt(problem, mapped, raw, dims, cone_dict, socp_state=socp_state)
 
         return SolverResult(
             status=mapped,
@@ -133,6 +180,205 @@ def _qp_has_nonzero_p(qp: dict) -> bool:
         return False
     p_sparse = sp.csc_matrix(p)
     return p_sparse.nnz > 0 and float(np.abs(p_sparse).sum()) > 0.0
+
+
+class _SOCPReformulationError(ValueError):
+    """Raised when a QP cannot be cleanly reformulated as an SOCP for
+    ECOS — typically because ``P`` is not symmetric / PSD within
+    numerical tolerance, or the dimension is too large for the dense
+    eigendecomposition path."""
+
+
+def _qp_to_ecos_via_socp(qp: dict):
+    """Reformulate ``min ½ x'Px + q'x s.t. l ≤ Ax ≤ u`` as an SOCP
+    over augmented variables ``[x, t]``.
+
+    Returns ``(data, dims, cone_dict, socp_state)`` where ``data`` is
+    the ECOS input tuple and ``socp_state`` records the metadata the
+    post-solve code needs to recover ``x`` and report the actual
+    ``½ x'Px + q'x`` objective.
+
+    Builds the std SOC of dim ``k+2`` over ``(u, v, R x)`` where
+    ``u = (t+1)/√2``, ``v = (t-1)/√2``, and ``R`` is a square root of
+    ``P`` from Cholesky (positive-definite case) or eigendecomposition
+    (rank-deficient PSD case). Zero eigenvalues are dropped, so the
+    SOC dim is ``rank(P) + 2``.
+    """
+    n = int(np.asarray(qp["q"], dtype=float).size)
+    p = sp.csc_matrix(qp["P"])
+    if p.shape != (n, n):
+        raise _SOCPReformulationError(
+            f"QP P matrix has shape {p.shape}, expected {(n, n)}; "
+            "cannot reformulate to SOCP."
+        )
+    r_factor = _psd_square_root(p)
+    if r_factor is None:
+        raise _SOCPReformulationError(
+            "QP P matrix is not symmetric PSD within tolerance; "
+            "cannot reformulate to SOCP for ECOS."
+        )
+    k = int(r_factor.shape[0])
+
+    # Original (non-Q) constraints via the nonneg-cone transform.
+    a_cone, b_cone, z_count = qp_to_nonnegative_cone(qp)
+    a_cone = sp.csc_matrix(a_cone)
+    b_eq = b_cone[:z_count]
+    b_ineq = b_cone[z_count:]
+
+    # Pad equality / inequality rows with a zero column for the new
+    # ``t`` variable (it does not appear in any of the original
+    # constraints).
+    zero_col = sp.csc_matrix((a_cone.shape[0], 1))
+    a_full = sp.hstack([a_cone, zero_col], format="csc")
+    a_eq_full = a_full[:z_count, :]
+    a_ineq_full = a_full[z_count:, :]
+
+    # Std SOC of dim k+2 over (u, v, R x):
+    #   u = t/√2 + 1/√2, v = t/√2 − 1/√2, plus the linear part R x.
+    # ECOS encodes the cone as h − G [x; t] in std SOC.
+    sqrt2 = float(np.sqrt(2.0))
+    inv_sqrt2 = 1.0 / sqrt2
+    # Row 0 (u): s_u = h_u − G_u [x; t] = 1/√2 − (-1/√2) t = 1/√2 + t/√2.
+    g_u = sp.csc_matrix(
+        ([- inv_sqrt2], ([0], [n])), shape=(1, n + 1)
+    )
+    # Row 1 (v): s_v = -1/√2 − (-1/√2) t = -1/√2 + t/√2.
+    g_v = sp.csc_matrix(
+        ([- inv_sqrt2], ([0], [n])), shape=(1, n + 1)
+    )
+    # Rows 2..k+1: s_y = 0 − (-R_full) [x; t] = R x. R_full is R
+    # padded with a zero column for the t variable.
+    r_padded = sp.hstack(
+        [sp.csc_matrix(-r_factor), sp.csc_matrix((k, 1))], format="csc"
+    )
+    g_soc = sp.vstack([g_u, g_v, r_padded], format="csc")
+    h_soc = np.concatenate([[inv_sqrt2, -inv_sqrt2], np.zeros(k)])
+
+    # Stack inequality blocks: linear (NN) first, then the SOC rows.
+    if a_ineq_full.shape[0]:
+        g_full = sp.vstack([a_ineq_full, g_soc], format="csc")
+        h_full = np.concatenate([b_ineq, h_soc])
+    else:
+        g_full = g_soc
+        h_full = h_soc
+
+    c = np.concatenate([np.asarray(qp["q"], dtype=float), [1.0]])
+
+    dims = {"l": int(a_ineq_full.shape[0]), "q": [k + 2], "e": 0}
+    cone_dict: dict = {}
+    if z_count:
+        cone_dict["z"] = int(z_count)
+    if a_ineq_full.shape[0]:
+        cone_dict["l"] = int(a_ineq_full.shape[0])
+    cone_dict["q"] = [k + 2]
+
+    socp_state = {
+        "n_x": n,
+        "rank_p": k,
+        "r_factor": r_factor,
+        "z_count": z_count,
+        "n_lin": int(a_ineq_full.shape[0]),
+    }
+    return (
+        {
+            "c": c,
+            "G": g_full,
+            "h": h_full,
+            "A": sp.csc_matrix(a_eq_full),
+            "b": b_eq,
+        },
+        dims,
+        cone_dict,
+        socp_state,
+    )
+
+
+def _psd_square_root(p: sp.csc_matrix) -> np.ndarray | None:
+    """Return ``R`` such that ``P = R'R``. ``R`` is square (rank=n) for
+    positive-definite ``P`` and tall (rows = rank ≤ n) when ``P`` is
+    rank-deficient. Returns ``None`` if ``P`` is not symmetric PSD
+    within numerical tolerance — including the **indefinite** case
+    (any eigenvalue meaningfully below zero) so a nonconvex QP is
+    rejected up-front rather than silently solved as if its negative
+    curvature didn't exist.
+
+    Tries Cholesky first (cheap, only works for SPD); falls back to
+    a symmetric eigendecomposition that drops near-zero eigenvalues
+    but rejects any ``< -threshold`` curvature.
+    """
+    p_dense = p.toarray() if hasattr(p, "toarray") else np.asarray(p, dtype=float)
+    if p_dense.ndim != 2 or p_dense.shape[0] != p_dense.shape[1]:
+        return None
+    # Symmetrize to absorb tiny numerical asymmetry.
+    p_sym = 0.5 * (p_dense + p_dense.T)
+    if not np.allclose(p_dense, p_sym, atol=1e-8 * max(1.0, np.abs(p_dense).max())):
+        return None
+    try:
+        import scipy.linalg as la
+
+        return la.cholesky(p_sym, lower=False)
+    except (np.linalg.LinAlgError, ValueError):
+        # P is rank-deficient PSD or indefinite; fall through to
+        # eigendecomposition to disambiguate.
+        pass
+    try:
+        import scipy.linalg as la
+
+        eigvals, eigvecs = la.eigh(p_sym)
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+    if eigvals.size == 0:
+        return np.zeros((0, p_sym.shape[0]))
+    max_eig = float(eigvals.max())
+    min_eig = float(eigvals.min())
+    if max_eig <= 0.0:
+        # All non-positive: either identically zero (LP path) or
+        # entirely negative (indefinite). For the all-zero case we
+        # return an empty factor; for any negative curvature we
+        # refuse so the caller surfaces SKIPPED_UNSUPPORTED rather
+        # than dropping the indefinite directions.
+        if min_eig < -max(1e-12, abs(min_eig) * 1e-12):
+            return None
+        return np.zeros((0, p_sym.shape[0]))
+    # Reject if any eigenvalue is meaningfully negative (indefinite
+    # P): pre-fix this branch silently dropped negative eigenvalues
+    # alongside the near-zero ones, so a nonconvex QP like
+    # ``diag([1, -1])`` was sent to ECOS as a rank-1 PSD relaxation.
+    threshold = max(1e-12, max_eig * 1e-12)
+    if min_eig < -threshold:
+        return None
+    # Drop near-zero eigenvalues (the QP epigraph constraint
+    # t ≥ ½ x'Px ignores zero-curvature directions).
+    keep = eigvals > threshold
+    if not keep.any():
+        return np.zeros((0, p_sym.shape[0]))
+    sqrt_eigvals = np.sqrt(eigvals[keep])
+    return (sqrt_eigvals[:, None] * eigvecs[:, keep].T).astype(float)
+
+
+def _strip_socp_aux_from_solution(raw: dict, n_x: int) -> dict:
+    """Drop the trailing ``t`` from ``raw['x']`` so the post-solve
+    code (KKT, dual reconstruction) sees only the original-x. The
+    SOC dual ``z`` and slack ``s`` blocks are also trimmed: KKT for
+    the original QP only cares about the linear (NN cone) duals.
+    """
+    new_raw = dict(raw)
+    if raw.get("x") is not None:
+        new_raw["x"] = np.asarray(raw["x"], dtype=float)[:n_x]
+    # Keep y (eq dual) as-is; trim z and s to the linear block only,
+    # discarding the SOC block that came from the SOCP reformulation.
+    # The linear block size lives at ``cone_dict["l"]`` but we don't
+    # have it here; the solver-side ``raw`` is rebuilt by the caller.
+    return new_raw
+
+
+def _qp_objective_value(qp: dict, x: np.ndarray) -> float:
+    p = qp.get("P")
+    q = np.asarray(qp["q"], dtype=float)
+    if p is None:
+        return float(q @ x)
+    px = sp.csc_matrix(p) @ x
+    return float(0.5 * x @ px + q @ x)
 
 
 def _qp_lp_to_ecos(qp: dict):
@@ -288,11 +534,17 @@ def _map_ecos_status(info: dict) -> str:
     return _ECOS_EXIT_FLAG_MAP.get(flag_int, status.SOLVER_ERROR)
 
 
-def _compute_kkt(problem, mapped_status, raw, dims, cone_dict):
+def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=None):
     """Forward to the canonical KKT helpers in the same shape as SCS.
 
     For QP-as-LP solves we call ``kkt.qp_residuals`` with P=0 and the
     original l/u bounds; for CONE problems we call the conic helpers.
+
+    The ``socp_state`` argument carries the metadata for QP-as-SOCP
+    solves. When present, ``raw`` already has the augmented ``t``
+    variable trimmed off; we trim ``z``/``s`` to the linear block
+    (``cone_dict["l"]``) so the KKT helpers see the original-QP
+    layout, and we use the actual ``P`` (not zero) for residuals.
     """
     x = raw.get("x")
     if x is None:
@@ -303,6 +555,14 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict):
     z_dual = raw.get("z")
     y_dual = raw.get("y")
     s_slack = raw.get("s")
+    if socp_state is not None and z_dual is not None:
+        # Drop the SOC dual block (not relevant to original-QP KKT);
+        # keep only the linear block.
+        n_lin = int(socp_state.get("n_lin", 0))
+        z_dual = np.asarray(z_dual, dtype=float)[:n_lin]
+    if socp_state is not None and s_slack is not None:
+        n_lin = int(socp_state.get("n_lin", 0))
+        s_slack = np.asarray(s_slack, dtype=float)[:n_lin]
 
     if problem.kind == QP:
         qp = problem.qp
