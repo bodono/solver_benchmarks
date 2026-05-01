@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import math
+import re
 from dataclasses import dataclass, field, replace
 from itertools import product
 from pathlib import Path
 from typing import Any
+
+# Identifiers flow into manifest fields, parquet columns, slugified
+# directory names, and CSV file names. Restrict them to a portable
+# charset so the same id round-trips cleanly across all of those.
+# `=` is allowed because the default sweep id template formats values
+# as ``key=value`` (e.g. ``scs__alpha=1e-6``).
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_.+=-]+$")
 
 
 @dataclass(frozen=True)
@@ -110,7 +120,9 @@ class RunConfig:
             "exclude": self.exclude,
             "timeout_seconds": self.timeout_seconds,
         }
-        encoded = json.dumps(payload, sort_keys=True, default=str).encode()
+        encoded = json.dumps(
+            _canonicalize(payload), sort_keys=True, separators=(",", ":")
+        ).encode()
         return hashlib.sha256(encoded).hexdigest()[:12]
 
     def to_manifest(self) -> dict[str, Any]:
@@ -196,7 +208,10 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
         exclude=exclude,
         parallelism=int(run.get("parallelism", raw.get("parallelism", 1))),
         resume=bool(run.get("resume", raw.get("resume", True))),
-        timeout_seconds=run.get("timeout_seconds", raw.get("timeout_seconds")),
+        timeout_seconds=_validate_timeout(
+            run.get("timeout_seconds", raw.get("timeout_seconds")),
+            context="run.timeout_seconds",
+        ),
         fail_on_unsupported=bool(
             run.get("fail_on_unsupported", raw.get("fail_on_unsupported", False))
         ),
@@ -284,7 +299,9 @@ def _parse_datasets(raw: dict[str, Any], run: dict[str, Any]) -> list[DatasetCon
     if not single_name:
         raise ValueError("Config must define `dataset` or `datasets`")
 
-    dataset_options = dict(run.get("dataset_options", raw.get("dataset_options", {})))
+    dataset_options = _canonicalize(
+        dict(run.get("dataset_options", raw.get("dataset_options", {})))
+    )
     return [
         DatasetConfig(
             name=str(single_name),
@@ -301,7 +318,14 @@ def _parse_dataset_entries(
     defaults: dict[str, Any],
     root: dict[str, Any],
 ) -> list[DatasetConfig]:
-    default_options = dict(defaults.get("dataset_options", root.get("dataset_options", {})))
+    # Canonicalize dataset_options at parse time so values like Path or
+    # set survive the manifest's json.dumps round-trip. Without this,
+    # programmatic configs with ``data_root=Path(...)`` would parse and
+    # hash successfully but later crash ``ResultStore.create()`` with
+    # ``TypeError: Object of type PosixPath is not JSON serializable``.
+    default_options = _canonicalize(
+        dict(defaults.get("dataset_options", root.get("dataset_options", {})))
+    )
     parsed: list[DatasetConfig] = []
     seen_ids: set[str] = set()
     seen_names_no_id: set[str] = set()
@@ -320,9 +344,10 @@ def _parse_dataset_entries(
                 )
             raw_id = entry.get("id")
             explicit_id = str(raw_id) if raw_id is not None else None
+            entry_options = _canonicalize(dict(entry.get("dataset_options", {})))
             dataset_options = {
                 **default_options,
-                **dict(entry.get("dataset_options", {})),
+                **entry_options,
             }
             include = _listify(entry.get("include", []))
             exclude = _listify(entry.get("exclude", []))
@@ -371,8 +396,10 @@ def _parse_solver_entries(items: list[dict[str, Any]], *, context: str) -> list[
         solver_id = item.get("id")
         if not solver_name or not solver_id:
             raise ValueError(f"Every {context} entry must define id and solver")
+        _validate_identifier(str(solver_id), context=f"{context} id")
         expanded = _expand_solver_entry(item, context=context)
         for solver in expanded:
+            _validate_identifier(solver.id, context=f"{context} id")
             if solver.id in seen_ids:
                 raise ValueError(f"Duplicate solver id after sweep expansion: {solver.id!r}")
             seen_ids.add(solver.id)
@@ -383,8 +410,21 @@ def _parse_solver_entries(items: list[dict[str, Any]], *, context: str) -> list[
 def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverConfig]:
     solver_name = str(item["solver"])
     base_id = str(item["id"])
-    base_settings = dict(item.get("settings", {}))
-    timeout_seconds = item.get("timeout_seconds")
+    # Deep-copy nested settings so two SolverConfigs produced from the same
+    # entry (e.g. via sweep expansion) do not share mutable nested dicts.
+    base_settings_raw = copy.deepcopy(item.get("settings", {}))
+    if not isinstance(base_settings_raw, dict):
+        raise ValueError(f"{context} {base_id!r} settings must be a mapping")
+    # Canonicalize settings (Path -> str, set -> sorted list, etc.) at
+    # parse time so they survive the manifest's json.dumps round-trip.
+    # config_hash already runs the same canonicalizer before hashing, so
+    # this also ensures the SolverConfig.settings dict that flows into
+    # adapters is the same shape as the one we hash on.
+    base_settings = _canonicalize(base_settings_raw)
+    timeout_seconds = _validate_timeout(
+        item.get("timeout_seconds"),
+        context=f"{context} {base_id!r} timeout_seconds",
+    )
     sweep = item.get("sweep")
     if sweep is None:
         return [
@@ -398,12 +438,17 @@ def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverCo
     if not isinstance(sweep, dict) or not sweep:
         raise ValueError(f"{context} {base_id!r} sweep must be a non-empty mapping")
     keys = [str(key) for key in sweep.keys()]
-    value_grid = [_sweep_values(base_id, key, sweep[key]) for key in keys]
     id_template = item.get("id_template")
+    value_grid = [
+        _sweep_values(base_id, key, sweep[key], require_scalar=id_template is None)
+        for key in keys
+    ]
     expanded = []
     for values in product(*value_grid):
-        sweep_settings = dict(zip(keys, values))
-        settings = {**base_settings, **sweep_settings}
+        sweep_settings = _canonicalize(dict(zip(keys, values)))
+        # Re-deepcopy on each expansion so the underlying SolverConfig
+        # entries cannot share mutable nested settings.
+        settings = {**copy.deepcopy(base_settings), **copy.deepcopy(sweep_settings)}
         solver_id = (
             _render_solver_id_template(str(id_template), base_id, solver_name, settings)
             if id_template
@@ -420,12 +465,49 @@ def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverCo
     return expanded
 
 
-def _sweep_values(base_id: str, key: str, values: Any) -> list[Any]:
+def _sweep_values(
+    base_id: str,
+    key: str,
+    values: Any,
+    *,
+    require_scalar: bool,
+) -> list[Any]:
     if not isinstance(values, list) or not values:
         raise ValueError(
             f"Solver {base_id!r} sweep parameter {key!r} must be a non-empty list"
         )
+    if require_scalar:
+        # When the user is relying on the default _format_sweep_value-based
+        # id, every sweep value must produce a unique scalar slug. Reject
+        # nested values up front rather than silently producing
+        # "key=[1, 2]"-style ids that flow into directory names.
+        for value in values:
+            if not _is_scalar_sweep_value(value):
+                raise ValueError(
+                    f"Solver {base_id!r} sweep parameter {key!r} contains a "
+                    f"non-scalar value {value!r}; provide an `id_template` "
+                    "to use non-scalar sweep values."
+                )
+    # Validate JSON-serializability so manifest writes never silently
+    # truncate or lose information about the sweep settings.
+    try:
+        json.dumps(values, default=_json_default)
+    except TypeError as exc:
+        raise ValueError(
+            f"Solver {base_id!r} sweep parameter {key!r} contains a "
+            f"non-JSON-serializable value: {exc}"
+        ) from exc
     return values
+
+
+def _is_scalar_sweep_value(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool)) or value is None
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _render_solver_id_template(
@@ -495,7 +577,66 @@ def _listify(value: Any) -> list[str]:
         return []
     if isinstance(value, str):
         return [value]
-    return [str(v) for v in value]
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    raise ValueError(
+        f"Expected a string or list, got {type(value).__name__}: {value!r}"
+    )
+
+
+def _validate_identifier(value: str, *, context: str) -> None:
+    if not _IDENTIFIER_PATTERN.fullmatch(value):
+        raise ValueError(
+            f"{context} {value!r} contains characters outside [A-Za-z0-9_.+-]; "
+            "use only those characters so the id round-trips through "
+            "filesystem paths and CSV column names."
+        )
+
+
+def _validate_timeout(value: Any, *, context: str) -> float | None:
+    if value is None:
+        return None
+    # Reject bool explicitly: ``True`` / ``False`` would otherwise pass
+    # the float() coercion as 1.0 / 0.0 and silently disable timeout
+    # behavior on a typo.
+    if isinstance(value, bool):
+        raise ValueError(
+            f"{context} must be a number or null, got bool: {value!r}"
+        )
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{context} must be a number or null, got {type(value).__name__}: {value!r}"
+        ) from exc
+    # nan / +inf / -inf are accepted by float() but would silently
+    # disable the timeout (compares as not-< 0 but later math.isfinite
+    # gates would treat them as "no limit"). Reject them up front.
+    if not math.isfinite(coerced):
+        raise ValueError(f"{context} must be finite (got {coerced!r})")
+    if coerced < 0:
+        raise ValueError(f"{context} must be >= 0 (got {coerced!r})")
+    return coerced
+
+
+def _canonicalize(value: Any) -> Any:
+    """Recursively normalize a config payload for stable hashing.
+
+    - dict -> dict with sorted, str keys; each value canonicalized.
+    - set/frozenset -> sorted list (deterministic order).
+    - list/tuple -> list of canonicalized items.
+    - Path -> str.
+    - other primitives unchanged.
+    """
+    if isinstance(value, dict):
+        return {str(k): _canonicalize(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (set, frozenset)):
+        return sorted((_canonicalize(item) for item in value), key=repr)
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:

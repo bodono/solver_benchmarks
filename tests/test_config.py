@@ -603,3 +603,251 @@ def test_parse_environment_run_config_rejects_duplicate_solver_ids_across_envs()
                 ],
             }
         )
+
+
+def test_parse_run_config_rejects_invalid_solver_id_charset():
+    with pytest.raises(ValueError, match="contains characters outside"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp"},
+                "solvers": [{"id": "scs/oops", "solver": "scs"}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_negative_timeout():
+    with pytest.raises(ValueError, match=">= 0"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp", "timeout_seconds": -1},
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+
+def test_parse_run_config_rejects_non_numeric_timeout():
+    with pytest.raises(ValueError, match="must be a number or null"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp"},
+                "solvers": [
+                    {"id": "scs", "solver": "scs", "timeout_seconds": "fast"}
+                ],
+            }
+        )
+
+
+def test_parse_run_config_rejects_non_scalar_default_sweep_value():
+    with pytest.raises(ValueError, match="non-scalar"):
+        parse_run_config(
+            {
+                "run": {"dataset": "synthetic_qp"},
+                "solvers": [
+                    {
+                        "id": "scs",
+                        "solver": "scs",
+                        "sweep": {"settings": [{"a": 1}, {"a": 2}]},
+                    }
+                ],
+            }
+        )
+
+
+def test_parse_run_config_allows_non_scalar_sweep_with_id_template():
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp"},
+            "solvers": [
+                {
+                    "id": "scs",
+                    "solver": "scs",
+                    "sweep": {"weights": [[1, 0], [0, 1]]},
+                    "id_template": "scs_w{weights[0]}_{weights[1]}",
+                }
+            ],
+        }
+    )
+    assert [solver.id for solver in config.solvers] == ["scs_w1_0", "scs_w0_1"]
+
+
+def test_parse_run_config_deepcopies_nested_sweep_settings():
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp"},
+            "solvers": [
+                {
+                    "id": "scs",
+                    "solver": "scs",
+                    "settings": {"nested": {"key": "value"}},
+                    "sweep": {"eps_abs": [1.0e-4, 1.0e-6]},
+                    "id_template": "scs_{eps_abs:g}",
+                }
+            ],
+        }
+    )
+    a, b = config.solvers
+    # Mutating one expanded entry's nested settings must not bleed into
+    # the other; deep copy isolates them.
+    a.settings["nested"]["mutated"] = True
+    assert "mutated" not in b.settings["nested"]
+
+
+def test_config_hash_is_independent_of_path_object_vs_string(tmp_path: Path):
+    first = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path)},
+            "solvers": [
+                {"id": "scs", "solver": "scs", "settings": {"path": Path("a")}},
+            ],
+        }
+    )
+    second = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path)},
+            "solvers": [
+                {"id": "scs", "solver": "scs", "settings": {"path": "a"}},
+            ],
+        }
+    )
+    assert first.config_hash == second.config_hash
+
+
+def test_path_settings_serialize_through_manifest_round_trip(tmp_path: Path):
+    """Path values inside solver settings must canonicalize to str at
+    parse time so the manifest's json.dumps round-trip succeeds.
+    Without canonicalization ResultStore.create() would crash with
+    ``TypeError: Object of type PosixPath is not JSON serializable``.
+    """
+    import json as _json
+
+    from solver_benchmarks.core.storage import ResultStore
+
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
+            "solvers": [
+                {
+                    "id": "scs",
+                    "solver": "scs",
+                    "settings": {
+                        "outdir": Path("/tmp/some/path"),
+                        "nested": {"sub_path": Path("a/b")},
+                    },
+                },
+            ],
+        }
+    )
+    # Path values were canonicalized to strings.
+    settings = config.solvers[0].settings
+    assert settings["outdir"] == "/tmp/some/path"
+    assert settings["nested"]["sub_path"] == "a/b"
+    # And the manifest writes cleanly without raising.
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = _json.loads(store.manifest_path.read_text())
+    forwarded = manifest["config"]["solvers"][0]["settings"]
+    assert forwarded["outdir"] == "/tmp/some/path"
+
+
+def test_path_dataset_options_serialize_through_manifest_round_trip(tmp_path: Path):
+    """Path values inside ``dataset_options`` must canonicalize to str
+    at parse time, mirroring the solver-settings fix.
+
+    Pre-fix the parse step stored ``dataset_options`` raw, so a
+    programmatic config with ``data_root=Path(...)`` parsed and hashed
+    successfully but later crashed ``ResultStore.create()`` with
+    ``TypeError: Object of type PosixPath is not JSON serializable``
+    via ``to_manifest()``.
+    """
+    import json as _json
+
+    from solver_benchmarks.core.storage import ResultStore
+
+    # Single-dataset (run.dataset / run.dataset_options) form.
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "dataset_options": {
+                    "data_root": Path("/tmp/data"),
+                    "nested": {"shard_dir": Path("a/b")},
+                },
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    options = config.datasets[0].dataset_options
+    assert options["data_root"] == "/tmp/data"
+    assert options["nested"]["shard_dir"] == "a/b"
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = _json.loads(store.manifest_path.read_text())
+    forwarded = manifest["config"]["datasets"][0]["dataset_options"]
+    assert forwarded["data_root"] == "/tmp/data"
+    assert forwarded["nested"]["shard_dir"] == "a/b"
+
+
+def test_path_dataset_options_serialize_through_manifest_in_datasets_list(
+    tmp_path: Path,
+):
+    """The same canonicalization must apply to ``run.datasets: [...]``
+    entries: both the run-level default ``dataset_options`` and the
+    per-entry ``dataset_options`` are canonicalized before being
+    stored on the ``DatasetConfig``.
+    """
+    import json as _json
+
+    from solver_benchmarks.core.storage import ResultStore
+
+    config = parse_run_config(
+        {
+            "run": {
+                "output_dir": str(tmp_path / "runs"),
+                "dataset_options": {"global_root": Path("/g")},
+                "datasets": [
+                    {
+                        "name": "synthetic_qp",
+                        "dataset_options": {"local_root": Path("/l")},
+                    }
+                ],
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    options = config.datasets[0].dataset_options
+    assert options == {"global_root": "/g", "local_root": "/l"}
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = _json.loads(store.manifest_path.read_text())
+    forwarded = manifest["config"]["datasets"][0]["dataset_options"]
+    assert forwarded == {"global_root": "/g", "local_root": "/l"}
+
+
+def test_validate_timeout_rejects_nan_inf_and_bool():
+    """``float("nan")`` / ``inf`` would silently disable the timeout if
+    accepted; ``True`` would coerce to 1.0 and turn a YAML typo into a
+    surprise 1-second cap."""
+    for bad_timeout in (float("nan"), float("inf"), -float("inf"), "nan", "inf", True, False):
+        with pytest.raises(ValueError):
+            parse_run_config(
+                {
+                    "run": {"dataset": "synthetic_qp", "timeout_seconds": bad_timeout},
+                    "solvers": [{"id": "scs", "solver": "scs"}],
+                }
+            )
+
+
+def test_validate_timeout_still_accepts_zero_and_finite_values():
+    """Zero is the canonical "no timeout" value and must still pass."""
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "timeout_seconds": 0},
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    assert config.timeout_seconds == 0.0
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "timeout_seconds": 30.5},
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    assert config.timeout_seconds == 30.5
