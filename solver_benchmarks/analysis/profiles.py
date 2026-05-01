@@ -9,13 +9,88 @@ from solver_benchmarks.core import status
 
 DEFAULT_FAILURE_PENALTY = 1.0e3
 
+# Per-metric defaults used by performance_profile / shifted_geomean
+# when the caller hasn't pinned ``max_value`` and ``shift``. The
+# original globals (1e3 / 10) made sense only for run_time_seconds;
+# applying them to ``iterations`` or KKT residuals gave nonsense
+# aggregates. The dispatch is opt-in: callers can still pass explicit
+# values, and unknown metrics fall back to the run-time-style defaults.
+_METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
+    "run_time_seconds": (1.0e3, 10.0),
+    "setup_time_seconds": (1.0e3, 10.0),
+    "solve_time_seconds": (1.0e3, 10.0),
+    "iterations": (1.0e6, 100.0),
+    "kkt.primal_res_rel": (1.0, 0.0),
+    "kkt.dual_res_rel": (1.0, 0.0),
+    "kkt.duality_gap_rel": (1.0, 0.0),
+    "kkt.comp_slack": (1.0, 0.0),
+}
+
+
+def metric_defaults(metric: str) -> tuple[float, float]:
+    """Return ``(failure_penalty, shift)`` defaults for ``metric``.
+
+    Falls back to the run-time-style defaults for unknown metrics so
+    aggregates remain useful for ad-hoc columns (e.g. wall-time
+    derivatives).
+    """
+    return _METRIC_DEFAULTS.get(metric, (DEFAULT_FAILURE_PENALTY, 10.0))
+
+
+def deduplicate_for_pivot(
+    frame: pd.DataFrame,
+    keys: list[str],
+    metric: str | None = None,
+    *,
+    success_statuses: set[str] | None = None,
+) -> pd.DataFrame:
+    """Collapse duplicate ``(*keys, solver_id)`` rows to one per group.
+
+    ``pivot_table(aggfunc="first")`` on a frame with duplicate
+    ``(problem, solver_id)`` rows picks non-deterministically across
+    pandas versions; sort first by status (successful rows beat failed
+    rows) and then by the metric so we always keep the best
+    *successful* row per ``(problem, solver_id)``. NaN metrics sort
+    last so a successful numeric row wins over a NaN row.
+
+    Pre-fix this sorted only by metric, which let a fast failure
+    (``solver_error`` at 0.1s) win over a slow success (``optimal`` at
+    1s) when the same solver had both a failed and a retried row, and
+    ``performance_profile`` then penalized the kept row as failed.
+
+    When ``metric`` is None or absent from the frame, the deduplication
+    falls back to ``keep="first"`` ordering.
+    """
+    if success_statuses is None:
+        success_statuses = set(status.SOLUTION_PRESENT)
+    subset_keys = [*keys, "solver_id"]
+    if metric is not None and metric in frame.columns:
+        sortable = frame.assign(
+            __metric_for_dedup=pd.to_numeric(frame[metric], errors="coerce"),
+        )
+        # Status-failure flag sorts ascending: False (success) before
+        # True (failure). When the status column is missing we treat
+        # every row as successful so behavior matches the old code path.
+        if "status" in sortable.columns:
+            sortable["__failure_for_dedup"] = ~sortable["status"].isin(success_statuses)
+            sort_columns = ["__failure_for_dedup", "__metric_for_dedup"]
+        else:
+            sort_columns = ["__metric_for_dedup"]
+        sortable = sortable.sort_values(
+            sort_columns, kind="stable", na_position="last"
+        )
+        deduped = sortable.drop_duplicates(subset=subset_keys, keep="first")
+        drop_columns = [c for c in ("__metric_for_dedup", "__failure_for_dedup") if c in deduped.columns]
+        return deduped.drop(columns=drop_columns)
+    return frame.drop_duplicates(subset=subset_keys, keep="first")
+
 
 def performance_profile(
     results: pd.DataFrame,
     *,
     metric: str = "run_time_seconds",
     success_statuses: set[str] | None = None,
-    max_value: float = DEFAULT_FAILURE_PENALTY,
+    max_value: float | None = None,
     n_tau: int = 1000,
     tau_max: float | None = None,
 ) -> pd.DataFrame:
@@ -40,12 +115,20 @@ def performance_profile(
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    if max_value is None:
+        max_value, _ = metric_defaults(metric)
     if results.empty:
         return pd.DataFrame()
     keys = ["dataset", "problem"] if "dataset" in results.columns else ["problem"]
     index = keys[0] if len(keys) == 1 else keys
-    pivot = results.pivot_table(index=index, columns="solver_id", values=metric, aggfunc="first")
-    status_pivot = results.pivot_table(
+    # Pre-deduplicate so pivot_table(aggfunc="first") becomes deterministic
+    # — best (lowest) metric wins for any duplicated (problem, solver_id),
+    # but successful rows beat failed rows regardless of metric.
+    deduped = deduplicate_for_pivot(
+        results, keys, metric, success_statuses=success_statuses
+    )
+    pivot = deduped.pivot_table(index=index, columns="solver_id", values=metric, aggfunc="first")
+    status_pivot = deduped.pivot_table(
         index=index, columns="solver_id", values="status", aggfunc="first"
     )
     values = pivot.copy()
@@ -90,13 +173,19 @@ def shifted_geomean(
     results: pd.DataFrame,
     *,
     metric: str = "run_time_seconds",
-    shift: float = 10.0,
+    shift: float | None = None,
     success_statuses: set[str] | None = None,
-    max_value: float = DEFAULT_FAILURE_PENALTY,
+    max_value: float | None = None,
     penalize_failures: bool = True,
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    if max_value is None or shift is None:
+        default_max, default_shift = metric_defaults(metric)
+        if max_value is None:
+            max_value = default_max
+        if shift is None:
+            shift = default_shift
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
         values = pd.to_numeric(group[metric], errors="coerce").to_numpy(copy=True)
@@ -127,6 +216,20 @@ def shifted_geomean(
 
 
 def _shifted_geomean(values: np.ndarray, shift: float) -> float:
+    """Shifted geometric mean: ``exp(mean(log(v + shift))) - shift``.
+
+    The textbook formula assumes ``v + shift > 0``. The previous
+    implementation floored at ``1.0`` to avoid ``log(<=0)``, which was
+    a no-op for run-time-style metrics (``shift = 10`` already keeps
+    everything above 1) but clamped sub-unit KKT residuals to ``1.0``
+    regardless of magnitude — making ``[1e-12, 1e-3]`` and ``[0.5,
+    0.99]`` both report a geomean of ``1.0``. We now floor at the
+    smallest positive float just to dodge ``log(0)``; for metrics with
+    ``shift >= 1`` and non-negative values this is a no-op (the
+    addition already keeps every element above the floor).
+    """
     if values.size == 0:
         return np.nan
-    return float(np.exp(np.mean(np.log(np.maximum(1.0, values + shift)))) - shift)
+    floor = float(np.finfo(float).tiny)
+    adjusted = np.maximum(floor, values + shift)
+    return float(np.exp(np.mean(np.log(adjusted))) - shift)

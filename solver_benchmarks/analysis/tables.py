@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from solver_benchmarks.analysis.profiles import deduplicate_for_pivot
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.datasets import get_dataset
@@ -633,6 +634,7 @@ def pairwise_speedups(
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
     keys = _problem_keys(successful)
     index = keys[0] if len(keys) == 1 else keys
+    successful = deduplicate_for_pivot(successful, keys, metric)
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -706,6 +708,7 @@ def objective_spreads(
     successful = successful[np.isfinite(successful["objective_value"])]
     keys = _problem_keys(successful)
     index = keys[0] if len(keys) == 1 else keys
+    successful = deduplicate_for_pivot(successful, keys, "objective_value")
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -842,7 +845,12 @@ def status_matrix(results: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     keys = _problem_keys(results)
     index = keys[0] if len(keys) == 1 else keys
-    return results.pivot_table(
+    # Deterministic dedup before pivoting; if multiple rows exist for a
+    # (problem, solver_id) we keep the alphabetically-first status as a
+    # stable choice (since "status" itself is the value column there's
+    # no metric to sort on).
+    deduped = deduplicate_for_pivot(results, keys)
+    return deduped.pivot_table(
         index=index,
         columns="solver_id",
         values="status",
@@ -993,6 +1001,7 @@ def performance_ratio_matrix(
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
     keys = _problem_keys(successful)
     index = keys[0] if len(keys) == 1 else keys
+    successful = deduplicate_for_pivot(successful, keys, metric)
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
