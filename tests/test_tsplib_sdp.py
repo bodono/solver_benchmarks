@@ -228,28 +228,72 @@ def test_maxcut_sdp_cone_problem_layout():
     # n diagonal-fix constraints → n columns of A, ``triangle`` rows.
     assert problem["A"].shape == (triangle, n)
     assert problem["b"].shape == (triangle,)
-    # q = -1 (minimize -1'y).
-    assert problem["q"].tolist() == [-1.0, -1.0, -1.0]
-    # Each diagonal-fix constraint A_k = e_k e_k^T contributes a
-    # single 1 at the (k, k) diagonal index.
+    # q = +1 (minimize 1'y, the SDP dual). Pre-fix this was -1, which
+    # encoded the dual of the *opposite* primal (min ¼trace(L X))
+    # instead of the MaxCut SDP relaxation.
+    assert problem["q"].tolist() == [1.0, 1.0, 1.0]
+    # Each diagonal-fix constraint contributes ``-e_k e_k^T`` (negative
+    # diagonal selector) so that ``s = b - A x = -¼L + Diag(y)``
+    # lies in PSD iff ``Diag(y) ⪰ ¼L``.
     a_dense = problem["A"].toarray()
     for k in range(n):
         diag_idx = k * n - k * (k - 1) // 2  # j*n - j*(j-1)//2 with i=j=k
-        assert a_dense[diag_idx, k] == 1.0
+        assert a_dense[diag_idx, k] == -1.0
     assert metadata["num_nodes"] == n
 
 
-def test_maxcut_sdp_constant_is_quarter_total_weight():
+def test_maxcut_sdp_no_constant_offset_in_metadata():
+    """Pre-fix the metadata carried a ``maxcut_constant`` of
+    ``¼ sum W`` so callers could reconstruct the SDP value from
+    ``-q'x + constant`` after the wrong-sign objective. Now ``q'x``
+    *is* the SDP value directly and no offset is reported, so the
+    ``maxcut_constant`` field is intentionally absent."""
     from solver_benchmarks.transforms.maxcut_sdp import maxcut_sdp_cone_problem
 
     w = np.array([[0, 2, 0], [2, 0, 4], [0, 4, 0]], dtype=float)
     _, metadata = maxcut_sdp_cone_problem(w)
-    # sum W / 2 = (4 + 8) / 2 = 6 (off-diagonals counted once each).
-    # Wait: total_weight should be sum(W) / 2 over the symmetric
-    # weight matrix; for this 3x3 with off-diagonal 2 + 4 it's
-    # (0+2+0+2+0+4+0+4+0)/2 = 12/2 = 6.
+    assert "maxcut_constant" not in metadata
+    # ``total_weight`` (= sum_{i<j} W[i,j]) is still reported for
+    # normalization (cut value ≤ total_weight is a trivial bound).
     assert metadata["total_weight"] == pytest.approx(6.0)
-    assert metadata["maxcut_constant"] == pytest.approx(0.25 * 12.0)
+
+
+def test_maxcut_sdp_value_equals_quarter_trace_l_for_known_graph():
+    """Directly verify the dual encoding: for a complete bipartite
+    graph K_{2,2} with unit weights, MaxCut value is 4 (the natural
+    bipartition cuts all 4 edges). The SDP relaxation is tight here,
+    so the solver's reported ``objective_value`` must equal 4 to
+    high precision. Pre-fix the wrong sign produced a value related
+    to the constant offset rather than the MaxCut bound itself."""
+    pytest.importorskip("clarabel")
+    from solver_benchmarks.core import status
+    from solver_benchmarks.core.problem import CONE, ProblemData
+    from solver_benchmarks.solvers.clarabel_adapter import ClarabelSolverAdapter
+    from solver_benchmarks.transforms.maxcut_sdp import maxcut_sdp_cone_problem
+
+    # K_{2,2}: nodes 0, 1 on one side; nodes 2, 3 on the other.
+    w = np.array([
+        [0, 0, 1, 1],
+        [0, 0, 1, 1],
+        [1, 1, 0, 0],
+        [1, 1, 0, 0],
+    ], dtype=float)
+    problem, _meta = maxcut_sdp_cone_problem(w)
+    pd = ProblemData("test", "k22", CONE, problem)
+    adapter = ClarabelSolverAdapter({"verbose": False})
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        result = adapter.solve(pd, _to_path(d))
+    assert result.status == status.OPTIMAL
+    # MaxCut SDP relaxation value = 4 (tight for bipartite graphs).
+    assert result.objective_value == pytest.approx(4.0, abs=1e-3)
+
+
+def _to_path(d):
+    from pathlib import Path
+
+    return Path(d)
 
 
 def test_maxcut_sdp_symmetrizes_asymmetric_inputs():
@@ -344,13 +388,11 @@ def test_tiny4_maxcut_sdp_solves_to_known_optimum(
     artifacts.mkdir()
     result = adapter.solve(pd, artifacts)
     assert result.status == status.OPTIMAL
-    # primal_max_cut_sdp = -q'x + maxcut_constant
-    # The 4-node graph in TINY_FULL_MATRIX has weights:
-    # row 0: [0, 1, 1, 2], row 1: [1, 0, 2, 1], etc.
-    # Sum = 2*(1+1+2+2+1+1) = 16, so total_weight = 8 and
-    # maxcut_constant = 4. The SDP optimum value is the relaxation
-    # upper bound on MaxCut (≤ 8 here, since total weight is 8).
-    primal_value = -float(result.objective_value) + pd.metadata["maxcut_constant"]
+    # The MaxCut SDP relaxation value equals the solver's reported
+    # objective directly (no constant offset). The 4-node graph in
+    # TINY_FULL_MATRIX has total_weight = 8; the SDP relaxation is a
+    # finite upper bound on MaxCut (which is itself ≤ total_weight).
+    primal_value = float(result.objective_value)
     assert primal_value > 0  # nontrivial MaxCut SDP value
     assert primal_value <= pd.metadata["total_weight"] + 1e-6  # SDP ≤ total
     assert result.kkt is not None
@@ -361,6 +403,74 @@ def test_tiny4_maxcut_sdp_solves_to_known_optimum(
 # ---------------------------------------------------------------------------
 # Helpers.
 # ---------------------------------------------------------------------------
+
+
+def test_tsplib_nint_uses_round_half_up_not_banker_rounding():
+    """Python ``round(2.5) == 2`` (banker's rounding), but TSPLIB's
+    ``nint`` is ``int(value + 0.5)``. Pre-fix the parser used
+    ``round`` directly, so EUC/MAN/MAX distances landing on a half
+    disagreed with the TSPLIB spec for legitimate coordinate data."""
+    from solver_benchmarks.datasets.tsplib_sdp import _tsplib_nint
+
+    # Banker's rounding sends these to even; nint sends them up.
+    assert _tsplib_nint(2.5) == 3
+    assert _tsplib_nint(3.5) == 4
+    assert _tsplib_nint(4.5) == 5
+    # Non-half values are unambiguous either way.
+    assert _tsplib_nint(2.4) == 2
+    assert _tsplib_nint(2.6) == 3
+    assert _tsplib_nint(0.0) == 0
+
+
+def test_read_tsplib_weights_euc_2d_uses_nint_rounding(tmp_path: Path):
+    """End-to-end: a TSPLIB EUC_2D fixture with two cities exactly
+    sqrt(12.25) = 3.5 apart should get a weight of 4, not 4 (banker
+    happens to match here for 3.5 → 4 because 4 is even). Pick
+    coordinates that produce 2.5 (the canonical banker-vs-nint
+    disagreement)."""
+    from solver_benchmarks.datasets.tsplib_sdp import read_tsplib_weights
+
+    body = """\
+NAME : nint_test
+TYPE : TSP
+DIMENSION : 2
+EDGE_WEIGHT_TYPE : EUC_2D
+NODE_COORD_SECTION
+1 0.0 0.0
+2 1.5 2.0
+EOF
+"""
+    # sqrt(1.5^2 + 2.0^2) = sqrt(2.25 + 4) = sqrt(6.25) = 2.5
+    # Banker's: round(2.5) == 2; nint: int(2.5 + 0.5) = 3.
+    path = _write_tsp(tmp_path, "nint_test", body)
+    w = read_tsplib_weights(path)
+    assert w[0, 1] == 3.0
+
+
+def test_read_tsplib_weights_explicit_rejects_extra_tokens(tmp_path: Path):
+    """Pre-fix ``_explicit_weights`` accepted sections with too many
+    tokens and silently dropped the trailing ones, masking malformed
+    files. With strict equality the parser surfaces the count
+    mismatch."""
+    from solver_benchmarks.datasets.tsplib_sdp import read_tsplib_weights
+
+    # FULL_MATRIX expects dim*dim = 9 tokens for n=3; provide 10.
+    body = """\
+NAME : extra_token
+TYPE : TSP
+DIMENSION : 3
+EDGE_WEIGHT_TYPE : EXPLICIT
+EDGE_WEIGHT_FORMAT : FULL_MATRIX
+EDGE_WEIGHT_SECTION
+0 1 2
+1 0 3
+2 3 0
+99
+EOF
+"""
+    path = _write_tsp(tmp_path, "extra_token", body)
+    with pytest.raises(ValueError, match="exactly"):
+        read_tsplib_weights(path)
 
 
 def test_tsplib_name_recognizes_extensions(tmp_path: Path):

@@ -8,18 +8,36 @@ relaxation of MaxCut is::
     subject to  diag(X) = 1
                 X ⪰ 0
 
-where ``L = diag(W·1) − W`` is the graph Laplacian. Expressing this
-in the canonical CONE form (``min q' x s.t. A x + s = b, s in K``)
-of the codebase: ``x = y`` is the SDP dual (one variable per
-diagonal-fix constraint), ``q = -1`` (we *minimize* the dual; primal
-MaxCut SDP value at optimum equals ``-q'x + constant``), ``A`` columns
-hold ``vec(A_k) = vec(e_k e_k')`` (the k-th diagonal selector), and
-``b = vec(¼ L)`` in the canonical PSD layout.
+where ``L = diag(W·1) − W`` is the graph Laplacian. The Lagrangian
+gives the dual::
 
-The constant ``¼ * sum W`` that the MaxCut value picks up under the
-``½(1 − X[i,j])`` substitution is recorded on
-``problem.metadata["maxcut_constant"]`` rather than baked into the
-objective.
+    minimize    1' y
+    subject to  Diag(y) − ¼ L  ⪰  0
+
+In the codebase's CONE form (``min q' x s.t. A x + s = b, s in K``)
+this is encoded with::
+
+    q = +ones(n)
+    A_k = -e_k e_k^T   (negative diagonal selector for each k)
+    b   = -vec(¼ L)    (canonical √2-scaled PSD layout)
+
+so that ``s = b - A x = -¼L + Diag(y) = Diag(y) - ¼L``, which lies
+in the PSD cone exactly when ``Diag(y) ⪰ ¼L``. By LP/SDP duality
+the optimum of the dual equals the optimum of the primal, so::
+
+    q' x  =  1' y  =  max ¼ tr(L X)  =  MaxCut SDP relaxation value
+
+Pre-fix this module flipped all three signs (``q = -1``, ``b = +¼L``,
+positive A selectors), encoding the dual of the **opposite**
+problem (``min ¼ tr(L X)``). The reported objective then had no
+useful relationship to the MaxCut bound.
+
+Note on the Goemans-Williamson identity:
+    cut value = (1/2) sum_{i<j} W[i,j] − (1/4) tr(W X)
+              = ¼ tr(L X)             [since diag(X) = 1 and L = D − W]
+
+so ``¼ tr(L X)`` is the SDP value directly — there is no separate
+constant offset to recover.
 """
 
 from __future__ import annotations
@@ -42,11 +60,12 @@ def maxcut_sdp_cone_problem(weights: np.ndarray) -> tuple[dict, dict]:
     Returns
     -------
     (problem_dict, metadata)
-        ``problem_dict`` is the canonical CONE-form dict (``P`` set to
-        None, ``q`` / ``A`` / ``b`` / ``cone`` populated). ``metadata``
-        carries ``num_nodes``, ``total_weight`` (``sum W / 2``), and
-        ``maxcut_constant`` (``¼ sum W``) so callers can recover the
-        absolute MaxCut SDP value from ``-q'x + maxcut_constant``.
+        ``problem_dict`` is the canonical CONE-form dict; the solver's
+        ``q' x`` at optimum equals ``max ¼ tr(L X)`` directly (no
+        constant offset). ``metadata`` carries ``num_nodes`` and
+        ``total_weight`` (``sum_{i<j} W[i,j]``, useful for
+        normalizing the bound against a trivial ``cut ≤ total``
+        baseline).
     """
     weights = np.asarray(weights, dtype=float)
     if weights.ndim != 2 or weights.shape[0] != weights.shape[1]:
@@ -62,28 +81,27 @@ def maxcut_sdp_cone_problem(weights: np.ndarray) -> tuple[dict, dict]:
     triangle_size = n * (n + 1) // 2
     sqrt2 = float(np.sqrt(2.0))
 
+    # b = -vec(¼ L) so that s = b - A x = Diag(y) - ¼L ∈ PSD; the
+    # √2 scaling is the canonical PSD-vec convention.
     b_dense = np.zeros(triangle_size, dtype=float)
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
     for j in range(n):
         for i in range(j, n):
             idx = _psd_triangle_index(n, i, j)
-            value = c_matrix[i, j]
+            value = -c_matrix[i, j]
             if i == j:
                 b_dense[idx] = value
             else:
-                # Off-diagonals carry the canonical √2 scaling so the
-                # canonical inner product matches the SDPA convention.
                 b_dense[idx] = sqrt2 * value
 
-    # Each diagonal-fix constraint A_k = e_k e_k^T contributes a
-    # single non-zero in the canonical vec at the (k, k) diagonal
-    # position (no √2 because diagonal entries are unscaled).
+    # A's k-th column is -e_k e_k^T in canonical PSD vec, so
+    # A x = -Diag(y), and s = b - A x = -¼L + Diag(y).
+    rows: list[int] = []
+    cols: list[int] = []
+    data: list[float] = []
     for k in range(n):
         rows.append(_psd_triangle_index(n, k, k))
         cols.append(k)
-        data.append(1.0)
+        data.append(-1.0)
 
     a_matrix = sp.csc_matrix(
         (data, (rows, cols)),
@@ -92,7 +110,7 @@ def maxcut_sdp_cone_problem(weights: np.ndarray) -> tuple[dict, dict]:
     cone = {"s": [n]}
     problem = {
         "P": None,
-        "q": -np.ones(n),  # min -1'y  ⇔  max 1'y  ⇔  primal ¼ trace(L X)
+        "q": np.ones(n),  # min 1'y; at optimum, q'x = SDP relaxation value.
         "r": 0.0,
         "A": a_matrix,
         "b": b_dense,
@@ -103,13 +121,10 @@ def maxcut_sdp_cone_problem(weights: np.ndarray) -> tuple[dict, dict]:
     }
     metadata = {
         "num_nodes": n,
+        # ``total_weight`` is the sum of edge weights (each undirected
+        # edge counted once); a trivial upper bound for any cut is
+        # ``total_weight`` (cut everything).
         "total_weight": float(0.5 * sym.sum()),
-        # The Goemans-Williamson identity:
-        #   max sum_{i<j} W[i,j] (1 − X[i,j]) / 2 + constant
-        # gives ``¼ sum W`` as the constant offset. Callers can
-        # recover the absolute MaxCut SDP value from
-        # ``primal = -q'x + maxcut_constant``.
-        "maxcut_constant": float(0.25 * sym.sum()),
     }
     return problem, metadata
 

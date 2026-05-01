@@ -271,13 +271,13 @@ def _coord_weights(coords: np.ndarray, weight_type: str) -> np.ndarray:
         for j in range(i + 1, n):
             if weight_type == "EUC_2D" or weight_type == "EUC_3D":
                 d = float(np.linalg.norm(coords[i] - coords[j]))
-                w = float(round(d))
+                w = float(_tsplib_nint(d))
             elif weight_type == "MAN_2D" or weight_type == "MAN_3D":
                 d = float(np.sum(np.abs(coords[i] - coords[j])))
-                w = float(round(d))
+                w = float(_tsplib_nint(d))
             elif weight_type == "MAX_2D" or weight_type == "MAX_3D":
                 d = float(np.max(np.abs(coords[i] - coords[j])))
-                w = float(round(d))
+                w = float(_tsplib_nint(d))
             elif weight_type == "GEO":
                 w = _geo_distance(coords[i], coords[j])
             elif weight_type == "ATT":
@@ -287,6 +287,22 @@ def _coord_weights(coords: np.ndarray, weight_type: str) -> np.ndarray:
             weights[i, j] = w
             weights[j, i] = w
     return weights
+
+
+def _tsplib_nint(value: float) -> int:
+    """TSPLIB ``nint`` rounding: ``int(value + 0.5)``.
+
+    Python's built-in ``round()`` uses banker's rounding (ties go to
+    the nearest even integer), so ``round(2.5) == 2`` and
+    ``round(3.5) == 4``. The TSPLIB95 spec specifies the simpler
+    round-half-up rule, equivalent to ``int(value + 0.5)`` for
+    non-negative inputs (which all TSPLIB distances are).
+
+    Pre-fix ``round()`` was used directly, so half-integer EUC/MAN/
+    MAX distances on legitimate coordinate data produced edge
+    weights that disagreed with the TSPLIB spec.
+    """
+    return int(value + 0.5)
 
 
 def _geo_distance(a: np.ndarray, b: np.ndarray) -> float:
@@ -333,10 +349,14 @@ def _explicit_weights(
     weights = np.zeros((dim, dim), dtype=float)
     fmt = weight_format.upper()
     expected_count = _explicit_expected_count(dim, fmt)
-    if len(tokens) < expected_count:
+    if len(tokens) != expected_count:
+        # Strict equality. Pre-fix the parser only rejected too-few
+        # tokens; extra trailing tokens were silently dropped, which
+        # could mask malformed files. The TSPLIB spec gives an exact
+        # count for each format, so any deviation is a parse error.
         raise ValueError(
             f"TSPLIB EDGE_WEIGHT_SECTION has {len(tokens)} entries, "
-            f"expected {expected_count} for format {fmt!r}."
+            f"expected exactly {expected_count} for format {fmt!r}."
         )
     cursor = 0
     if fmt == "FULL_MATRIX":
