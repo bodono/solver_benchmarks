@@ -192,8 +192,8 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
         # arithmetic and was easy to drift from add_domain.
         add_domain(domain, -rows, rhs)
 
-    matrices = []
-    rhs_parts = []
+    matrices: list[sp.csc_matrix] = []
+    rhs_parts: list[np.ndarray] = []
     cone: dict = {}
     if zero_blocks:
         matrices.extend(block[0] for block in zero_blocks)
@@ -387,7 +387,9 @@ def _domain_summary(domains: list[_Domain]) -> dict[str, int | list[int]]:
             assert isinstance(summary["q"], list)
             summary["q"].append(domain.dim)
         else:
-            summary[domain.name.lower()] = int(summary.get(domain.name.lower(), 0)) + domain.dim
+            existing = summary.get(domain.name.lower(), 0)
+            assert not isinstance(existing, list)  # only "q" is a list-valued bucket
+            summary[domain.name.lower()] = int(existing) + domain.dim
     return summary
 
 

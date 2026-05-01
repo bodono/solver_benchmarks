@@ -5,6 +5,13 @@ QP-shaped inputs are accepted when ``P`` is structurally zero because the
 benchmark suite represents LP datasets through the same QP dictionary format.
 """
 
+# ortools' linear_solver subpackage exposes linear_solver_pb2 at
+# runtime (an auto-generated protobuf module) but mypy's bundled type
+# stubs don't include it. Disable the attr-defined check at the
+# file level rather than scattering # type: ignore comments across
+# every place we import the proto module.
+# mypy: disable-error-code="attr-defined"
+
 from __future__ import annotations
 
 import time
@@ -96,12 +103,14 @@ def _import_ortools() -> None:
         import ortools
         from ortools.linear_solver import linear_solver_pb2  # noqa: F401
         from ortools.pdlp import solve_log_pb2, solvers_pb2  # noqa: F401
+
         _import_model_builder_helper()
     except ModuleNotFoundError as exc:
         raise SolverUnavailable("Install with the pdlp extra to use PDLP") from exc
     if _version_tuple(getattr(ortools, "__version__", "0")) < (9, 3, 0):
+        version_str = getattr(ortools, "__version__", "unknown")
         raise SolverUnavailable(
-            f"OR-Tools {ortools.__version__} is too old for PDLP; expected >= 9.3.0"
+            f"OR-Tools {version_str} is too old for PDLP; expected >= 9.3.0"
         )
 
 

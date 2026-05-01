@@ -228,7 +228,7 @@ def _miplib_remote_problem_names() -> list[str]:
     return sorted(set(names))
 
 
-def _miplib_names_under_size(names: list[str], max_size_mb: object) -> list[str]:
+def _miplib_names_under_size(names: list[str], max_size_mb: float) -> list[str]:
     threshold_bytes = float(max_size_mb) * 1.0e6
     return [
         name

@@ -137,8 +137,8 @@ def _prepare_sdpap_problem(cone_problem: dict, sdpap) -> _PreparedSDPAProblem:
     c = np.asarray(cone_problem["q"], dtype=float)
     cone = dict(cone_problem["cone"])
     sdpa_row = 0
-    a_parts = []
-    b_parts = []
+    a_parts: list[sp.csc_matrix] = []
+    b_parts: list[np.ndarray] = []
     dual_blocks: list[tuple[int, int, int, int, sp.csc_matrix | None]] = []
     unsupported = set(cone) - {"f", "z", "l", "q", "s"}
     if unsupported:
