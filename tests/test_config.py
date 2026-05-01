@@ -710,3 +710,71 @@ def test_config_hash_is_independent_of_path_object_vs_string(tmp_path: Path):
         }
     )
     assert first.config_hash == second.config_hash
+
+
+def test_path_settings_serialize_through_manifest_round_trip(tmp_path: Path):
+    """Path values inside solver settings must canonicalize to str at
+    parse time so the manifest's json.dumps round-trip succeeds.
+    Without canonicalization ResultStore.create() would crash with
+    ``TypeError: Object of type PosixPath is not JSON serializable``.
+    """
+    import json as _json
+
+    from solver_benchmarks.core.storage import ResultStore
+
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
+            "solvers": [
+                {
+                    "id": "scs",
+                    "solver": "scs",
+                    "settings": {
+                        "outdir": Path("/tmp/some/path"),
+                        "nested": {"sub_path": Path("a/b")},
+                    },
+                },
+            ],
+        }
+    )
+    # Path values were canonicalized to strings.
+    settings = config.solvers[0].settings
+    assert settings["outdir"] == "/tmp/some/path"
+    assert settings["nested"]["sub_path"] == "a/b"
+    # And the manifest writes cleanly without raising.
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = _json.loads(store.manifest_path.read_text())
+    forwarded = manifest["config"]["solvers"][0]["settings"]
+    assert forwarded["outdir"] == "/tmp/some/path"
+
+
+def test_validate_timeout_rejects_nan_inf_and_bool():
+    """``float("nan")`` / ``inf`` would silently disable the timeout if
+    accepted; ``True`` would coerce to 1.0 and turn a YAML typo into a
+    surprise 1-second cap."""
+    for bad_timeout in (float("nan"), float("inf"), -float("inf"), "nan", "inf", True, False):
+        with pytest.raises(ValueError):
+            parse_run_config(
+                {
+                    "run": {"dataset": "synthetic_qp", "timeout_seconds": bad_timeout},
+                    "solvers": [{"id": "scs", "solver": "scs"}],
+                }
+            )
+
+
+def test_validate_timeout_still_accepts_zero_and_finite_values():
+    """Zero is the canonical "no timeout" value and must still pass."""
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "timeout_seconds": 0},
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    assert config.timeout_seconds == 0.0
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "timeout_seconds": 30.5},
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    assert config.timeout_seconds == 30.5

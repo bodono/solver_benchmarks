@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 from itertools import product
@@ -401,9 +402,15 @@ def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverCo
     base_id = str(item["id"])
     # Deep-copy nested settings so two SolverConfigs produced from the same
     # entry (e.g. via sweep expansion) do not share mutable nested dicts.
-    base_settings = copy.deepcopy(item.get("settings", {}))
-    if not isinstance(base_settings, dict):
+    base_settings_raw = copy.deepcopy(item.get("settings", {}))
+    if not isinstance(base_settings_raw, dict):
         raise ValueError(f"{context} {base_id!r} settings must be a mapping")
+    # Canonicalize settings (Path -> str, set -> sorted list, etc.) at
+    # parse time so they survive the manifest's json.dumps round-trip.
+    # config_hash already runs the same canonicalizer before hashing, so
+    # this also ensures the SolverConfig.settings dict that flows into
+    # adapters is the same shape as the one we hash on.
+    base_settings = _canonicalize(base_settings_raw)
     timeout_seconds = _validate_timeout(
         item.get("timeout_seconds"),
         context=f"{context} {base_id!r} timeout_seconds",
@@ -428,7 +435,7 @@ def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverCo
     ]
     expanded = []
     for values in product(*value_grid):
-        sweep_settings = dict(zip(keys, values))
+        sweep_settings = _canonicalize(dict(zip(keys, values)))
         # Re-deepcopy on each expansion so the underlying SolverConfig
         # entries cannot share mutable nested settings.
         settings = {**copy.deepcopy(base_settings), **copy.deepcopy(sweep_settings)}
@@ -579,12 +586,24 @@ def _validate_identifier(value: str, *, context: str) -> None:
 def _validate_timeout(value: Any, *, context: str) -> float | None:
     if value is None:
         return None
+    # Reject bool explicitly: ``True`` / ``False`` would otherwise pass
+    # the float() coercion as 1.0 / 0.0 and silently disable timeout
+    # behavior on a typo.
+    if isinstance(value, bool):
+        raise ValueError(
+            f"{context} must be a number or null, got bool: {value!r}"
+        )
     try:
         coerced = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"{context} must be a number or null, got {type(value).__name__}: {value!r}"
         ) from exc
+    # nan / +inf / -inf are accepted by float() but would silently
+    # disable the timeout (compares as not-< 0 but later math.isfinite
+    # gates would treat them as "no limit"). Reject them up front.
+    if not math.isfinite(coerced):
+        raise ValueError(f"{context} must be finite (got {coerced!r})")
     if coerced < 0:
         raise ValueError(f"{context} must be >= 0 (got {coerced!r})")
     return coerced
