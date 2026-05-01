@@ -170,6 +170,66 @@ def test_parse_sdpa_s_rejects_empty_file():
         parse_sdpa_s("* only comments\n")
 
 
+def test_parse_sdpa_s_rejects_trailing_partial_entry():
+    """Pre-fix ``parse_sdpa_s`` consumed entries while
+    ``cursor + 5 <= len(tokens)`` and silently dropped any 1-4
+    trailing tokens. A truncated SDPA file with a complete header
+    plus an incomplete final entry would parse "successfully" with
+    the partial row dropped — masking download corruption.
+
+    Verify the parser now refuses any leftover non-multiple-of-5
+    tail."""
+    from solver_benchmarks.transforms.sdpa import parse_sdpa_s
+
+    body = """\
+*truncated entry
+1
+1
+2
+1.0
+0 1 1 1 1.0
+1 1 1
+"""
+    with pytest.raises(ValueError, match="ends mid-entry"):
+        parse_sdpa_s(body)
+
+
+def test_parse_sdpa_s_rejects_zero_indexed_entry():
+    """SDPA-S indices are 1-based; a literal ``0`` would wrap into
+    Python's negative-index space and silently corrupt the
+    canonical vec output downstream. The parser must reject it."""
+    from solver_benchmarks.transforms.sdpa import parse_sdpa_s
+
+    body = """\
+*0-indexed bug
+1
+1
+2
+1.0
+0 1 0 1 1.0
+"""
+    with pytest.raises(ValueError, match="indices"):
+        parse_sdpa_s(body)
+
+
+def test_parse_sdpa_s_rejects_index_above_block_order():
+    """An entry with ``i`` or ``j`` exceeding the declared block
+    order indicates a malformed file. The parser must raise rather
+    than crash later inside the canonical vec construction."""
+    from solver_benchmarks.transforms.sdpa import parse_sdpa_s
+
+    body = """\
+*out-of-range entry
+1
+1
+2
+1.0
+0 1 5 5 1.0
+"""
+    with pytest.raises(ValueError, match="indices"):
+        parse_sdpa_s(body)
+
+
 def test_parse_sdpa_s_file_handles_gzip(tmp_path: Path):
     from solver_benchmarks.transforms.sdpa import parse_sdpa_s_file
 

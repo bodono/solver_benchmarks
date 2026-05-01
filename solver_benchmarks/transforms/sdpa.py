@@ -125,7 +125,17 @@ def parse_sdpa_s(text: str) -> SDPAProblem:
             raise ValueError(
                 f"SDPA-S blockno {blockno} out of range [1, {len(blocks)}]"
             )
-        # 1-indexed in the file; convert to 0-indexed entries.
+        block = blocks[blockno - 1]
+        # ``i`` and ``j`` are 1-indexed in the file. Validate the
+        # range explicitly: a 0 (Python's negative wrap-around
+        # nightmare) or a value above the block order must be a clear
+        # parse error, not a silent corruption of the vectorized
+        # output downstream.
+        if i < 1 or i > block.order or j < 1 or j > block.order:
+            raise ValueError(
+                f"SDPA-S matrix entry indices ({i}, {j}) out of range "
+                f"[1, {block.order}] for block {blockno}"
+            )
         i0 = i - 1
         j0 = j - 1
         if i0 > j0:
@@ -136,6 +146,18 @@ def parse_sdpa_s(text: str) -> SDPAProblem:
             a_blocks[matno - 1][blockno - 1].append(
                 (i0, j0, float(value))
             )
+    # After the entry loop, any leftover tokens mean the file ended
+    # mid-entry (1-4 tokens of an incomplete `matno blockno i j value`
+    # row). Surface that as a clear truncation error rather than
+    # silently dropping the partial entry — same severity as the
+    # truncated-b case _take_float would catch above.
+    if cursor != len(tokens):
+        leftover = len(tokens) - cursor
+        raise ValueError(
+            "SDPA-S file ends mid-entry: "
+            f"{leftover} trailing token(s) after the last complete entry; "
+            "expected a multiple of 5 (matno blockno i j value)."
+        )
     return SDPAProblem(m=m, blocks=blocks, b=b, c_blocks=c_blocks, a_blocks=a_blocks)
 
 
