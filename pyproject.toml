@@ -12,7 +12,10 @@ dependencies = [
     "click>=8.1",
     "h5py>=3.0",
     "highspy>=1.0",
-    "matplotlib>=3.7",
+    # Matplotlib 3.9 is the floor: analysis/plots.py uses the
+    # `tick_labels=` keyword on ax.boxplot, which was added in 3.9
+    # (replacing the deprecated `labels=` keyword).
+    "matplotlib>=3.9",
     "numpy>=1.24",
     "pandas>=2.0",
     "pyarrow>=14.0",
