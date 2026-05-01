@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from solver_benchmarks.core import status as canonical
 from solver_benchmarks.core.problem import ProblemData
 from solver_benchmarks.core.result import SolverResult
-from solver_benchmarks.core import status as canonical
 
 
 class SolverUnavailable(RuntimeError):

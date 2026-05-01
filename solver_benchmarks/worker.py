@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
 import json
 import traceback
+from pathlib import Path
 
+from solver_benchmarks.core import status
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import CONE, QP, cone_dimensions, qp_dimensions
 from solver_benchmarks.core.result import ProblemResult, to_jsonable
-from solver_benchmarks.core import status
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.solvers import get_solver
 

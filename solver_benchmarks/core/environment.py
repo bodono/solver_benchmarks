@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from importlib import metadata
 import platform
 import sys
-
+from importlib import metadata
 
 SOLVER_PACKAGES = {
     "clarabel": ("clarabel",),

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
@@ -17,6 +17,7 @@ from solver_benchmarks.transforms.psd import (
     cone_row_perm_canonical_to_row_major,
     cone_vec_row_major_to_canonical,
 )
+
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 

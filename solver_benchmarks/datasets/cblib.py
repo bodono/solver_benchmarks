@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import gzip
 import re
 import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
-from .base import Dataset
 
+from .base import Dataset
 
 CBLIB_BASE_URL = "https://cblib.zib.de/download/all"
 CBLIB_DEFAULT_SUBSET = (

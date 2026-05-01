@@ -8,7 +8,6 @@ from click.testing import CliRunner
 from solver_benchmarks.cli import main
 from solver_benchmarks.datasets import get_dataset
 
-
 pytestmark = pytest.mark.network
 
 

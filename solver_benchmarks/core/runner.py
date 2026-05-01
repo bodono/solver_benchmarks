@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict
-from pathlib import Path
-from typing import Iterable
-
 import json
 import math
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from types import SimpleNamespace
 
 from solver_benchmarks.core import status
@@ -33,7 +31,6 @@ from solver_benchmarks.core.storage import ResultStore, atomic_write_text
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.datasets.base import filter_problem_specs_by_size
 from solver_benchmarks.solvers import get_solver
-
 
 # Grace period added on top of the configured timeout before the subprocess
 # is force-killed. This lets solvers that honor their own internal time

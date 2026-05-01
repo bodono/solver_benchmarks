@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import urllib.request
+from pathlib import Path
 
 from problem_classes.qplib import QPLIB
-
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
-from .base import Dataset
 
+from .base import Dataset
 
 QPLIB_BASE_URL = "https://qplib.zib.de/qplib"
 QPLIB_DEFAULT_SUBSET = ("8790", "8515", "8495")

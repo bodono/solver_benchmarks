@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import inspect
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,7 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult, to_jsonable
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
+
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 

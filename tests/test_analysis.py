@@ -11,12 +11,17 @@ from solver_benchmarks.analysis.profiles import (
     performance_profile,
     shifted_geomean,
 )
+from solver_benchmarks.analysis.report import (
+    _section_table,
+    _sort_report_table,
+    write_run_report,
+)
 from solver_benchmarks.analysis.reports import (
     claimed_optimal_kkt_thresholds,
     completion_summary,
     difficulty_scaling,
-    failures_with_successful_alternatives,
     failure_rates,
+    failures_with_successful_alternatives,
     missing_results,
     objective_spreads,
     pairwise_speedups,
@@ -28,11 +33,6 @@ from solver_benchmarks.analysis.reports import (
     solver_metrics,
     solver_problem_tables,
     status_matrix,
-)
-from solver_benchmarks.analysis.report import (
-    _section_table,
-    _sort_report_table,
-    write_run_report,
 )
 from solver_benchmarks.cli import main
 
@@ -300,7 +300,7 @@ def test_inaccurate_statuses_are_not_successful_by_default():
     assert values["inaccurate"] == pytest.approx(100.0)
 
 
-def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
+def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest = {
@@ -330,7 +330,7 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
 
     assert len(loaded) == 4
     assert set(summary["solver_id"]) == {"solver_a", "solver_b"}
-    completion = completion_summary(run_dir, loaded, repo_root=Path.cwd())
+    completion = completion_summary(run_dir, loaded, repo_root=repo_root)
     assert completion["missing"].tolist() == [0, 0]
 
     runner = CliRunner()
@@ -415,7 +415,7 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path):
     assert (report_dir / "README.md").read_text() == report_markdown
 
     direct_report_dir = tmp_path / "direct_report"
-    outputs = write_run_report(run_dir, output_dir=direct_report_dir, repo_root=Path.cwd())
+    outputs = write_run_report(run_dir, output_dir=direct_report_dir, repo_root=repo_root)
     assert outputs
     assert direct_report_dir / "index.md" in outputs
     assert (direct_report_dir / "slowest_solves_run_time_seconds.csv").exists()
@@ -565,7 +565,7 @@ def test_setup_solve_breakdown_empty_without_columns():
     assert setup_solve_breakdown(_analysis_frame()).empty
 
 
-def test_report_includes_new_analysis_sections(tmp_path: Path):
+def test_report_includes_new_analysis_sections(tmp_path: Path, repo_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest = {
@@ -596,7 +596,7 @@ def test_report_includes_new_analysis_sections(tmp_path: Path):
             handle.write(json.dumps(record) + "\n")
 
     report_dir = tmp_path / "report"
-    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
 
     assert (report_dir / "claimed_optimal_kkt_thresholds.csv").exists()
     assert (report_dir / "difficulty_scaling_run_time_seconds.csv").exists()
@@ -618,7 +618,7 @@ def test_report_includes_new_analysis_sections(tmp_path: Path):
     ) in markdown
 
 
-def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
+def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path, repo_root: Path):
     # Regression: ``_write_kkt_residual_boxplot`` previously saved to
     # ``kkt_residuals.png`` while the markdown report linked
     # ``kkt_residual_boxplot.png``, so the boxplot silently never appeared
@@ -652,7 +652,7 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path):
             handle.write(json.dumps(record) + "\n")
 
     report_dir = tmp_path / "report"
-    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
     markdown = (report_dir / "index.md").read_text()
     for filename, alt_text in [
         ("kkt_residual_boxplot.png", "KKT Residual Boxplot"),
@@ -714,7 +714,7 @@ def _register_fake_datasets(monkeypatch, dataset_a: str, dataset_b: str):
     monkeypatch.setitem(dataset_registry.DATASETS, dataset_b, _FakeB)
 
 
-def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path):
+def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path, repo_root: Path):
     _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -746,7 +746,7 @@ def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path
         for record in _multi_dataset_records("ds_a", "ds_b"):
             handle.write(json.dumps(record) + "\n")
 
-    completion = completion_summary(run_dir, load_results(run_dir), repo_root=Path.cwd())
+    completion = completion_summary(run_dir, load_results(run_dir), repo_root=repo_root)
     by_pair = completion.set_index(["solver_id", "dataset"])
 
     assert by_pair.loc[("solver_a", "ds_a"), "expected"] == 1
@@ -758,7 +758,7 @@ def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path
     assert by_pair.loc[("solver_b", "ds_b"), "missing"] == 0
 
 
-def test_completion_summary_honors_dataset_size_filter(monkeypatch, tmp_path: Path):
+def test_completion_summary_honors_dataset_size_filter(monkeypatch, tmp_path: Path, repo_root: Path):
     from solver_benchmarks.core.problem import QP, ProblemSpec
     from solver_benchmarks.datasets import registry as dataset_registry
 
@@ -798,14 +798,14 @@ def test_completion_summary_honors_dataset_size_filter(monkeypatch, tmp_path: Pa
     (run_dir / "manifest.json").write_text(json.dumps(manifest))
     (run_dir / "results.jsonl").write_text("")
 
-    completion = completion_summary(run_dir, load_results(run_dir), repo_root=Path.cwd())
-    missing = missing_results(run_dir, load_results(run_dir), repo_root=Path.cwd())
+    completion = completion_summary(run_dir, load_results(run_dir), repo_root=repo_root)
+    missing = missing_results(run_dir, load_results(run_dir), repo_root=repo_root)
 
     assert completion.loc[0, "expected"] == 1
     assert missing["problem"].tolist() == ["small"]
 
 
-def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
+def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path, repo_root: Path):
     _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -838,7 +838,7 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
             handle.write(json.dumps(record) + "\n")
 
     report_dir = tmp_path / "report"
-    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
     markdown = (report_dir / "index.md").read_text()
 
     assert "## By Dataset" in markdown
@@ -849,7 +849,7 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path):
 
 
 def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, repo_root: Path
 ):
     """Two entries with the same registry name but distinct ids must each
     surface as their own populated h3 section."""
@@ -936,7 +936,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
             handle.write(json.dumps(record) + "\n")
 
     report_dir = tmp_path / "report"
-    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
     markdown = (report_dir / "index.md").read_text()
 
     assert "### netlib_feasible (netlib)" in markdown
@@ -1146,7 +1146,7 @@ def test_failures_with_successful_alternatives_keys_on_dataset_and_problem():
     assert ("ds_b", "p1", "solver_b") not in rows.index
 
 
-def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Path):
+def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Path, repo_root: Path):
     # Two datasets share name p1 → 2 distinct (dataset, problem) pairs.
     # If the denominator counted unique problem names only it would be 1,
     # which would push cactus fractions above 1.0.
@@ -1178,7 +1178,7 @@ def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Pat
     assert path is not None and path.exists()
 
 
-def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):
+def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path, repo_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     manifest = {
@@ -1199,7 +1199,7 @@ def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path):
             handle.write(json.dumps(record) + "\n")
 
     report_dir = tmp_path / "report"
-    write_run_report(run_dir, output_dir=report_dir, repo_root=Path.cwd())
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
     markdown = (report_dir / "index.md").read_text()
 
     assert "## By Dataset" not in markdown

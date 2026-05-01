@@ -7,7 +7,6 @@ import pandas as pd
 
 from solver_benchmarks.core import status
 
-
 DEFAULT_FAILURE_PENALTY = 1.0e3
 
 
@@ -64,7 +63,7 @@ def shifted_geomean(
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     rows = []
-    for solver_id, group in results.groupby("solver_id"):
+    for solver_id, group in results.groupby("solver_id", observed=True):
         values = pd.to_numeric(group[metric], errors="coerce").to_numpy(copy=True)
         successful = group["status"].isin(success_statuses).to_numpy()
         success_count = int(successful.sum())

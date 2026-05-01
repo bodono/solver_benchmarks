@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
-import time
 
 import numpy as np
 import scipy.sparse as sp
@@ -13,6 +13,7 @@ from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData
 from solver_benchmarks.core.result import SolverResult
+
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 
 

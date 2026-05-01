@@ -1,7 +1,7 @@
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-import sys
 
 import numpy as np
 import scipy.sparse as sp
@@ -22,7 +22,7 @@ from solver_benchmarks.solvers.base import SolverAdapter
 from solver_benchmarks.worker import run_payload
 
 
-def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch, tmp_path: Path):
+def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch, tmp_path: Path, repo_root: Path):
     class FakeConeDataset:
         def __init__(self, repo_root=None, **options):
             pass
@@ -52,7 +52,7 @@ def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch,
         }
     )
 
-    store = run_benchmark(config, repo_root=Path.cwd())
+    store = run_benchmark(config, repo_root=repo_root)
     events = [
         json.loads(line)
         for line in store.events_path.read_text().splitlines()
@@ -67,7 +67,7 @@ def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch,
     assert "does not support" in event["message"]
 
 
-def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, capsys):
+def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, capsys, repo_root: Path):
     class FakeDataset:
         def __init__(self, repo_root=None, **options):
             pass
@@ -138,7 +138,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
 
     store = run_benchmark(
         config,
-        repo_root=Path.cwd(),
+        repo_root=repo_root,
         stream_output=True,
         stream_solver_output=False,
     )
@@ -179,7 +179,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
 
 
 def test_resume_progress_uses_total_expected_denominator(
-    monkeypatch, tmp_path: Path, capsys
+    monkeypatch, tmp_path: Path, capsys, repo_root: Path
 ):
     class FakeDataset:
         def __init__(self, repo_root=None, **options):
@@ -268,7 +268,7 @@ def test_resume_progress_uses_total_expected_denominator(
     store = run_benchmark(
         config,
         run_dir=seed_store.run_dir,
-        repo_root=Path.cwd(),
+        repo_root=repo_root,
         stream_output=True,
     )
     captured = capsys.readouterr()
@@ -298,7 +298,7 @@ def test_resume_progress_uses_total_expected_denominator(
     assert progress_event["remaining_queued"] == 0
 
 
-def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path):
+def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path, repo_root: Path):
     dataset_config = DatasetConfig(name="synthetic_qp")
     config = RunConfig(
         datasets=[dataset_config],
@@ -347,7 +347,7 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess)
 
-    result = _run_one(store, config, Path.cwd(), dataset_config, problem, solver)
+    result = _run_one(store, config, repo_root, dataset_config, problem, solver)
     artifact_dir = Path(result.artifact_dir)
 
     assert result.status == "optimal"
@@ -355,7 +355,7 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
     assert (artifact_dir / "stderr.log").read_text() == "solver stderr\n"
 
 
-def test_run_subprocess_streams_while_writing_logs(tmp_path: Path, capsys):
+def test_run_subprocess_streams_while_writing_logs(tmp_path: Path, capsys, repo_root: Path):
     result = _run_subprocess(
         [
             sys.executable,
@@ -366,7 +366,7 @@ def test_run_subprocess_streams_while_writing_logs(tmp_path: Path, capsys):
                 "print('solver stderr', file=sys.stderr)"
             ),
         ],
-        cwd=Path.cwd(),
+        cwd=repo_root,
         timeout=10,
         stdout_path=tmp_path / "stdout.log",
         stderr_path=tmp_path / "stderr.log",
@@ -384,7 +384,7 @@ def test_run_subprocess_streams_while_writing_logs(tmp_path: Path, capsys):
     assert "solver stderr" in captured.err
 
 
-def test_worker_writes_solver_trace(monkeypatch, tmp_path: Path):
+def test_worker_writes_solver_trace(monkeypatch, tmp_path: Path, repo_root: Path):
     class FakeDataset:
         def __init__(self, repo_root=None, **options):
             pass
@@ -428,7 +428,7 @@ def test_worker_writes_solver_trace(monkeypatch, tmp_path: Path):
         "problem_kind": QP,
         "solver": {"id": "fake_solver", "solver": "fake_solver", "settings": {}},
         "artifacts_dir": str(tmp_path / "artifacts"),
-        "repo_root": str(Path.cwd()),
+        "repo_root": str(repo_root),
     }
 
     result = run_payload(payload)

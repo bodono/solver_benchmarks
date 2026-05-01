@@ -14,7 +14,6 @@ from .qplib import QPLIBDataset
 from .sdplib import SDPLIBDataset
 from .synthetic import SyntheticConeDataset, SyntheticQPDataset
 
-
 DATASETS: dict[str, type[Dataset]] = {
     "cblib": CBLIBDataset,
     "cutest_qp": CUTEstQPDataset,

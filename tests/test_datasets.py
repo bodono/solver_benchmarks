@@ -12,11 +12,10 @@ from solver_benchmarks.cli import main
 from solver_benchmarks.datasets import cblib as cblib_module
 from solver_benchmarks.datasets import dimacs as dimacs_module
 from solver_benchmarks.datasets import get_dataset, list_datasets
-from solver_benchmarks.datasets import mps as mps_module
 from solver_benchmarks.datasets import mpc_qpbenchmark as mpc_module
+from solver_benchmarks.datasets import mps as mps_module
 from solver_benchmarks.datasets import qplib as qplib_module
 from solver_benchmarks.solvers import get_solver, list_solvers
-
 
 _TINY_MPS = """\
 NAME          TINY
@@ -326,14 +325,16 @@ def test_kennington_dataset_round_trips_through_qpsreader(tmp_path: Path):
     assert problem.qp["A"].shape[1] == 2
 
 
-def test_dimacs_prepare_uses_bundled_cache_before_network(monkeypatch, tmp_path: Path):
+def test_dimacs_prepare_uses_bundled_cache_before_network(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
     def fail_if_network_is_used(*args, **kwargs):
         raise AssertionError("DIMACS bundled prepare unexpectedly used the network")
 
     monkeypatch.setattr(dimacs_module.urllib.request, "urlopen", fail_if_network_is_used)
     data_root = tmp_path / "problem_classes"
     dataset = get_dataset("dimacs")(
-        repo_root=Path.cwd(),
+        repo_root=repo_root,
         data_root=data_root,
     )
 
@@ -341,7 +342,10 @@ def test_dimacs_prepare_uses_bundled_cache_before_network(monkeypatch, tmp_path:
 
     target = data_root / "dimacs_data" / "nb.mat.gz"
     assert target.exists()
-    assert target.read_bytes() == (Path.cwd() / "problem_classes/dimacs_data/nb.mat.gz").read_bytes()
+    assert (
+        target.read_bytes()
+        == (repo_root / "problem_classes/dimacs_data/nb.mat.gz").read_bytes()
+    )
 
 
 def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):

@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
-
 INF_BOUND = 1.0e20
 
 

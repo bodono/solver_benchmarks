@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import time
-
-import numpy as np
+from pathlib import Path
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
+
 from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
 from .qp_split import combine_qp_duals, split_qp_for_range_constraints
 

@@ -161,12 +161,14 @@ def test_solver_settings_are_verbose_by_default():
     assert settings_with_defaults({"verbose": False})["verbose"] is False
 
 
-def test_example_configs_do_not_opt_out_of_verbose_by_default():
+def test_example_configs_do_not_opt_out_of_verbose_by_default(repo_root: Path):
+    configs_dir = repo_root / "configs"
     config_paths = [
-        *Path("configs").glob("*.json"),
-        *Path("configs").glob("*.yaml"),
-        *Path("configs").glob("*.yml"),
+        *configs_dir.glob("*.json"),
+        *configs_dir.glob("*.yaml"),
+        *configs_dir.glob("*.yml"),
     ]
+    assert config_paths, f"No example configs found under {configs_dir}"
     for config_path in config_paths:
         config = load_run_config(config_path)
         assert all(

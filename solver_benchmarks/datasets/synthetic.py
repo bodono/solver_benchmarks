@@ -6,6 +6,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import CONE, QP, ProblemData, ProblemSpec
+
 from .base import Dataset
 
 

@@ -12,7 +12,6 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.solvers import get_solver
 
-
 SOLVER_SETTINGS = {
     "highs": {"verbose": False},
     "osqp": {"verbose": False, "eps_abs": 1e-8, "eps_rel": 1e-8, "max_iter": 10000, "polish": True},

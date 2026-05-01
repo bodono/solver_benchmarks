@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
 
 import numpy as np
 import scipy.io
 import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
-from .base import Dataset
 
+from .base import Dataset
 
 _NAME_RE = re.compile(
     r"^(?P<classification>infeas|weak)_"

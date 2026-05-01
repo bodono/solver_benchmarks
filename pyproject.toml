@@ -36,7 +36,7 @@ proxqp = ["proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'"]
 piqp = ["piqp>=0.6.0"]
 sdpa = ["sdpa-python>=0.2.2; python_version < '3.14'"]
 cplex = ["cplex>=22.1"]
-test = ["pytest>=7.0"]
+test = ["pytest>=7.0", "pytest-timeout>=2.1"]
 all = [
     "scs>=3.0",
     "osqp>=0.6",
@@ -48,6 +48,7 @@ all = [
     "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
     "sdpa-python>=0.2.2; python_version < '3.14'",
     "pytest>=7.0",
+    "pytest-timeout>=2.1",
 ]
 
 [project.scripts]
@@ -58,8 +59,30 @@ include = ["solver_benchmarks*", "problem_classes*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --strict-markers"
 pythonpath = ["."]
+timeout = 300
 markers = [
     "network: tests that contact external dataset hosts",
+    "slow: tests that take more than a few seconds",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["build", "results", "configs/runs", "problem_classes/*_data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line length (covered by formatter; some long strings intentional)
+    "E741",  # ambiguous variable name (math conventions use l, m, n)
+    "B008",  # function call in argument default (Click options)
+    "B904",  # raise from inside except
+    "B905",  # zip without strict= (rolling fix planned)
+    "C901",  # function is too complex (planned for PR 7)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+"problem_classes/qplib.py" = ["F841"]  # parsed-but-unused infinity sentinel; refactored in PR 4

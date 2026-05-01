@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from itertools import combinations
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -44,7 +44,7 @@ def solver_metrics(
         return pd.DataFrame(columns=columns)
 
     rows = []
-    for solver_id, group in results.groupby("solver_id"):
+    for solver_id, group in results.groupby("solver_id", observed=True):
         total = len(group)
         successful = group["status"].isin(success_statuses)
         success_count = int(successful.sum())
@@ -126,7 +126,7 @@ def kkt_summary(
         return pd.DataFrame(columns=columns)
 
     rows = []
-    for solver_id, group in successful.groupby("solver_id"):
+    for solver_id, group in successful.groupby("solver_id", observed=True):
         row: dict[str, Any] = {
             "solver_id": solver_id,
             "success_count": int(len(group)),
@@ -194,7 +194,7 @@ def claimed_optimal_kkt_thresholds(
     claimed["__worst_kkt__"] = numeric.max(axis=1, skipna=True)
 
     rows = []
-    for solver_id, group in claimed.groupby("solver_id"):
+    for solver_id, group in claimed.groupby("solver_id", observed=True):
         worst = group["__worst_kkt__"].dropna()
         claimed_optimal = int(len(group))
         with_residuals = int(worst.size)
@@ -276,7 +276,7 @@ def difficulty_scaling(
     sized["__bin__"] = sized["__bin__"].astype(int)
 
     rows = []
-    for (solver_id, bin_id), group in sized.groupby(["solver_id", "__bin__"]):
+    for (solver_id, bin_id), group in sized.groupby(["solver_id", "__bin__"], observed=True):
         sizes_in_bin = group[size_field].astype(float)
         successful = group[group["status"].isin(success_statuses)]
         success_metric = pd.to_numeric(successful[metric], errors="coerce").dropna()
@@ -343,7 +343,7 @@ def setup_solve_breakdown(
     )
 
     rows = []
-    for solver_id, group in successful.groupby("solver_id"):
+    for solver_id, group in successful.groupby("solver_id", observed=True):
         both = group.dropna(subset=["setup_time_seconds", "solve_time_seconds"])
         if both.empty:
             rows.append(
@@ -409,7 +409,7 @@ def kkt_certificate_summary(
         return pd.DataFrame(columns=columns)
 
     rows = []
-    for solver_id, group in infeasible.groupby("solver_id"):
+    for solver_id, group in infeasible.groupby("solver_id", observed=True):
         valid_series = group.get("kkt.valid")
         cert_rows = group if valid_series is None else group[valid_series.notna()]
         valid_count = int(valid_series.fillna(False).astype(bool).sum()) if valid_series is not None else 0
@@ -449,7 +449,7 @@ def failure_rates(
         return pd.DataFrame(columns=columns)
 
     rows = []
-    for solver_id, group in results.groupby("solver_id"):
+    for solver_id, group in results.groupby("solver_id", observed=True):
         total = len(group)
         successful = group["status"].isin(success_statuses)
         success_count = int(successful.sum())
@@ -800,7 +800,7 @@ def failures_with_successful_alternatives(
         return pd.DataFrame(columns=columns)
 
     success_metric = metric if metric in successes else "solver_id"
-    best_successes = successes.sort_values(success_metric).groupby(keys).first()
+    best_successes = successes.sort_values(success_metric).groupby(keys, observed=True).first()
     rows = []
     for _, failure in failures.iterrows():
         key = tuple(failure[col] for col in keys) if len(keys) > 1 else failure[keys[0]]
@@ -917,7 +917,7 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "artifact_dir",
         "error",
     ]
-    for solver_id, group in results.groupby("solver_id"):
+    for solver_id, group in results.groupby("solver_id", observed=True):
         available = [column for column in base_columns if column in group]
         table = group[available].sort_values(keys).reset_index(drop=True)
         if not dimensions.empty:
