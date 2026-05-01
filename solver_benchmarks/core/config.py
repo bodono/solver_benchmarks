@@ -299,7 +299,9 @@ def _parse_datasets(raw: dict[str, Any], run: dict[str, Any]) -> list[DatasetCon
     if not single_name:
         raise ValueError("Config must define `dataset` or `datasets`")
 
-    dataset_options = dict(run.get("dataset_options", raw.get("dataset_options", {})))
+    dataset_options = _canonicalize(
+        dict(run.get("dataset_options", raw.get("dataset_options", {})))
+    )
     return [
         DatasetConfig(
             name=str(single_name),
@@ -316,7 +318,14 @@ def _parse_dataset_entries(
     defaults: dict[str, Any],
     root: dict[str, Any],
 ) -> list[DatasetConfig]:
-    default_options = dict(defaults.get("dataset_options", root.get("dataset_options", {})))
+    # Canonicalize dataset_options at parse time so values like Path or
+    # set survive the manifest's json.dumps round-trip. Without this,
+    # programmatic configs with ``data_root=Path(...)`` would parse and
+    # hash successfully but later crash ``ResultStore.create()`` with
+    # ``TypeError: Object of type PosixPath is not JSON serializable``.
+    default_options = _canonicalize(
+        dict(defaults.get("dataset_options", root.get("dataset_options", {})))
+    )
     parsed: list[DatasetConfig] = []
     seen_ids: set[str] = set()
     seen_names_no_id: set[str] = set()
@@ -335,9 +344,10 @@ def _parse_dataset_entries(
                 )
             raw_id = entry.get("id")
             explicit_id = str(raw_id) if raw_id is not None else None
+            entry_options = _canonicalize(dict(entry.get("dataset_options", {})))
             dataset_options = {
                 **default_options,
-                **dict(entry.get("dataset_options", {})),
+                **entry_options,
             }
             include = _listify(entry.get("include", []))
             exclude = _listify(entry.get("exclude", []))
