@@ -18,6 +18,7 @@ crash from a hardware-info call gone wrong.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import platform
@@ -30,7 +31,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def system_metadata(*, include_hostname: bool = False) -> dict[str, Any]:
+def system_metadata(
+    *,
+    include_hostname: bool = False,
+    include_full_python_path: bool = False,
+) -> dict[str, Any]:
     """Return a JSON-serializable snapshot of the host running this code.
 
     Captures CPU model / count / frequency, total RAM, OS / kernel
@@ -40,12 +45,28 @@ def system_metadata(*, include_hostname: bool = False) -> dict[str, Any]:
     library is missing or a probe raises, the field is set to None
     rather than failing the capture.
 
-    ``include_hostname`` defaults to False so manifests don't leak
-    machine names into shared reports. Callers running on isolated
-    infrastructure can opt in.
+    Privacy defaults:
+
+    - ``include_hostname=False`` (default) omits ``socket.gethostname()``
+      so manifests don't leak machine names into shared reports.
+    - ``include_full_python_path=False`` (default) records only the
+      *basename* of ``sys.executable`` (e.g. ``python3.12`` rather
+      than ``/Users/<username>/miniconda3/envs/.../bin/python3.12``).
+      The full path can include a username or private environment
+      path, which the report's per-row Runtime Environments table
+      then publishes alongside the timing data.
+
+    Callers running on isolated infrastructure can opt into the full
+    fields when the privacy concern doesn't apply.
     """
     payload: dict[str, Any] = {}
-    payload.update(_safe(_python_metadata, "python") or {})
+    payload.update(
+        _safe(
+            lambda: _python_metadata(include_full_path=include_full_python_path),
+            "python",
+        )
+        or {}
+    )
     payload.update(_safe(_os_metadata, "os") or {})
     payload["cpu"] = _safe(_cpu_metadata, "cpu") or {}
     payload["memory"] = _safe(_memory_metadata, "memory") or {}
@@ -55,13 +76,25 @@ def system_metadata(*, include_hostname: bool = False) -> dict[str, Any]:
     return payload
 
 
-def _python_metadata() -> dict[str, Any]:
-    return {
-        "python_executable": sys.executable,
+def _python_metadata(*, include_full_path: bool = False) -> dict[str, Any]:
+    """Capture Python interpreter / executable info.
+
+    ``python_executable`` defaults to the basename of
+    ``sys.executable`` so a manifest doesn't leak a username via the
+    full installer path. The full ``sys.executable`` is preserved
+    under ``python_executable_full`` only when explicitly requested.
+    """
+    executable = sys.executable
+    short = os.path.basename(executable) if executable else None
+    payload: dict[str, Any] = {
+        "python_executable": executable if include_full_path else short,
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "python_compiler": platform.python_compiler(),
     }
+    if include_full_path:
+        payload["python_executable_full"] = executable
+    return payload
 
 
 def _os_metadata() -> dict[str, Any]:
@@ -114,14 +147,19 @@ def _is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
+@functools.lru_cache(maxsize=1)
 def _detect_cpu_model() -> str | None:
     """Best-effort CPU model lookup across platforms.
 
     On Linux: parse ``/proc/cpuinfo`` for the first ``model name`` line.
-    On macOS: ``sysctl -n machdep.cpu.brand_string`` (via subprocess,
-    cached so we don't fork on every solve). On Windows / unknown
-    systems we fall back to ``platform.processor()`` which is
-    architecture-only on most hosts.
+    On macOS: ``sysctl -n machdep.cpu.brand_string`` (via subprocess).
+    On Windows / unknown systems we fall back to
+    ``platform.processor()`` which is architecture-only on most hosts.
+
+    Cached at the module level: ``runtime_metadata`` is called once
+    per result row and the CPU model doesn't change during a process
+    lifetime, so without the cache we'd reread ``/proc/cpuinfo`` (or
+    fork ``sysctl``) on every solve.
     """
     if platform.system() == "Linux":
         try:

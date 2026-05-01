@@ -1211,9 +1211,14 @@ def _system_summary_lines(manifest: dict) -> list[str]:
     if not rows:
         return []
 
+    # Route both field name and value through ``_escape_cell`` so a
+    # CPU model / platform / library string with a literal ``|`` or
+    # newline doesn't break the Markdown table layout. Other report
+    # tables (``_section_table``) do this routing already; pre-fix
+    # ``_system_summary_lines`` was the one place that didn't.
     lines = ["### System", "", "| Field | Value |", "| --- | --- |"]
     for field, value in rows:
-        lines.append(f"| {field} | {value} |")
+        lines.append(f"| {_escape_cell(field)} | {_escape_cell(value)} |")
     lines.append("")
     return lines
 

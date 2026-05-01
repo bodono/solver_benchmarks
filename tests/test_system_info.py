@@ -76,6 +76,37 @@ def test_system_metadata_includes_hostname_when_opt_in():
     assert md["hostname"] is None or isinstance(md["hostname"], str)
 
 
+def test_system_metadata_python_executable_is_basename_by_default():
+    """``python_executable`` should be the basename only (e.g.
+    ``python3.12``) by default, since the full ``sys.executable``
+    path commonly contains a username or private installer path.
+    The full path is captured under ``python_executable_full`` only
+    when the caller opts in."""
+    from solver_benchmarks.core.system_info import system_metadata
+
+    md = system_metadata()
+    executable = md["python_executable"]
+    # Basename has no path separators.
+    assert executable is None or "/" not in executable
+    assert executable is None or "\\" not in executable
+    # ``python_executable_full`` is suppressed by default.
+    assert "python_executable_full" not in md
+
+
+def test_system_metadata_includes_full_python_path_when_opt_in():
+    """Privacy opt-in: ``include_full_python_path=True`` records the
+    full ``sys.executable`` under ``python_executable_full`` so
+    isolated infrastructure can preserve the install location for
+    reproducibility."""
+    import sys as _sys
+
+    from solver_benchmarks.core.system_info import system_metadata
+
+    md = system_metadata(include_full_python_path=True)
+    assert md["python_executable"] == _sys.executable
+    assert md["python_executable_full"] == _sys.executable
+
+
 def test_system_metadata_swallows_probe_exceptions(monkeypatch):
     """Every individual probe is wrapped in ``_safe`` so an
     unexpected error in one piece (e.g. a Linux container with /proc
@@ -127,8 +158,11 @@ def test_detect_cpu_model_returns_string_or_none():
 def test_detect_cpu_model_uses_proc_cpuinfo_on_linux(tmp_path: Path):
     """On Linux, the model is read from /proc/cpuinfo. Patch
     ``open`` and ``platform.system`` so the test doesn't depend on
-    the host actually being Linux."""
+    the host actually being Linux. Clear the LRU cache so any prior
+    real-host probe doesn't leak in."""
     from solver_benchmarks.core import system_info as si
+
+    si._detect_cpu_model.cache_clear()
 
     fake_cpuinfo = (
         "processor : 0\n"
@@ -137,11 +171,15 @@ def test_detect_cpu_model_uses_proc_cpuinfo_on_linux(tmp_path: Path):
         "cache size : 28160 KB\n"
     )
 
-    with (
-        patch("solver_benchmarks.core.system_info.platform.system", return_value="Linux"),
-        patch("builtins.open", _mock_open(fake_cpuinfo)),
-    ):
-        assert si._detect_cpu_model() == "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz"
+    try:
+        with (
+            patch("solver_benchmarks.core.system_info.platform.system", return_value="Linux"),
+            patch("builtins.open", _mock_open(fake_cpuinfo)),
+        ):
+            assert si._detect_cpu_model() == "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz"
+    finally:
+        # Don't leak the patched value into other tests.
+        si._detect_cpu_model.cache_clear()
 
 
 def _mock_open(read_text: str):
@@ -260,6 +298,44 @@ def test_runtime_metadata_includes_cpu_model():
     assert md["cpu_model"] is None or isinstance(md["cpu_model"], str)
 
 
+def test_runtime_metadata_python_executable_is_basename():
+    """The per-row metadata must NOT publish the full
+    ``sys.executable`` path, which commonly contains a username."""
+    from solver_benchmarks.core.environment import runtime_metadata
+
+    md = runtime_metadata("scs")
+    executable = md["python_executable"]
+    assert executable is None or "/" not in executable
+    assert executable is None or "\\" not in executable
+
+
+def test_detect_cpu_model_is_cached_across_calls():
+    """``runtime_metadata`` is invoked once per result row, so the
+    CPU-model probe needs to be cheap. ``functools.lru_cache``
+    means repeated calls don't re-read ``/proc/cpuinfo`` or fork
+    ``sysctl``. Verify by patching the underlying ``platform.system``
+    after the first call: a non-cached implementation would hit the
+    new branch on the second call."""
+    from solver_benchmarks.core import system_info as si
+
+    si._detect_cpu_model.cache_clear()
+    try:
+        first = si._detect_cpu_model()
+        # If we patched ``platform.system`` to ``"Windows"`` here a
+        # fresh call would route through ``platform.processor()``
+        # instead of the macOS / Linux paths. The cache should make
+        # the second call short-circuit, returning the original
+        # result.
+        with patch(
+            "solver_benchmarks.core.system_info.platform.system",
+            return_value="Windows",
+        ):
+            cached = si._detect_cpu_model()
+        assert cached == first
+    finally:
+        si._detect_cpu_model.cache_clear()
+
+
 # ---------------------------------------------------------------------------
 # Markdown report integration.
 # ---------------------------------------------------------------------------
@@ -324,6 +400,38 @@ def test_system_summary_lines_handles_partial_data():
     assert "4 logical" in rendered
     # No memory row, no OS row.
     assert "Total RAM" not in rendered
+
+
+def test_system_summary_lines_escapes_pipes_and_newlines_in_values():
+    """A CPU model / platform / library string carrying a literal
+    ``|`` or newline must not break the Markdown table layout. Other
+    report tables route values through ``_escape_cell``; pre-fix
+    ``_system_summary_lines`` did not."""
+    from solver_benchmarks.analysis.markdown_report import _system_summary_lines
+
+    manifest = {
+        "system": {
+            "cpu": {
+                "logical_count": 4,
+                "model": "Weird | CPU\nwith pipe and newline",
+            },
+            "platform": "Linux | special",
+        }
+    }
+    rendered = "\n".join(_system_summary_lines(manifest))
+    # Escaped pipe and newline should appear in the output.
+    assert r"\|" in rendered
+    assert "<br>" in rendered
+    # No raw unescaped pipe in any data cell. A row has 3 unescaped
+    # pipes (leading, between Field and Value, trailing); any extra
+    # would mean an unescaped pipe leaked from the value.
+    body_lines = [
+        line for line in rendered.splitlines()
+        if line.startswith("| ") and "Field" not in line and "---" not in line
+    ]
+    for line in body_lines:
+        stripped = line.replace(r"\|", "")
+        assert stripped.count("|") == 3, line
 
 
 def test_format_bytes_uses_binary_prefixes():

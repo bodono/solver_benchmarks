@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from importlib import metadata
@@ -40,8 +41,16 @@ def runtime_metadata(solver_name: str) -> dict:
         package: _package_version(package)
         for package in SOLVER_PACKAGES.get(solver_name, ())
     }
+    # ``python_executable`` is recorded as the basename only (e.g.
+    # ``python3.12``) rather than the full path, since the full path
+    # commonly contains a username (``/Users/<user>/...``,
+    # ``/home/<user>/...``) that we don't want to publish into shared
+    # report tables. The absolute path is captured under
+    # ``manifest["system"]["python_executable_full"]`` only when
+    # ``system_metadata(include_full_python_path=True)`` is requested.
+    short_executable = os.path.basename(sys.executable) if sys.executable else None
     return {
-        "python_executable": sys.executable,
+        "python_executable": short_executable,
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "platform": platform.platform(),
