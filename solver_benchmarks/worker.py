@@ -118,11 +118,12 @@ def _problem_dimensions(problem):
 
 
 def _write_trace_if_needed(artifacts_dir: Path, trace: list[dict]) -> None:
-    if not trace:
-        return
     # Always overwrite so a re-run on the same artifacts_dir does not
     # leave a stale trace from a previous attempt.
     path = artifacts_dir / "trace.jsonl"
+    if not trace:
+        path.unlink(missing_ok=True)
+        return
     body = "".join(
         json.dumps(to_jsonable(row), sort_keys=True) + "\n" for row in trace
     )

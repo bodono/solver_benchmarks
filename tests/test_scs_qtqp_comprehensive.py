@@ -910,13 +910,22 @@ def test_qtqp_compute_kkt_returns_none_for_unmapped_status():
 
 
 def test_qtqp_write_trace_noop_for_empty_list(tmp_path):
-    """An empty trace must not create a zero-byte file (which would
-    mislead later readers into thinking there was a header but no
-    rows)."""
+    """An empty trace must not create a zero-byte file."""
     from solver_benchmarks.solvers.qtqp_adapter import _write_trace
 
     out = tmp_path / "trace.jsonl"
     _write_trace(out, [])
+    assert not out.exists()
+
+
+def test_qtqp_write_trace_removes_stale_file_for_empty_list(tmp_path):
+    from solver_benchmarks.solvers.qtqp_adapter import _write_trace
+
+    out = tmp_path / "trace.jsonl"
+    out.write_text('{"iter": 0}\n')
+
+    _write_trace(out, [])
+
     assert not out.exists()
 
 
