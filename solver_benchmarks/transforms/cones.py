@@ -12,7 +12,15 @@ def split_qp_bounds(qp: dict):
     a = sp.csc_matrix(qp["A"])
     l = np.asarray(qp["l"], dtype=float)
     u = np.asarray(qp["u"], dtype=float)
-    eq = (np.abs(u - l) < 1.0e-8) & (u < INF_BOUND) & (l > -INF_BOUND)
+    # Equality detection uses a relative tolerance against the larger
+    # of |l|, |u|, falling back to an absolute tolerance for tiny
+    # bounds. The previous fixed |u-l| < 1e-8 silently treated tiny
+    # but distinct bounds (e.g. 0 vs 1e-9) as equality and conversely
+    # missed legitimate equalities at scale 1e10 (where 1e-8 of slack
+    # is well below floating-point precision of the bounds themselves).
+    abs_diff = np.abs(u - l)
+    scale = np.maximum.reduce([np.abs(l), np.abs(u), np.ones_like(l)])
+    eq = (abs_diff <= 1.0e-12 * scale) & (u < INF_BOUND) & (l > -INF_BOUND)
     finite_u = (~eq) & (u < INF_BOUND)
     finite_l = (~eq) & (l > -INF_BOUND)
     return a, l, u, eq, finite_l, finite_u
