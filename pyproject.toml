@@ -88,3 +88,18 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+# strict_optional is off because the codebase uses None-returning paths
+# extensively (e.g. SolverResult fields that are populated only on
+# success). Tightening this is a follow-up.
+strict_optional = false
+# tests/scripts intentionally skip annotations.
+exclude = [
+    "tests/.*",
+    "scripts/.*",
+    "build/.*",
+    "results/.*",
+]

@@ -9,6 +9,13 @@ from typing import Any
 
 import numpy as np
 
+# Increment when ProblemResult's on-disk shape changes in a way that
+# old loaders would mis-interpret (e.g. a renamed required field). The
+# runner's worker-result parser tolerates unknown keys via a known-
+# fields filter, so adding new optional columns does NOT require a
+# bump; only structural / semantic changes do.
+PROBLEM_RESULT_SCHEMA_VERSION = 1
+
 
 @dataclass
 class SolverResult:
@@ -43,6 +50,7 @@ class ProblemResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     info: dict[str, Any] = field(default_factory=dict)
     kkt: dict[str, Any] | None = None
+    schema_version: int = PROBLEM_RESULT_SCHEMA_VERSION
 
     def to_record(self) -> dict[str, Any]:
         return to_jsonable(asdict(self))

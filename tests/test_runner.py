@@ -1098,3 +1098,84 @@ def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path:
         "scs_current_a",
         "scs_current_b",
     }
+
+
+def test_check_schema_version_accepts_int_and_none():
+    from solver_benchmarks.core.result import PROBLEM_RESULT_SCHEMA_VERSION
+    from solver_benchmarks.core.runner import _check_schema_version
+
+    assert _check_schema_version(None) is None
+    assert _check_schema_version(PROBLEM_RESULT_SCHEMA_VERSION) is None
+    assert _check_schema_version(0) is None
+
+
+def test_check_schema_version_rejects_future_version():
+    from solver_benchmarks.core.result import PROBLEM_RESULT_SCHEMA_VERSION
+    from solver_benchmarks.core.runner import _check_schema_version
+
+    err = _check_schema_version(PROBLEM_RESULT_SCHEMA_VERSION + 100)
+    assert err is not None
+    assert "newer than the runner" in err
+
+
+def test_check_schema_version_rejects_non_integer_payloads():
+    """Pre-fix this comparison crashed the parent runner with
+    ``TypeError: '>' not supported between instances of 'str' and
+    'int'`` when a hand-edited worker_result.json had
+    ``"schema_version": "2"``. Validate the type explicitly so
+    malformed payloads become a worker_error row instead.
+    """
+    from solver_benchmarks.core.runner import _check_schema_version
+
+    for bad in ("2", 1.5, True, False, [1], {"v": 1}):
+        err = _check_schema_version(bad)
+        assert err is not None, f"expected error for {bad!r}"
+        assert "not an integer" in err
+
+
+def test_load_worker_result_records_malformed_schema_version_as_worker_error(
+    tmp_path: Path,
+):
+    """End-to-end check that a payload with a string ``schema_version``
+    is recorded as a worker_error row rather than crashing the parent
+    runner."""
+    from solver_benchmarks.core.config import DatasetConfig, SolverConfig
+    from solver_benchmarks.core.runner import _load_worker_result
+    from solver_benchmarks.core.storage import ResultStore
+
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    payload = {
+        "run_id": "r",
+        "dataset": "d",
+        "problem": "p",
+        "problem_kind": QP,
+        "solver_id": "s",
+        "solver": "scs",
+        "status": "optimal",
+        "schema_version": "2",  # malformed: string instead of int
+    }
+    worker_path = artifacts_dir / "worker_result.json"
+    worker_path.write_text(json.dumps(payload))
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    store = ResultStore(run_id="r", run_dir=run_dir)
+    dataset_config = DatasetConfig(name="synthetic_qp", id="d")
+    problem = ProblemSpec(dataset_id="d", name="p", kind=QP)
+    solver_config = SolverConfig(id="s", solver="scs")
+
+    result = _load_worker_result(
+        worker_path,
+        store=store,
+        dataset_config=dataset_config,
+        problem=problem,
+        solver_config=solver_config,
+        artifacts_dir=artifacts_dir,
+        environment_id=None,
+        environment_metadata=None,
+    )
+    assert result.status == "worker_error"
+    assert result.error is not None
+    assert "schema_version" in result.error
+    assert "not an integer" in result.error

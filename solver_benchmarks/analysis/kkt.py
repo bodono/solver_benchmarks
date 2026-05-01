@@ -26,7 +26,7 @@ def qp_residuals(
     u,
     x,
     y,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """KKT residuals for ``min ½ x'Px + q'x  s.t.  l ≤ Ax ≤ u``.
 
     ``y`` follows the sign convention ``y = λ_u − λ_l`` with
@@ -100,7 +100,7 @@ def cone_residuals(
     x,
     y,
     s,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """KKT residuals for ``min ½ x'Px + q'x  s.t.  Ax + s = b, s ∈ K``.
 
     Supported cone keys: ``z``/``f`` (zero), ``l`` (nonnegative),
@@ -156,7 +156,7 @@ def cone_residuals(
     norm_pri = 1.0 + max(_inf_norm(Ax), _inf_norm(s), _inf_norm(b))
     norm_dual = 1.0 + max(_inf_norm(Px), _inf_norm(Aty), _inf_norm(q))
 
-    out: dict[str, float] = {
+    out: dict[str, Any] = {
         "form": "cone",
         "primal_res": r_eq,
         "primal_res_l2": r_eq_l2,
@@ -183,7 +183,7 @@ def cone_primal_infeasibility_cert(
     b,
     cone: dict[str, Any],
     y,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Check ``y ∈ K*, A'y = 0, b'y < 0`` for primal infeasibility."""
     y = _as_dense(y)
     A = _as_sparse(A)
@@ -212,7 +212,7 @@ def cone_dual_infeasibility_cert(
     A,
     cone: dict[str, Any],
     x,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Check ``Px = 0, Ax ∈ -K, q'x < 0`` for dual infeasibility (unbounded)."""
     x = _as_dense(x)
     P = _as_sparse(P)
@@ -243,7 +243,7 @@ def qp_primal_infeasibility_cert(
     l,
     u,
     y,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """``A'y = 0`` with ``u'y⁺ − l'y⁻ < 0`` certifies primal infeasibility."""
     y = _as_dense(y)
     A = _as_sparse(A)
@@ -273,7 +273,7 @@ def qp_dual_infeasibility_cert(
     l,
     u,
     x,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """``Px = 0``, ``q'x < 0`` with ``Ax`` in the recession cone of ``l ≤ · ≤ u``."""
     x = _as_dense(x)
     P = _as_sparse(P)
