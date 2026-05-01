@@ -86,20 +86,37 @@ def _parse_sparse_matrix(handle, idx: int) -> sp.csc_matrix:
 
 def _psd_vec(matrix: sp.spmatrix) -> sp.csc_matrix:
     """Vectorize a symmetric matrix in col-major lower-triangular order
-    (the canonical PSD vec convention used by SCS and the KKT module)."""
+    (the canonical PSD vec convention used by SCS and the KKT module).
+
+    Vectorized over the COO triple so block sizes in the hundreds-of-
+    thousands of nnz are handled without a Python-level inner loop.
+    """
     matrix = sp.tril(matrix, format="coo")
     n = matrix.shape[0]
-    idx = []
-    data = []
-    for i, j, value in zip(matrix.row, matrix.col, matrix.data):
-        flat = _col_major_lower_index(int(i), int(j), n)
-        scale = np.sqrt(2.0) if i != j else 1.0
-        idx.append(flat)
-        data.append(scale * float(value))
-    return sp.csc_matrix((data, (idx, np.zeros(len(idx), dtype=int))), shape=(n * (n + 1) // 2, 1))
+    if matrix.nnz == 0:
+        return sp.csc_matrix((n * (n + 1) // 2, 1))
+    rows = matrix.row.astype(np.int64, copy=False)
+    cols = matrix.col.astype(np.int64, copy=False)
+    values = matrix.data.astype(float, copy=False)
+    flat = _col_major_lower_index_array(rows, cols, n)
+    scale = np.where(rows != cols, np.sqrt(2.0), 1.0)
+    data = scale * values
+    return sp.csc_matrix(
+        (data, (flat, np.zeros(flat.size, dtype=np.int64))),
+        shape=(n * (n + 1) // 2, 1),
+    )
 
 
 def _col_major_lower_index(i: int, j: int, n: int) -> int:
     if i < j:
         i, j = j, i
+    return j * n - j * (j - 1) // 2 + (i - j)
+
+
+def _col_major_lower_index_array(rows: np.ndarray, cols: np.ndarray, n: int) -> np.ndarray:
+    """Vectorized version of _col_major_lower_index over COO arrays."""
+    # Ensure i >= j elementwise, swapping where necessary.
+    upper = rows < cols
+    i = np.where(upper, cols, rows)
+    j = np.where(upper, rows, cols)
     return j * n - j * (j - 1) // 2 + (i - j)

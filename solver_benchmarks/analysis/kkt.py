@@ -356,19 +356,29 @@ def _project_cones(
                     y_parts.append(_project_psd_triangle(_take(y, triangle), dim))
                 row += triangle
         elif name in ("bl", "bu"):
-            # Box cone: not projected here. SCS adapters translate back to
-            # the QP form, so we do not exercise this path in practice.
+            # SCS box cone: width is 1 (the leading t scalar) plus the
+            # length of the box vector. ``bl`` and ``bu`` must agree on
+            # length; if the user supplied only one side the other is
+            # treated as length-zero.
             bl = np.asarray(cone.get("bl", []), dtype=float)
             bu = np.asarray(cone.get("bu", []), dtype=float)
-            dim = max(bl.size, bu.size) + 1
-            if name == "bl":
+            if bl.size and bu.size and bl.size != bu.size:
+                # Malformed cone — record but do not advance the row
+                # cursor in a way that misaligns downstream reads.
+                unsupported.append("box")
+                continue
+            box_width = 1 + max(bl.size, bu.size)
+            # Track which key has already consumed the slice so iteration
+            # order doesn't matter (whichever of bl/bu we see first
+            # consumes the slot; the other is a no-op).
+            if "box" not in unsupported:
                 unsupported.append("box")
                 if s is not None:
-                    s_parts.append(_take(s, dim))
+                    s_parts.append(_take(s, box_width))
                 if y is not None:
-                    y_parts.append(_take(y, dim))
-                row += dim
-            # "bu" is consumed jointly with "bl"; skip the second occurrence.
+                    y_parts.append(_take(y, box_width))
+                row += box_width
+            # The matching bl/bu key is consumed jointly; skip it.
         elif name in ("ep", "ed"):
             dim = 3 * int(value)
             unsupported.append(name)

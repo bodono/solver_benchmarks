@@ -227,3 +227,45 @@ def test_soc_projection_boundary_case():
     assert abs(proj[0] - 2.5) < 1e-12
     rest_norm = np.linalg.norm(proj[1:])
     assert abs(rest_norm - 2.5) < 1e-12  # lies on boundary
+
+
+def test_box_cone_handling_does_not_double_advance_row_cursor():
+    """A cone dict with both ``bl`` and ``bu`` keys present must consume
+    the box slot exactly once; otherwise downstream slices get
+    misaligned and downstream KKT values are computed on wrong slack
+    entries. The audit flagged this."""
+    # 2 zero entries + box of width 1 + len(bl)=2 -> total 5.
+    cone = {"z": 2, "bl": [-1.0, -1.0], "bu": [1.0, 1.0]}
+    # Slack/dual vectors of the right size; the projection function
+    # must mark "box" as unsupported but consume only one slot.
+    s = np.arange(5, dtype=float)
+    y = np.arange(5, dtype=float) * -1.0
+    s_proj, y_proj, unsupported = kkt._project_cones(cone, s, y)
+    assert unsupported == ["box"]
+    # The two zero rows project to zeros, then the 3-element box slice
+    # is left as-is. Output length must match the input.
+    assert s_proj.size == 5
+    assert y_proj.size == 5
+
+
+def test_box_cone_with_only_bl_key():
+    """An sdp/box cone with only ``bl`` (or only ``bu``) — a possible
+    user mistake — must still consume the right slot width without
+    crashing or misaligning."""
+    cone = {"bl": [0.0, 0.0, 0.0]}  # box width = 1 + 3 = 4
+    s = np.arange(4, dtype=float)
+    y = np.arange(4, dtype=float)
+    s_proj, y_proj, unsupported = kkt._project_cones(cone, s, y)
+    assert unsupported == ["box"]
+    assert s_proj.size == 4
+    assert y_proj.size == 4
+
+
+def test_box_cone_with_mismatched_bl_bu_sizes_marks_unsupported_safely():
+    """Malformed cone where bl and bu disagree in size: do not advance
+    the row cursor in a way that would shift later slices."""
+    cone = {"bl": [0.0], "bu": [0.0, 0.0]}
+    s = np.zeros(8, dtype=float)
+    y = np.zeros(8, dtype=float)
+    s_proj, y_proj, unsupported = kkt._project_cones(cone, s, y)
+    assert "box" in unsupported

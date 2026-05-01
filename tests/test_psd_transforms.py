@@ -128,3 +128,61 @@ def test_cone_row_perm_treats_f_and_z_as_skip():
     assert list(idx[:3]) == [0, 1, 2]
     p = col_major_to_row_major_perm(2)
     assert list(idx[3:]) == list(3 + np.argsort(p))
+
+
+def test_psd_vec_round_trip_recovers_inner_product():
+    """The vectorized form must satisfy <C, X> = vec(C).vec(X) so the
+    cone constraint formulation is preserved."""
+    import scipy.sparse as sp
+
+    from solver_benchmarks.transforms.sdplib import _psd_vec
+
+    for n in (1, 2, 3, 5, 8):
+        c = _symmetric_matrix(n)
+        x = _symmetric_matrix(n)
+        c_sparse = sp.csc_matrix(c)
+        x_sparse = sp.csc_matrix(x)
+        c_vec = _psd_vec(c_sparse).toarray().reshape(-1)
+        x_vec = _psd_vec(x_sparse).toarray().reshape(-1)
+        # The canonical convention: <C, X> = vec(C).vec(X) where the
+        # off-diagonals carry the sqrt(2) scaling exactly once.
+        assert np.isclose(
+            float(c_vec @ x_vec), float(np.sum(c * x)), atol=1e-10
+        )
+
+
+def test_psd_vec_handles_empty_block():
+    """A symmetric block with all-zero data should produce a zero vec."""
+    import scipy.sparse as sp
+
+    from solver_benchmarks.transforms.sdplib import _psd_vec
+
+    n = 4
+    empty = sp.csc_matrix((n, n))
+    out = _psd_vec(empty)
+    assert out.shape == (n * (n + 1) // 2, 1)
+    assert out.nnz == 0
+
+
+def test_psd_vec_vectorized_matches_naive_loop():
+    """The vectorized impl must produce identical output to the naive
+    Python-loop reference (mirrors the previous implementation)."""
+    import scipy.sparse as sp
+
+    from solver_benchmarks.transforms.sdplib import _col_major_lower_index, _psd_vec
+
+    rng = np.random.default_rng(7)  # used below for the test fixture
+    a = rng.normal(size=(5, 5))
+    a = 0.5 * (a + a.T)
+    matrix = sp.csc_matrix(a)
+    out = _psd_vec(matrix).toarray().reshape(-1)
+
+    # Naive reconstruction.
+    n = matrix.shape[0]
+    expected = np.zeros(n * (n + 1) // 2)
+    tril = sp.tril(matrix, format="coo")
+    for i, j, value in zip(tril.row, tril.col, tril.data):
+        flat = _col_major_lower_index(int(i), int(j), n)
+        scale = np.sqrt(2.0) if i != j else 1.0
+        expected[flat] = scale * float(value)
+    assert np.allclose(out, expected)

@@ -185,10 +185,12 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
         rhs = raw_b[domain.start : domain.start + domain.dim]
         if domain.name == "F":
             continue
-        if domain.name == "L-":
-            nonnegative_blocks.append((rows, -rhs))
-        else:
-            add_domain(domain, -rows, rhs)
+        # add_domain already handles every cone kind including L-;
+        # passing the unnegated rows lets the L- branch flip both
+        # sides exactly once. The previous bespoke L- shortcut here
+        # produced the same numbers (rows, -rhs) but doubled the
+        # arithmetic and was easy to drift from add_domain.
+        add_domain(domain, -rows, rhs)
 
     matrices = []
     rhs_parts = []
