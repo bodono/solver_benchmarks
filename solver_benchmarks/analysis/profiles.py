@@ -9,13 +9,67 @@ from solver_benchmarks.core import status
 
 DEFAULT_FAILURE_PENALTY = 1.0e3
 
+# Per-metric defaults used by performance_profile / shifted_geomean
+# when the caller hasn't pinned ``max_value`` and ``shift``. The
+# original globals (1e3 / 10) made sense only for run_time_seconds;
+# applying them to ``iterations`` or KKT residuals gave nonsense
+# aggregates. The dispatch is opt-in: callers can still pass explicit
+# values, and unknown metrics fall back to the run-time-style defaults.
+_METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
+    "run_time_seconds": (1.0e3, 10.0),
+    "setup_time_seconds": (1.0e3, 10.0),
+    "solve_time_seconds": (1.0e3, 10.0),
+    "iterations": (1.0e6, 100.0),
+    "kkt.primal_res_rel": (1.0, 0.0),
+    "kkt.dual_res_rel": (1.0, 0.0),
+    "kkt.duality_gap_rel": (1.0, 0.0),
+    "kkt.comp_slack": (1.0, 0.0),
+}
+
+
+def metric_defaults(metric: str) -> tuple[float, float]:
+    """Return ``(failure_penalty, shift)`` defaults for ``metric``.
+
+    Falls back to the run-time-style defaults for unknown metrics so
+    aggregates remain useful for ad-hoc columns (e.g. wall-time
+    derivatives).
+    """
+    return _METRIC_DEFAULTS.get(metric, (DEFAULT_FAILURE_PENALTY, 10.0))
+
+
+def deduplicate_for_pivot(
+    frame: pd.DataFrame, keys: list[str], metric: str | None = None
+) -> pd.DataFrame:
+    """Collapse duplicate ``(*keys, solver_id)`` rows to one per group.
+
+    ``pivot_table(aggfunc="first")`` on a frame with duplicate
+    ``(problem, solver_id)`` rows picks non-deterministically across
+    pandas versions; sort first by the metric so we always keep the
+    best (lowest) row for each ``(problem, solver_id)``. NaN metrics
+    sort last so a successful numeric row wins over a NaN row.
+
+    When ``metric`` is None or absent from the frame, the deduplication
+    falls back to ``keep="first"`` ordering.
+    """
+    subset_keys = [*keys, "solver_id"]
+    if metric is not None and metric in frame.columns:
+        sortable = frame.assign(
+            __metric_for_dedup=pd.to_numeric(frame[metric], errors="coerce")
+        )
+        sortable = sortable.sort_values(
+            "__metric_for_dedup", kind="stable", na_position="last"
+        )
+        deduped = sortable.drop_duplicates(subset=subset_keys, keep="first")
+        return deduped.drop(columns="__metric_for_dedup")
+    return frame.drop_duplicates(subset=subset_keys, keep="first")
+
 
 def performance_profile(
     results: pd.DataFrame,
     *,
     metric: str = "run_time_seconds",
     success_statuses: set[str] | None = None,
-    max_value: float = DEFAULT_FAILURE_PENALTY,
+    max_value: float | None = None,
     n_tau: int = 1000,
     tau_max: float | None = None,
 ) -> pd.DataFrame:
@@ -40,12 +94,17 @@ def performance_profile(
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    if max_value is None:
+        max_value, _ = metric_defaults(metric)
     if results.empty:
         return pd.DataFrame()
     keys = ["dataset", "problem"] if "dataset" in results.columns else ["problem"]
     index = keys[0] if len(keys) == 1 else keys
-    pivot = results.pivot_table(index=index, columns="solver_id", values=metric, aggfunc="first")
-    status_pivot = results.pivot_table(
+    # Pre-deduplicate so pivot_table(aggfunc="first") becomes deterministic
+    # — best (lowest) metric wins for any duplicated (problem, solver_id).
+    deduped = deduplicate_for_pivot(results, keys, metric)
+    pivot = deduped.pivot_table(index=index, columns="solver_id", values=metric, aggfunc="first")
+    status_pivot = deduped.pivot_table(
         index=index, columns="solver_id", values="status", aggfunc="first"
     )
     values = pivot.copy()
@@ -90,13 +149,19 @@ def shifted_geomean(
     results: pd.DataFrame,
     *,
     metric: str = "run_time_seconds",
-    shift: float = 10.0,
+    shift: float | None = None,
     success_statuses: set[str] | None = None,
-    max_value: float = DEFAULT_FAILURE_PENALTY,
+    max_value: float | None = None,
     penalize_failures: bool = True,
 ) -> pd.DataFrame:
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    if max_value is None or shift is None:
+        default_max, default_shift = metric_defaults(metric)
+        if max_value is None:
+            max_value = default_max
+        if shift is None:
+            shift = default_shift
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
         values = pd.to_numeric(group[metric], errors="coerce").to_numpy(copy=True)

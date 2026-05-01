@@ -27,7 +27,11 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.analysis.load import load_results
-from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
+from solver_benchmarks.analysis.profiles import (
+    deduplicate_for_pivot,
+    performance_profile,
+    shifted_geomean,
+)
 from solver_benchmarks.analysis.tables import (
     difficulty_scaling,
     failure_rates,
@@ -193,6 +197,7 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
     keys = ["dataset", "problem"] if "dataset" in successful.columns else ["problem"]
     index = keys[0] if len(keys) == 1 else keys
+    successful = deduplicate_for_pivot(successful, keys, metric)
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -409,6 +414,7 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
         frame = successful[np.isfinite(successful[col]) & (successful[col] > 0.0)]
         if frame.empty:
             continue
+        frame = deduplicate_for_pivot(frame, keys, col)
         pivot = frame.pivot_table(
             index=pivot_index,
             columns="solver_id",
@@ -471,10 +477,14 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
     if not solver_ids:
         return None
 
-    problem_totals = {
-        solver_id: int((results["solver_id"] == solver_id).sum())
-        for solver_id in solver_ids
-    }
+    # Denominator is the number of solves of the solver that produced
+    # the residual being plotted (i.e. successful solves with a
+    # finite KKT value). Previously we divided by total attempts which
+    # conflated "solver failed" with "solver produced a poor
+    # residual" — a solver that fails on 95% of problems but is
+    # accurate on the 5% it solves would otherwise look like a 5%-rate
+    # failure. The y-axis label now reflects the per-success
+    # normalization explicitly.
     thresholds = np.logspace(-12, 0, 121)
 
     cols = len(available)
@@ -489,11 +499,13 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
                 successful.loc[successful["solver_id"] == solver_id, col], errors="coerce"
             )
             series = series[np.isfinite(series)].to_numpy()
-            total = problem_totals.get(solver_id, 0)
-            if total == 0 or series.size == 0:
+            if series.size == 0:
                 continue
             series = np.where(series <= 0.0, 1e-16, series)
-            fractions = np.array([(series <= t).sum() / total for t in thresholds])
+            denominator = float(series.size)
+            fractions = np.array(
+                [(series <= t).sum() / denominator for t in thresholds]
+            )
             per_solver.append((solver_id, fractions))
         if not per_solver:
             ax.set_axis_off()
@@ -505,7 +517,7 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
         ax.set_xscale("log")
         ax.set_ylim(0.0, 1.02)
         ax.set_xlabel("residual threshold tau")
-        ax.set_ylabel("fraction with residual <= tau")
+        ax.set_ylabel("fraction of successes with residual <= tau")
         ax.set_title(label)
         ax.grid(True, which="both", alpha=0.25)
         ax.legend(fontsize="small")
@@ -514,7 +526,9 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
         plt.close(fig)
         return None
 
-    fig.suptitle("KKT Accuracy Profile (per solver, across all problems)")
+    fig.suptitle(
+        "KKT Accuracy Profile (per solver, normalized by per-solver successes)"
+    )
     path = output_dir / "kkt_accuracy_profile.png"
     fig.savefig(path, dpi=180)
     plt.close(fig)

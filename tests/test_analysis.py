@@ -88,6 +88,26 @@ def test_performance_profile_penalizes_failed_solves():
     assert profile["solver_b"].tolist() == pytest.approx([0.5, 1.0, 1.0])
 
 
+def test_performance_profile_is_deterministic_under_duplicate_rows():
+    """Duplicate (problem, solver_id) rows used to make pivot_table
+    aggfunc='first' pick non-deterministically. Now we pre-deduplicate
+    by best metric so the profile is stable."""
+    frame = pd.DataFrame(
+        [
+            {"problem": "p", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
+            # Worst-case duplicate appears first; dedup must keep the
+            # better (lower) value so the profile is independent of row
+            # order.
+            {"problem": "p", "solver_id": "b", "status": "optimal", "run_time_seconds": 100.0},
+            {"problem": "p", "solver_id": "b", "status": "optimal", "run_time_seconds": 2.0},
+        ]
+    )
+    profile = performance_profile(frame, n_tau=4, tau_max=10000.0)
+    # b's best run is 2s; ratio b/a = 2.0; b appears at tau >= 2.
+    assert profile["b"].iloc[0] == 0.0  # at tau=1, b is not within 1x of a
+    assert profile["b"].iloc[-1] == pytest.approx(1.0)
+
+
 def test_performance_profile_drops_problems_where_every_solver_failed():
     """When no solver succeeded on a problem the row is undefined under
     Dolan-Moré; including it would inflate every curve at tau=1."""
@@ -131,6 +151,32 @@ def test_shifted_geomean_penalizes_failed_solves():
     assert values["solver_b"] == pytest.approx((2.0 * 4.0) ** 0.5)
     assert set(geomean["mode"]) == {"penalized"}
     assert geomean.set_index("solver_id").loc["solver_a", "failure_count"] == 1
+
+
+def test_metric_defaults_dispatch_per_metric():
+    """Per-metric defaults stop the run-time-style penalty from leaking
+    into iterations / KKT residuals."""
+    from solver_benchmarks.analysis.profiles import metric_defaults
+
+    assert metric_defaults("run_time_seconds") == (1.0e3, 10.0)
+    assert metric_defaults("iterations") == (1.0e6, 100.0)
+    assert metric_defaults("kkt.primal_res_rel") == (1.0, 0.0)
+    # Unknown metrics fall back to the run-time-style defaults.
+    assert metric_defaults("unknown_column") == (1.0e3, 10.0)
+
+
+def test_shifted_geomean_uses_metric_defaults_when_unspecified():
+    """Calling shifted_geomean with metric=iterations (no shift kwarg)
+    should pick the iterations defaults, not 10.0 seconds."""
+    frame = pd.DataFrame(
+        [
+            {"solver_id": "a", "status": "optimal", "iterations": 100},
+            {"solver_id": "a", "status": "optimal", "iterations": 200},
+        ]
+    )
+    geomean = shifted_geomean(frame, metric="iterations")
+    # max_value should be 1e6 (per metric_defaults("iterations"))
+    assert geomean.iloc[0]["max_value"] == 1.0e6
 
 
 def test_default_failure_penalty_is_one_thousand_seconds():
