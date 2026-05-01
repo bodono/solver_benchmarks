@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import bz2
-import gzip
-import io
 import re
 import urllib.error
 import urllib.parse
@@ -17,7 +15,7 @@ import scipy.sparse as sp
 import problem_classes.qpsreader as qpsreader
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
 
 class MPSLPDataset(Dataset):
@@ -290,8 +288,10 @@ def _miplib_problem_url(filename: str) -> str:
 
 def _validate_gzip_payload(compressed: bytes, name: str) -> None:
     try:
-        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
-            stream.read(1)
+        # Validate the full gzip stream (header + CRC + EOF marker), not
+        # just the header — see datasets/base.py::validate_gzip_payload
+        # for the rationale.
+        validate_gzip_payload(compressed)
     except (EOFError, OSError) as exc:
         raise RuntimeError(f"MIPLIB problem {name!r} did not download as gzip data") from exc
 
@@ -350,10 +350,9 @@ def _download_kennington_problem(name: str, folder: Path) -> None:
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             compressed = response.read()
-        # Validate that NETLIB served a gzip stream before writing it under .mps.gz.
-        # Streaming probe avoids holding the full decompressed payload in memory.
-        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as probe:
-            probe.read(1)
+        # Validate the full gzip stream (CRC + EOF marker), not just
+        # the header — see datasets/base.py for the rationale.
+        validate_gzip_payload(compressed)
         atomic_write_bytes(target, compressed)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"Could not download Kennington problem {name!r}: {exc}") from exc

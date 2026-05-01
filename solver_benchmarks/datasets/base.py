@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import io
 import os
 import tempfile
 from abc import ABC, abstractmethod
@@ -10,6 +12,24 @@ from pathlib import Path
 from typing import Any
 
 from solver_benchmarks.core.problem import ProblemData, ProblemSpec
+
+
+def validate_gzip_payload(compressed: bytes) -> None:
+    """Verify ``compressed`` is a complete, well-formed gzip stream.
+
+    Streaming-decompresses the whole payload (in 64 KiB chunks so peak
+    memory stays bounded by the chunk size, not the decompressed body)
+    and surfaces ``OSError`` / ``EOFError`` from gzip's CRC and
+    end-of-stream checks. A peek-one-byte probe (``GzipFile.read(1)``)
+    only validates the gzip header; a truncated tail with a missing
+    CRC32 / EOF marker passes the probe but blows up at the next
+    parse, and the atomic-write commit means subsequent runs reuse the
+    corrupt cache file forever.
+    """
+    chunk_size = 64 * 1024
+    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+        while stream.read(chunk_size):
+            pass
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:

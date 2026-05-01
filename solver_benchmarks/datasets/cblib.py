@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import io
 import re
 import urllib.request
 from dataclasses import dataclass
@@ -14,7 +13,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
 CBLIB_BASE_URL = "https://cblib.zib.de/download/all"
 CBLIB_DEFAULT_SUBSET = (
@@ -125,11 +124,11 @@ def download_cblib_problem(name: str, folder: Path) -> Path:
     url = f"{CBLIB_BASE_URL}/{stem}.cbf.gz"
     with urllib.request.urlopen(url, timeout=60) as response:
         compressed = response.read()
-    # Sanity-check the gzip stream so we don't atomically commit a payload
-    # that would explode at parse time. Peek a single byte; this validates
-    # the header without holding the full decompressed body in memory.
-    with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as probe:
-        probe.read(1)
+    # Validate the full gzip stream (header + CRC + EOF marker) before
+    # committing to the cache. A truncated tail would pass a peek-one-
+    # byte probe but blow up at parse time, and the atomic-write commit
+    # would then bake the corruption in for every subsequent run.
+    validate_gzip_payload(compressed)
     folder.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(target, compressed)
     return target

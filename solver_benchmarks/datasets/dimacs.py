@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import io
 import re
 import urllib.request
 from io import BytesIO
@@ -16,7 +15,7 @@ import scipy.sparse.linalg
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
 DIMACS_BASE_URL = "https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances"
 DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")
@@ -221,8 +220,9 @@ def _download_dimacs_problem(name: str, folder: Path) -> Path:
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             content = response.read()
-        with gzip.GzipFile(fileobj=io.BytesIO(content)) as probe:
-            probe.read(1)
+        # Validate the full gzip stream (CRC + EOF marker), not just
+        # the header — see datasets/base.py for the rationale.
+        validate_gzip_payload(content)
         atomic_write_bytes(target, content)
         return target
     except OSError as exc:
