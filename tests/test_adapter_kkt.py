@@ -205,6 +205,17 @@ def test_adapter_reports_primal_infeasibility_certificate(solver_name: str, tmp_
     assert witness is not None and witness < 0.0
 
 
+def test_osqp_infeasible_result_has_no_reported_objective(tmp_path: Path):
+    result = _solve("osqp", _infeasible_lp(), tmp_path)
+
+    assert result.status in {
+        status.PRIMAL_INFEASIBLE,
+        status.PRIMAL_INFEASIBLE_INACCURATE,
+    }
+    assert result.objective_value is None
+    assert "obj_val" in result.info
+
+
 @pytest.mark.parametrize(
     "status_val, expected",
     [
