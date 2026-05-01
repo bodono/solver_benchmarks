@@ -72,30 +72,6 @@ def solver_metrics(
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
 
 
-KKT_RESIDUAL_COLUMNS: tuple[str, ...] = (
-    "kkt.primal_res",
-    "kkt.primal_res_rel",
-    "kkt.dual_res",
-    "kkt.dual_res_rel",
-    "kkt.comp_slack",
-    "kkt.primal_cone_res",
-    "kkt.dual_cone_res",
-    "kkt.duality_gap",
-    "kkt.duality_gap_rel",
-)
-
-KKT_CERTIFICATE_COLUMNS: tuple[str, ...] = (
-    "kkt.Aty_rel",
-    "kkt.Px_rel",
-    "kkt.qtx",
-    "kkt.bty",
-    "kkt.support",
-    "kkt.primal_cone_res",
-    "kkt.dual_cone_res",
-    "kkt.valid",
-)
-
-
 def kkt_summary(
     results: pd.DataFrame,
     *,
@@ -1105,11 +1081,3 @@ def _expected_by_dataset(
     return expected
 
 
-def _expected_problem_names(
-    config: dict, *, repo_root: str | Path | None = None
-) -> list[str]:
-    """Backward-compatible: union of expected problems across all datasets."""
-    expected: set[str] = set()
-    for problems in _expected_by_dataset(config, repo_root=repo_root).values():
-        expected |= problems
-    return sorted(expected)

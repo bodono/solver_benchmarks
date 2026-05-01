@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
-from solver_benchmarks.core import status as canonical
 from solver_benchmarks.core.problem import ProblemData
 from solver_benchmarks.core.result import SolverResult
-
-logger = logging.getLogger(__name__)
 
 
 class SolverUnavailable(RuntimeError):
@@ -149,35 +144,3 @@ def mark_threads_ignored(info: dict[str, Any], threads: int | None) -> None:
         info["threads_requested"] = int(threads)
 
 
-OLD_STATUS_MAP = {
-    "optimal": canonical.OPTIMAL,
-    "optimal inaccurate": canonical.OPTIMAL_INACCURATE,
-    "optimal_inaccurate": canonical.OPTIMAL_INACCURATE,
-    "primal infeasible": canonical.PRIMAL_INFEASIBLE,
-    "primal_infeasible": canonical.PRIMAL_INFEASIBLE,
-    "primal infeasible inaccurate": canonical.PRIMAL_INFEASIBLE_INACCURATE,
-    "dual infeasible": canonical.DUAL_INFEASIBLE,
-    "dual_infeasible": canonical.DUAL_INFEASIBLE,
-    "dual infeasible inaccurate": canonical.DUAL_INFEASIBLE_INACCURATE,
-    "primal or dual infeasible": canonical.PRIMAL_OR_DUAL_INFEASIBLE,
-    "solver_error": canonical.SOLVER_ERROR,
-    "max_iter_reached": canonical.MAX_ITER_REACHED,
-    "time_limit": canonical.TIME_LIMIT,
-}
-
-
-def normalize_status(status: Any) -> str:
-    key = str(status)
-    if key in OLD_STATUS_MAP:
-        return OLD_STATUS_MAP[key]
-    lower = key.lower()
-    if lower in OLD_STATUS_MAP:
-        return OLD_STATUS_MAP[lower]
-    # Log so an adapter that forgets to extend its mapping shows up in
-    # the debug stream rather than silently producing SOLVER_ERROR.
-    logger.warning("normalize_status: unmapped solver status %r", status)
-    return canonical.SOLVER_ERROR
-
-
-def qp_namespace(problem: ProblemData):
-    return SimpleNamespace(qp_problem=problem.qp, prob_name=problem.name)
