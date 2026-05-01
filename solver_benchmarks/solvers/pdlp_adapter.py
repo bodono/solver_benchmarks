@@ -19,7 +19,13 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 INF_BOUND = 1.0e20
 
@@ -194,16 +200,23 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
 
     settings = settings_with_defaults(settings)
     verbose = bool(settings.pop("verbose"))
-    time_limit = settings.pop("time_limit_sec", None)
-    time_limit = settings.pop("solver_time_limit_sec", time_limit)
+    # Cross-adapter aliases live in pop_time_limit; ortools also has a
+    # legacy ``solver_time_limit_sec`` spelling we still accept here for
+    # back-compat with pinned configs.
+    time_limit = pop_time_limit(settings)
+    if time_limit is None:
+        time_limit = settings.pop("solver_time_limit_sec", None)
+    threads = pop_threads(settings)
 
     request = linear_solver_pb2.MPModelRequest(
         model=model,
         enable_internal_solver_output=verbose,
         solver_type=linear_solver_pb2.MPModelRequest.PDLP_LINEAR_PROGRAMMING,
     )
+    time_limit_ignored = False
     if time_limit is not None:
-        _set_time_limit(request, float(time_limit))
+        if not _set_time_limit(request, float(time_limit)):
+            time_limit_ignored = True
 
     parameters = _pdlp_parameters_from_settings(settings)
     if settings:
@@ -235,20 +248,34 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         except Exception:
             kkt_dict = None
 
+    info = {
+        "termination_reason": solve_log_pb2.TerminationReason.Name(
+            solve_log.termination_reason
+        ),
+        "termination_string": solve_log.termination_string,
+        "solver_time_sec": getattr(solve_log, "solve_time_sec", None),
+        "primal_solution_size": len(response.variable_value),
+        "dual_solution_size": len(response.dual_value),
+    }
+    if time_limit_ignored:
+        info["time_limit_ignored"] = True
+        info["time_limit_seconds"] = float(time_limit)
+    if threads is not None:
+        # PDLP is single-threaded by design; surface so callers can detect.
+        info["threads_ignored"] = True
+        info["threads_requested"] = int(threads)
+    # Gate objective on a solution-bearing status; for infeasibility
+    # certs OR-Tools may still populate objective_value with the
+    # certificate's residual.
+    objective_present = mapped_status in status.SOLUTION_PRESENT or (
+        mapped_status == status.OPTIMAL_INACCURATE
+    )
     return SolverResult(
         status=mapped_status,
-        objective_value=float(response.objective_value),
+        objective_value=float(response.objective_value) if objective_present else None,
         iterations=_extract_iterations(solve_log),
         run_time_seconds=elapsed,
-        info={
-            "termination_reason": solve_log_pb2.TerminationReason.Name(
-                solve_log.termination_reason
-            ),
-            "termination_string": solve_log.termination_string,
-            "solver_time_sec": getattr(solve_log, "solve_time_sec", None),
-            "primal_solution_size": len(response.variable_value),
-            "dual_solution_size": len(response.dual_value),
-        },
+        info=info,
         kkt=kkt_dict,
     )
 
@@ -284,11 +311,23 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
 
 
 def _apply_pure_pdlp_defaults(parameters) -> None:
-    parameters.presolve_options.use_glop = False
-    parameters.use_feasibility_polishing = False
-    parameters.apply_feasibility_polishing_after_limits_reached = False
-    parameters.apply_feasibility_polishing_if_solver_is_interrupted = False
-    parameters.use_diagonal_qp_trust_region_solver = False
+    """Disable PDLP's optional warm-start helpers (Glop presolve and
+    feasibility-polishing) so the benchmark sees the unaided PDLP
+    behavior. Each field is gated by ``hasattr`` because OR-Tools has
+    renamed these flags between releases.
+    """
+    if hasattr(parameters, "presolve_options") and hasattr(
+        parameters.presolve_options, "use_glop"
+    ):
+        parameters.presolve_options.use_glop = False
+    for attr in (
+        "use_feasibility_polishing",
+        "apply_feasibility_polishing_after_limits_reached",
+        "apply_feasibility_polishing_if_solver_is_interrupted",
+        "use_diagonal_qp_trust_region_solver",
+    ):
+        if hasattr(parameters, attr):
+            setattr(parameters, attr, False)
 
 
 def _qp_kkt(mapped_status, qp, x, y):
@@ -338,15 +377,20 @@ def _import_model_builder_helper():
         return model_builder_helper
 
 
-def _set_time_limit(request, value: float) -> None:
+def _set_time_limit(request, value: float) -> bool:
+    """Set the solver time limit on an MPModelRequest, returning True
+    on success. Returns False if no compatible field exists on this
+    OR-Tools build (the caller can then mark the request as
+    time_limit_ignored rather than crashing the solve).
+    """
     fields = request.DESCRIPTOR.fields_by_name
     if "solver_time_limit_sec" in fields:
         request.solver_time_limit_sec = value
-        return
+        return True
     if "solver_time_limit_seconds" in fields:
         request.solver_time_limit_seconds = value
-        return
-    raise AttributeError("MPModelRequest does not expose a solver time-limit field")
+        return True
+    return False
 
 
 def _solve_request(model_builder_helper, linear_solver_pb2, request):

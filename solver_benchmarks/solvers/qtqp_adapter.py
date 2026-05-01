@@ -17,7 +17,15 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult, to_jsonable
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    mark_threads_ignored,
+    mark_time_limit_ignored,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class QTQPSolverAdapter(SolverAdapter):
@@ -40,6 +48,11 @@ class QTQPSolverAdapter(SolverAdapter):
 
         qp = problem.qp
         settings = settings_with_defaults(self.settings)
+        # QTQP exposes neither a time-limit knob nor a thread-count
+        # setting; record the configured values on info so callers can
+        # detect they were ignored rather than silently dropping them.
+        time_limit = pop_time_limit(settings)
+        threads = pop_threads(settings)
         settings = _normalize_settings(settings, qtqp)
         a, b, z = qp_to_nonnegative_cone(qp)
         p = sp.csc_matrix(qp["P"])
@@ -74,12 +87,15 @@ class QTQPSolverAdapter(SolverAdapter):
         if a.shape[0] - z:
             cone_dict["l"] = int(a.shape[0] - z)
         kkt_dict = _compute_kkt(mapped, solution, p, c, a, b, cone_dict)
+        result_info = {"raw_status": raw_status, **info}
+        mark_time_limit_ignored(result_info, time_limit)
+        mark_threads_ignored(result_info, threads)
         return SolverResult(
             status=mapped,
             objective_value=objective,
             iterations=iterations,
             run_time_seconds=elapsed,
-            info={"raw_status": raw_status, **info},
+            info=result_info,
             trace=[to_jsonable(row) for row in trace],
             kkt=kkt_dict,
         )

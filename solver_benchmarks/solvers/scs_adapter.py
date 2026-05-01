@@ -15,7 +15,53 @@ from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dual
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    mark_threads_ignored,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
+
+_SCS_NUM_THREADS_SUPPORTED: bool | None = None
+
+
+def _scs_supports_num_threads() -> bool:
+    """Detect whether the installed SCS build accepts ``num_threads``.
+
+    Only the OpenMP-built variant accepts the kwarg; on a stock build
+    SCS' C extension raises ``TypeError: 'num_threads' is an invalid
+    keyword argument for this function``. We probe once with a 1x1
+    problem and cache the result, so cross-adapter ``threads`` requests
+    can be either forwarded or marked ignored without crashing the
+    solve.
+    """
+    global _SCS_NUM_THREADS_SUPPORTED
+    if _SCS_NUM_THREADS_SUPPORTED is not None:
+        return _SCS_NUM_THREADS_SUPPORTED
+    try:
+        import scs as _scs
+    except ModuleNotFoundError:
+        _SCS_NUM_THREADS_SUPPORTED = False
+        return False
+    data = {
+        "P": sp.csc_matrix((1, 1)),
+        "A": sp.csc_matrix(np.array([[1.0]])),
+        "b": np.array([0.0]),
+        "c": np.array([0.0]),
+    }
+    cone = {"z": 1}
+    try:
+        _scs.SCS(data, cone, num_threads=1, verbose=False)
+    except TypeError:
+        _SCS_NUM_THREADS_SUPPORTED = False
+    except Exception:
+        # Any other failure means SCS at least accepted the kwarg.
+        _SCS_NUM_THREADS_SUPPORTED = True
+    else:
+        _SCS_NUM_THREADS_SUPPORTED = True
+    return _SCS_NUM_THREADS_SUPPORTED
 
 
 class SCSSolverAdapter(SolverAdapter):
@@ -37,6 +83,22 @@ class SCSSolverAdapter(SolverAdapter):
             raise SolverUnavailable("Install with the scs extra to use SCS") from exc
 
         settings = settings_with_defaults(self.settings)
+        # Translate cross-adapter aliases. SCS' native time-limit knob
+        # is ``time_limit_secs`` (note the trailing ``s``); accept the
+        # other spellings via pop_time_limit.
+        time_limit = pop_time_limit(settings)
+        if time_limit is not None:
+            settings["time_limit_secs"] = float(time_limit)
+        threads = pop_threads(settings)
+        threads_ignored = False
+        if threads is not None:
+            # SCS only accepts the ``num_threads`` kwarg on OpenMP
+            # builds — on a stock build the C extension raises
+            # TypeError. Probe once and either forward or mark ignored.
+            if _scs_supports_num_threads():
+                settings.setdefault("num_threads", threads)
+            else:
+                threads_ignored = True
         if settings.get("log_csv_filename") is True:
             settings["log_csv_filename"] = str(artifacts_dir / "scs_trace.csv")
 
@@ -64,6 +126,8 @@ class SCSSolverAdapter(SolverAdapter):
         raw = scs.solve(data, cone, **settings)
         elapsed = time.perf_counter() - start
         info = dict(raw.get("info", {}))
+        if threads_ignored:
+            mark_threads_ignored(info, threads)
         mapped = _map_scs_status(info)
         trace = _read_csv_trace(settings.get("log_csv_filename"))
         kkt_dict = _compute_kkt(problem, mapped, raw, cone, inv_perm)

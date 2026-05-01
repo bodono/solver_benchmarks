@@ -12,7 +12,13 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class GurobiSolverAdapter(SolverAdapter):
@@ -139,16 +145,17 @@ def _finite_bounds(values, inf_value: float, *, lower: bool) -> np.ndarray:
 
 def _configure_gurobi(model, settings: dict, grb) -> None:
     settings = settings_with_defaults(settings)
-    if not settings.get("verbose"):
+    if not settings.pop("verbose", False):
         model.setParam("OutputFlag", 0)
-    if "time_limit" in settings:
-        model.setParam("TimeLimit", float(settings["time_limit"]))
-    if "time_limit_sec" in settings:
-        model.setParam("TimeLimit", float(settings["time_limit_sec"]))
-    ignored = {"verbose", "time_limit", "time_limit_sec", "high_accuracy"}
+    time_limit = pop_time_limit(settings)
+    if time_limit is not None:
+        model.setParam("TimeLimit", float(time_limit))
+    threads = pop_threads(settings)
+    if threads is not None:
+        model.setParam("Threads", int(threads))
+    settings.pop("high_accuracy", None)
     for key, value in settings.items():
-        if key not in ignored:
-            model.setParam(key, value)
+        model.setParam(key, value)
 
 
 def _map_gurobi_status(raw_status: int, grb) -> str:
