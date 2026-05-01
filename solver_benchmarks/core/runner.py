@@ -23,6 +23,7 @@ from solver_benchmarks.core.config import (
     RunConfig,
     SolverConfig,
     resolve_output_dir,
+    solve_signature,
 )
 from solver_benchmarks.core.data_prepare import (
     data_prepare_command,
@@ -59,10 +60,19 @@ def run_benchmark(
     config = resolve_output_dir(config, repo_root)
     if stream_solver_output is None:
         stream_solver_output = stream_output
+    previous_manifest = (
+        ResultStore.read_manifest(run_dir)
+        if run_dir is not None and config.resume
+        else None
+    )
     store = ResultStore.create(config, run_dir=run_dir)
     if source_config_path is not None:
         store.copy_source_config(source_config_path)
-    completed = store.completed_keys() if config.resume else set()
+    completed = (
+        store.completed_keys(config=config, previous_manifest=previous_manifest)
+        if config.resume
+        else set()
+    )
 
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
     already_complete = 0
@@ -386,6 +396,7 @@ def _run_one(
     artifacts_dir = store.problem_solver_dir(
         dataset_config.id, problem.name, solver_config.id
     )
+    resume_signature = solve_signature(config, dataset_config, solver_config)
     payload = {
         "run_id": store.run_id,
         "dataset": dataset_config.id,
@@ -403,6 +414,7 @@ def _run_one(
         "repo_root": str(repo_root),
         "environment_id": environment_id,
         "environment_metadata": environment_metadata or {},
+        "resume_signature": resume_signature,
     }
     payload_path = artifacts_dir / "payload.json"
     atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
@@ -448,6 +460,7 @@ def _run_one(
                 solver_config,
                 environment_id=environment_id,
                 environment_metadata=environment_metadata,
+                resume_signature=resume_signature,
             ),
         )
 
@@ -462,6 +475,7 @@ def _run_one(
             artifacts_dir=artifacts_dir,
             environment_id=environment_id,
             environment_metadata=environment_metadata,
+            resume_signature=resume_signature,
         )
         _emit_progress(
             stream_output,
@@ -490,6 +504,7 @@ def _run_one(
             solver_config,
             environment_id=environment_id,
             environment_metadata=environment_metadata,
+            resume_signature=resume_signature,
         ),
     )
 
@@ -535,6 +550,7 @@ def _load_worker_result(
     artifacts_dir: Path,
     environment_id: str | None,
     environment_metadata: dict | None,
+    resume_signature: str | None = None,
 ) -> ProblemResult:
     """Parse a worker_result.json into a ProblemResult.
 
@@ -569,6 +585,12 @@ def _load_worker_result(
             error = version_check
             record = None
         else:
+            metadata = record.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if resume_signature is not None:
+                metadata = {**metadata, "resume_signature": resume_signature}
+            record["metadata"] = metadata
             try:
                 return ProblemResult(**record)
             except TypeError as exc:
@@ -591,6 +613,7 @@ def _load_worker_result(
             solver_config,
             environment_id=environment_id,
             environment_metadata=environment_metadata,
+            resume_signature=resume_signature,
         ),
     )
 
@@ -856,6 +879,7 @@ def _write_skip(
                 solver_config,
                 environment_id=environment_id,
                 environment_metadata=environment_metadata,
+                resume_signature=solve_signature(config, dataset_config, solver_config),
             ),
         )
     )
@@ -867,6 +891,7 @@ def _metadata_with_environment(
     *,
     environment_id: str | None,
     environment_metadata: dict | None,
+    resume_signature: str | None = None,
 ) -> dict:
     metadata = dict(problem.metadata)
     metadata.update(
@@ -876,4 +901,6 @@ def _metadata_with_environment(
             "runtime": runtime_metadata(solver_config.solver),
         }
     )
+    if resume_signature is not None:
+        metadata["resume_signature"] = resume_signature
     return metadata

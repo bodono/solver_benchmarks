@@ -120,10 +120,7 @@ class RunConfig:
             "exclude": self.exclude,
             "timeout_seconds": self.timeout_seconds,
         }
-        encoded = json.dumps(
-            _canonicalize(payload), sort_keys=True, separators=(",", ":")
-        ).encode()
-        return hashlib.sha256(encoded).hexdigest()[:12]
+        return _stable_digest(payload, length=12)
 
     def to_manifest(self) -> dict[str, Any]:
         return {
@@ -619,6 +616,13 @@ def _validate_timeout(value: Any, *, context: str) -> float | None:
     return coerced
 
 
+def _stable_digest(payload: Any, *, length: int) -> str:
+    encoded = json.dumps(
+        _canonicalize(payload), sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()[:length]
+
+
 def _canonicalize(value: Any) -> Any:
     """Recursively normalize a config payload for stable hashing.
 
@@ -683,3 +687,78 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
             "exclude": list(run_exclude),
         }
     ]
+
+
+def solve_signature(
+    config: RunConfig,
+    dataset: DatasetConfig,
+    solver: SolverConfig,
+) -> str:
+    """Return the resume identity for one dataset/solver solve family.
+
+    The signature intentionally ignores run bookkeeping fields such as
+    name, output_dir, parallelism, resume, and reporting flags. It covers
+    the pieces that can change the actual mathematical problem or solver
+    behavior for an already-planned ``(dataset, problem, solver_id)`` row.
+    """
+    return _stable_digest(
+        {
+            "dataset": {
+                "id": dataset.id,
+                "name": dataset.name,
+                "dataset_options": dataset.dataset_options,
+            },
+            "solver": {
+                "id": solver.id,
+                "solver": solver.solver,
+                "settings": solver.settings,
+                "effective_timeout_seconds": _effective_timeout(config, solver),
+            },
+        },
+        length=24,
+    )
+
+
+def solve_signatures(config: RunConfig) -> dict[tuple[str, str], str]:
+    return {
+        (str(dataset.id), solver.id): solve_signature(config, dataset, solver)
+        for dataset in config.datasets
+        for solver in config.solvers
+    }
+
+
+def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], str]:
+    """Return solve signatures for a manifest ``config`` payload."""
+    run_timeout = config.get("timeout_seconds")
+    signatures: dict[tuple[str, str], str] = {}
+    for dataset in manifest_dataset_entries(config):
+        dataset_id = str(dataset["id"])
+        for solver in config.get("solvers", []) or []:
+            solver_id = str(solver["id"])
+            solver_timeout = solver.get("timeout_seconds")
+            effective_timeout = (
+                solver_timeout if solver_timeout is not None else run_timeout
+            )
+            signatures[(dataset_id, solver_id)] = _stable_digest(
+                {
+                    "dataset": {
+                        "id": dataset_id,
+                        "name": str(dataset["name"]),
+                        "dataset_options": dict(dataset.get("dataset_options") or {}),
+                    },
+                    "solver": {
+                        "id": solver_id,
+                        "solver": str(solver["solver"]),
+                        "settings": dict(solver.get("settings") or {}),
+                        "effective_timeout_seconds": effective_timeout,
+                    },
+                },
+                length=24,
+            )
+    return signatures
+
+
+def _effective_timeout(config: RunConfig, solver: SolverConfig) -> float | None:
+    if solver.timeout_seconds is not None:
+        return solver.timeout_seconds
+    return config.timeout_seconds

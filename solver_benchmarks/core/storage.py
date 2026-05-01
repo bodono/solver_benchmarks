@@ -18,7 +18,7 @@ from typing import Any
 
 import pandas as pd
 
-from .config import RunConfig
+from .config import RunConfig, manifest_solve_signatures, solve_signatures
 from .result import ProblemResult, to_jsonable
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,31 @@ def _datasets_slug(config: RunConfig) -> str:
 def slugify(value: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
     return value.strip("-") or "run"
+
+
+def _previous_solve_signatures(
+    previous_manifest: dict[str, Any] | None,
+) -> dict[tuple[str, str], str]:
+    if not previous_manifest:
+        return {}
+    config = previous_manifest.get("config")
+    if not isinstance(config, dict):
+        return {}
+    return manifest_solve_signatures(config)
+
+
+def _is_resume_compatible(
+    record: dict[str, Any],
+    *,
+    current_signature: str,
+    previous_signature: str | None,
+) -> bool:
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        recorded_signature = metadata.get("resume_signature")
+        if recorded_signature is not None:
+            return str(recorded_signature) == current_signature
+    return previous_signature == current_signature
 
 
 @dataclass
@@ -106,6 +131,17 @@ class ResultStore:
     def results_parquet_path(self) -> Path:
         return self.run_dir / "results.parquet"
 
+    @staticmethod
+    def read_manifest(run_dir: str | Path) -> dict[str, Any] | None:
+        path = Path(run_dir).resolve() / "manifest.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            logger.warning("Could not parse existing manifest %s", path)
+            return None
+
     def write_manifest(self, config: RunConfig) -> None:
         manifest = {
             "run_id": self.run_id,
@@ -142,16 +178,28 @@ class ResultStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def completed_keys(self) -> set[tuple[str, str, str]]:
+    def completed_keys(
+        self,
+        *,
+        config: RunConfig | None = None,
+        previous_manifest: dict[str, Any] | None = None,
+    ) -> set[tuple[str, str, str]]:
         """Resume keys are ``(dataset, problem, solver_id)`` tuples.
 
         Including the dataset name avoids collisions when two datasets
         share a problem name (e.g. ``afiro`` in NETLIB vs another LP
         bundle), so resume cannot conflate them. Tolerant of partially
         written / unparseable JSONL lines (skips with a warning).
+
+        When ``config`` is supplied, only rows whose solve signature is
+        compatible with the current dataset/solver definition are treated
+        as complete. Legacy rows without an embedded signature are checked
+        against ``previous_manifest`` when available.
         """
         if not self.results_jsonl_path.exists():
             return set()
+        current_signatures = solve_signatures(config) if config is not None else None
+        previous_signatures = _previous_solve_signatures(previous_manifest)
         keys: set[tuple[str, str, str]] = set()
         with self.results_jsonl_path.open() as handle:
             for lineno, line in enumerate(handle, start=1):
@@ -175,13 +223,24 @@ class ResultStore:
                         self.results_jsonl_path,
                     )
                     continue
-                keys.add(
-                    (
-                        str(record.get("dataset", "")),
-                        str(problem),
-                        str(solver_id),
-                    )
+                key = (
+                    str(record.get("dataset", "")),
+                    str(problem),
+                    str(solver_id),
                 )
+                if current_signatures is not None:
+                    signature_key = (key[0], key[2])
+                    current_signature = current_signatures.get(signature_key)
+                    if current_signature is None:
+                        continue
+                    previous_signature = previous_signatures.get(signature_key)
+                    if not _is_resume_compatible(
+                        record,
+                        current_signature=current_signature,
+                        previous_signature=previous_signature,
+                    ):
+                        continue
+                keys.add(key)
         return keys
 
     def append_event(self, level: str, message: str, **fields: Any) -> None:

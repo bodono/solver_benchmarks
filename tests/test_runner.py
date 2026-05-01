@@ -70,6 +70,215 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path, repo_root: Path)
     assert df.loc[0, "solver_id"] == "scs_smoke"
 
 
+def test_resume_reuses_legacy_rows_when_solve_signature_is_compatible(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    class ResumeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="resume_ds", name="p", kind=QP)]
+
+    class ResumeSolver(SolverAdapter):
+        solver_name = "resume_solver"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    calls: list[str] = []
+
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        calls.append(payload["solver"]["id"])
+        artifact_dir = Path(payload["artifacts_dir"])
+        record = ProblemResult(
+            run_id=payload["run_id"],
+            dataset=payload["dataset"],
+            problem=payload["problem"],
+            problem_kind=payload["problem_kind"],
+            solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+            artifact_dir=str(artifact_dir),
+        ).to_record()
+        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
+        stdout_path.write_text("")
+        stderr_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "resume_ds", ResumeDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "resume_solver", ResumeSolver)
+    monkeypatch.setattr(
+        "solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess
+    )
+    config1 = parse_run_config(
+        {
+            "run": {"dataset": "resume_ds", "output_dir": str(tmp_path / "runs")},
+            "solvers": [
+                {
+                    "id": "existing",
+                    "solver": "resume_solver",
+                    "settings": {"alpha": 1},
+                }
+            ],
+        }
+    )
+    store = ResultStore.create(config1, run_dir=tmp_path / "run")
+    # Simulate a pre-signature result row from an older release.
+    store.write_result(
+        ProblemResult(
+            run_id=store.run_id,
+            dataset="resume_ds",
+            problem="p",
+            problem_kind=QP,
+            solver_id="existing",
+            solver="resume_solver",
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+        )
+    )
+    config2 = parse_run_config(
+        {
+            "run": {
+                "dataset": "resume_ds",
+                "output_dir": str(tmp_path / "runs"),
+                "parallelism": 2,
+                "name": "expanded",
+            },
+            "solvers": [
+                {
+                    "id": "existing",
+                    "solver": "resume_solver",
+                    "settings": {"alpha": 1},
+                },
+                {
+                    "id": "new",
+                    "solver": "resume_solver",
+                    "settings": {"alpha": 1},
+                },
+            ],
+        }
+    )
+
+    run_benchmark(config2, run_dir=store.run_dir, repo_root=repo_root)
+
+    rows = [
+        json.loads(line)
+        for line in store.results_jsonl_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert calls == ["new"]
+    assert [row["solver_id"] for row in rows] == ["existing", "new"]
+    new_row = rows[1]
+    assert new_row["metadata"]["resume_signature"]
+
+
+def test_resume_recomputes_legacy_rows_when_solver_settings_change(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    class ResumeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="resume_ds", name="p", kind=QP)]
+
+    class ResumeSolver(SolverAdapter):
+        solver_name = "resume_solver"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    calls: list[dict] = []
+
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        calls.append(payload["solver"])
+        artifact_dir = Path(payload["artifacts_dir"])
+        record = ProblemResult(
+            run_id=payload["run_id"],
+            dataset=payload["dataset"],
+            problem=payload["problem"],
+            problem_kind=payload["problem_kind"],
+            solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+            artifact_dir=str(artifact_dir),
+        ).to_record()
+        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
+        stdout_path.write_text("")
+        stderr_path.write_text("")
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "resume_ds", ResumeDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "resume_solver", ResumeSolver)
+    monkeypatch.setattr(
+        "solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess
+    )
+    config1 = parse_run_config(
+        {
+            "run": {"dataset": "resume_ds", "output_dir": str(tmp_path / "runs")},
+            "solvers": [
+                {
+                    "id": "existing",
+                    "solver": "resume_solver",
+                    "settings": {"alpha": 1},
+                }
+            ],
+        }
+    )
+    store = ResultStore.create(config1, run_dir=tmp_path / "run")
+    store.write_result(
+        ProblemResult(
+            run_id=store.run_id,
+            dataset="resume_ds",
+            problem="p",
+            problem_kind=QP,
+            solver_id="existing",
+            solver="resume_solver",
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+        )
+    )
+    config2 = parse_run_config(
+        {
+            "run": {"dataset": "resume_ds", "output_dir": str(tmp_path / "runs")},
+            "solvers": [
+                {
+                    "id": "existing",
+                    "solver": "resume_solver",
+                    "settings": {"alpha": 2},
+                }
+            ],
+        }
+    )
+
+    run_benchmark(config2, run_dir=store.run_dir, repo_root=repo_root)
+
+    rows = [
+        json.loads(line)
+        for line in store.results_jsonl_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert [call["id"] for call in calls] == ["existing"]
+    assert calls[0]["settings"] == {"alpha": 2}
+    assert [row["solver_id"] for row in rows] == ["existing", "existing"]
+    assert rows[1]["metadata"]["resume_signature"]
+
+
 def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path, repo_root: Path):
     config_path = tmp_path / "named_smoke_run.yaml"
     output_dir = tmp_path / "runs"
