@@ -643,3 +643,116 @@ def test_qplib_loader_negates_max_data_and_reports_min_obj_type(tmp_path: Path):
     # Quadratic + linear data was negated; constant offset r flipped sign.
     assert qp["r"] == 1.0  # original r = -1, negated for min form
     assert qp["q"][0] == -2.0  # original q[0] = 2, negated
+
+
+def test_qplib_loader_handles_min_direction_without_negation(tmp_path: Path):
+    """Min-form QPLIB files must NOT be negated."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n8888\n")
+    _write_minimal_qplib(folder / "QPLIB_8888.qplib", direction="minimize")
+
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("8888")
+    qp = problem.qp
+    assert qp["obj_type"] == "min"
+    assert problem.metadata.get("original_obj_type") == "min"
+    assert qp["r"] == -1.0  # unchanged
+    assert qp["q"][0] == 2.0  # unchanged
+
+
+def test_qplib_loader_with_constraints_assembles_a_and_bounds(tmp_path: Path):
+    """The single-pass parser must produce the same A/l/u shapes as
+    the old multi-read implementation when constraints are present.
+
+    Lays out a 1-variable, 1-constraint min problem with a single A
+    nonzero, default lower=0 and upper=10."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n7777\n")
+    body = "\n".join(
+        [
+            "TINY_WITH_CON",
+            "QCB",
+            "minimize",
+            "1 variables",
+            "1 constraints",  # m = 1
+            "0 quadratic objective",  # nnz_Ptriu = 0
+            "0.0",  # q default
+            "0",
+            "0.0",  # r
+            "1 linear constraint coefficient",  # nnz_A = 1
+            "1 1 1.0",  # A[0,0] = 1
+            "1.0e30",  # infty marker
+            "0.0",  # l default
+            "0",
+            "10.0",  # u default
+            "0",
+            "0.0",  # lx default
+            "0",
+            "5.0",  # ux default
+            "0",
+            "0.0",  # x0 default
+            "0",
+            "0.0",  # y0 default
+            "0",
+            "0.0",  # w0 default
+            "0",
+            "",
+        ]
+    )
+    (folder / "QPLIB_7777.qplib").write_text(body)
+
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("7777")
+    qp = problem.qp
+    # Combined: 1 user constraint + 1 variable bound row -> m = 2.
+    assert qp["m"] == 2
+    assert qp["A"].shape == (2, 1)
+    # First row is the user constraint with coefficient 1.
+    assert qp["A"].toarray()[0, 0] == 1.0
+    # Bounds: [user_l=0, var_l=0] / [user_u=10, var_u=5].
+    assert list(qp["l"]) == [0.0, 0.0]
+    assert list(qp["u"]) == [10.0, 5.0]
+
+
+def test_qplib_loader_tolerates_blank_lines(tmp_path: Path):
+    """The new cursor strips blank lines so a stray trailing blank or
+    extra blank between sections doesn't shift later parses."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n6666\n")
+    body = "\n".join(
+        [
+            "TINY_BLANK",
+            "QCB",
+            "",  # spurious blank line before direction
+            "minimize",
+            "1 variables",
+            "0 constraints",
+            "0 quadratic objective",
+            "0.0",
+            "0",
+            "0.0",
+            "1.0e30",
+            "0.0",
+            "0",
+            "0.0",
+            "0",
+            "",  # spurious blank line in middle
+            "0.0",
+            "0",
+            "0.0",
+            "0",
+            "0.0",
+            "0",
+            "",
+        ]
+    )
+    (folder / "QPLIB_6666.qplib").write_text(body)
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("6666")
+    assert problem.qp["n"] == 1
