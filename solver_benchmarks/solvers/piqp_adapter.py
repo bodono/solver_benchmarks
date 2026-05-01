@@ -10,7 +10,13 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    mark_time_limit_ignored,
+    pop_time_limit,
+    settings_with_defaults,
+)
 from .qp_split import combine_qp_duals, dual_from_lower_upper, split_qp_for_range_constraints
 
 
@@ -35,7 +41,16 @@ class PIQPSolverAdapter(SolverAdapter):
         qp = problem.qp
         p, q, aeq, b, g, h_l, h_u, eq_idx, ineq_idx = split_qp_for_range_constraints(qp)
         settings = settings_with_defaults(self.settings)
-        use_dense = bool(settings.pop("dense", False) or settings.pop("backend", "") == "dense")
+        # Pop both keys unconditionally; the previous `or`-chain
+        # short-circuited and left "backend" in settings whenever
+        # "dense" was truthy, which then tripped the unknown-setting
+        # check below.
+        dense_flag = settings.pop("dense", False)
+        backend_value = settings.pop("backend", "")
+        use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
+        # PIQP has no native time-limit knob; surface the configured value
+        # in info so callers can detect that it was ignored.
+        time_limit = pop_time_limit(settings)
         solver = piqp.DenseSolver() if use_dense else piqp.SparseSolver()
         settings.setdefault("compute_timings", True)
         _configure_piqp(solver, settings)
@@ -83,6 +98,7 @@ class PIQPSolverAdapter(SolverAdapter):
                 y,
             )
         info = _info_dict(result.info)
+        mark_time_limit_ignored(info, time_limit)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(info.get("primal_obj")),
@@ -96,10 +112,6 @@ class PIQPSolverAdapter(SolverAdapter):
 
 
 def _configure_piqp(solver, settings: dict) -> None:
-    if "time_limit" in settings:
-        settings.pop("time_limit")
-    if "time_limit_sec" in settings:
-        settings.pop("time_limit_sec")
     for key, value in settings.items():
         if not hasattr(solver.settings, key):
             raise ValueError(f"Invalid PIQP setting {key!r}")

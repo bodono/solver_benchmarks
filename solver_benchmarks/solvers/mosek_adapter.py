@@ -42,54 +42,61 @@ class MosekSolverAdapter(SolverAdapter):
         lower = np.asarray(qp["l"], dtype=float)
         upper = np.asarray(qp["u"], dtype=float)
 
-        env = mosek.Env()
-        task = env.Task()
-        _configure_mosek(task, env, self.settings, mosek)
+        # Wrap MOSEK Env / Task in `with` blocks so the C-level resources
+        # and the streamprinter callback are released deterministically.
+        # Otherwise long batch runs leak license tokens until GC fires.
+        with mosek.Env() as env, env.Task() as task:
+            _configure_mosek(task, env, self.settings, mosek)
 
-        task.appendcons(m)
-        task.appendvars(n)
-        for col, value in enumerate(q):
-            task.putcj(col, float(value))
-            task.putvarbound(col, mosek.boundkey.fr, -np.inf, np.inf)
+            task.appendcons(m)
+            task.appendvars(n)
+            # Set linear costs and free variable bounds in bulk; the
+            # previous per-variable putvarbound loop was O(n) Python calls.
+            if n:
+                task.putclist(list(range(n)), q.tolist())
+                task.putvarboundsliceconst(0, n, mosek.boundkey.fr, -np.inf, np.inf)
 
-        task.putaijlist(a_mat.row, a_mat.col, a_mat.data)
-        for row in range(m):
-            bound_key, l_val, u_val = _mosek_bound(lower[row], upper[row], mosek)
-            task.putconbound(row, bound_key, l_val, u_val)
+            task.putaijlist(a_mat.row, a_mat.col, a_mat.data)
+            for row in range(m):
+                bound_key, l_val, u_val = _mosek_bound(lower[row], upper[row], mosek)
+                task.putconbound(row, bound_key, l_val, u_val)
 
-        if p_mat.nnz:
-            task.putqobj(p_mat.row, p_mat.col, p_mat.data)
-        task.putobjsense(mosek.objsense.minimize)
+            if p_mat.nnz:
+                task.putqobj(p_mat.row, p_mat.col, p_mat.data)
+            task.putobjsense(mosek.objsense.minimize)
 
-        start = time.perf_counter()
-        try:
-            termination_code = task.optimize()
-        except Exception as exc:
-            return SolverResult(
-                status=status.SOLVER_ERROR,
-                run_time_seconds=time.perf_counter() - start,
-                info={"error": str(exc)},
+            start = time.perf_counter()
+            try:
+                termination_code = task.optimize()
+            except Exception as exc:
+                return SolverResult(
+                    status=status.SOLVER_ERROR,
+                    run_time_seconds=time.perf_counter() - start,
+                    info={"error": str(exc)},
+                )
+            elapsed = time.perf_counter() - start
+
+            soltype = _resolve_mosek_soltype(task, mosek)
+            raw_status = task.getsolsta(soltype)
+            mapped = _map_mosek_status(raw_status, termination_code, mosek)
+            solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
+            iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
+            objective = (
+                task.getprimalobj(soltype) if mapped in status.SOLUTION_PRESENT else None
             )
-        elapsed = time.perf_counter() - start
-
-        soltype = mosek.soltype.itr
-        raw_status = task.getsolsta(soltype)
-        mapped = _map_mosek_status(raw_status, termination_code, mosek)
-        solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
-        iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
-        objective = task.getprimalobj(soltype) if mapped in status.SOLUTION_PRESENT else None
-        return SolverResult(
-            status=mapped,
-            objective_value=None if objective is None else float(objective),
-            iterations=int(iterations) if iterations is not None else None,
-            run_time_seconds=elapsed,
-            info={
-                "raw_status": str(raw_status),
-                "termination_code": str(termination_code),
-                "solver": "mosek",
-                "solver_reported_runtime": float(solver_reported_runtime),
-            },
-        )
+            return SolverResult(
+                status=mapped,
+                objective_value=None if objective is None else float(objective),
+                iterations=int(iterations) if iterations is not None else None,
+                run_time_seconds=elapsed,
+                info={
+                    "raw_status": str(raw_status),
+                    "termination_code": str(termination_code),
+                    "solver": "mosek",
+                    "solver_reported_runtime": float(solver_reported_runtime),
+                    "soltype": str(soltype),
+                },
+            )
 
 
 def _configure_mosek(task, env, settings: dict, mosek) -> None:
@@ -133,12 +140,14 @@ def _mosek_bound(lower: float, upper: float, mosek):
 
 
 def _map_mosek_status(raw_status, termination_code, mosek) -> str:
-    if termination_code == mosek.rescode.trm_max_time:
-        return status.TIME_LIMIT
-    if termination_code == mosek.rescode.trm_max_iterations:
-        return status.MAX_ITER_REACHED
+    """Map MOSEK's (solsta, termination_code) pair to the canonical status.
+
+    Solsta is checked first: if the optimizer found an optimum *before*
+    the time/iteration limit fired, we should report OPTIMAL rather than
+    discarding it as TIME_LIMIT.
+    """
     solsta = mosek.solsta
-    mapping = {
+    solsta_mapping = {
         solsta.optimal: status.OPTIMAL,
         solsta.integer_optimal: status.OPTIMAL,
         solsta.prim_and_dual_feas: status.OPTIMAL_INACCURATE,
@@ -147,7 +156,38 @@ def _map_mosek_status(raw_status, termination_code, mosek) -> str:
         solsta.dual_infeas_cer: status.DUAL_INFEASIBLE,
         solsta.unknown: status.SOLVER_ERROR,
     }
-    return mapping.get(raw_status, status.SOLVER_ERROR)
+    canonical_solsta = solsta_mapping.get(raw_status)
+    # If MOSEK actually concluded with a useful solsta, keep it even if
+    # the optimizer also raised a time/iter termination code.
+    if canonical_solsta in {status.OPTIMAL, status.PRIMAL_INFEASIBLE, status.DUAL_INFEASIBLE}:
+        return canonical_solsta
+    if termination_code == mosek.rescode.trm_max_time:
+        return status.TIME_LIMIT
+    if termination_code == mosek.rescode.trm_max_iterations:
+        return status.MAX_ITER_REACHED
+    if canonical_solsta is not None:
+        return canonical_solsta
+    return status.SOLVER_ERROR
+
+
+def _resolve_mosek_soltype(task, mosek):
+    """Pick the MOSEK solution slot most likely to be populated.
+
+    MOSEK exposes separate slots for interior-point (itr), basic (bas),
+    and integer (itg) solutions. Hard-coding `itr` made the adapter
+    return ``unknown`` on simplex/MIP solves. Try in priority order and
+    fall back to itr.
+    """
+    soltype = mosek.soltype
+    candidates = (soltype.itg, soltype.bas, soltype.itr)
+    for candidate in candidates:
+        try:
+            sta = task.getsolsta(candidate)
+        except Exception:
+            continue
+        if sta != mosek.solsta.unknown:
+            return candidate
+    return soltype.itr
 
 
 def _handle_mosek_str_param(task, param: str, value) -> None:

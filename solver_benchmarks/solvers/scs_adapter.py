@@ -67,9 +67,15 @@ class SCSSolverAdapter(SolverAdapter):
         mapped = _map_scs_status(info)
         trace = _read_csv_trace(settings.get("log_csv_filename"))
         kkt_dict = _compute_kkt(problem, mapped, raw, cone, inv_perm)
+        # Gate objective_value on a solution-bearing status (including
+        # OPTIMAL_INACCURATE). For infeasibility-certificate statuses
+        # SCS still populates pobj, but reporting it as the objective
+        # value is misleading because it's the certificate's normalizer,
+        # not the optimal value.
+        objective_present = mapped in status.SOLUTION_PRESENT or mapped == status.OPTIMAL_INACCURATE
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(info.get("pobj")),
+            objective_value=_maybe_float(info.get("pobj")) if objective_present else None,
             iterations=_maybe_int(info.get("iter")),
             run_time_seconds=elapsed,
             setup_time_seconds=_maybe_scs_seconds(info.get("setup_time")),

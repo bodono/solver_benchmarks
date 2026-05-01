@@ -41,46 +41,58 @@ class CPLEXSolverAdapter(SolverAdapter):
         u = np.asarray(qp["u"], dtype=float)
         n = int(qp.get("n", q.shape[0]))
         model = cplex.Cplex()
-        model.objective.set_sense(model.objective.sense.minimize)
-        _configure_cplex(model, self.settings)
-        infinity = model.infinity
-        model.variables.add(
-            obj=q.tolist(),
-            lb=[-infinity] * n,
-            ub=[infinity] * n,
-            names=[f"x_{idx}" for idx in range(n)],
-        )
-        _add_cplex_constraints(model, cplex, a, l, u, infinity)
-        if p.nnz:
-            model.objective.set_quadratic_coefficients(
-                [(int(i), int(j), float(v)) for i, j, v in zip(p.row, p.col, p.data)]
-            )
-
-        start = time.perf_counter()
+        # Always end() the model so the C-level state and license token
+        # are released deterministically, even when an exception fires.
         try:
-            model.solve()
-        except Exception as exc:
-            return SolverResult(
-                status=status.SOLVER_ERROR,
-                run_time_seconds=time.perf_counter() - start,
-                info={"error": str(exc)},
+            model.objective.set_sense(model.objective.sense.minimize)
+            _configure_cplex(model, self.settings)
+            infinity = model.infinity
+            model.variables.add(
+                obj=q.tolist(),
+                lb=[-infinity] * n,
+                ub=[infinity] * n,
+                names=[f"x_{idx}" for idx in range(n)],
             )
-        elapsed = time.perf_counter() - start
-        raw_status = model.solution.get_status()
-        mapped = _map_cplex_status(raw_status, model)
-        return SolverResult(
-            status=mapped,
-            objective_value=model.solution.get_objective_value()
-            if mapped in status.SOLUTION_PRESENT
-            else None,
-            iterations=_cplex_iterations(model),
-            run_time_seconds=elapsed,
-            info={
-                "raw_status": raw_status,
-                "status_string": model.solution.get_status_string(raw_status),
-                "problem_type": model.problem_type[model.get_problem_type()],
-            },
-        )
+            _add_cplex_constraints(model, cplex, a, l, u, infinity)
+            if p.nnz:
+                model.objective.set_quadratic_coefficients(
+                    [(int(i), int(j), float(v)) for i, j, v in zip(p.row, p.col, p.data)]
+                )
+
+            start = time.perf_counter()
+            try:
+                model.solve()
+            except Exception as exc:
+                return SolverResult(
+                    status=status.SOLVER_ERROR,
+                    run_time_seconds=time.perf_counter() - start,
+                    info={"error": str(exc)},
+                )
+            elapsed = time.perf_counter() - start
+            raw_status = model.solution.get_status()
+            mapped = _map_cplex_status(raw_status, model)
+            objective_present = mapped in status.SOLUTION_PRESENT or (
+                mapped == status.OPTIMAL_INACCURATE
+            )
+            objective_value = (
+                model.solution.get_objective_value() if objective_present else None
+            )
+            return SolverResult(
+                status=mapped,
+                objective_value=objective_value,
+                iterations=_cplex_iterations(model),
+                run_time_seconds=elapsed,
+                info={
+                    "raw_status": raw_status,
+                    "status_string": model.solution.get_status_string(raw_status),
+                    "problem_type": model.problem_type[model.get_problem_type()],
+                },
+            )
+        finally:
+            try:
+                model.end()
+            except Exception:
+                pass
 
 
 def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> None:

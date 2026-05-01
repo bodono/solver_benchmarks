@@ -155,26 +155,13 @@ def test_config_hash_ignores_run_name(tmp_path: Path):
     assert first.config_hash == second.config_hash
 
 
-def test_solver_settings_are_verbose_by_default():
-    assert settings_with_defaults({})["verbose"] is True
-    assert settings_with_defaults({"eps_abs": 1.0e-6})["verbose"] is True
+def test_solver_settings_default_verbose_is_quiet():
+    """Batch benchmark runs default to quiet solvers; an explicit verbose
+    setting flows through unchanged."""
+    assert settings_with_defaults({})["verbose"] is False
+    assert settings_with_defaults({"eps_abs": 1.0e-6})["verbose"] is False
+    assert settings_with_defaults({"verbose": True})["verbose"] is True
     assert settings_with_defaults({"verbose": False})["verbose"] is False
-
-
-def test_example_configs_do_not_opt_out_of_verbose_by_default(repo_root: Path):
-    configs_dir = repo_root / "configs"
-    config_paths = [
-        *configs_dir.glob("*.json"),
-        *configs_dir.glob("*.yaml"),
-        *configs_dir.glob("*.yml"),
-    ]
-    assert config_paths, f"No example configs found under {configs_dir}"
-    for config_path in config_paths:
-        config = load_run_config(config_path)
-        assert all(
-            solver.settings.get("verbose", True) is not False
-            for solver in config.solvers
-        )
 
 
 def test_parse_environment_run_config():
