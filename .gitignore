@@ -5,6 +5,7 @@ problem_classes/miplib_data/
 
 # Benchmark run outputs
 results/
+configs/runs/
 
 # OSX Files
 .DS_Store
