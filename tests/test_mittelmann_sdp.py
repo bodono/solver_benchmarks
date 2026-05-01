@@ -430,13 +430,13 @@ def test_normalize_subset_none_means_no_filter():
 def test_normalize_subset_accepts_comma_string_and_list():
     from solver_benchmarks.datasets.mittelmann_sdp import _normalize_subset
 
-    assert _normalize_subset("theta1, G11") == {"theta1", "G11"}
-    assert _normalize_subset(["theta1", "G14"]) == {"theta1", "G14"}
+    assert _normalize_subset("trto3, G40mc") == {"trto3", "G40mc"}
+    assert _normalize_subset(["trto3", "rose13"]) == {"trto3", "rose13"}
 
 
 def test_sdpa_name_recognizes_dat_s_extensions(tmp_path: Path):
     from solver_benchmarks.datasets.mittelmann_sdp import _sdpa_name
 
-    assert _sdpa_name(tmp_path / "theta1.dat-s") == "theta1"
-    assert _sdpa_name(tmp_path / "G11.dat-s.gz") == "G11"
+    assert _sdpa_name(tmp_path / "trto3.dat-s") == "trto3"
+    assert _sdpa_name(tmp_path / "G40mc.dat-s.gz") == "G40mc"
     assert _sdpa_name(tmp_path / "not_an_sdp.txt") is None

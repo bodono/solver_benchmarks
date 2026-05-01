@@ -12,21 +12,41 @@ pytestmark = pytest.mark.network
 
 
 @pytest.mark.parametrize(
-    ("dataset_id", "problem_name", "expected_file"),
+    ("dataset_id", "prepare_name", "expected_problem_name", "expected_file"),
     [
-        ("cblib", "nb", "cblib_data/nb.cbf.gz"),
-        ("kennington", "ken-07", "kennington/ken-07.mps.gz"),
-        ("miplib", "markshare_4_0", "miplib_data/markshare_4_0.mps.gz"),
-        ("mittelmann", "qap15", "mittelmann/qap15.mps"),
-        ("mpc_qpbenchmark", "LIPMWALK0", "mpc_qpbenchmark_data/LIPMWALK0.npz"),
-        ("qplib", "8790", "qplib_data/QPLIB_8790.qplib"),
+        ("cblib", "nb", "nb", "cblib_data/nb.cbf.gz"),
+        ("dc_opf", "case5", "case5", "dc_opf_data/case5.m"),
+        ("kennington", "ken-07", "ken-07", "kennington/ken-07.mps.gz"),
+        ("libsvm_qp", "heart", "svm_dual_heart", "libsvm_data/heart.libsvm"),
+        (
+            "miplib",
+            "markshare_4_0",
+            "markshare_4_0",
+            "miplib_data/markshare_4_0.mps.gz",
+        ),
+        ("mittelmann", "qap15", "qap15", "mittelmann/qap15.mps"),
+        (
+            "mittelmann_sdp",
+            "trto3",
+            "trto3",
+            "mittelmann_sdp_data/trto3.dat-s.gz",
+        ),
+        (
+            "mpc_qpbenchmark",
+            "LIPMWALK0",
+            "LIPMWALK0",
+            "mpc_qpbenchmark_data/LIPMWALK0.npz",
+        ),
+        ("qplib", "8790", "8790", "qplib_data/QPLIB_8790.qplib"),
+        ("tsplib_sdp", "burma14", "burma14", "tsplib_data/burma14.tsp"),
     ],
 )
 def test_external_dataset_prepare_downloads_real_problem_and_uses_cache(
     monkeypatch,
     tmp_path: Path,
     dataset_id: str,
-    problem_name: str,
+    prepare_name: str,
+    expected_problem_name: str,
     expected_file: str,
 ):
     data_root = tmp_path / "problem_classes"
@@ -43,7 +63,7 @@ def test_external_dataset_prepare_downloads_real_problem_and_uses_cache(
             "--option",
             f"data_root={data_root}",
             "--problem",
-            problem_name,
+            prepare_name,
         ],
     )
 
@@ -53,7 +73,7 @@ def test_external_dataset_prepare_downloads_real_problem_and_uses_cache(
     assert downloaded.exists()
     assert downloaded.stat().st_size > 0
     dataset = get_dataset(dataset_id)(repo_root=tmp_path, data_root=data_root)
-    assert problem_name in {spec.name for spec in dataset.list_problems()}
+    assert expected_problem_name in {spec.name for spec in dataset.list_problems()}
 
     def fail_if_network_is_used(*args, **kwargs):
         raise AssertionError("cached prepare_data unexpectedly used the network")
@@ -70,7 +90,7 @@ def test_external_dataset_prepare_downloads_real_problem_and_uses_cache(
             "--option",
             f"data_root={data_root}",
             "--problem",
-            problem_name,
+            prepare_name,
         ],
     )
 
@@ -106,7 +126,11 @@ def test_miplib_prepare_max_size_uses_real_manifest_and_downloads_small_files(
 
 
 def _disable_dataset_network(monkeypatch, dataset_id: str, replacement) -> None:
-    if dataset_id in {"kennington", "miplib", "mittelmann"}:
+    if dataset_id == "dc_opf":
+        from solver_benchmarks.datasets import dc_opf
+
+        monkeypatch.setattr(dc_opf.urllib.request, "urlopen", replacement)
+    elif dataset_id in {"kennington", "miplib", "mittelmann"}:
         from solver_benchmarks.datasets import mps
 
         monkeypatch.setattr(mps.urllib.request, "urlopen", replacement)
@@ -118,9 +142,21 @@ def _disable_dataset_network(monkeypatch, dataset_id: str, replacement) -> None:
         from solver_benchmarks.datasets import mpc_qpbenchmark
 
         monkeypatch.setattr(mpc_qpbenchmark.urllib.request, "urlopen", replacement)
+    elif dataset_id == "libsvm_qp":
+        from solver_benchmarks.datasets import libsvm_qp
+
+        monkeypatch.setattr(libsvm_qp.urllib.request, "urlopen", replacement)
+    elif dataset_id == "mittelmann_sdp":
+        from solver_benchmarks.datasets import mittelmann_sdp
+
+        monkeypatch.setattr(mittelmann_sdp.urllib.request, "urlopen", replacement)
     elif dataset_id == "qplib":
         from solver_benchmarks.datasets import qplib
 
         monkeypatch.setattr(qplib.urllib.request, "urlopen", replacement)
+    elif dataset_id == "tsplib_sdp":
+        from solver_benchmarks.datasets import tsplib_sdp
+
+        monkeypatch.setattr(tsplib_sdp.urllib.request, "urlopen", replacement)
     else:
         raise AssertionError(f"Unhandled dataset {dataset_id!r}")

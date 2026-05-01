@@ -13,6 +13,18 @@ from solver_benchmarks.core.runner import run_benchmark
 
 SETTINGS = {
     "clarabel": {"verbose": False},
+    "cvxopt": {
+        "verbose": False,
+        "abstol": 1.0e-9,
+        "reltol": 1.0e-9,
+        "feastol": 1.0e-9,
+    },
+    "ecos": {
+        "verbose": False,
+        "abstol": 1.0e-9,
+        "reltol": 1.0e-9,
+        "feastol": 1.0e-9,
+    },
     "highs": {"verbose": False},
     "osqp": {"verbose": False, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
     "pdlp": {"time_limit_sec": 10.0},

@@ -1,14 +1,13 @@
 """Download Mittelmann SDP instances into problem_classes/mittelmann_sdp_data.
 
-Default behavior downloads the curated default subset (small G-graph
-maxcut relaxations + Lovász theta numbers). Larger Mittelmann SDP
-instances at https://plato.asu.edu/ftp/sparse_sdp/ can be added via
-``--problem <name>`` (e.g. ``--problem theta42`` or
-``--problem maxG55``).
+Default behavior downloads the curated default subset of small SDP
+instances. Larger Mittelmann SDP instances at
+https://plato.asu.edu/ftp/sdp/ can be added via ``--problem <name>``
+(e.g. ``--problem rose15`` or ``--problem theta12``).
 
 Examples:
   python scripts/prepare_mittelmann_sdp.py
-  python scripts/prepare_mittelmann_sdp.py --problem theta1
+  python scripts/prepare_mittelmann_sdp.py --problem trto3
 """
 
 from __future__ import annotations

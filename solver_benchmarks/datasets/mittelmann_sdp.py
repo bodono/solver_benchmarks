@@ -3,7 +3,7 @@
 Hans Mittelmann maintains a curated SDP test set distinct from his
 LP/QP collections. Most instances are at:
 
-    https://plato.asu.edu/ftp/sparse_sdp/
+    https://plato.asu.edu/ftp/sdp/
 
 in SDPA-S sparse format (``.dat-s`` or ``.dat-s.gz``). The default
 subset here is a handful of small-to-medium instances that solve in
@@ -11,7 +11,7 @@ under a few seconds with modern interior-point SDP codes — suitable
 for regression tests and quick comparative benchmarks.
 
 The full curated list at Mittelmann's site contains many larger
-instances (G-graph relaxations, Lovász theta numbers, SDPLIB
+instances (graph relaxations, Lovász theta numbers, SDPLIB
 compilations); add them via ``--problem`` to ``prepare_mittelmann_sdp.py``
 or by passing a ``subset`` list.
 """
@@ -29,21 +29,19 @@ from solver_benchmarks.transforms.sdpa import (
 
 from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
-MITTELMANN_SDP_BASE_URL = "https://plato.asu.edu/ftp/sparse_sdp"
+MITTELMANN_SDP_BASE_URL = "https://plato.asu.edu/ftp/sdp"
 
 # Curated default: small-to-medium SDPLIB-style instances (Lovász
 # theta numbers and graph-coloring SDPs) that ship in SDPA-S format.
 # Each entry maps the problem name (used as the ProblemSpec name) to
 # its remote filename relative to ``MITTELMANN_SDP_BASE_URL``.
 MITTELMANN_SDP_DEFAULT_SUBSET: dict[str, str] = {
-    # The G-graph max-cut relaxations are a Mittelmann favorite.
-    "G11": "G11.dat-s.gz",
-    "G14": "G14.dat-s.gz",
-    "G20": "G20.dat-s.gz",
-    # Lovász theta on Hamming graphs — small enough to solve quickly.
-    "theta1": "theta1.dat-s.gz",
-    "theta2": "theta2.dat-s.gz",
-    "theta3": "theta3.dat-s.gz",
+    "trto3": "trto3.dat-s.gz",
+    "rose13": "rose13.dat-s.gz",
+    "cnhil8": "cnhil8.dat-s.gz",
+    "buck3": "buck3.dat-s.gz",
+    "biggs": "biggs.dat-s.gz",
+    "G40mc": "G40mc.dat-s.gz",
 }
 
 
@@ -63,9 +61,7 @@ class MittelmannSDPDataset(Dataset):
         "Complements the LP / QP Mittelmann sets; instances are PSD-"
         "block SDPs of the form min C•X s.t. A_k•X = b_k, X ⪰ 0."
     )
-    data_source = (
-        "external download from https://plato.asu.edu/ftp/sparse_sdp/"
-    )
+    data_source = "external download from https://plato.asu.edu/ftp/sdp/"
     data_patterns = ("*.dat-s", "*.dat-s.gz")
     prepare_command = "python scripts/prepare_mittelmann_sdp.py"
     automatic_download = True

@@ -150,6 +150,10 @@ jobs:
         include:
           - solver: clarabel
             extra: clarabel
+          - solver: cvxopt
+            extra: cvxopt
+          - solver: ecos
+            extra: ecos
           - solver: highs
             extra: highs
           - solver: osqp
