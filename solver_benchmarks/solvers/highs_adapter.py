@@ -137,6 +137,7 @@ def _configure_highs(solver, settings: dict) -> None:
         for option in (
             "simplex_iteration_limit",
             "ipm_iteration_limit",
+            "qp_iteration_limit",
             "pdlp_iteration_limit",
         ):
             try:

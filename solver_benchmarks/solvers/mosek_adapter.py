@@ -81,9 +81,14 @@ class MosekSolverAdapter(SolverAdapter):
             mapped = _map_mosek_status(raw_status, termination_code, mosek)
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
-            objective = (
-                task.getprimalobj(soltype) if mapped in status.SOLUTION_PRESENT else None
+            # Include OPTIMAL_INACCURATE in the objective gate to match
+            # the CPLEX / Gurobi / SCS treatment landed in this PR;
+            # MOSEK exposes a usable primal objective for prim_feas /
+            # prim_and_dual_feas (which map to OPTIMAL_INACCURATE).
+            objective_present = mapped in status.SOLUTION_PRESENT or (
+                mapped == status.OPTIMAL_INACCURATE
             )
+            objective = task.getprimalobj(soltype) if objective_present else None
             return SolverResult(
                 status=mapped,
                 objective_value=None if objective is None else float(objective),
