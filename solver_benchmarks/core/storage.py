@@ -20,6 +20,7 @@ import pandas as pd
 
 from .config import RunConfig, manifest_solve_signatures, solve_signatures
 from .result import ProblemResult, to_jsonable
+from .system_info import system_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -147,12 +148,22 @@ class ResultStore:
             "run_id": self.run_id,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "config": config.to_manifest(),
+            "system": system_metadata(),
         }
         if self.manifest_path.exists():
             existing = json.loads(self.manifest_path.read_text())
             manifest["created_at_utc"] = existing.get(
                 "created_at_utc", manifest["created_at_utc"]
             )
+            # Preserve the system snapshot from the original write so
+            # rewrites (e.g. when the runner re-saves the manifest on
+            # resume) don't capture a different system blob if the
+            # second invocation runs on a different host. Re-running
+            # on a different machine should be visible as a separate
+            # run, not as a silent overwrite of provenance.
+            existing_system = existing.get("system")
+            if existing_system:
+                manifest["system"] = existing_system
         atomic_write_text(self.manifest_path, json.dumps(to_jsonable(manifest), indent=2))
 
     def copy_source_config(self, config_path: str | Path, *, name: str = "run_config") -> Path:
