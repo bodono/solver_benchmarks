@@ -113,7 +113,7 @@ Current maintained adapters:
 | SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files; requires `h5py`. |
 | TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
 | DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
-| CBLIB | `cblib` | Cone | Downloads CBF files; supports linear, second-order, and exponential cone instances; the parser silently drops other unsupported cone kinds. |
+| CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. |
 | MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
 | LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
 | DC OPF | `dc_opf` | LP as QP | DC Optimal Power Flow LPs from MATPOWER `.m` case files; sparse power-balance equalities, line-flow inequality limits, generator box bounds. |
@@ -218,8 +218,11 @@ python scripts/prepare_cutest_qp.py
 
 The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
 follows the full CBLIB directory index and may download mixed-integer or
-currently unsupported CBF files; the `cblib` adapter only lists continuous
-linear/SOC instances it can parse. Mittelmann `--all` follows the ASU lptestset
+currently unsupported CBF files; the `cblib` adapter lists continuous
+linear, second-order, and exponential-cone (`EXP`/`EXP*`) instances by
+default and hides anything else (PSD, integer, etc.). Set
+`dataset_options.include_unsupported=true` to surface those entries
+with `metadata["supported"]=False`. Mittelmann `--all` follows the ASU lptestset
 index. MIPLIB `--all` follows the official MIPLIB 2017 benchmark v2 instance
 list, and `bench data prepare miplib --option max_size_mb=5` downloads only
 benchmark instances whose compressed `.mps.gz` file is at most 5 MB. QPLIB
@@ -333,7 +336,7 @@ Current maintained adapters:
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
 | ECOS | `ecos` | QP, cone (LP/SOCP/expcone) | Interior-point conic solver. QPs are reformulated to SOCP via the standard epigraph trick (Cholesky for PD `P`, eigendecomposition for rank-deficient PSD); the SOC dim is `rank(P) + 2`. PSD cones not supported. |
-| CVXOPT | `cvxopt` | QP, cone (LP/QP/SOCP/SDP) | Interior-point solver supporting QPs natively plus PSD cones (canonical PSD-vec layout converted to BLAS unpacked-L automatically). Exponential cones not supported. CVXOPT options live on a global dict; the adapter snapshots and restores it per solve so concurrent solves don't leak knobs. |
+| CVXOPT | `cvxopt` | QP, cone (LP/QP/SOCP/SDP) | Interior-point solver supporting QPs natively plus PSD cones (canonical PSD-vec layout converted to BLAS unpacked-L automatically). Exponential cones not supported. CVXOPT options live on a global dict; the adapter snapshots and restores it per solve so **sequential** solves in the same process don't leak knobs into each other. This is *not* thread-safe — concurrent in-process solves would still race on the global. The benchmark runner uses subprocess-level parallelism, so this per-process sequential contract is sufficient. |
 | PDLP | `pdlp` | LP-only QP, simple linear cone | Uses OR-Tools directly, no CVXPY. |
 | HiGHS | `highs` | QP | Direct LP/QP adapter through `highspy`; strong LP baseline. |
 | ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite; optional on Python < 3.14 while wheels are available. |
