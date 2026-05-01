@@ -44,12 +44,22 @@ def test_run_subprocess_timeout_returns_timed_out_and_writes_logs(tmp_path: Path
 @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
 def test_run_subprocess_timeout_kills_grandchildren(tmp_path: Path):
     """If the worker forks helpers, killing the direct child must not
-    leave them holding the stdout pipe and blocking wait()."""
+    leave them running. The grandchild writes its PID to a file
+    before sleeping; after _run_subprocess returns we probe that PID
+    with kill(pid, 0) and assert it's gone. Without process-group
+    escalation the grandchild would survive and the probe would
+    succeed.
+    """
+    import errno
+    import time as _time
+
+    pid_file = tmp_path / "grandchild.pid"
     script_path = tmp_path / "fork_and_sleep.py"
     script_path.write_text(
-        "import os, sys, time\n"
+        "import os, pathlib, sys, time\n"
         "pid = os.fork()\n"
         "if pid == 0:\n"
+        "    pathlib.Path(" + repr(str(pid_file)) + ").write_text(str(os.getpid()))\n"
         "    time.sleep(60)\n"
         "    os._exit(0)\n"
         "else:\n"
@@ -66,3 +76,36 @@ def test_run_subprocess_timeout_kills_grandchildren(tmp_path: Path):
         stream_output=False,
     )
     assert result.timed_out is True
+
+    # The grandchild had time to write its PID before sleeping. The
+    # file must exist; otherwise the test fixture itself misfired and
+    # we cannot prove anything about cleanup.
+    assert pid_file.exists(), "grandchild did not write its PID file"
+    grandchild_pid = int(pid_file.read_text().strip())
+
+    # Probe up to 2 seconds for the grandchild to disappear. SIGKILL
+    # delivery to the process group is asynchronous; the probe gives
+    # the OS a moment to reap it, then asserts it's gone. Without
+    # process-group escalation the grandchild would still be alive
+    # 60s later.
+    deadline = _time.monotonic() + 2.0
+    while _time.monotonic() < deadline:
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            return  # grandchild is gone — pass.
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                return
+            raise
+        _time.sleep(0.05)
+    # Probe never raised → grandchild still alive. Fail loudly and
+    # clean up so we don't orphan a 60-second sleep.
+    try:
+        os.kill(grandchild_pid, 9)
+    except OSError:
+        pass
+    pytest.fail(
+        f"grandchild PID {grandchild_pid} survived _run_subprocess timeout — "
+        "process-group escalation did not propagate the kill."
+    )
