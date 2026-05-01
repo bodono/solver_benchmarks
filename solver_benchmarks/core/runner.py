@@ -494,6 +494,37 @@ def _run_one(
     )
 
 
+def _check_schema_version(record_version: object) -> str | None:
+    """Return an error string if ``record_version`` is invalid or too
+    new for the current runner; ``None`` means the version is fine.
+
+    Pre-fix the comparison ``record_version > PROBLEM_RESULT_SCHEMA_VERSION``
+    raised ``TypeError`` for non-int values like ``"2"`` (a hand-edited
+    payload) and escaped ``_load_worker_result``, crashing the parent
+    runner instead of being recorded as a worker error. Validate the
+    type explicitly here so every malformed payload becomes a worker
+    error row.
+    """
+    from solver_benchmarks.core.result import PROBLEM_RESULT_SCHEMA_VERSION
+
+    if record_version is None:
+        return None
+    # ``bool`` is a subclass of ``int``; reject it explicitly so a
+    # ``schema_version: true`` payload is not silently treated as ``1``.
+    if isinstance(record_version, bool) or not isinstance(record_version, int):
+        return (
+            f"worker_result.json schema_version is not an integer "
+            f"(got {record_version!r}); the worker payload is malformed."
+        )
+    if record_version > PROBLEM_RESULT_SCHEMA_VERSION:
+        return (
+            f"worker_result.json schema_version={record_version} is "
+            f"newer than the runner's "
+            f"({PROBLEM_RESULT_SCHEMA_VERSION}); upgrade the runner."
+        )
+    return None
+
+
 def _load_worker_result(
     path: Path,
     *,
@@ -524,8 +555,6 @@ def _load_worker_result(
         except json.JSONDecodeError as exc:
             error = f"Could not parse worker_result.json: {exc}"
     if record is not None:
-        from solver_benchmarks.core.result import PROBLEM_RESULT_SCHEMA_VERSION
-
         known = {field.name for field in dataclasses.fields(ProblemResult)}
         unknown = set(record) - known
         if unknown:
@@ -535,15 +564,9 @@ def _load_worker_result(
         # reject explicitly so the failure is obvious in the events log
         # rather than surfacing as a silently-mismatched record.
         record_version = record.get("schema_version")
-        if (
-            record_version is not None
-            and record_version > PROBLEM_RESULT_SCHEMA_VERSION
-        ):
-            error = (
-                f"worker_result.json schema_version={record_version} is "
-                f"newer than the runner's "
-                f"({PROBLEM_RESULT_SCHEMA_VERSION}); upgrade the runner."
-            )
+        version_check = _check_schema_version(record_version)
+        if version_check is not None:
+            error = version_check
             record = None
         else:
             try:
