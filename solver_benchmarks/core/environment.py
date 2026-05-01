@@ -9,6 +9,7 @@ from importlib import metadata
 SOLVER_PACKAGES = {
     "clarabel": ("clarabel",),
     "cplex": ("cplex",),
+    "ecos": ("ecos",),
     "gurobi": ("gurobipy",),
     "highs": ("highspy",),
     "mosek": ("Mosek", "mosek"),

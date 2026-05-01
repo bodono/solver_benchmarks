@@ -118,6 +118,21 @@ def test_ecos_is_registered():
     assert {QP, CONE} == cls.supported_problem_kinds
 
 
+def test_ecos_runtime_metadata_includes_package_version():
+    """Each ECOS result row must record the installed ``ecos``
+    package version under ``solver_package_versions``; otherwise the
+    report cannot tell which ECOS build produced the timings."""
+    from solver_benchmarks.core.environment import SOLVER_PACKAGES, runtime_metadata
+
+    assert "ecos" in SOLVER_PACKAGES
+    md = runtime_metadata("ecos")
+    versions = md["solver_package_versions"]
+    assert "ecos" in versions
+    # The value is the installed version string, or None when the
+    # package is not installed (the import-skip path).
+    assert versions["ecos"] is None or isinstance(versions["ecos"], str)
+
+
 def test_ecos_is_available_when_module_present():
     pytest.importorskip("ecos")
     from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
