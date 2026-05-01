@@ -21,6 +21,7 @@ SOLVER_SETTINGS = {
     "clarabel": {"verbose": False},
     "qtqp": {"verbose": False},
     "cvxopt": {"verbose": False, "abstol": 1e-9, "reltol": 1e-9, "feastol": 1e-9},
+    "ecos": {"verbose": False, "feastol": 1e-9, "abstol": 1e-9, "reltol": 1e-9},
     "pdlp": {"time_limit_sec": 10.0, "use_glop": False},
     "sdpa": {"verbose": False, "max_iter": 50, "optimality_tolerance": 1e-5},
 }
@@ -145,7 +146,7 @@ def _solve_cone(solver_name: str, cone_problem: dict, tmp_path: Path):
     return adapter.solve(problem, artifacts)
 
 
-@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "highs", "proxqp", "piqp", "cvxopt"])
+@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "highs", "proxqp", "piqp", "cvxopt", "ecos"])
 def test_adapter_reports_kkt_for_small_qp(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _small_qp(), tmp_path)
     assert result.status == status.OPTIMAL, result.status
@@ -158,7 +159,7 @@ def test_adapter_reports_kkt_for_small_qp(solver_name: str, tmp_path: Path):
     assert result.kkt["duality_gap_rel"] < 1e-4
 
 
-@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "pdlp", "highs", "proxqp", "piqp", "cvxopt"])
+@pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "pdlp", "highs", "proxqp", "piqp", "cvxopt", "ecos"])
 def test_adapter_reports_kkt_for_small_lp(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _small_lp(), tmp_path)
     assert result.status == status.OPTIMAL, result.status
@@ -192,7 +193,7 @@ def test_solvers_agree_on_small_sdp_with_psd_cone(solver_name: str, tmp_path: Pa
     assert result.kkt["dual_res_rel"] < 1e-4
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "osqp"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "osqp", "ecos"])
 def test_adapter_reports_primal_infeasibility_certificate(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _infeasible_lp(), tmp_path)
     assert result.status in {
@@ -255,7 +256,7 @@ def test_qtqp_status_mapping(raw_status: str, expected: str):
     assert _map_qtqp_status(raw_status) == expected
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
 def test_adapter_reports_dual_infeasibility_certificate(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _unbounded_lp(), tmp_path)
     assert result.status in {

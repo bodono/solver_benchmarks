@@ -5,31 +5,39 @@ from __future__ import annotations
 from .base import Dataset
 from .cblib import CBLIBDataset
 from .cutest_qp import CUTEstQPDataset
+from .dc_opf import DCOPFDataset
 from .dimacs import DIMACSDataset
+from .libsvm_qp import LibsvmQPDataset
 from .liu_pataki import LiuPatakiDataset
 from .maros_meszaros import MarosMeszarosDataset
+from .mittelmann_sdp import MittelmannSDPDataset
 from .mpc_qpbenchmark import MPCQPBenchmarkDataset
 from .mps import KenningtonDataset, MiplibDataset, MittelmannDataset, NetlibDataset
 from .qplib import QPLIBDataset
 from .sdplib import SDPLIBDataset
 from .synthetic import SyntheticConeDataset, SyntheticQPDataset
+from .tsplib_sdp import TSPLIBSDPDataset
 
 DATASETS: dict[str, type[Dataset]] = {
     "cblib": CBLIBDataset,
     "cutest_qp": CUTEstQPDataset,
+    "dc_opf": DCOPFDataset,
     "dimacs": DIMACSDataset,
     "kennington": KenningtonDataset,
+    "libsvm_qp": LibsvmQPDataset,
     "liu_pataki": LiuPatakiDataset,
     "maros_meszaros": MarosMeszarosDataset,
     "miplib": MiplibDataset,
     "miplib_lp_relaxation": MiplibDataset,
     "mpc_qpbenchmark": MPCQPBenchmarkDataset,
     "mittelmann": MittelmannDataset,
+    "mittelmann_sdp": MittelmannSDPDataset,
     "netlib": NetlibDataset,
     "qplib": QPLIBDataset,
     "sdplib": SDPLIBDataset,
     "synthetic_cone": SyntheticConeDataset,
     "synthetic_qp": SyntheticQPDataset,
+    "tsplib_sdp": TSPLIBSDPDataset,
 }
 
 

@@ -555,6 +555,7 @@ def _render_provenance_block(
     results: pd.DataFrame,
 ) -> list[str]:
     lines: list[str] = ["## Provenance", ""]
+    lines.extend(_system_summary_lines(manifest))
     environment_columns = [
         column
         for column in [
@@ -563,6 +564,7 @@ def _render_provenance_block(
             "metadata.runtime.python_executable",
             "metadata.runtime.python_version",
             "metadata.runtime.platform",
+            "metadata.runtime.cpu_model",
         ]
         if column in results
     ]
@@ -1155,6 +1157,83 @@ def _software_versions_table(results: pd.DataFrame, config: dict) -> pd.DataFram
         }
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _system_summary_lines(manifest: dict) -> list[str]:
+    """Render the manifest's ``system`` block as a Markdown summary.
+
+    The block is captured once at run-start and answers the implicit
+    question "what hardware made these timings"; surface the most
+    relevant fields up-front (CPU model and count, total RAM, OS,
+    Python version) so a reviewer can size up the timing data
+    without scrolling to the manifest. Older runs without a
+    ``system`` block render as an empty section so downstream
+    parsing doesn't break on legacy data.
+    """
+    system = manifest.get("system") or {}
+    if not system:
+        return []
+    cpu = system.get("cpu") or {}
+    memory = system.get("memory") or {}
+
+    rows: list[tuple[str, str]] = []
+    cpu_model = cpu.get("model")
+    if cpu_model:
+        rows.append(("CPU model", str(cpu_model)))
+    logical = cpu.get("logical_count")
+    physical = cpu.get("physical_count")
+    if logical or physical:
+        if physical and logical and physical != logical:
+            rows.append(("CPU cores", f"{physical} physical / {logical} logical"))
+        elif logical:
+            rows.append(("CPU cores", f"{logical} logical"))
+    max_freq = cpu.get("max_frequency_mhz")
+    if max_freq:
+        rows.append(("CPU max frequency", f"{float(max_freq):.0f} MHz"))
+    total_mem = memory.get("total_bytes")
+    if total_mem:
+        rows.append(("Total RAM", _format_bytes(int(total_mem))))
+    available_mem = memory.get("available_bytes")
+    if available_mem:
+        rows.append(("RAM available at start", _format_bytes(int(available_mem))))
+    if system.get("platform"):
+        rows.append(("OS", str(system["platform"])))
+    if system.get("python_version"):
+        rows.append(("Python", str(system["python_version"])))
+    libs = system.get("library_versions") or {}
+    if libs:
+        formatted = ", ".join(
+            f"{name} {version}" for name, version in sorted(libs.items()) if version
+        )
+        if formatted:
+            rows.append(("Libraries", formatted))
+
+    if not rows:
+        return []
+
+    # Route both field name and value through ``_escape_cell`` so a
+    # CPU model / platform / library string with a literal ``|`` or
+    # newline doesn't break the Markdown table layout. Other report
+    # tables (``_section_table``) do this routing already; pre-fix
+    # ``_system_summary_lines`` was the one place that didn't.
+    lines = ["### System", "", "| Field | Value |", "| --- | --- |"]
+    for field, value in rows:
+        lines.append(f"| {_escape_cell(field)} | {_escape_cell(value)} |")
+    lines.append("")
+    return lines
+
+
+def _format_bytes(num_bytes: int) -> str:
+    """Format a byte count as the largest sensible binary-prefix unit.
+
+    Memory totals are typically reported in GiB / TiB; using SI
+    prefixes (10^9) rounds 16 GiB DIMMs to the misleading 17.2 GB.
+    """
+    units = (("TiB", 1024**4), ("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024))
+    for label, divisor in units:
+        if num_bytes >= divisor:
+            return f"{num_bytes / divisor:.1f} {label}"
+    return f"{num_bytes} B"
 
 
 def _source_config_section(run_dir: Path, manifest: dict) -> list[str]:
