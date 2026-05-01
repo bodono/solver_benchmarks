@@ -49,6 +49,12 @@ class CBLIBDataset(Dataset):
         if not self.folder.is_dir():
             return []
         subset = _normalize_subset(self.options.get("subset"))
+        # ``subset_kind`` filters by cone shape rather than by name.
+        # Accepted values: ``expcone`` (instances using EXP / EXP* cones),
+        # ``socp`` (instances with SOC cones but no exp cones), ``lp``
+        # (instances with only linear cones / equality / free vars).
+        # ``None`` means no kind-based filter.
+        subset_kind = self.options.get("subset_kind")
         specs = []
         for path in sorted(self.folder.iterdir()):
             name = _cbf_name(path)
@@ -62,6 +68,8 @@ class CBLIBDataset(Dataset):
                 if not self.options.get("include_unsupported", False):
                     continue
                 metadata = {"supported": False}
+            if subset_kind is not None and not _matches_kind(metadata, subset_kind):
+                continue
             specs.append(
                 ProblemSpec(
                     dataset_id=self.dataset_id,
@@ -154,6 +162,8 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
     zero_blocks: list[tuple[sp.csc_matrix, np.ndarray]] = []
     nonnegative_blocks: list[tuple[sp.csc_matrix, np.ndarray]] = []
     soc_blocks: list[tuple[sp.csc_matrix, np.ndarray, int]] = []
+    expcone_blocks: list[tuple[sp.csc_matrix, np.ndarray]] = []
+    dual_expcone_blocks: list[tuple[sp.csc_matrix, np.ndarray]] = []
 
     def add_domain(domain: _Domain, matrix: sp.csc_matrix | None, rhs: np.ndarray | None) -> None:
         if domain.name == "F":
@@ -161,7 +171,7 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
         if matrix is None or rhs is None:
             rows = _selector(n, domain.start, domain.dim)
             zeros = np.zeros(domain.dim)
-            if domain.name in {"L+", "L-", "L=", "Q"}:
+            if domain.name in {"L+", "L-", "L=", "Q", "EXP", "EXP*"}:
                 matrix = -rows
                 rhs = zeros
             else:
@@ -174,6 +184,11 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
             nonnegative_blocks.append((-matrix, -rhs))
         elif domain.name == "Q":
             soc_blocks.append((matrix, rhs, domain.dim))
+        elif domain.name == "EXP":
+            # CBF's EXP cone is always 3-dim per cone.
+            expcone_blocks.append((matrix, rhs))
+        elif domain.name == "EXP*":
+            dual_expcone_blocks.append((matrix, rhs))
         else:
             raise UnsupportedCBFError(f"Unsupported CBF cone {domain.name!r}")
 
@@ -207,6 +222,16 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
         matrices.extend(block[0] for block in soc_blocks)
         rhs_parts.extend(block[1] for block in soc_blocks)
         cone["q"] = [int(block[2]) for block in soc_blocks]
+    if expcone_blocks:
+        matrices.extend(block[0] for block in expcone_blocks)
+        rhs_parts.extend(block[1] for block in expcone_blocks)
+        # The schema's "ep" value is the *count* of 3-tuples; total
+        # rows in the expcone block are 3 * count.
+        cone["ep"] = len(expcone_blocks)
+    if dual_expcone_blocks:
+        matrices.extend(block[0] for block in dual_expcone_blocks)
+        rhs_parts.extend(block[1] for block in dual_expcone_blocks)
+        cone["ed"] = len(dual_expcone_blocks)
 
     a = sp.vstack(matrices, format="csc") if matrices else sp.csc_matrix((0, n))
     b = np.concatenate(rhs_parts).astype(float) if rhs_parts else np.array([], dtype=float)
@@ -366,6 +391,9 @@ def _parse_domains(lines: list[str], idx: int, count: int) -> tuple[list[_Domain
     for _ in range(count):
         cone, dim = lines[idx].split()
         dim_int = int(dim)
+        # CBF cone names are case-sensitive in spec but most files use
+        # uppercase; normalize to upper-case but preserve the trailing
+        # ``*`` that distinguishes EXP from EXP* (dual exponential cone).
         domains.append(_Domain(cone.upper(), dim_int, start))
         start += dim_int
         idx += 1
@@ -373,10 +401,16 @@ def _parse_domains(lines: list[str], idx: int, count: int) -> tuple[list[_Domain
 
 
 def _validate_domains(domains: list[_Domain]) -> None:
-    supported = {"F", "L+", "L-", "L=", "Q"}
+    supported = {"F", "L+", "L-", "L=", "Q", "EXP", "EXP*"}
     unsupported = sorted({domain.name for domain in domains if domain.name not in supported})
     if unsupported:
         raise UnsupportedCBFError(f"Unsupported CBF cones: {', '.join(unsupported)}")
+    for domain in domains:
+        if domain.name in {"EXP", "EXP*"} and domain.dim != 3:
+            raise UnsupportedCBFError(
+                f"CBF EXP cone must have dim 3 (got {domain.dim}); the parser does "
+                "not support multi-EXP blocks expressed as a single domain entry."
+            )
 
 
 def _domain_summary(domains: list[_Domain]) -> dict[str, int | list[int]]:
@@ -386,11 +420,52 @@ def _domain_summary(domains: list[_Domain]) -> dict[str, int | list[int]]:
             summary.setdefault("q", [])
             assert isinstance(summary["q"], list)
             summary["q"].append(domain.dim)
+        elif domain.name == "EXP":
+            existing = summary.get("ep", 0)
+            assert not isinstance(existing, list)
+            summary["ep"] = int(existing) + 1  # count by 3-tuples, not row count.
+        elif domain.name == "EXP*":
+            existing = summary.get("ed", 0)
+            assert not isinstance(existing, list)
+            summary["ed"] = int(existing) + 1
         else:
             existing = summary.get(domain.name.lower(), 0)
             assert not isinstance(existing, list)  # only "q" is a list-valued bucket
             summary[domain.name.lower()] = int(existing) + domain.dim
     return summary
+
+
+def _matches_kind(metadata: dict, kind: str) -> bool:
+    """Return True if a CBF instance's cone summary matches ``kind``.
+
+    Recognized kinds:
+    - ``expcone`` / ``exp``: at least one EXP or EXP* cone (instance
+      uses the exponential cone).
+    - ``socp``: at least one Q cone, no exponential cones (LP +
+      second-order is fine).
+    - ``lp``: only linear / equality / free cones (no Q, no EXP, no
+      PSD).
+
+    Unknown kind strings raise ``ValueError`` so misconfigured runs
+    surface immediately rather than silently returning empty problem
+    lists.
+    """
+    var_cones = metadata.get("variable_cones") or {}
+    con_cones = metadata.get("constraint_cones") or {}
+    has_q = bool(var_cones.get("q") or con_cones.get("q"))
+    has_ep = bool(var_cones.get("ep") or con_cones.get("ep"))
+    has_ed = bool(var_cones.get("ed") or con_cones.get("ed"))
+    kind = kind.lower().strip()
+    if kind in ("expcone", "exp"):
+        return has_ep or has_ed
+    if kind == "socp":
+        return has_q and not (has_ep or has_ed)
+    if kind == "lp":
+        return not (has_q or has_ep or has_ed)
+    raise ValueError(
+        f"Unknown CBLib subset_kind {kind!r}. Accepted values: "
+        "'expcone', 'socp', 'lp'."
+    )
 
 
 def _selector(n: int, start: int, dim: int) -> sp.csc_matrix:
