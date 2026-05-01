@@ -166,6 +166,15 @@ def test_svm_dual_qp_shape_and_constraint_layout():
     assert (qp["u"][1:] == 1.0).all()
 
 
+def _balanced_labels(n: int) -> np.ndarray:
+    """Construct a length-``n`` ±1 label vector with both classes
+    present (the SVM dual builder rejects single-class inputs as a
+    misconfiguration). Alternating labels keeps the test
+    deterministic and avoids brittle ``rng.choice`` runs that
+    occasionally drew a single class."""
+    return np.array([1.0 if i % 2 == 0 else -1.0 for i in range(n)])
+
+
 def test_svm_dual_qp_p_is_psd_and_symmetric():
     """``Q[i,j] = y_i y_j K(x_i, x_j)`` is PSD (the kernel is PSD,
     so the outer y product preserves semidefiniteness). Verify by
@@ -175,7 +184,7 @@ def test_svm_dual_qp_p_is_psd_and_symmetric():
     rng = np.random.default_rng(0)
     n, d = 6, 3
     x = rng.standard_normal((n, d))
-    y = rng.choice([-1.0, 1.0], size=n)
+    y = _balanced_labels(n)
     qp = svm_dual_qp(x, y, kernel="linear")
     p = qp["P"].toarray()
     assert np.allclose(p, p.T)
@@ -193,7 +202,7 @@ def test_svm_dual_qp_linear_kernel_low_rank_when_d_lt_n():
     rng = np.random.default_rng(42)
     n, d = 6, 2
     x = rng.standard_normal((n, d))
-    y = rng.choice([-1.0, 1.0], size=n)
+    y = _balanced_labels(n)
     qp = svm_dual_qp(x, y, kernel="linear")
     p = qp["P"].toarray()
     rank = int(np.sum(np.linalg.eigvalsh(p) > 1e-9))
@@ -207,7 +216,7 @@ def test_svm_dual_qp_rbf_kernel_full_rank():
     rng = np.random.default_rng(0)
     n, d = 5, 3
     x = rng.standard_normal((n, d))
-    y = rng.choice([-1.0, 1.0], size=n)
+    y = _balanced_labels(n)
     qp = svm_dual_qp(x, y, kernel="rbf", gamma=0.5)
     p = qp["P"].toarray()
     eigvals = np.linalg.eigvalsh(p)
@@ -215,8 +224,8 @@ def test_svm_dual_qp_rbf_kernel_full_rank():
 
 
 def test_svm_dual_qp_coerces_zero_one_labels():
-    """LIBSVM datasets sometimes use {0, 1} or {1, 2} labels instead
-    of {-1, +1}; the adapter must coerce to ±1 before forming Q."""
+    """LIBSVM datasets sometimes use {0, 1} labels instead of
+    {-1, +1}; the adapter must coerce to ±1 before forming Q."""
     from solver_benchmarks.datasets.libsvm_qp import svm_dual_qp
 
     x = np.eye(2)
@@ -225,6 +234,47 @@ def test_svm_dual_qp_coerces_zero_one_labels():
     # First row of A is the y'α = 0 equality. With coerced y = [-1, +1]:
     a_eq_row = qp["A"].toarray()[0]
     assert a_eq_row.tolist() == [-1.0, 1.0]
+
+
+def test_svm_dual_qp_coerces_one_two_labels():
+    """Several LIBSVM binary files use {1, 2} labels (e.g. heart,
+    splice). Pre-fix, ``y > 0 → +1`` collapsed both classes into a
+    single +1 group; the dual then had ``y'α = 0`` reduce to
+    ``Σα = 0`` which forces a degenerate solution. The fix maps
+    smaller→-1, larger→+1 regardless of zero-crossing."""
+    from solver_benchmarks.datasets.libsvm_qp import svm_dual_qp
+
+    x = np.eye(4)
+    y = np.array([1.0, 2.0, 1.0, 2.0])  # Should map to [-1, +1, -1, +1].
+    qp = svm_dual_qp(x, y, kernel="linear")
+    a_eq_row = qp["A"].toarray()[0]
+    assert a_eq_row.tolist() == [-1.0, 1.0, -1.0, 1.0]
+
+
+def test_svm_dual_qp_rejects_single_class_labels():
+    """A dataset with all labels equal cannot form a valid binary SVM
+    dual; must raise rather than build a degenerate QP."""
+    from solver_benchmarks.datasets.libsvm_qp import svm_dual_qp
+
+    with pytest.raises(ValueError, match="exactly two distinct labels"):
+        svm_dual_qp(np.eye(3), np.array([1.0, 1.0, 1.0]))
+
+
+def test_svm_dual_qp_rejects_multi_class_labels():
+    from solver_benchmarks.datasets.libsvm_qp import svm_dual_qp
+
+    with pytest.raises(ValueError, match="exactly two distinct labels"):
+        svm_dual_qp(np.eye(3), np.array([1.0, 2.0, 3.0]))
+
+
+def test_coerce_binary_labels_picks_smaller_as_negative():
+    """The smaller of the two distinct values maps to -1; this is
+    what makes ``{1, 2}`` and ``{0, 1}`` both work."""
+    from solver_benchmarks.datasets.libsvm_qp import _coerce_binary_labels
+
+    assert _coerce_binary_labels([1, 2, 1, 2]).tolist() == [-1.0, 1.0, -1.0, 1.0]
+    assert _coerce_binary_labels([0, 1, 0]).tolist() == [-1.0, 1.0, -1.0]
+    assert _coerce_binary_labels([-1, 1]).tolist() == [-1.0, 1.0]
 
 
 def test_svm_dual_qp_rejects_unknown_kernel():
@@ -348,11 +398,16 @@ def test_load_problem_returns_well_formed_markowitz(libsvm_data_folder: Path):
 def test_load_problem_respects_max_samples_subsampling(libsvm_data_folder: Path):
     """``max_samples`` deterministically subsamples the rows so the
     QP stays small even on larger LIBSVM datasets."""
-    # Build a 20-row LIBSVM file; with max_samples=5, the dual QP
-    # should have n = 5.
+    # Build a 20-row LIBSVM file with labels arranged so subsampling
+    # at every-4th row still keeps both classes present (the SVM
+    # dual builder rejects single-class inputs).
     body_lines = []
     for i in range(20):
-        label = "+1" if i % 2 == 0 else "-1"
+        # The deterministic subsampler keeps every 4th row (indices
+        # 0, 4, 8, 12, 16). Label by ``(i // 4) % 2`` so the kept
+        # rows alternate ``+ - + - +`` and the SVM dual builder sees
+        # both classes after subsampling.
+        label = "+1" if (i // 4) % 2 == 0 else "-1"
         body_lines.append(f"{label} 1:{i}.0")
     _write_libsvm(libsvm_data_folder / "heart.libsvm", "\n".join(body_lines) + "\n")
     dataset = _local_dataset(libsvm_data_folder, subset="heart", max_samples=5)
@@ -406,6 +461,27 @@ def test_markowitz_qp_is_solvable_by_clarabel(tmp_path: Path, libsvm_data_folder
 # ---------------------------------------------------------------------------
 # _subsample utility.
 # ---------------------------------------------------------------------------
+
+
+def test_subsample_rejects_zero_max_samples():
+    """Pre-fix ``max_samples: 0`` (a config typo) raised a confusing
+    ``ZeroDivisionError`` deep inside ``_subsample`` (when ``n // 0``
+    was computed). Now the validation surfaces a clear error."""
+    from solver_benchmarks.datasets.libsvm_qp import _subsample
+
+    x = sp.csr_matrix(np.eye(5))
+    y = np.array([1.0, -1.0, 1.0, -1.0, 1.0])
+    with pytest.raises(ValueError, match="max_samples must be >= 1"):
+        _subsample(x, y, max_samples=0)
+
+
+def test_subsample_rejects_negative_max_samples():
+    from solver_benchmarks.datasets.libsvm_qp import _subsample
+
+    x = sp.csr_matrix(np.eye(2))
+    y = np.array([1.0, -1.0])
+    with pytest.raises(ValueError, match="max_samples must be >= 1"):
+        _subsample(x, y, max_samples=-3)
 
 
 def test_subsample_passthrough_when_under_limit():

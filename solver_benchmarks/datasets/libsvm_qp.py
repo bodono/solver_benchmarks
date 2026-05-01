@@ -331,12 +331,19 @@ def svm_dual_qp(
         s.t. y' α = 0
              0 ≤ α ≤ C
 
-    with ``Q[i,j] = y[i] y[j] K(x[i], x[j])``. Labels ``y`` are
-    coerced to ``±1`` (any nonzero positive becomes ``+1``, anything
-    else becomes ``-1``) — many LIBSVM binary files use ``{0, 1}`` or
-    ``{1, 2}`` instead of ``{-1, +1}``.
+    with ``Q[i,j] = y[i] y[j] K(x[i], x[j])``. Labels are coerced to
+    ``±1``: the smaller of the two distinct label values maps to
+    ``-1``, the larger to ``+1``. Many LIBSVM binary files use
+    ``{0, 1}`` or ``{1, 2}`` instead of ``{-1, +1}``; both work
+    with this rule. A pre-fix implementation mapped ``y > 0 → +1``
+    and everything else to ``-1``, which collapsed ``{1, 2}`` to a
+    single class and produced a degenerate dual.
+
+    Non-binary inputs (one or three+ distinct labels) raise
+    ``ValueError`` so a misconfigured run fails loudly rather than
+    silently building a meaningless QP.
     """
-    y = np.where(np.asarray(y, dtype=float) > 0.0, 1.0, -1.0)
+    y = _coerce_binary_labels(y)
     n = int(y.size)
     if sp.issparse(x):
         x_dense = np.asarray(x.toarray(), dtype=np.float64)  # type: ignore[union-attr]
@@ -423,6 +430,32 @@ def markowitz_qp(
     }
 
 
+def _coerce_binary_labels(y) -> np.ndarray:
+    """Map exactly two distinct label values onto ``-1`` / ``+1``.
+
+    The smaller of the two observed values maps to ``-1``, the
+    larger to ``+1``. Works for ``{-1, +1}``, ``{0, 1}``, ``{1, 2}``,
+    and any other binary scheme without baking in a "0 is negative"
+    assumption. Pre-fix the SVM dual builder mapped ``y > 0 → +1``,
+    which collapsed ``{1, 2}`` into a single class.
+
+    Raises ``ValueError`` for empty / single-class / multi-class
+    inputs so a misconfigured run fails loudly rather than producing
+    a degenerate QP.
+    """
+    arr = np.asarray(y, dtype=float).ravel()
+    if arr.size == 0:
+        raise ValueError("SVM dual QP requires at least one labeled sample.")
+    unique = np.unique(arr)
+    if unique.size != 2:
+        raise ValueError(
+            "SVM dual QP requires exactly two distinct labels; got "
+            f"{unique.tolist()!r}."
+        )
+    low, high = float(unique.min()), float(unique.max())
+    return np.where(arr <= low, -1.0, 1.0)
+
+
 def _subsample(
     x: sp.spmatrix, y: np.ndarray, *, max_samples: int
 ) -> tuple[sp.spmatrix, np.ndarray]:
@@ -431,7 +464,15 @@ def _subsample(
     Selection is deterministic (every k-th row) rather than random so
     repeat runs of the same dataset produce the same QP and the
     benchmark's resume / cache-hash logic stays consistent.
+
+    Raises ``ValueError`` for ``max_samples < 1`` so a config typo
+    like ``max_samples: 0`` surfaces immediately rather than as a
+    ``ZeroDivisionError`` deep inside the subsampler.
     """
+    if max_samples < 1:
+        raise ValueError(
+            f"max_samples must be >= 1; got {max_samples}."
+        )
     n = x.shape[0]
     if n <= max_samples:
         return x, y
