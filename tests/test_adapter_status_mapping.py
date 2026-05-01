@@ -149,13 +149,18 @@ def test_pdlp_status_mapping_table():
         assert _map_status(_FakeSolveLog(reason)) == expected_canonical
 
 
-def test_clarabel_status_mapping_via_solve_results():
-    """Clarabel statuses are simple strings; verify the mapping in
-    isolation by patching solver.solve."""
+def test_clarabel_status_mapping_table():
+    """Walk every Clarabel status string through the production
+    mapping helper so a regression in any non-optimal branch surfaces
+    here instead of only when that branch is hit at runtime.
+
+    Pre-fix this test only re-derived the mapping in a local dict and
+    never called any adapter code, so renaming a canonical value or
+    dropping a key from the production mapping would not have failed.
+    """
     pytest.importorskip("clarabel")
-    # Clarabel doesn't expose a mapping helper; the adapter inlines
-    # the dict. Re-derive it here so a regression in the canonical
-    # values surfaces in a fast unit test.
+    from solver_benchmarks.solvers.clarabel_adapter import _map_clarabel_status
+
     expected = {
         "Solved": status.OPTIMAL,
         "AlmostSolved": status.OPTIMAL_INACCURATE,
@@ -166,6 +171,9 @@ def test_clarabel_status_mapping_via_solve_results():
         "MaxIterations": status.MAX_ITER_REACHED,
         "MaxTime": status.TIME_LIMIT,
     }
-    # Sanity: every canonical we expect is a real status constant.
-    for canonical in expected.values():
-        assert isinstance(canonical, str)
+    for raw, expected_canonical in expected.items():
+        assert _map_clarabel_status(raw) == expected_canonical
+    # Unknown / future statuses fall through to SOLVER_ERROR rather
+    # than crashing.
+    assert _map_clarabel_status("ThisStatusDoesNotExist") == status.SOLVER_ERROR
+    assert _map_clarabel_status("") == status.SOLVER_ERROR

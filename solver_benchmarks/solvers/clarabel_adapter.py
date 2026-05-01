@@ -103,16 +103,7 @@ class ClarabelSolverAdapter(SolverAdapter):
         solver = clarabel.DefaultSolver(p, q, sp.csc_matrix(a), b, cones, settings)
         solution = solver.solve()
         elapsed = time.perf_counter() - start
-        mapped = {
-            "Solved": status.OPTIMAL,
-            "AlmostSolved": status.OPTIMAL_INACCURATE,
-            "PrimalInfeasible": status.PRIMAL_INFEASIBLE,
-            "AlmostPrimalInfeasible": status.PRIMAL_INFEASIBLE_INACCURATE,
-            "DualInfeasible": status.DUAL_INFEASIBLE,
-            "AlmostDualInfeasible": status.DUAL_INFEASIBLE_INACCURATE,
-            "MaxIterations": status.MAX_ITER_REACHED,
-            "MaxTime": status.TIME_LIMIT,
-        }.get(str(solution.status), status.SOLVER_ERROR)
+        mapped = _map_clarabel_status(str(solution.status))
         kkt_dict = _compute_kkt(
             mapped, solution, problem, p, q, a, b, cone_dict
         )
@@ -182,6 +173,30 @@ def _compute_kkt(mapped_status, solution, problem, p, q, a, b, cone_dict):
     if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
         return kkt.cone_dual_infeasibility_cert(p, q, a_for_kkt, cone_dict, x)
     return None
+
+
+_CLARABEL_STATUS_MAP: dict[str, str] = {
+    "Solved": status.OPTIMAL,
+    "AlmostSolved": status.OPTIMAL_INACCURATE,
+    "PrimalInfeasible": status.PRIMAL_INFEASIBLE,
+    "AlmostPrimalInfeasible": status.PRIMAL_INFEASIBLE_INACCURATE,
+    "DualInfeasible": status.DUAL_INFEASIBLE,
+    "AlmostDualInfeasible": status.DUAL_INFEASIBLE_INACCURATE,
+    "MaxIterations": status.MAX_ITER_REACHED,
+    "MaxTime": status.TIME_LIMIT,
+}
+
+
+def _map_clarabel_status(raw_status: str) -> str:
+    """Translate a Clarabel ``solution.status`` string to canonical.
+
+    Exposed as a module-level helper so the per-status mapping table
+    can be exercised directly in tests instead of via a real Clarabel
+    solve, and so a regression in any non-optimal branch surfaces in
+    a fast unit test rather than only when that branch is hit at
+    runtime.
+    """
+    return _CLARABEL_STATUS_MAP.get(raw_status, status.SOLVER_ERROR)
 
 
 def _maybe_float(value):
