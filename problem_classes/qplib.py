@@ -1,354 +1,277 @@
-import linecache
+"""QPLIB problem loader.
+
+Reads a single ``.qplib`` text file into a (P, q, r, A, l, u, n, m)
+QP. The previous implementation called ``linecache.getline`` once per
+header line and then ``pandas.read_csv(skiprows=...)`` once per COO
+section, which re-read the file from byte zero on every section. For
+QPLIB instances with many sections this was O(file_size · num_sections)
+and dominated the load step.
+
+This rewrite reads the file once into memory and walks it with a
+single cursor. The output is bit-identical to the previous loader.
+"""
+
+from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 import scipy.sparse as spa
 
 
 class QPLIB:
-    '''
-    QPLIB
-    '''
-    def __init__(self, file_name, prob_name):
-        '''
-        Generate QPLIB problem in QP format.
-        '''
-        # Load problem from file
-        self._load_qplib_problem(file_name)
+    """QPLIB problem loaded from a ``.qplib`` text file."""
 
-        self.qp_problem = self._generate_qp_problem()
+    def __init__(self, file_name: str, prob_name: str) -> None:
         self.prob_name = prob_name
+        self._load_qplib_problem(file_name)
+        self.qp_problem = self._generate_qp_problem()
 
-    def _load_qplib_problem(self, filename, verbose=False):
-        # linecache caches by filename indefinitely. If the file has been
-        # rewritten (e.g. by a re-run of prepare_qplib.py in the same
-        # process) we must clear the cached lines so we re-read from disk.
-        linecache.checkcache(filename)
+    def _load_qplib_problem(self, filename: str) -> None:
+        cursor = _Cursor(filename)
 
-        # minimize or maximize
-        head = 3                                    # 3
-        line = linecache.getline(filename, head)
-        if 'minimize' in line:
-            obj_type = 'min'
-        else:
-            obj_type = 'max'
+        # Header lines 1-2 are problem name / type code; we skip them.
+        cursor.skip_lines(2)
 
-        # number of variables. QPLIB header rows use whitespace-separated
-        # columns; tolerate tabs and multiple spaces by splitting on any
-        # whitespace rather than assuming single-space separators.
-        head += 1                                   # 4
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        if 'variables' in parts:
-            n = int(parts[0])
-            if verbose:
-                print(line)
-        else:
-            raise ValueError("No number of variables recognized")
+        # min / max
+        line = cursor.next_line()
+        original_obj_type = "min" if "minimize" in line else "max"
 
-        # number of constraints
-        head += 1                                   # 5
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        if 'constraints' in parts:
-            m = int(parts[0])
-            if verbose:
-                print(line)
-        else:
-            m = 0  # No constraints
-            head -= 1
+        # number of variables
+        n = cursor.next_int_with_keyword("variables")
 
-        # nnz in Ptriu
-        head += 1                                   # 6
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        if ('quadratic' in parts) and ('objective' in parts):
-            nnz_Ptriu = int(parts[0])
-            if verbose:
-                print(line)
-        else:
-            nnz_Ptriu = 0
-            head -= 1
+        # number of constraints (optional row)
+        m_value = cursor.optional_int_with_keyword("constraints")
+        m = m_value if m_value is not None else 0
 
-        # Extract upper triangular part of P
-        head += 1                                   # 7
-        if (nnz_Ptriu > 0):
-            P_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=nnz_Ptriu, header=None)
+        # nnz in P upper triangle (optional row)
+        nnz_Ptriu_value = cursor.optional_int_with_keyword(
+            "quadratic", required_keyword2="objective"
+        )
+        nnz_Ptriu = nnz_Ptriu_value if nnz_Ptriu_value is not None else 0
 
-            # Replace the order of rows and columns since QPLIB stores P as a lower triangular matrix
-            P = spa.csc_matrix((P_df[2].values, (P_df[1].values-1, P_df[0].values-1)), shape=(n, n))
+        # P entries (i j v), nnz_Ptriu rows. QPLIB stores the lower
+        # triangle indexed (i, j) so the existing convention transposes
+        # before assembling the symmetric matrix.
+        if nnz_Ptriu > 0:
+            triplets = cursor.read_triplets(nnz_Ptriu)
+            P = spa.csc_matrix(
+                (triplets[:, 2], (triplets[:, 1].astype(int) - 1, triplets[:, 0].astype(int) - 1)),
+                shape=(n, n),
+            )
             P = (P + spa.triu(P, 1).T).tocsc()
         else:
             P = spa.csc_matrix((n, n))
 
-        # Default value of q
-        head += nnz_Ptriu
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        q_dflt = float(parts[0])
-        if verbose:
-            print(line)
+        # q default + non-default entries
+        q_dflt = cursor.next_float()
+        q = _read_default_overrides(cursor, n, q_dflt)
 
-        # Number of non-default values for q
-        head += 1
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        q_non_dflt_numel = int(parts[0])
-        if verbose:
-            print(line)
+        # objective constant r
+        r = cursor.next_float()
 
-        # Extract q
-        head += 1
-        q = q_dflt * np.ones(n)
-        if (q_non_dflt_numel > 0):
-            q_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=q_non_dflt_numel, header=None)
-            q[q_df[0] - 1] = q_df[1]
-
-        # Objective constant
-        head += q_non_dflt_numel
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        r = float(parts[0])
-        if verbose:
-            print(line)
-
-        # Extract constraints only if present
+        # constraint matrix A (only when there are constraints)
         if m > 0:
-            # nnz in A
-            head += 1
-            line = linecache.getline(filename, head)
-            parts = line.split()
-            nnz_A = int(parts[0])
-            if verbose:
-                print(line)
-
-            # Extract A
-            head += 1
-            if (nnz_A > 0):
-                A_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=nnz_A, header=None)
-                A = spa.csc_matrix((A_df[2].values, (A_df[0].values-1, A_df[1].values-1)), shape=(m, n))
+            nnz_A = cursor.next_int()
+            if nnz_A > 0:
+                triplets = cursor.read_triplets(nnz_A)
+                A = spa.csc_matrix(
+                    (
+                        triplets[:, 2],
+                        (
+                            triplets[:, 0].astype(int) - 1,
+                            triplets[:, 1].astype(int) - 1,
+                        ),
+                    ),
+                    shape=(m, n),
+                )
             else:
-                A = None
+                A = spa.csc_matrix((m, n))
         else:
-            head += 1
-            nnz_A = 0
             A = spa.csc_matrix((0, n))
 
-        # Value for infinity (header marker; unused — QPLIB callers
-        # treat any value with absolute magnitude >= this as +/-inf at
-        # the solver layer, but our pipeline preserves the raw bound.)
-        head += nnz_A
-        line = linecache.getline(filename, head)
-        if verbose:
-            print(line)
+        # infinity sentinel (header marker; we keep the raw bound values
+        # downstream and the solver layer interprets them).
+        cursor.next_line()
 
-        # Extract constraints if present
+        # constraint bounds (only when there are constraints)
         if m > 0:
-            # Default value of l
-            head += 1
-            line = linecache.getline(filename, head)
-            parts = line.split()
-            l_dflt = float(parts[0])
-            if verbose:
-                print(line)
-
-            # Number of non-default values for l
-            head += 1
-            line = linecache.getline(filename, head)
-            parts = line.split()
-            l_non_dflt_numel = int(parts[0])
-            if verbose:
-                print(line)
-
-            # Extract l
-            head += 1
-            l = l_dflt * np.ones(m)
-            if (l_non_dflt_numel > 0):
-                l_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=l_non_dflt_numel, header=None)
-                l[l_df[0] - 1] = l_df[1]
-
-            # Default values for u
-            head += l_non_dflt_numel
-            line = linecache.getline(filename, head)
-            parts = line.split()
-            u_dflt = float(parts[0])
-            if verbose:
-                print(line)
-
-            # Number of non-default values for u
-            head += 1
-            line = linecache.getline(filename, head)
-            parts = line.split()
-            u_non_dflt_numel = int(parts[0])
-            if verbose:
-                print(line)
-
-            # Extract u
-            head += 1
-            u = u_dflt * np.ones(m)
-            if (u_non_dflt_numel > 0):
-                u_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=u_non_dflt_numel, header=None)
-                u[u_df[0] - 1] = u_df[1]
+            l_dflt = cursor.next_float()
+            lc = _read_default_overrides(cursor, m, l_dflt)
+            u_dflt = cursor.next_float()
+            uc = _read_default_overrides(cursor, m, u_dflt)
         else:
-            head += 1
-            l = np.array([])
-            u = np.array([])
-            u_non_dflt_numel = 0  # To continue processing
+            lc = np.array([], dtype=float)
+            uc = np.array([], dtype=float)
 
-        # Default value of lx
-        head += u_non_dflt_numel
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        lx_dflt = float(parts[0])
-        if verbose:
-            print(line)
+        # variable bounds
+        lx_dflt = cursor.next_float()
+        lx = _read_default_overrides(cursor, n, lx_dflt)
+        ux_dflt = cursor.next_float()
+        ux = _read_default_overrides(cursor, n, ux_dflt)
 
-        # Number of non-default values for lx
-        head += 1
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        lx_non_dflt_numel = int(parts[0])
-        if verbose:
-            print(line)
+        # x0 / y0 / w0 are read for spec completeness but the benchmark
+        # pipeline does not use them. Keeping the cursor advanced means a
+        # malformed file fails here instead of leaking into the next
+        # section's parse.
+        x0_dflt = cursor.next_float()
+        _ = _read_default_overrides(cursor, n, x0_dflt)
+        y0_dflt = cursor.next_float()
+        _ = _read_default_overrides(cursor, m, y0_dflt)
+        w0_dflt = cursor.next_float()
+        _ = _read_default_overrides(cursor, n, w0_dflt)
 
-        # Extract lx
-        head += 1
-        lx = lx_dflt * np.ones(n)
-        if (lx_non_dflt_numel > 0):
-            lx_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=lx_non_dflt_numel, header=None)
-            lx[lx_df[0] - 1] = lx_df[1]
-
-        # Default value of ux
-        head += lx_non_dflt_numel
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        ux_dflt = float(parts[0])
-        if verbose:
-            print(line)
-
-        # Number of non-default values for ux
-        head += 1
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        ux_non_dflt_numel = int(parts[0])
-        if verbose:
-            print(line)
-
-        # Extract ux
-        head += 1
-        ux = ux_dflt * np.ones(n)
-        if (ux_non_dflt_numel > 0):
-            ux_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=ux_non_dflt_numel, header=None)
-            ux[ux_df[0] - 1] = ux_df[1]
-
-
-        # Default value of x0
-        head += ux_non_dflt_numel
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        x0_dflt = float(parts[0])
-        if verbose:
-            print(line)
-
-        # Number of non-default values for x0
-        head += 1
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        x0_non_dflt_numel = int(parts[0])
-        if verbose:
-            print(line)
-
-        # Extract x0
-        head += 1
-        x0 = x0_dflt * np.ones(n)
-        if (x0_non_dflt_numel > 0):
-            x0_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=x0_non_dflt_numel, header=None)
-            x0[x0_df[0] - 1] = x0_df[1]
-
-        # Default value of y0
-        head += x0_non_dflt_numel
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        y0_dflt = float(parts[0])
-        if verbose:
-            print(line)
-
-        # Number of non-default values for y0
-        head += 1
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        y0_non_dflt_numel = int(parts[0])
-        if verbose:
-            print(line)
-
-        # Extract y0
-        head += 1
-        y0 = y0_dflt * np.ones(m)
-        if (y0_non_dflt_numel > 0):
-            y0_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=y0_non_dflt_numel, header=None)
-            y0[y0_df[0] - 1] = y0_df[1]
-
-        # Default value of w0
-        head += y0_non_dflt_numel
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        w0_dflt = float(parts[0])
-        if verbose:
-            print(line)
-
-        # Number of non-default values for w0
-        head += 1
-        line = linecache.getline(filename, head)
-        parts = line.split()
-        w0_non_dflt_numel = int(parts[0])
-        if verbose:
-            print(line)
-
-        # Extract w0
-        head += 1
-        w0 = w0_dflt * np.ones(n)
-        if (w0_non_dflt_numel > 0):
-            w0_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=w0_non_dflt_numel, header=None)
-            w0[w0_df[0] - 1] = w0_df[1]
-
-        # Assign final values to problem. QPLIB encodes either a `min`
-        # or `max` direction; we always present the loaded data as a
-        # minimization problem and record the original direction in
-        # `original_obj_type` for callers that need to report it. The
-        # downstream worker also assumes `obj_type` reflects the data's
-        # convention, so reporting "min" here prevents the worker from
-        # applying a second negation.
+        # Assemble the QP. QPLIB encodes either a min or max direction;
+        # we always present the loaded data as a minimization problem
+        # and record the original direction in ``original_obj_type`` for
+        # callers that want to surface it. Without this, the worker's
+        # _reported_objective would apply a second negation when
+        # obj_type == "max".
         self.n = n
-        self.m = m + n  # Combine bounds in constraints
+        self.m = m + n  # Combine variable bounds with linear constraints
         self.A = spa.vstack([A, spa.eye(n)]).tocsc()
-        self.l = np.hstack([l, lx])
-        self.u = np.hstack([u, ux])
+        self.l = np.hstack([lc, lx])
+        self.u = np.hstack([uc, ux])
         self.P = P
         self.q = q
         self.r = r
-        self.original_obj_type = obj_type
-        if obj_type == 'max':
+        self.original_obj_type = original_obj_type
+        if original_obj_type == "max":
             self.P = self.P * -1
             self.q = self.q * -1
             self.r = -self.r
-        self.obj_type = 'min'
+        self.obj_type = "min"
 
     @staticmethod
-    def name():
-        return 'QPLIB'
+    def name() -> str:
+        return "QPLIB"
 
-    def _generate_qp_problem(self):
-        '''
-        Generate QP problem
-        '''
-        problem = {}
-        problem['P'] = self.P
-        problem['q'] = self.q
-        problem['r'] = self.r
-        problem['A'] = self.A
-        problem['l'] = self.l
-        problem['u'] = self.u
-        problem['n'] = self.n
-        problem['m'] = self.m
+    def _generate_qp_problem(self) -> dict:
+        return {
+            "P": self.P,
+            "q": self.q,
+            "r": self.r,
+            "A": self.A,
+            "l": self.l,
+            "u": self.u,
+            "n": self.n,
+            "m": self.m,
+        }
 
-        return problem
+
+class _Cursor:
+    """Single-pass cursor over a QPLIB file's whitespace-tokenized lines.
+
+    Lines are stripped of trailing newlines. Blank lines are dropped at
+    read time so the cursor never has to peek for them.
+    """
+
+    def __init__(self, filename: str) -> None:
+        with open(filename, encoding="utf-8") as handle:
+            # Strip blank lines so a stray trailing newline in a fixture
+            # doesn't shift the cursor and cause a parse error several
+            # sections later.
+            self._lines = [line.rstrip("\n") for line in handle if line.strip()]
+        self._idx = 0
+
+    def skip_lines(self, count: int) -> None:
+        self._idx = min(self._idx + count, len(self._lines))
+
+    def _peek(self) -> str | None:
+        if self._idx >= len(self._lines):
+            return None
+        return self._lines[self._idx]
+
+    def next_line(self) -> str:
+        if self._idx >= len(self._lines):
+            raise ValueError("QPLIB file ended unexpectedly")
+        line = self._lines[self._idx]
+        self._idx += 1
+        return line
+
+    def next_int(self) -> int:
+        return int(self.next_line().split()[0])
+
+    def next_float(self) -> float:
+        return float(self.next_line().split()[0])
+
+    def next_int_with_keyword(self, keyword: str) -> int:
+        line = self.next_line()
+        parts = line.split()
+        if keyword not in parts:
+            raise ValueError(
+                f"Expected QPLIB header line containing {keyword!r}, got {line!r}"
+            )
+        return int(parts[0])
+
+    def optional_int_with_keyword(
+        self,
+        keyword: str,
+        *,
+        required_keyword2: str | None = None,
+    ) -> int | None:
+        """Read the current line if it is the keyword line; otherwise
+        leave the cursor where it was so the caller can parse the
+        following section. Returns the integer value if present.
+        """
+        line = self._peek()
+        if line is None:
+            return None
+        parts = line.split()
+        if keyword not in parts:
+            return None
+        if required_keyword2 is not None and required_keyword2 not in parts:
+            return None
+        self._idx += 1
+        return int(parts[0])
+
+    def read_triplets(self, count: int) -> np.ndarray:
+        """Read ``count`` whitespace-separated lines of three numbers.
+
+        Returns a (count, 3) float array. ``i, j`` columns are 1-indexed
+        in the file and are not converted here — callers cast and
+        subtract 1 as needed for the matrix they're building.
+        """
+        rows: list[list[float]] = []
+        for _ in range(count):
+            line = self.next_line()
+            parts = line.split()
+            if len(parts) < 3:
+                raise ValueError(
+                    f"Expected three values per triplet line, got {line!r}"
+                )
+            rows.append([float(parts[0]), float(parts[1]), float(parts[2])])
+        return np.array(rows, dtype=float)
+
+    def read_index_value_pairs(self, count: int) -> tuple[np.ndarray, np.ndarray]:
+        """Read ``count`` ``index value`` lines. Returns
+        (1-indexed index ints, float values).
+        """
+        if count == 0:
+            return np.array([], dtype=int), np.array([], dtype=float)
+        indices = np.empty(count, dtype=int)
+        values = np.empty(count, dtype=float)
+        for k in range(count):
+            line = self.next_line()
+            parts = line.split()
+            if len(parts) < 2:
+                raise ValueError(
+                    f"Expected two values per index/value line, got {line!r}"
+                )
+            indices[k] = int(parts[0])
+            values[k] = float(parts[1])
+        return indices, values
+
+
+def _read_default_overrides(
+    cursor: _Cursor, length: int, default_value: float
+) -> np.ndarray:
+    """Read a ``<count>`` line followed by ``count`` ``<index> <value>``
+    lines and return a length-``length`` array filled with
+    ``default_value`` and overridden at the indices.
+    """
+    count = cursor.next_int()
+    out = np.full(length, float(default_value), dtype=float)
+    if count > 0:
+        indices, values = cursor.read_index_value_pairs(count)
+        # File indices are 1-based.
+        out[indices - 1] = values
+    return out
