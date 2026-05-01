@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -74,6 +75,46 @@ def _analysis_frame() -> pd.DataFrame:
             },
         ]
     )
+
+
+def test_load_results_prefers_newer_jsonl_over_stale_parquet(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    parquet = run_dir / "results.parquet"
+    jsonl = run_dir / "results.jsonl"
+    pd.DataFrame([{"problem": "p1", "solver_id": "s"}]).to_parquet(
+        parquet, index=False
+    )
+    jsonl.write_text(
+        "\n".join(
+            [
+                json.dumps({"problem": "p1", "solver_id": "s"}),
+                json.dumps({"problem": "p2", "solver_id": "s"}),
+            ]
+        )
+        + "\n"
+    )
+    fresh_time = parquet.stat().st_mtime_ns + 1_000_000_000
+    os.utime(jsonl, ns=(fresh_time, fresh_time))
+
+    loaded = load_results(run_dir)
+
+    assert loaded["problem"].tolist() == ["p1", "p2"]
+
+
+def test_load_results_skips_torn_jsonl_lines(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    jsonl = run_dir / "results.jsonl"
+    jsonl.write_text(
+        json.dumps({"problem": "p1", "solver_id": "s"})
+        + "\n"
+        + '{"problem": "p2", "solver_id":'
+    )
+
+    loaded = load_results(run_dir)
+
+    assert loaded["problem"].tolist() == ["p1"]
 
 
 def test_performance_profile_penalizes_failed_solves():
