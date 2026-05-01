@@ -20,6 +20,11 @@ class QPLIB:
         self.prob_name = prob_name
 
     def _load_qplib_problem(self, filename, verbose=False):
+        # linecache caches by filename indefinitely. If the file has been
+        # rewritten (e.g. by a re-run of prepare_qplib.py in the same
+        # process) we must clear the cached lines so we re-read from disk.
+        linecache.checkcache(filename)
+
         # minimize or maximize
         head = 3                                    # 3
         line = linecache.getline(filename, head)
@@ -28,11 +33,13 @@ class QPLIB:
         else:
             obj_type = 'max'
 
-        # number of variables
+        # number of variables. QPLIB header rows use whitespace-separated
+        # columns; tolerate tabs and multiple spaces by splitting on any
+        # whitespace rather than assuming single-space separators.
         head += 1                                   # 4
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
-        if 'variables\n' in parts:
+        parts = line.split()
+        if 'variables' in parts:
             n = int(parts[0])
             if verbose:
                 print(line)
@@ -42,8 +49,8 @@ class QPLIB:
         # number of constraints
         head += 1                                   # 5
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
-        if 'constraints\n' in parts:
+        parts = line.split()
+        if 'constraints' in parts:
             m = int(parts[0])
             if verbose:
                 print(line)
@@ -54,8 +61,8 @@ class QPLIB:
         # nnz in Ptriu
         head += 1                                   # 6
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
-        if ('quadratic' in parts) and ('objective\n' in parts):
+        parts = line.split()
+        if ('quadratic' in parts) and ('objective' in parts):
             nnz_Ptriu = int(parts[0])
             if verbose:
                 print(line)
@@ -77,7 +84,7 @@ class QPLIB:
         # Default value of q
         head += nnz_Ptriu
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         q_dflt = float(parts[0])
         if verbose:
             print(line)
@@ -85,7 +92,7 @@ class QPLIB:
         # Number of non-default values for q
         head += 1
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         q_non_dflt_numel = int(parts[0])
         if verbose:
             print(line)
@@ -100,7 +107,7 @@ class QPLIB:
         # Objective constant
         head += q_non_dflt_numel
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         r = float(parts[0])
         if verbose:
             print(line)
@@ -110,7 +117,7 @@ class QPLIB:
             # nnz in A
             head += 1
             line = linecache.getline(filename, head)
-            parts = line.split(' ')
+            parts = line.split()
             nnz_A = int(parts[0])
             if verbose:
                 print(line)
@@ -127,11 +134,11 @@ class QPLIB:
             nnz_A = 0
             A = spa.csc_matrix((0, n))
 
-        # Value for infinity
+        # Value for infinity (header marker; unused — QPLIB callers
+        # treat any value with absolute magnitude >= this as +/-inf at
+        # the solver layer, but our pipeline preserves the raw bound.)
         head += nnz_A
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
-        infty = float(parts[0])
         if verbose:
             print(line)
 
@@ -140,7 +147,7 @@ class QPLIB:
             # Default value of l
             head += 1
             line = linecache.getline(filename, head)
-            parts = line.split(' ')
+            parts = line.split()
             l_dflt = float(parts[0])
             if verbose:
                 print(line)
@@ -148,7 +155,7 @@ class QPLIB:
             # Number of non-default values for l
             head += 1
             line = linecache.getline(filename, head)
-            parts = line.split(' ')
+            parts = line.split()
             l_non_dflt_numel = int(parts[0])
             if verbose:
                 print(line)
@@ -163,7 +170,7 @@ class QPLIB:
             # Default values for u
             head += l_non_dflt_numel
             line = linecache.getline(filename, head)
-            parts = line.split(' ')
+            parts = line.split()
             u_dflt = float(parts[0])
             if verbose:
                 print(line)
@@ -171,7 +178,7 @@ class QPLIB:
             # Number of non-default values for u
             head += 1
             line = linecache.getline(filename, head)
-            parts = line.split(' ')
+            parts = line.split()
             u_non_dflt_numel = int(parts[0])
             if verbose:
                 print(line)
@@ -191,7 +198,7 @@ class QPLIB:
         # Default value of lx
         head += u_non_dflt_numel
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         lx_dflt = float(parts[0])
         if verbose:
             print(line)
@@ -199,7 +206,7 @@ class QPLIB:
         # Number of non-default values for lx
         head += 1
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         lx_non_dflt_numel = int(parts[0])
         if verbose:
             print(line)
@@ -214,7 +221,7 @@ class QPLIB:
         # Default value of ux
         head += lx_non_dflt_numel
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         ux_dflt = float(parts[0])
         if verbose:
             print(line)
@@ -222,7 +229,7 @@ class QPLIB:
         # Number of non-default values for ux
         head += 1
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         ux_non_dflt_numel = int(parts[0])
         if verbose:
             print(line)
@@ -238,7 +245,7 @@ class QPLIB:
         # Default value of x0
         head += ux_non_dflt_numel
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         x0_dflt = float(parts[0])
         if verbose:
             print(line)
@@ -246,7 +253,7 @@ class QPLIB:
         # Number of non-default values for x0
         head += 1
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         x0_non_dflt_numel = int(parts[0])
         if verbose:
             print(line)
@@ -261,7 +268,7 @@ class QPLIB:
         # Default value of y0
         head += x0_non_dflt_numel
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         y0_dflt = float(parts[0])
         if verbose:
             print(line)
@@ -269,7 +276,7 @@ class QPLIB:
         # Number of non-default values for y0
         head += 1
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         y0_non_dflt_numel = int(parts[0])
         if verbose:
             print(line)
@@ -284,7 +291,7 @@ class QPLIB:
         # Default value of w0
         head += y0_non_dflt_numel
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         w0_dflt = float(parts[0])
         if verbose:
             print(line)
@@ -292,7 +299,7 @@ class QPLIB:
         # Number of non-default values for w0
         head += 1
         line = linecache.getline(filename, head)
-        parts = line.split(' ')
+        parts = line.split()
         w0_non_dflt_numel = int(parts[0])
         if verbose:
             print(line)
@@ -304,7 +311,13 @@ class QPLIB:
             w0_df = pd.read_csv(filename, sep=' ', skiprows=head-1, nrows=w0_non_dflt_numel, header=None)
             w0[w0_df[0] - 1] = w0_df[1]
 
-        # Assign final values to problem
+        # Assign final values to problem. QPLIB encodes either a `min`
+        # or `max` direction; we always present the loaded data as a
+        # minimization problem and record the original direction in
+        # `original_obj_type` for callers that need to report it. The
+        # downstream worker also assumes `obj_type` reflects the data's
+        # convention, so reporting "min" here prevents the worker from
+        # applying a second negation.
         self.n = n
         self.m = m + n  # Combine bounds in constraints
         self.A = spa.vstack([A, spa.eye(n)]).tocsc()
@@ -313,11 +326,12 @@ class QPLIB:
         self.P = P
         self.q = q
         self.r = r
-        self.obj_type = obj_type
-        if self.obj_type == 'max':
-            self.P *= -1
-            self.q *= -1
-            self.r *= -1
+        self.original_obj_type = obj_type
+        if obj_type == 'max':
+            self.P = self.P * -1
+            self.q = self.q * -1
+            self.r = -self.r
+        self.obj_type = 'min'
 
     @staticmethod
     def name():

@@ -134,3 +134,42 @@ def test_readMpsLp_missing_gz_raises(tmp_path: Path):
     # rather than returning empty matrices.
     with pytest.raises((RuntimeError, FileNotFoundError, OSError)):
         qpsreader.readMpsLp(str(tmp_path / "does_not_exist.mps.gz"))
+
+
+def test_readMpsLp_warns_on_quadratic_section(tmp_path: Path):
+    """A QPS file with a quadratic section should warn (HiGHS getLp() drops it).
+
+    The warning fires before HiGHS attempts to parse, so even if HiGHS
+    rejects the QPS file the user gets a clear signal about the dropped
+    quadratic data.
+    """
+    qps_body = _TINY_MPS.replace(
+        "ENDATA\n",
+        "QUADOBJ\n    X1   X1   2.0\nENDATA\n",
+    )
+    path = _write(tmp_path / "tiny.qps", qps_body)
+    import warnings as _warnings
+
+    with _warnings.catch_warnings(record=True) as record:
+        _warnings.simplefilter("always")
+        try:
+            qpsreader.readMpsLp(str(path))
+        except RuntimeError:
+            pass  # HiGHS may also fail to parse; the warning is what we test.
+    quadratic_warnings = [
+        w for w in record if issubclass(w.category, qpsreader.QuadraticDataIgnoredWarning)
+    ]
+    assert quadratic_warnings, "Expected a QuadraticDataIgnoredWarning"
+
+
+def test_readMpsLp_does_not_warn_on_plain_lp(tmp_path: Path):
+    path = _write(tmp_path / "tiny.mps", _TINY_MPS)
+    import warnings as _warnings
+
+    with _warnings.catch_warnings(record=True) as record:
+        _warnings.simplefilter("always")
+        qpsreader.readMpsLp(str(path))
+    quadratic_warnings = [
+        w for w in record if issubclass(w.category, qpsreader.QuadraticDataIgnoredWarning)
+    ]
+    assert quadratic_warnings == []

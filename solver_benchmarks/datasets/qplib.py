@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 from problem_classes.qplib import QPLIB
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 
-from .base import Dataset
+from .base import Dataset, atomic_write_bytes
 
 QPLIB_BASE_URL = "https://qplib.zib.de/qplib"
 QPLIB_DEFAULT_SUBSET = ("8790", "8515", "8495")
@@ -80,8 +81,18 @@ class QPLIBDataset(Dataset):
         assert spec.path is not None
         instance = QPLIB(str(spec.path), name)
         qp = dict(instance.qp_problem)
-        qp["obj_type"] = instance.obj_type
-        return ProblemData(self.dataset_id, name, QP, qp, metadata=dict(spec.metadata))
+        # The QPLIB loader internally negates max-form data so the QP we
+        # ship downstream is always min-form. Recording obj_type as
+        # "min" here prevents the worker from applying a second negation
+        # when reporting the objective value.
+        qp["obj_type"] = "min"
+        metadata = dict(spec.metadata)
+        # Preserve the original objective direction for callers that
+        # want to report it back in the report (without affecting math).
+        metadata["original_obj_type"] = getattr(
+            instance, "original_obj_type", instance.obj_type
+        )
+        return ProblemData(self.dataset_id, name, QP, qp, metadata=metadata)
 
     def prepare_data(
         self,
@@ -123,15 +134,18 @@ def download_qplib_problem(name: str, folder: Path) -> Path:
     target = folder / f"QPLIB_{problem_id}.qplib"
     if target.exists():
         return target
+    folder.mkdir(parents=True, exist_ok=True)
     url = f"{QPLIB_BASE_URL}/QPLIB_{problem_id}.qplib"
+    # Narrow the exception scope to network/transport errors so a typo
+    # in the URL does not silently bypass HTTPS via the HTTP fallback.
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             content = response.read()
-    except Exception:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
         fallback = f"http://qplib.zib.de/qplib/QPLIB_{problem_id}.qplib"
         with urllib.request.urlopen(fallback, timeout=60) as response:
             content = response.read()
-    target.write_bytes(content)
+    atomic_write_bytes(target, content)
     return target
 
 

@@ -238,6 +238,72 @@ def test_cblib_prepare_uses_default_small_subset(monkeypatch, tmp_path: Path):
     assert [name for name, _ in calls] == list(cblib_module.CBLIB_DEFAULT_SUBSET)
 
 
+def test_validate_gzip_payload_rejects_truncated_archive():
+    """A truncated gzip stream (header valid, CRC/EOF missing) must be
+    rejected. The previous one-byte ``GzipFile.read(1)`` probe passed
+    on these payloads, atomically writing them to the cache and baking
+    the corruption in for every subsequent run.
+    """
+    import gzip as _gzip
+
+    import pytest
+
+    from solver_benchmarks.datasets.base import validate_gzip_payload
+
+    full = _gzip.compress(b"hello world" * 100)
+    # Drop the trailing CRC32+ISIZE (8 bytes) so the EOF marker is missing.
+    truncated = full[:-4]
+    with pytest.raises((EOFError, OSError)):
+        validate_gzip_payload(truncated)
+
+
+def test_validate_gzip_payload_accepts_well_formed_archive():
+    import gzip as _gzip
+
+    from solver_benchmarks.datasets.base import validate_gzip_payload
+
+    # No exception expected.
+    validate_gzip_payload(_gzip.compress(b"hello"))
+
+
+def test_cblib_download_does_not_atomically_commit_truncated_gzip(
+    monkeypatch, tmp_path: Path
+):
+    """Pin the contract that a truncated gzip from the network is
+    rejected before atomic_write_bytes lands it on disk."""
+    import gzip as _gzip
+    import urllib.request
+
+    import pytest
+
+    folder = tmp_path / "problem_classes" / "cblib_data"
+    full = _gzip.compress(b"\n".join([b"VER", b"1", b"OBJSENSE", b"MIN"]))
+    truncated = full[:-4]
+
+    class _FakeResponse:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: _FakeResponse(truncated),
+    )
+    with pytest.raises((EOFError, OSError)):
+        cblib_module.download_cblib_problem("never_committed", folder)
+    # No file was written at the cache target.
+    assert not (folder / "never_committed.cbf.gz").exists()
+
+
 def test_mpc_qpbenchmark_npz_loader_converts_qp_schema(tmp_path: Path):
     data_root = tmp_path / "problem_classes"
     folder = data_root / "mpc_qpbenchmark_data"
@@ -523,3 +589,57 @@ def test_qplib_index_and_subset_filtering(tmp_path: Path):
     assert qplib_module.qplib_index(folder) == {"8790": "ccb", "8495": "dcl"}
     assert {spec.name for spec in all_dataset.list_problems()} == {"8790", "8495"}
     assert [spec.name for spec in ccb_dataset.list_problems()] == ["8790"]
+
+
+def _write_minimal_qplib(path: Path, *, direction: str = "minimize") -> None:
+    """Write a tiny QPLIB-format file for a 1-D max problem ``-(x-1)^2``."""
+    body = "\n".join(
+        [
+            "TINY",
+            "QCB",
+            direction,
+            "1 variables",
+            "0 constraints",
+            "1 quadratic objective",
+            "1 1 -2.0",  # P = -2 in lower-tri (x^2 coefficient = -1, doubled by 1/2 conv)
+            "0.0",  # q default
+            "1",  # 1 non-default q
+            "1 2.0",  # q[1] = 2.0
+            "-1.0",  # r = -1
+            "1.0e30",  # infty marker
+            "0.0",  # lx default
+            "0",  # 0 non-default lx
+            "0.0",  # ux default
+            "0",
+            "0.0",  # x0 default
+            "0",
+            "0.0",  # y0 default
+            "0",
+            "0.0",  # w0 default
+            "0",
+            "",
+        ]
+    )
+    path.write_text(body)
+
+
+def test_qplib_loader_negates_max_data_and_reports_min_obj_type(tmp_path: Path):
+    """A max-form QPLIB file must be loaded as min-form so the worker
+    does not double-negate the reported objective value."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n9999\n")
+    _write_minimal_qplib(folder / "QPLIB_9999.qplib", direction="maximize")
+
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("9999")
+
+    qp = problem.qp
+    # obj_type is min-form so the worker leaves the reported objective alone.
+    assert qp["obj_type"] == "min"
+    # Original direction is preserved as metadata for reporting.
+    assert problem.metadata.get("original_obj_type") == "max"
+    # Quadratic + linear data was negated; constant offset r flipped sign.
+    assert qp["r"] == 1.0  # original r = -1, negated for min form
+    assert qp["q"][0] == -2.0  # original q[0] = 2, negated

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,7 @@ import scipy.sparse as sp
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.cones import INF_BOUND
 
-from .base import Dataset
+from .base import Dataset, atomic_write_bytes
 
 MPC_QPBENCHMARK_API_URL = (
     "https://api.github.com/repos/qpsolvers/mpc_qpbenchmark/contents/data"
@@ -172,10 +173,22 @@ def download_mpc_qpbenchmark_problem(name: str, folder: Path) -> Path:
     target = folder / f"{stem}.npz"
     if target.exists():
         return target
+    folder.mkdir(parents=True, exist_ok=True)
     url = f"{MPC_QPBENCHMARK_RAW_URL}/{stem}.npz"
     with urllib.request.urlopen(url, timeout=60) as response:
         content = response.read()
-    target.write_bytes(content)
+    # Validate that the server returned a real numpy archive before
+    # committing to the cache; an HTML 404 page would otherwise silently
+    # be saved as foo.npz and fail at parse time on subsequent runs.
+    try:
+        with np.load(BytesIO(content), allow_pickle=False) as probe:
+            _ = list(probe.files)
+    except (ValueError, OSError) as exc:
+        raise RuntimeError(
+            f"Could not download MPC qpbenchmark problem {name!r}: "
+            f"response was not a valid .npz archive ({exc})"
+        ) from exc
+    atomic_write_bytes(target, content)
     return target
 
 
