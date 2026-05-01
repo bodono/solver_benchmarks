@@ -100,6 +100,18 @@ def test_cvxopt_is_registered():
     assert {QP, CONE} == cls.supported_problem_kinds
 
 
+def test_cvxopt_runtime_metadata_includes_package_version():
+    """CVXOPT result rows must record the installed ``cvxopt``
+    package version under ``solver_package_versions``."""
+    from solver_benchmarks.core.environment import SOLVER_PACKAGES, runtime_metadata
+
+    assert "cvxopt" in SOLVER_PACKAGES
+    md = runtime_metadata("cvxopt")
+    versions = md["solver_package_versions"]
+    assert "cvxopt" in versions
+    assert versions["cvxopt"] is None or isinstance(versions["cvxopt"], str)
+
+
 def test_cvxopt_is_available_when_module_present():
     pytest.importorskip("cvxopt")
     from solver_benchmarks.solvers.cvxopt_adapter import CVXOPTSolverAdapter
@@ -165,15 +177,65 @@ def test_cvxopt_status_mapping(raw_status, expected):
     assert _map_cvxopt_status(raw) == expected
 
 
-def test_cvxopt_unknown_with_small_relgap_maps_to_optimal_inaccurate():
-    """CVXOPT's "unknown" with a tight relative gap is the practical
-    "I gave up but the answer looks fine" case. Map it to
-    OPTIMAL_INACCURATE so the downstream analysis treats the row as
-    a low-confidence success rather than a max-iter timeout."""
+def test_cvxopt_unknown_with_small_relgap_and_low_infeas_maps_to_optimal_inaccurate():
+    """CVXOPT's "unknown" with a tight relative gap *and* small
+    infeasibility metrics is the practical "I gave up but the answer
+    looks fine" case. We require all three signals because pre-fix
+    the small-gap-alone gate would happily promote results with
+    primal infeasibility = 100 to OPTIMAL_INACCURATE."""
     from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
 
-    raw = {"status": "unknown", "relative gap": 1e-5}
+    raw = {
+        "status": "unknown",
+        "relative gap": 1e-5,
+        "primal infeasibility": 1e-8,
+        "dual infeasibility": 1e-8,
+    }
     assert _map_cvxopt_status(raw) == status.OPTIMAL_INACCURATE
+
+
+def test_cvxopt_unknown_with_small_relgap_but_high_primal_infeas_is_not_optimal():
+    """Regression: pre-fix the adapter promoted any small-relative-gap
+    "unknown" to OPTIMAL_INACCURATE, even if the primal infeasibility
+    metric was huge. The combined gate catches this."""
+    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
+
+    raw = {
+        "status": "unknown",
+        "relative gap": 1e-5,
+        "primal infeasibility": 100.0,
+        "dual infeasibility": 1e-8,
+    }
+    # Should NOT be OPTIMAL_INACCURATE; large primal infeasibility
+    # routes us to the corresponding inaccurate certificate status.
+    assert _map_cvxopt_status(raw) == status.PRIMAL_INFEASIBLE_INACCURATE
+
+
+def test_cvxopt_unknown_with_small_relgap_but_high_dual_infeas_is_not_optimal():
+    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
+
+    raw = {
+        "status": "unknown",
+        "relative gap": 1e-5,
+        "primal infeasibility": 1e-8,
+        "dual infeasibility": 50.0,
+    }
+    assert _map_cvxopt_status(raw) == status.DUAL_INFEASIBLE_INACCURATE
+
+
+def test_cvxopt_unknown_with_nan_metrics_falls_through_to_max_iter():
+    """NaN / inf infeasibility metrics offer no signal; the mapping
+    must not silently treat them as 'small enough' for the
+    OPTIMAL_INACCURATE gate."""
+    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
+
+    raw = {
+        "status": "unknown",
+        "relative gap": 1e-5,
+        "primal infeasibility": float("nan"),
+        "dual infeasibility": float("inf"),
+    }
+    assert _map_cvxopt_status(raw) == status.MAX_ITER_REACHED
 
 
 def test_cvxopt_unknown_with_large_primal_infeas_maps_to_pinf_inaccurate():
@@ -326,9 +388,17 @@ def test_cvxopt_handles_legacy_free_cone_key(tmp_path):
 
 
 def test_cvxopt_options_are_restored_after_solve(tmp_path):
-    """CVXOPT's options dict is global state. The adapter must
-    snapshot and restore it so concurrent solves don't leak knobs
-    into each other."""
+    """CVXOPT's options dict is global state. The adapter snapshots
+    and restores it around every solve so **sequential** solves in
+    the same process don't leak knobs into each other.
+
+    This does NOT make in-process concurrent solves safe: two threads
+    racing through ``coneqp`` would still observe each other's
+    in-flight option mutations. The benchmark runner uses
+    subprocess-level parallelism, so the per-process contract is
+    sufficient there. If you call the adapter from in-process
+    threads, wrap the solve calls in your own lock.
+    """
     pytest.importorskip("cvxopt")
     import cvxopt.solvers as cs
 

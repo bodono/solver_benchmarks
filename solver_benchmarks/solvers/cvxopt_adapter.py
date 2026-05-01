@@ -185,7 +185,14 @@ def _cvxopt_options(cs, settings: dict, *, verbose: bool):
     CVXOPT's solvers are configured via the global ``solvers.options``
     dict; mutating it without restoring would leak knobs across solves
     that share a process (and across pytest tests). The contract here
-    is local-only mutation.
+    is **per-process sequential**: the snapshot/restore protects
+    against leaking to *later* solves in the same process. It does
+    **not** make concurrent in-process solves safe — two threads
+    racing through ``coneqp`` would still observe each other's
+    in-flight option mutations. The benchmark runner uses
+    subprocess-level parallelism, so this is sufficient for our use.
+    Callers running CVXOPT from in-process threads should wrap solve
+    calls in their own lock.
     """
     snapshot = dict(cs.options)
     try:
@@ -204,16 +211,29 @@ def _cvxopt_options(cs, settings: dict, *, verbose: bool):
 # ---------------------------------------------------------------------------
 
 
+_CVXOPT_INFEASIBILITY_FAILURE_THRESHOLD = 1.0
+_CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD = 1e-3
+_CVXOPT_RELATIVE_GAP_ACCEPT_THRESHOLD = 1e-3
+
+
 def _map_cvxopt_status(raw: dict) -> str:
     """CVXOPT exposes four status strings: ``optimal``, ``unknown``,
     ``primal infeasible``, ``dual infeasible``.
 
     The ``unknown`` status is ambiguous — it covers max-iter and
-    numerical failure. We disambiguate by reading ``relative gap``
-    and ``primal/dual infeasibility`` from the result dict: a small
-    relative gap with finite bounds means OPTIMAL_INACCURATE, while
-    an explicit infeasibility indicator points at the certificate
-    branches; otherwise fall through to MAX_ITER_REACHED.
+    numerical failure. We disambiguate using the relative gap *and*
+    the primal/dual infeasibility metrics:
+
+    - **OPTIMAL_INACCURATE** requires a tight relative gap *and*
+      primal/dual infeasibilities below the accept threshold. Pre-fix
+      we promoted to OPTIMAL_INACCURATE on small gap alone, so a
+      result like ``{relative gap: 1e-5, primal infeasibility: 100}``
+      was recorded as a solution-bearing success. The combined check
+      makes that path safe.
+    - A single large infeasibility metric (above the failure
+      threshold) points at the corresponding certificate-style
+      INACCURATE status.
+    - Anything else falls through to MAX_ITER_REACHED.
     """
     raw_status = str(raw.get("status", "")).lower()
     if raw_status == "optimal":
@@ -224,20 +244,53 @@ def _map_cvxopt_status(raw: dict) -> str:
         return status.DUAL_INFEASIBLE
     if raw_status == "unknown":
         rel_gap = raw.get("relative gap")
-        if rel_gap is not None and _is_small(rel_gap, 1e-3):
-            return status.OPTIMAL_INACCURATE
-        # CVXOPT does not flag infeasibility under "unknown" via a
-        # boolean — but extreme values of the infeasibility metrics
-        # are a useful tie-breaker when the user runs with a tight
-        # iteration cap.
         prim_inf = raw.get("primal infeasibility")
         dual_inf = raw.get("dual infeasibility")
-        if prim_inf is not None and prim_inf > 1.0:
+        if (
+            _is_finite_below(rel_gap, _CVXOPT_RELATIVE_GAP_ACCEPT_THRESHOLD)
+            and _is_finite_below(prim_inf, _CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD)
+            and _is_finite_below(dual_inf, _CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD)
+        ):
+            return status.OPTIMAL_INACCURATE
+        if (
+            prim_inf is not None
+            and _coerce_finite_float(prim_inf) is not None
+            and float(prim_inf) > _CVXOPT_INFEASIBILITY_FAILURE_THRESHOLD
+        ):
             return status.PRIMAL_INFEASIBLE_INACCURATE
-        if dual_inf is not None and dual_inf > 1.0:
+        if (
+            dual_inf is not None
+            and _coerce_finite_float(dual_inf) is not None
+            and float(dual_inf) > _CVXOPT_INFEASIBILITY_FAILURE_THRESHOLD
+        ):
             return status.DUAL_INFEASIBLE_INACCURATE
         return status.MAX_ITER_REACHED
     return status.SOLVER_ERROR
+
+
+def _coerce_finite_float(value) -> float | None:
+    """Return ``float(value)`` if finite, else None.
+
+    Used by the status-mapping accept gates: a NaN or inf
+    infeasibility metric is treated as "no signal" rather than
+    silently passing the comparison.
+    """
+    if value is None:
+        return None
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return None
+    if coerced != coerced or coerced in (float("inf"), float("-inf")):  # NaN check + inf
+        return None
+    return coerced
+
+
+def _is_finite_below(value, threshold: float) -> bool:
+    """True iff ``value`` is finite and ``< threshold``. None is
+    treated as a failure (no evidence of acceptably small value)."""
+    coerced = _coerce_finite_float(value)
+    return coerced is not None and coerced < threshold
 
 
 def _is_small(value, threshold: float) -> bool:
