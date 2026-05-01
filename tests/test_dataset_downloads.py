@@ -6,9 +6,17 @@ import pytest
 from click.testing import CliRunner
 
 from solver_benchmarks.cli import main
+from solver_benchmarks.core import status
 from solver_benchmarks.datasets import get_dataset
+from solver_benchmarks.solvers import get_solver
 
 pytestmark = pytest.mark.network
+
+TERMINAL_SOLVE_STATUSES = {
+    status.OPTIMAL,
+    status.OPTIMAL_INACCURATE,
+    *status.ANY_INFEASIBLE,
+}
 
 
 @pytest.mark.parametrize(
@@ -123,6 +131,54 @@ def test_miplib_prepare_max_size_uses_real_manifest_and_downloads_small_files(
     assert downloaded
     assert all(path.stat().st_size <= 1000 for path in downloaded)
     assert (data_root / "miplib_data" / "markshare_4_0.mps.gz").exists()
+
+
+@pytest.mark.parametrize(
+    ("dataset_id", "prepare_name", "problem_name"),
+    [
+        ("cblib", "nb", "nb"),
+        ("dc_opf", "case5", "case5"),
+        pytest.param(
+            "kennington",
+            "ken-07",
+            "ken-07",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "Netlib Kennington downloads are gzip-wrapped compressed MPS; "
+                    "qpsreader currently cannot load them after download."
+                ),
+            ),
+        ),
+        ("libsvm_qp", "heart", "svm_dual_heart"),
+        ("miplib", "markshare_4_0", "markshare_4_0"),
+        ("mittelmann", "qap15", "qap15"),
+        ("mittelmann_sdp", "trto3", "trto3"),
+        ("mpc_qpbenchmark", "LIPMWALK0", "LIPMWALK0"),
+        ("qplib", "8790", "8790"),
+        ("tsplib_sdp", "burma14", "burma14"),
+    ],
+)
+def test_external_dataset_downloaded_problem_loads_and_solves(
+    tmp_path: Path,
+    dataset_id: str,
+    prepare_name: str,
+    problem_name: str,
+):
+    data_root = tmp_path / "problem_classes"
+    dataset = get_dataset(dataset_id)(repo_root=tmp_path, data_root=data_root)
+    dataset.prepare_data([prepare_name])
+    problem = dataset.load_problem(problem_name)
+
+    solver_cls = get_solver("clarabel")
+    assert solver_cls.is_available()
+    assert problem.kind in solver_cls.supported_problem_kinds
+
+    artifacts = tmp_path / "artifacts" / dataset_id
+    artifacts.mkdir(parents=True)
+    result = solver_cls({"verbose": False, "max_iter": 200}).solve(problem, artifacts)
+
+    assert result.status in TERMINAL_SOLVE_STATUSES
 
 
 def _disable_dataset_network(monkeypatch, dataset_id: str, replacement) -> None:
