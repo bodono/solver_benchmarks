@@ -449,7 +449,17 @@ def _matches_kind(metadata: dict, kind: str) -> bool:
     Unknown kind strings raise ``ValueError`` so misconfigured runs
     surface immediately rather than silently returning empty problem
     lists.
+
+    Instances flagged as unsupported (``metadata["supported"] is
+    False``) never match a kind filter. They're surfaced via
+    ``include_unsupported=True`` for visibility, but their cone
+    summary is empty — the parser raised before populating it — so
+    matching them against ``subset_kind="lp"`` would falsely include
+    e.g. PSD instances in an LP-only filter. Returning False here
+    keeps the kind filter honest.
     """
+    if metadata.get("supported") is False:
+        return False
     var_cones = metadata.get("variable_cones") or {}
     con_cones = metadata.get("constraint_cones") or {}
     has_q = bool(var_cones.get("q") or con_cones.get("q"))

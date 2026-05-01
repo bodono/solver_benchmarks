@@ -325,6 +325,41 @@ def test_subset_kind_none_returns_all_instances(mixed_cblib_folder: Path):
     assert names == ["expcone_only", "lp_only", "socp_only"]
 
 
+def test_subset_kind_lp_does_not_include_unsupported_instances(
+    tmp_path: Path,
+):
+    """Pre-fix: when ``include_unsupported=True`` was set, an
+    unsupported instance had empty ``variable_cones`` /
+    ``constraint_cones`` metadata, so ``_matches_kind`` for ``"lp"``
+    falsely returned True. Now unsupported instances never match a
+    kind filter, regardless of ``include_unsupported``."""
+    folder = tmp_path / "cblib_data"
+    _write_cbf(folder, "lp_only", _LP_ONLY_CBF)
+    _write_cbf(folder, "psd_synthetic", _PSD_CBF)
+    dataset = _make_dataset(
+        folder,
+        {"subset_kind": "lp", "include_unsupported": True},
+    )
+    names = sorted(spec.name for spec in dataset.list_problems())
+    # The PSD instance is unsupported by the parser; it must not be
+    # reclassified as LP just because its cone summary is empty.
+    assert names == ["lp_only"]
+
+
+def test_unsupported_instance_passthrough_when_no_kind_filter(
+    tmp_path: Path,
+):
+    """``include_unsupported=True`` without a ``subset_kind`` filter
+    still surfaces the instance — kind-filter exclusion is the only
+    new behavior, not blanket suppression."""
+    folder = tmp_path / "cblib_data"
+    _write_cbf(folder, "lp_only", _LP_ONLY_CBF)
+    _write_cbf(folder, "psd_synthetic", _PSD_CBF)
+    dataset = _make_dataset(folder, {"include_unsupported": True})
+    names = sorted(spec.name for spec in dataset.list_problems())
+    assert names == ["lp_only", "psd_synthetic"]
+
+
 def test_subset_kind_combines_with_subset_name_filter(
     mixed_cblib_folder: Path,
 ):
