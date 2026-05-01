@@ -13,6 +13,7 @@ from .mps import KenningtonDataset, MiplibDataset, MittelmannDataset, NetlibData
 from .qplib import QPLIBDataset
 from .sdplib import SDPLIBDataset
 from .synthetic import SyntheticConeDataset, SyntheticQPDataset
+from .tsplib_sdp import TSPLIBSDPDataset
 
 DATASETS: dict[str, type[Dataset]] = {
     "cblib": CBLIBDataset,
@@ -30,6 +31,7 @@ DATASETS: dict[str, type[Dataset]] = {
     "sdplib": SDPLIBDataset,
     "synthetic_cone": SyntheticConeDataset,
     "synthetic_qp": SyntheticQPDataset,
+    "tsplib_sdp": TSPLIBSDPDataset,
 }
 
 
