@@ -13,7 +13,9 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    mark_threads_ignored,
     mark_time_limit_ignored,
+    pop_threads,
     pop_time_limit,
     settings_with_defaults,
 )
@@ -46,9 +48,10 @@ class ProxQPSolverAdapter(SolverAdapter):
         dense_flag = settings.pop("dense", False)
         backend_value = settings.pop("backend", "")
         use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
-        # ProxQP has no native time-limit knob; record the configured
-        # limit on info so callers know it was ignored.
+        # ProxQP has no native time-limit / threads knobs; record the
+        # configured values on info so callers know they were ignored.
         time_limit = pop_time_limit(settings)
+        threads = pop_threads(settings)
         settings.setdefault("compute_timings", True)
         start = time.perf_counter()
         if use_dense:
@@ -96,6 +99,7 @@ class ProxQPSolverAdapter(SolverAdapter):
             )
         info = _info_dict(result.info)
         mark_time_limit_ignored(info, time_limit)
+        mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(info.get("objValue")),

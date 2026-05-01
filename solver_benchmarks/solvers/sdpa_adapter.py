@@ -14,7 +14,15 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    mark_threads_ignored,
+    mark_time_limit_ignored,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class SDPASolverAdapter(SolverAdapter):
@@ -50,7 +58,8 @@ class SDPASolverAdapter(SolverAdapter):
 
         settings = settings_with_defaults(self.settings)
         optimality_tolerance = float(settings.pop("optimality_tolerance", 1.0e-6))
-        option = _sdpa_options(settings, artifacts_dir)
+        ignore_markers: dict = {}
+        option = _sdpa_options(settings, artifacts_dir, info=ignore_markers)
         start = time.perf_counter()
         result = sdpap.solve(prepared.a, prepared.b, prepared.c, prepared.k, prepared.j, option)
         elapsed = time.perf_counter() - start
@@ -58,7 +67,7 @@ class SDPASolverAdapter(SolverAdapter):
             return SolverResult(
                 status=status.SOLVER_ERROR,
                 run_time_seconds=elapsed,
-                info={"raw_status": "no_result"},
+                info={"raw_status": "no_result", **ignore_markers},
             )
         x_raw, y_raw, sdpap_info, time_info, sdpa_info = result
         x = _dense(x_raw)
@@ -94,6 +103,7 @@ class SDPASolverAdapter(SolverAdapter):
                 "dualError": sdpap_info.get("dualError"),
                 "time": time_info,
                 "sdpa": sdpa_info,
+                **ignore_markers,
             },
             kkt=kkt_dict,
         )
@@ -232,9 +242,20 @@ def _psd_triangle_to_full(dim: int) -> sp.csc_matrix:
     return sp.csc_matrix((data, (rows, cols)), shape=(dim * dim, dim * (dim + 1) // 2))
 
 
-def _sdpa_options(settings: dict, artifacts_dir: Path) -> dict:
-    options = {}
-    verbose = bool(settings.pop("verbose", True))
+def _sdpa_options(
+    settings: dict,
+    artifacts_dir: Path,
+    *,
+    info: dict | None = None,
+) -> dict:
+    """Translate adapter settings into the dict consumed by sdpap.solve.
+
+    The optional ``info`` dict gets ``time_limit_ignored`` /
+    ``threads_ignored`` markers when the user requested them — SDPA
+    does not expose either knob.
+    """
+    options: dict = {}
+    verbose = bool(settings.pop("verbose", False))
     options["print"] = settings.pop("print", "display" if verbose else "no")
     if settings.pop("result_file", False):
         options["resultFile"] = str(artifacts_dir / "sdpa_result.txt")
@@ -246,10 +267,11 @@ def _sdpa_options(settings: dict, artifacts_dir: Path) -> dict:
         options["epsilonStar"] = float(settings.pop("eps_abs"))
     if "eps_rel" in settings:
         options["epsilonDash"] = float(settings.pop("eps_rel"))
-    ignored = {"time_limit", "time_limit_sec"}
-    for key in list(settings):
-        if key in ignored:
-            settings.pop(key)
+    time_limit = pop_time_limit(settings)
+    threads = pop_threads(settings)
+    if info is not None:
+        mark_time_limit_ignored(info, time_limit)
+        mark_threads_ignored(info, threads)
     options.update(settings)
     return options
 

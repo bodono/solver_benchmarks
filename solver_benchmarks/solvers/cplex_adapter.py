@@ -12,7 +12,13 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class CPLEXSolverAdapter(SolverAdapter):
@@ -132,15 +138,18 @@ def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> None:
 
 def _configure_cplex(model, settings: dict) -> None:
     settings = settings_with_defaults(settings)
-    verbose = bool(settings.pop("verbose", True))
+    verbose = bool(settings.pop("verbose", False))
     if not verbose:
         model.set_results_stream(None)
         model.set_log_stream(None)
         model.set_warning_stream(None)
         model.set_error_stream(None)
-    for source in ("time_limit_sec", "time_limit"):
-        if source in settings:
-            model.parameters.timelimit.set(float(settings.pop(source)))
+    time_limit = pop_time_limit(settings)
+    if time_limit is not None:
+        model.parameters.timelimit.set(float(time_limit))
+    threads = pop_threads(settings)
+    if threads is not None:
+        model.parameters.threads.set(int(threads))
     for key, value in settings.items():
         _set_cplex_parameter(model, key, value)
 

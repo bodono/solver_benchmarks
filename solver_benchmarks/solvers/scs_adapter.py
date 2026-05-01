@@ -15,7 +15,13 @@ from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dual
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class SCSSolverAdapter(SolverAdapter):
@@ -37,6 +43,18 @@ class SCSSolverAdapter(SolverAdapter):
             raise SolverUnavailable("Install with the scs extra to use SCS") from exc
 
         settings = settings_with_defaults(self.settings)
+        # Translate cross-adapter aliases. SCS' native time-limit knob
+        # is ``time_limit_secs`` (note the trailing ``s``); accept the
+        # other spellings via pop_time_limit.
+        time_limit = pop_time_limit(settings)
+        if time_limit is not None:
+            settings["time_limit_secs"] = float(time_limit)
+        threads = pop_threads(settings)
+        if threads is not None:
+            # SCS accepts ``num_threads`` for openmp-built variants;
+            # if the underlying build ignores it, scs.solve will still
+            # accept the kwarg.
+            settings.setdefault("num_threads", threads)
         if settings.get("log_csv_filename") is True:
             settings["log_csv_filename"] = str(artifacts_dir / "scs_trace.csv")
 

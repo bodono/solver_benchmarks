@@ -12,7 +12,13 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class MosekSolverAdapter(SolverAdapter):
@@ -106,7 +112,7 @@ class MosekSolverAdapter(SolverAdapter):
 
 def _configure_mosek(task, env, settings: dict, mosek) -> None:
     settings = settings_with_defaults(settings)
-    if settings.get("verbose"):
+    if settings.pop("verbose", False):
         def streamprinter(text):
             print(text, end="")
 
@@ -115,15 +121,15 @@ def _configure_mosek(task, env, settings: dict, mosek) -> None:
     else:
         task.putintparam(mosek.iparam.log, 0)
 
-    if "time_limit" in settings:
-        task.putdouparam(mosek.dparam.optimizer_max_time, float(settings["time_limit"]))
-    if "time_limit_sec" in settings:
-        task.putdouparam(mosek.dparam.optimizer_max_time, float(settings["time_limit_sec"]))
+    time_limit = pop_time_limit(settings)
+    if time_limit is not None:
+        task.putdouparam(mosek.dparam.optimizer_max_time, float(time_limit))
+    threads = pop_threads(settings)
+    if threads is not None and threads >= 1:
+        task.putintparam(mosek.iparam.num_threads, int(threads))
 
-    ignored = {"verbose", "time_limit", "time_limit_sec", "high_accuracy"}
+    settings.pop("high_accuracy", None)
     for key, value in settings.items():
-        if key in ignored:
-            continue
         if isinstance(key, str):
             _handle_mosek_str_param(task, key.strip(), value)
         else:

@@ -13,7 +13,14 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    mark_threads_ignored,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class OSQPSolverAdapter(SolverAdapter):
@@ -36,6 +43,14 @@ class OSQPSolverAdapter(SolverAdapter):
 
         qp = problem.qp
         settings = settings_with_defaults(self.settings)
+        # Translate the cross-adapter aliases. OSQP's own knob is
+        # ``time_limit`` (seconds, 0 = none); the alias `time_limit_sec`
+        # is normalized here so users can use either spelling.
+        time_limit = pop_time_limit(settings)
+        if time_limit is not None:
+            settings["time_limit"] = float(time_limit)
+        # OSQP does not expose a thread count knob.
+        threads = pop_threads(settings)
         p = sp.csc_matrix(qp["P"])
         a = sp.csc_matrix(qp["A"])
 
@@ -83,6 +98,7 @@ class OSQPSolverAdapter(SolverAdapter):
             if hasattr(raw.info, key)
         }
         kkt_dict = _compute_kkt(mapped, raw, qp, p, a)
+        mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(raw.info.obj_val),

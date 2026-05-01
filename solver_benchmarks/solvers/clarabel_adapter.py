@@ -18,7 +18,13 @@ from solver_benchmarks.transforms.psd import (
     cone_vec_row_major_to_canonical,
 )
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    pop_time_limit,
+    settings_with_defaults,
+)
 
 
 class ClarabelSolverAdapter(SolverAdapter):
@@ -53,13 +59,33 @@ class ClarabelSolverAdapter(SolverAdapter):
             )
 
         normalized_settings = settings_with_defaults(self.settings)
+        # Translate the cross-adapter aliases into Clarabel's native
+        # knobs: time_limit_sec/time_limit -> time_limit (Clarabel
+        # exposes it directly), threads -> threads (sparse cones only).
+        time_limit = pop_time_limit(normalized_settings)
+        threads = pop_threads(normalized_settings)
+        if time_limit is not None:
+            normalized_settings["time_limit"] = float(time_limit)
+        if threads is not None and threads >= 1:
+            # Clarabel uses `max_threads`/`threads` depending on
+            # version; setattr with hasattr handles either.
+            for attr in ("max_threads", "threads"):
+                normalized_settings.setdefault(attr, threads)
+
         settings = clarabel.DefaultSettings()
         settings.verbose = bool(normalized_settings.get("verbose"))
+        unknown_keys: list[str] = []
         for key, value in normalized_settings.items():
             if key == "verbose":
                 continue
             if hasattr(settings, key):
                 setattr(settings, key, value)
+            else:
+                unknown_keys.append(key)
+        if unknown_keys:
+            raise ValueError(
+                f"Invalid Clarabel settings: {sorted(unknown_keys)!r}"
+            )
 
         start = time.perf_counter()
         solver = clarabel.DefaultSolver(p, q, sp.csc_matrix(a), b, cones, settings)

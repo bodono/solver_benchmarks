@@ -13,7 +13,12 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
-from .base import SolverAdapter, SolverUnavailable, settings_with_defaults
+from .base import (
+    SolverAdapter,
+    SolverUnavailable,
+    pop_threads,
+    settings_with_defaults,
+)
 
 
 class HighsSolverAdapter(SolverAdapter):
@@ -125,10 +130,17 @@ def _configure_highs(solver, settings: dict) -> None:
         solver.setOptionValue("output_flag", bool(settings.pop("verbose")))
     for source, target in [
         ("time_limit_sec", "time_limit"),
+        ("time_limit_secs", "time_limit"),
         ("time_limit", "time_limit"),
     ]:
         if source in settings:
             solver.setOptionValue(target, settings.pop(source))
+    threads = pop_threads(settings)
+    if threads is not None:
+        try:
+            solver.setOptionValue("threads", int(threads))
+        except Exception:
+            pass
     if "max_iter" in settings:
         # HiGHS uses a separate iteration cap per algorithm. Forward
         # the user's max_iter to all of them so an LP solved by IPM,

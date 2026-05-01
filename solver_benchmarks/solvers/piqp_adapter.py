@@ -13,7 +13,9 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    mark_threads_ignored,
     mark_time_limit_ignored,
+    pop_threads,
     pop_time_limit,
     settings_with_defaults,
 )
@@ -48,9 +50,11 @@ class PIQPSolverAdapter(SolverAdapter):
         dense_flag = settings.pop("dense", False)
         backend_value = settings.pop("backend", "")
         use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
-        # PIQP has no native time-limit knob; surface the configured value
-        # in info so callers can detect that it was ignored.
+        # PIQP has no native time-limit / threads knobs; surface the
+        # configured values in info so callers can detect they were
+        # ignored rather than silently dropped.
         time_limit = pop_time_limit(settings)
+        threads = pop_threads(settings)
         solver = piqp.DenseSolver() if use_dense else piqp.SparseSolver()
         settings.setdefault("compute_timings", True)
         _configure_piqp(solver, settings)
@@ -99,6 +103,7 @@ class PIQPSolverAdapter(SolverAdapter):
             )
         info = _info_dict(result.info)
         mark_time_limit_ignored(info, time_limit)
+        mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(info.get("primal_obj")),
