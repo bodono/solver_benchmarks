@@ -101,7 +101,7 @@ class OSQPSolverAdapter(SolverAdapter):
         mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(raw.info.obj_val),
+            objective_value=_objective_value(mapped, raw),
             iterations=_maybe_int(raw.info.iter),
             run_time_seconds=elapsed,
             setup_time_seconds=_maybe_float(getattr(raw.info, "setup_time", None)),
@@ -136,6 +136,12 @@ def _compute_kkt(mapped_status, raw, qp, p, a):
         if cert is None:
             return None
         return kkt.qp_dual_infeasibility_cert(p, q, a, l, u, cert)
+    return None
+
+
+def _objective_value(mapped_status, raw):
+    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        return _maybe_float(raw.info.obj_val)
     return None
 
 
