@@ -15,6 +15,7 @@ from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult, to_jsonable
+from solver_benchmarks.core.storage import atomic_write_text
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
@@ -146,10 +147,10 @@ def _normalize_settings(settings: dict, qtqp_module):
 
 def _write_trace(path: Path, trace: list[dict]) -> None:
     if not trace:
+        path.unlink(missing_ok=True)
         return
-    with path.open("w") as handle:
-        for row in trace:
-            handle.write(json.dumps(to_jsonable(row), sort_keys=True) + "\n")
+    body = "".join(json.dumps(to_jsonable(row), sort_keys=True) + "\n" for row in trace)
+    atomic_write_text(path, body)
 
 
 def _maybe_float(value):

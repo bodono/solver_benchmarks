@@ -19,7 +19,7 @@ from solver_benchmarks.core.storage import ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
 from solver_benchmarks.solvers.base import SolverAdapter
-from solver_benchmarks.worker import run_payload
+from solver_benchmarks.worker import _write_trace_if_needed, run_payload
 
 
 def test_warning_events_are_structured_for_unsupported_combinations(monkeypatch, tmp_path: Path, repo_root: Path):
@@ -438,3 +438,12 @@ def test_worker_writes_solver_trace(monkeypatch, tmp_path: Path, repo_root: Path
     assert result.status == "optimal"
     assert result.info == {"custom": "value"}
     assert trace_lines == [{"iter": 1, "residual": 1.0}, {"iter": 2, "residual": 0.1}]
+
+
+def test_worker_removes_stale_trace_for_empty_solver_trace(tmp_path: Path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text('{"iter": 1}\n')
+
+    _write_trace_if_needed(tmp_path, [])
+
+    assert not trace_path.exists()
