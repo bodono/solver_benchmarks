@@ -28,9 +28,10 @@ pip install -e ".[all]"
 ```
 
 The `all` extra installs open-source solver dependencies declared by the package,
-including QTQP, SCS, OSQP, Clarabel, HiGHS, PIQP, OR-Tools/PDLP, PyYAML, and
-pytest. ProxQP and SDPA are included on Python versions where their wheels are
-available; currently they are skipped on Python 3.14 by dependency markers.
+including QTQP, SCS, OSQP, Clarabel, ECOS, CVXOPT, HiGHS, PIQP, OR-Tools/PDLP,
+PyYAML, and pytest. ProxQP and SDPA are included on Python versions where their
+wheels are available; currently they are skipped on Python 3.14 by dependency
+markers.
 
 Commercial solvers are optional and must be installed separately with valid licenses:
 
@@ -46,12 +47,22 @@ Install only one optional solver if you prefer:
 pip install -e ".[scs]"
 pip install -e ".[osqp]"
 pip install -e ".[clarabel]"
+pip install -e ".[ecos]"
+pip install -e ".[cvxopt]"
 pip install -e ".[highs]"
 pip install -e ".[qtqp]"
 pip install -e ".[pdlp]"
 pip install -e ".[piqp]"
 pip install -e ".[proxqp]"
 pip install -e ".[sdpa]"
+```
+
+The `system_info` extra installs `psutil`, which enriches the system snapshot
+captured into each run's `manifest.json` (physical core count, CPU frequency,
+total RAM). The capture falls back gracefully when `psutil` isn't installed.
+
+```bash
+pip install -e ".[system_info]"
 ```
 
 Check what is available in the current environment:
@@ -65,6 +76,8 @@ Example output:
 ```text
 clarabel  available               cone,qp
 cplex     missing optional extra  qp
+cvxopt    available               cone,qp
+ecos      available               cone,qp
 gurobi    missing optional extra  qp
 highs     available               qp
 mosek     missing optional extra  qp
@@ -96,10 +109,14 @@ Current maintained adapters:
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only; downloads official MIPLIB 2017 benchmark `.mps.gz` files on request. |
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
 | Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
+| Mittelmann SDP | `mittelmann_sdp` | Cone/SDP | Mittelmann's SDP test set in SDPA-S sparse format (G-graph maxcut relaxations + Lovász theta numbers); downloads from `plato.asu.edu`. |
 | SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files; requires `h5py`. |
+| TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
 | DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
-| CBLIB | `cblib` | Cone | Downloads CBF files; adapter lists continuous linear/SOC instances it can parse. |
+| CBLIB | `cblib` | Cone | Downloads CBF files; supports linear, second-order, and exponential cone instances; the parser silently drops other unsupported cone kinds. |
 | MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
+| LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
+| DC OPF | `dc_opf` | LP as QP | DC Optimal Power Flow LPs from MATPOWER `.m` case files; sparse power-balance equalities, line-flow inequality limits, generator box bounds. |
 | CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
 | Synthetic cone smoke test | `synthetic_cone` | Cone | Tiny deterministic conic LP test problem. |
@@ -140,6 +157,10 @@ bench data prepare qplib
 bench data prepare kennington
 bench data prepare miplib
 bench data prepare mittelmann
+bench data prepare mittelmann_sdp
+bench data prepare tsplib_sdp
+bench data prepare libsvm_qp
+bench data prepare dc_opf
 ```
 
 Running with automatic preparation:
@@ -158,6 +179,10 @@ Default prepared subsets are intentionally small:
 | `kennington` | The 16 standard Kennington LP files. |
 | `miplib` | `markshare_4_0` |
 | `mittelmann` | `qap15` |
+| `mittelmann_sdp` | `G11`, `G14`, `G20`, `theta1`, `theta2`, `theta3` |
+| `tsplib_sdp` | `burma14`, `ulysses16`, `gr17`, `gr21`, `gr24`, `bayg29` |
+| `libsvm_qp` | `heart`, `breast-cancer`, `australian`, `diabetes`, `ionosphere`, `german-numer` |
+| `dc_opf` | `case5`, `case6ww`, `case9`, `case14`, `case30`, `case39` |
 
 DIMACS data is bundled in the repository under `problem_classes/dimacs_data`.
 `bench data prepare dimacs --problem NAME` can repair a missing local DIMACS
@@ -182,6 +207,10 @@ python scripts/prepare_qplib.py
 python scripts/prepare_kennington.py
 python scripts/prepare_miplib.py
 python scripts/prepare_mittelmann.py
+python scripts/prepare_mittelmann_sdp.py
+python scripts/prepare_tsplib_sdp.py
+python scripts/prepare_libsvm_qp.py
+python scripts/prepare_dc_opf.py
 python scripts/prepare_sdplib.py
 python scripts/prepare_dimacs.py
 python scripts/prepare_cutest_qp.py
@@ -221,6 +250,12 @@ bench list problems qplib --option subset=ccb
 bench list problems liu_pataki --option classification=weak --option conditioning=messy
 bench list problems mpc_qpbenchmark --option subset=default
 bench list problems cblib
+bench list problems cblib --option subset_kind=expcone
+bench list problems libsvm_qp --option kind=svm_dual
+bench list problems libsvm_qp --option kind=markowitz
+bench list problems mittelmann_sdp
+bench list problems tsplib_sdp
+bench list problems dc_opf
 ```
 
 Dataset options are passed as `key=value` on the CLI or as `dataset_options` in
@@ -240,7 +275,18 @@ Useful dataset options:
 | `mpc_qpbenchmark` | `subset=default`, `all`, or comma-separated names | Filter downloaded MPC QP `.npz` files. |
 | `cutest_qp` | `subset=default`, `all`, or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
 | `cblib` | `subset=default`, `all`, or comma-separated names | Filter downloaded CBF files. |
+| `cblib` | `subset_kind=expcone`, `socp`, or `lp` | Filter CBF instances by cone shape rather than by name. Combines with `subset` (both filters must pass). |
 | `cblib` | `include_unsupported=true` | Show downloaded CBF files the parser would otherwise hide. |
+| `mittelmann_sdp` | `subset=all` (no filter) or comma-separated names | Filter to a subset of locally available SDPA-S instances. |
+| `tsplib_sdp` | `subset=all` (no filter) or comma-separated names | Filter to a subset of locally available TSPLIB instances. |
+| `dc_opf` | `subset=all` (no filter) or comma-separated names | Filter to a subset of locally available MATPOWER cases. |
+| `libsvm_qp` | `kind=svm_dual` (default) or `markowitz` | Choose the QP shape derived from the LIBSVM data. |
+| `libsvm_qp` | `kernel=linear` (default) or `rbf` | SVM-dual kernel choice. Linear gives a low-rank `Q` (rank ≤ feature dimension). |
+| `libsvm_qp` | `gamma=<float>` | RBF kernel bandwidth; defaults to `1 / num_features`. |
+| `libsvm_qp` | `C=<float>` | SVM regularization upper bound on dual variables (default `1.0`). |
+| `libsvm_qp` | `risk_aversion=<float>` | Markowitz `λ` in the objective `½ w'Σw − λ μ'w` (default `1.0`). |
+| `libsvm_qp` | `max_samples=<int>` | Deterministically subsample to this many rows (default `200`). |
+| `libsvm_qp` | `subset=default`, `all`, or comma-separated names | Filter to a subset of LIBSVM datasets. |
 
 ### Filtering by file size
 
@@ -286,6 +332,8 @@ Current maintained adapters:
 | SCS | `scs` | QP, cone | Supports SCS box-cone form for QPs and native conic data. |
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
+| ECOS | `ecos` | QP, cone (LP/SOCP/expcone) | Interior-point conic solver. QPs are reformulated to SOCP via the standard epigraph trick (Cholesky for PD `P`, eigendecomposition for rank-deficient PSD); the SOC dim is `rank(P) + 2`. PSD cones not supported. |
+| CVXOPT | `cvxopt` | QP, cone (LP/QP/SOCP/SDP) | Interior-point solver supporting QPs natively plus PSD cones (canonical PSD-vec layout converted to BLAS unpacked-L automatically). Exponential cones not supported. CVXOPT options live on a global dict; the adapter snapshots and restores it per solve so concurrent solves don't leak knobs. |
 | PDLP | `pdlp` | LP-only QP, simple linear cone | Uses OR-Tools directly, no CVXPY. |
 | HiGHS | `highs` | QP | Direct LP/QP adapter through `highspy`; strong LP baseline. |
 | ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite; optional on Python < 3.14 while wheels are available. |
@@ -948,6 +996,35 @@ Solver-specific traces:
 - PDLP writes `pdlp_solve_log.textproto` and `pdlp_response.textproto` when
   OR-Tools is installed and a solve is attempted.
 
+System info: each run's `manifest.json` carries a `system` block captured once
+at run start, recording the CPU model / logical and physical core count / max
+frequency, total and available memory, OS / kernel version, Python version,
+and the installed numpy / scipy / pandas / pyarrow versions. The block is
+preserved across manifest rewrites so a re-run on the same run directory
+cannot silently overwrite the original provenance. Install the optional
+`system_info` extra (`pip install -e ".[system_info]"`) for the richer fields
+(physical core count, CPU frequency, swap); the capture falls back gracefully
+to stdlib + `/proc` (Linux) / `sysctl` (macOS) without it.
+
+The generated markdown report renders the block as a `### System` section at
+the top of the Provenance block:
+
+```text
+### System
+
+| Field | Value |
+| --- | --- |
+| CPU model | Apple M4 |
+| CPU cores | 10 logical |
+| Total RAM | 16.0 GiB |
+| OS | macOS-26.3.1-arm64-arm-64bit |
+| Python | 3.12.8 |
+| Libraries | numpy 2.4.2, pandas 3.0.0, pyarrow 23.0.1, scipy 1.16.3 |
+```
+
+Per-row results also carry `metadata.runtime.cpu_model` so heterogeneous runs
+(multiple environments / hosts in one matrix) can be told apart row-by-row.
+
 ## Analysis
 
 Summary by solver/status:
@@ -1007,7 +1084,7 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 
 `bench report` writes:
 
-- A generated Markdown report at `index.md`, mirrored to `README.md`, that presents run metadata, completion, solver metrics, status counts, plots, diagnostics, provenance, and links to the full CSV artifacts in a single document.
+- A generated Markdown report at `index.md`, mirrored to `README.md`, that presents run metadata, completion, solver metrics, status counts, plots, diagnostics, provenance (including the captured `### System` block — CPU model, cores, RAM, OS, library versions), and links to the full CSV artifacts in a single document.
 - Solver-level metrics, status counts, failure rates, completion, and missing results.
 - Dolan-More performance-profile CSVs and plots.
 - Cactus plots showing the fraction of problems solved under each time/iteration budget.
@@ -1292,11 +1369,13 @@ Current tests cover:
 - Worker trace serialization.
 - Generated Markdown reports from `bench report`.
 - Real solver smoke coverage on a small QP and LP for every open-source adapter
-  (OSQP, SCS, Clarabel, QTQP, HiGHS, ProxQP, PIQP, plus PDLP on the LP), with
-  KKT residuals checked against tight tolerances.
+  (OSQP, SCS, Clarabel, QTQP, ECOS, CVXOPT, HiGHS, ProxQP, PIQP, plus PDLP on
+  the LP), with KKT residuals checked against tight tolerances.
 - SDPA cone smoke coverage on a small linear cone LP with KKT residuals.
-- Primal- and dual-infeasibility certificate checks for SCS, Clarabel, and OSQP
-  against deliberately infeasible/unbounded LPs.
+- Multi-solver agreement tests on a small SDP with PSD cones (SCS, Clarabel,
+  SDPA, CVXOPT) — guarding against PSD-vec layout drift.
+- Primal- and dual-infeasibility certificate checks for SCS, Clarabel, OSQP,
+  and ECOS against deliberately infeasible / unbounded LPs.
 - Adapter status-mapping unit tests (e.g. `test_scs_status_val_mapping`,
   `test_sdpa_phase_mapping`) that pin the raw → canonical status translation
   for every documented solver code.
