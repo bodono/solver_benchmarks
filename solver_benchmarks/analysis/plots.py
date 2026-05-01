@@ -141,22 +141,30 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
         return None
     successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
-    # Filter strictly positive so log-scale plotting is well-defined.
-    # The previous `>= 0.0` filter let zeros through which then mapped
-    # to -inf on the log axis and produced empty bars in the cactus
-    # plot.
-    successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    # Keep zero-duration successes (instantly-solved problems) so the
+    # cactus curve correctly counts them; previously a strict ``> 0``
+    # filter dropped these rows but the denominator still used the
+    # total problem count, so a solver with one zero-time and one
+    # nonzero-time success would top out at 0.5 instead of 1.0.
+    # Negative or non-finite metric values are still dropped — those
+    # would not have a meaningful place on a log-scale axis.
+    successful = successful[np.isfinite(successful[metric]) & (successful[metric] >= 0.0)]
     if successful.empty:
         return None
 
     problem_count = _unique_problem_count(results)
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     has_positive = False
+    # On a log axis a literal zero would map to -inf. Floor zeros to a
+    # tiny positive value so they're drawn at the leftmost edge of the
+    # axis but still contribute one step to the curve.
+    log_floor = 1.0e-12
     for solver_id, group in successful.groupby("solver_id", observed=True):
-        values = np.sort(group[metric].to_numpy())
-        if len(values) == 0:
+        raw = group[metric].to_numpy()
+        if raw.size == 0:
             continue
-        has_positive = has_positive or bool(np.any(values > 0.0))
+        has_positive = has_positive or bool(np.any(raw > 0.0))
+        values = np.sort(np.where(raw > 0.0, raw, log_floor))
         fractions = np.arange(1, len(values) + 1) / problem_count
         ax.step(values, fractions, where="post", label=solver_id, linewidth=2)
     if not ax.lines:

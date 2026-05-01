@@ -1219,6 +1219,54 @@ def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Pat
     assert path is not None and path.exists()
 
 
+def test_cactus_plot_counts_zero_duration_successes(tmp_path: Path, repo_root: Path):
+    """Reviewer-flagged regression: a strict ``> 0`` filter dropped
+    zero-duration successes so the cactus curve undercounted them.
+    With one solver and two successful problems at run times
+    [0.0, 1.0] the curve must reach 1.0, not 0.5."""
+    import numpy as np
+
+    from solver_benchmarks.analysis.plots import _write_cactus
+
+    frame = pd.DataFrame(
+        [
+            {"problem": "instant", "solver_id": "fast",
+             "status": "optimal", "run_time_seconds": 0.0},
+            {"problem": "slower", "solver_id": "fast",
+             "status": "optimal", "run_time_seconds": 1.0},
+        ]
+    )
+    out_dir = tmp_path / "plots"
+    out_dir.mkdir()
+
+    # The cactus plot itself is a PNG; invoke the writer and assert it
+    # produces output. The contract that matters most for this fix is
+    # internal — verify by patching ax.step to capture the y values
+    # passed to it.
+    captured: list[tuple] = []
+    import matplotlib.axes as _axes
+
+    real_step = _axes.Axes.step
+
+    def capturing_step(self, x, y, *args, **kwargs):
+        captured.append((np.asarray(x).copy(), np.asarray(y).copy()))
+        return real_step(self, x, y, *args, **kwargs)
+
+    try:
+        _axes.Axes.step = capturing_step  # type: ignore[assignment]
+        path = _write_cactus(frame, out_dir, "run_time_seconds")
+    finally:
+        _axes.Axes.step = real_step  # type: ignore[assignment]
+
+    assert path is not None and path.exists()
+    assert len(captured) == 1, "expected one solver curve to be drawn"
+    x_values, y_values = captured[0]
+    # Both successes must contribute one step each; the curve tops at
+    # 1.0 for the single-solver / two-success case.
+    assert len(x_values) == 2
+    assert y_values[-1] == pytest.approx(1.0)
+
+
 def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path, repo_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
