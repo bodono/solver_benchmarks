@@ -329,6 +329,94 @@ def test_ecos_psd_square_root_returns_none_for_nonsymmetric():
     assert _psd_square_root(p) is None
 
 
+def test_ecos_psd_square_root_rejects_indefinite_p():
+    """Pre-fix the eigendecomposition fallback dropped *negative*
+    eigenvalues alongside the near-zero ones, so an indefinite QP
+    like ``diag([1, -1])`` was silently sent to ECOS as a rank-1
+    PSD relaxation. The reviewer flagged this as High severity:
+    the user gets back what looks like a valid solve of a different
+    (convex) problem. The fix is to refuse indefinite ``P`` so the
+    adapter surfaces SKIPPED_UNSUPPORTED instead."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    indefinite = sp.csc_matrix(np.diag([1.0, -1.0]))
+    assert _psd_square_root(indefinite) is None
+
+
+def test_ecos_psd_square_root_rejects_negative_definite_p():
+    """All-negative eigenvalues = ``-P`` is PSD; the QP has the
+    wrong curvature direction and must not be accepted."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    neg_def = sp.csc_matrix(np.diag([-1.0, -2.0]))
+    assert _psd_square_root(neg_def) is None
+
+
+def test_ecos_skips_indefinite_qp_via_solve_path(tmp_path):
+    """End-to-end: feeding an indefinite ``P`` to the adapter goes
+    through ``_qp_to_ecos_via_socp`` which uses ``_psd_square_root``;
+    the adapter must return SKIPPED_UNSUPPORTED rather than secretly
+    solving the convex relaxation."""
+    pytest.importorskip("ecos")
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+    qp = {
+        "P": sp.csc_matrix(np.diag([1.0, -1.0])),
+        "q": np.array([0.0, 0.0]),
+        "A": sp.csc_matrix(np.eye(2)),
+        "l": np.array([-5.0, -5.0]),
+        "u": np.array([5.0, 5.0]),
+    }
+    adapter = ECOSSolverAdapter({"verbose": False})
+    result = adapter.solve(_make_qp_problem(qp), tmp_path)
+    assert result.status == status.SKIPPED_UNSUPPORTED
+    assert "PSD" in result.info["reason"] or "psd" in result.info["reason"].lower()
+
+
+def test_ecos_socp_path_handles_missing_primal_x(monkeypatch, tmp_path):
+    """If ECOS returns without a primal ``x`` (max-iter, numerical
+    failure, an infeasibility certificate it computed without a
+    primal), the SOCP post-processing must NOT crash on
+    ``raw['x'][n_x]``. Pre-fix we unconditionally indexed there.
+    Stub ECOS to return ``x=None`` and verify the adapter surfaces
+    a status without raising."""
+    pytest.importorskip("ecos")
+    import sys as _sys
+    from types import SimpleNamespace as _NS
+
+    captured = {}
+
+    def fake_solve(c, G, h, dims, A=None, b=None, **kwargs):
+        captured["called"] = True
+        return {
+            # No 'x' key at all — simulating a status with no primal.
+            "y": None,
+            "z": None,
+            "s": None,
+            # exitFlag=-1 is MAX_ITER_REACHED in our mapping.
+            "info": {"exitFlag": -1},
+        }
+
+    fake_ecos = _NS(solve=fake_solve)
+    _sys.modules["ecos"] = fake_ecos
+    try:
+        from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+        adapter = ECOSSolverAdapter({"verbose": False})
+        result = adapter.solve(_make_qp_problem(_qp_with_nonzero_p()), tmp_path)
+    finally:
+        _sys.modules.pop("ecos", None)
+    assert captured.get("called")
+    # Status maps from exitFlag=-1.
+    assert result.status == status.MAX_ITER_REACHED
+    # Objective is None (no primal); socp_reformulation flag still
+    # set since we did go through the SOCP path.
+    assert result.objective_value is None
+    assert result.info.get("socp_reformulation") is True
+    # No socp_t_value because there was no primal vector.
+    assert "socp_t_value" not in result.info
+
+
 def test_ecos_lp_via_qp_form_reports_iteration_count(tmp_path):
     pytest.importorskip("ecos")
     from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter

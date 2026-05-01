@@ -129,20 +129,33 @@ class ECOSSolverAdapter(SolverAdapter):
             mapped in status.SOLUTION_PRESENT or mapped == status.OPTIMAL_INACCURATE
         )
         if socp_state is not None:
-            # Augmented variables x_full = [x_orig, t]; recover x_orig
-            # and report ½ x'Px + q'x as the actual QP objective rather
-            # than the surrogate t + q'x. Restore the dropped trailing
-            # ``t`` from ``raw['x']`` so KKT / dual reconstruction sees
-            # only the original variables.
+            # Augmented variables x_full = [x_orig, t]. ECOS may
+            # return without a primal vector (max-iter, numerical
+            # error, infeasibility certificate); guard every read of
+            # ``raw['x']`` so non-solution statuses don't crash the
+            # adapter. Pre-fix we unconditionally indexed
+            # ``raw['x'][n_x]`` here.
             socp_state["raw_full"] = raw
-            raw = _strip_socp_aux_from_solution(raw, socp_state["n_x"])
             info["socp_reformulation"] = True
-            info["socp_t_value"] = _maybe_float(socp_state["raw_full"]["x"][socp_state["n_x"]])
-            objective = (
-                _qp_objective_value(problem.qp, np.asarray(raw["x"], dtype=float))
-                if objective_present
-                else None
+            full_x = raw.get("x")
+            full_x_arr = (
+                np.asarray(full_x, dtype=float) if full_x is not None else None
             )
+            n_x = int(socp_state["n_x"])
+            if full_x_arr is not None and full_x_arr.size > n_x:
+                info["socp_t_value"] = _maybe_float(full_x_arr[n_x])
+            raw = _strip_socp_aux_from_solution(raw, n_x)
+            stripped_x = raw.get("x")
+            if (
+                objective_present
+                and stripped_x is not None
+                and np.asarray(stripped_x).size == n_x
+            ):
+                objective = _qp_objective_value(
+                    problem.qp, np.asarray(stripped_x, dtype=float)
+                )
+            else:
+                objective = None
         else:
             objective = (
                 _maybe_float(info.get("pcost")) if objective_present else None
@@ -284,11 +297,14 @@ def _psd_square_root(p: sp.csc_matrix) -> np.ndarray | None:
     """Return ``R`` such that ``P = R'R``. ``R`` is square (rank=n) for
     positive-definite ``P`` and tall (rows = rank ≤ n) when ``P`` is
     rank-deficient. Returns ``None`` if ``P`` is not symmetric PSD
-    within numerical tolerance.
+    within numerical tolerance — including the **indefinite** case
+    (any eigenvalue meaningfully below zero) so a nonconvex QP is
+    rejected up-front rather than silently solved as if its negative
+    curvature didn't exist.
 
     Tries Cholesky first (cheap, only works for SPD); falls back to
-    a symmetric eigendecomposition that drops eigenvalues below a
-    relative tolerance.
+    a symmetric eigendecomposition that drops near-zero eigenvalues
+    but rejects any ``< -threshold`` curvature.
     """
     p_dense = p.toarray() if hasattr(p, "toarray") else np.asarray(p, dtype=float)
     if p_dense.ndim != 2 or p_dense.shape[0] != p_dense.shape[1]:
@@ -302,7 +318,8 @@ def _psd_square_root(p: sp.csc_matrix) -> np.ndarray | None:
 
         return la.cholesky(p_sym, lower=False)
     except (np.linalg.LinAlgError, ValueError):
-        # P is rank-deficient PSD; fall through to eigendecomposition.
+        # P is rank-deficient PSD or indefinite; fall through to
+        # eigendecomposition to disambiguate.
         pass
     try:
         import scipy.linalg as la
@@ -310,13 +327,28 @@ def _psd_square_root(p: sp.csc_matrix) -> np.ndarray | None:
         eigvals, eigvecs = la.eigh(p_sym)
     except (np.linalg.LinAlgError, ValueError):
         return None
-    # Drop eigenvalues below a relative threshold; treat them as zero
-    # (the QP epigraph constraint t ≥ ½ x'Px ignores those directions).
-    max_eig = float(eigvals.max()) if eigvals.size else 0.0
-    if max_eig <= 0.0:
-        # P is identically zero — caller should have used the LP path.
+    if eigvals.size == 0:
         return np.zeros((0, p_sym.shape[0]))
+    max_eig = float(eigvals.max())
+    min_eig = float(eigvals.min())
+    if max_eig <= 0.0:
+        # All non-positive: either identically zero (LP path) or
+        # entirely negative (indefinite). For the all-zero case we
+        # return an empty factor; for any negative curvature we
+        # refuse so the caller surfaces SKIPPED_UNSUPPORTED rather
+        # than dropping the indefinite directions.
+        if min_eig < -max(1e-12, abs(min_eig) * 1e-12):
+            return None
+        return np.zeros((0, p_sym.shape[0]))
+    # Reject if any eigenvalue is meaningfully negative (indefinite
+    # P): pre-fix this branch silently dropped negative eigenvalues
+    # alongside the near-zero ones, so a nonconvex QP like
+    # ``diag([1, -1])`` was sent to ECOS as a rank-1 PSD relaxation.
     threshold = max(1e-12, max_eig * 1e-12)
+    if min_eig < -threshold:
+        return None
+    # Drop near-zero eigenvalues (the QP epigraph constraint
+    # t ≥ ½ x'Px ignores zero-curvature directions).
     keep = eigvals > threshold
     if not keep.any():
         return np.zeros((0, p_sym.shape[0]))
