@@ -28,7 +28,7 @@ import pandas as pd
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
-from solver_benchmarks.analysis.reports import (
+from solver_benchmarks.analysis.tables import (
     difficulty_scaling,
     failure_rates,
     performance_ratio_matrix,

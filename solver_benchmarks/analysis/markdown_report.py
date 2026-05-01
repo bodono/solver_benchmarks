@@ -13,7 +13,7 @@ from solver_benchmarks import __version__ as BENCHMARK_VERSION
 from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.plots import write_analysis_plots
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
-from solver_benchmarks.analysis.reports import (
+from solver_benchmarks.analysis.tables import (
     claimed_optimal_kkt_thresholds,
     completion_summary,
     difficulty_scaling,
@@ -111,10 +111,22 @@ def write_run_report(
         plot_outputs=plot_outputs,
         artifact_outputs=outputs,
     )
+    # Write the rendered markdown once as both index.md (default
+    # GitHub directory landing page) and README.md (rendered on web
+    # views). The previous code wrote the same bytes twice; sharing
+    # avoids drift if anyone hand-edits one of them.
     index_path = output_dir / "index.md"
     readme_path = output_dir / "README.md"
     index_path.write_text(markdown)
-    readme_path.write_text(markdown)
+    # Use a relative symlink when the platform supports it so the two
+    # paths cannot drift, falling back to a copy on platforms (or
+    # filesystems) that disallow symlinks.
+    try:
+        if readme_path.exists() or readme_path.is_symlink():
+            readme_path.unlink()
+        readme_path.symlink_to(index_path.name)
+    except (OSError, NotImplementedError):
+        readme_path.write_text(markdown)
     outputs.extend([index_path, readme_path])
     return outputs
 

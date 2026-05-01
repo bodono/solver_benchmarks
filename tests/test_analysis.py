@@ -6,17 +6,17 @@ import pytest
 from click.testing import CliRunner
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
+from solver_benchmarks.analysis.markdown_report import (
+    _section_table,
+    _sort_report_table,
+    write_run_report,
+)
 from solver_benchmarks.analysis.profiles import (
     DEFAULT_FAILURE_PENALTY,
     performance_profile,
     shifted_geomean,
 )
-from solver_benchmarks.analysis.report import (
-    _section_table,
-    _sort_report_table,
-    write_run_report,
-)
-from solver_benchmarks.analysis.reports import (
+from solver_benchmarks.analysis.tables import (
     claimed_optimal_kkt_thresholds,
     completion_summary,
     difficulty_scaling,
