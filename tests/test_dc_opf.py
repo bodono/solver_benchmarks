@@ -281,6 +281,146 @@ def test_dc_opf_lp_generator_bounds_use_per_unit():
     assert pg_upper.tolist() == [2.0, 2.0]
 
 
+def test_dc_opf_lp_uses_tap_in_susceptance():
+    """A non-unity transformer tap divides the susceptance: ``b_l =
+    1 / (x * tau)``. Verify the bus susceptance matrix entry for a
+    branch with x=0.1, tau=2.0 ends up at b = 1/(0.1*2) = 5, not
+    1/0.1 = 10."""
+    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    body = """\
+function mpc = case_tap
+mpc.baseMVA = 100;
+mpc.bus = [
+    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
+    2  1   100.0 0   0   0   1   1   0   135   1   1.05   0.95;
+];
+mpc.gen = [
+    1  0   0   100   -100   1   100   1   200   0;
+];
+mpc.branch = [
+    1  2   0.0   0.1   0   200   200   200   2.0   0   1   -360   360;
+];
+mpc.gencost = [
+    2  0   0   2  10   0;
+];
+"""
+    case = parse_matpower_case(body)
+    problem, metadata = dc_opf_lp(case)
+    assert metadata["has_transformer_taps"] is True
+    # The first 2 rows of A are the power-balance equality constraints.
+    # B_bus[0, 1] should be -b = -5.0 (using b = 1/(0.1*2)). Since the
+    # power balance is M Pg - B theta = ..., the corresponding column
+    # of A for theta_2 in row 0 (bus 0) is +5.0 (negation cancels).
+    a_dense = problem["A"].toarray()
+    n_gen = 1
+    # Row 0 (bus 1's power balance), column for theta_2 (= n_gen + 1).
+    assert a_dense[0, n_gen + 1] == pytest.approx(5.0)
+    assert a_dense[0, n_gen + 0] == pytest.approx(-5.0)
+
+
+def test_dc_opf_lp_phase_shift_adjusts_power_balance_and_flow_bounds():
+    """A phase shifter ``shift_deg`` adds a constant offset to the
+    affected branch flow and modifies the power balance via the
+    phase-shift injection. Verify both the metadata flag and the
+    flow-bound shift."""
+    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    body = """\
+function mpc = case_shift
+mpc.baseMVA = 100;
+mpc.bus = [
+    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
+    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
+];
+mpc.gen = [
+    1  0   0   100   -100   1   100   1   100   0;
+];
+mpc.branch = [
+    1  2   0.0   0.1   0   100   100   100   0   30   1   -360   360;
+];
+mpc.gencost = [
+    2  0   0   2  20   0;
+];
+"""
+    case = parse_matpower_case(body)
+    problem, metadata = dc_opf_lp(case)
+    assert metadata["has_phase_shifts"] is True
+    # b_l = 1/0.1 = 10. shift = 30 deg = pi/6 rad.
+    # rate = 100 MW = 1.0 p.u. Flow bounds: ±1.0 + 10 * pi/6.
+    expected_offset = 10.0 * (np.pi / 6.0)
+    # The flow row sits between equalities (2 rows: power balance
+    # for 2 buses) + reference (1 row) + flow rows. So flow row is
+    # at index 3.
+    flow_row_idx = 3
+    assert problem["l"][flow_row_idx] == pytest.approx(-1.0 + expected_offset)
+    assert problem["u"][flow_row_idx] == pytest.approx(1.0 + expected_offset)
+
+
+def test_dc_opf_lp_records_dropped_quadratic_cost_rows():
+    """A generator with a quadratic cost (``model=2, n=3``) loses
+    its quadratic term in the linear OPF; the metadata must record
+    this so reports don't present the LP objective as the original
+    MATPOWER OPF cost."""
+    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    body = """\
+function mpc = case_quad
+mpc.baseMVA = 100;
+mpc.bus = [
+    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
+    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
+];
+mpc.gen = [
+    1  0   0   100   -100   1   100   1   100   0;
+];
+mpc.branch = [
+    1  2   0.0   0.1   0   100   100   100   0   0   1   -360   360;
+];
+mpc.gencost = [
+    2  0   0   3  0.01   20   5;
+];
+"""
+    case = parse_matpower_case(body)
+    _, metadata = dc_opf_lp(case)
+    dropped = metadata["dropped_cost_rows"]
+    assert dropped["quadratic"] == [0]
+    assert dropped["piecewise_linear"] == []
+    assert dropped["unknown_model"] == []
+
+
+def test_dc_opf_lp_records_dropped_pwl_cost_rows():
+    """``model=1`` (piecewise-linear) cost rows are recorded as
+    ``dropped`` since the LP transform doesn't add the epigraph
+    variables needed to represent them."""
+    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    body = """\
+function mpc = case_pwl
+mpc.baseMVA = 100;
+mpc.bus = [
+    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
+    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
+];
+mpc.gen = [
+    1  0   0   100   -100   1   100   1   100   0;
+];
+mpc.branch = [
+    1  2   0.0   0.1   0   100   100   100   0   0   1   -360   360;
+];
+mpc.gencost = [
+    1  0   0   2  0   0   100   1000;
+];
+"""
+    case = parse_matpower_case(body)
+    _, metadata = dc_opf_lp(case)
+    assert metadata["dropped_cost_rows"]["piecewise_linear"] == [0]
+
+
 def test_dc_opf_lp_skips_unlimited_lines():
     """A branch with rateA = 0 (MATPOWER convention for unlimited)
     must not produce a flow-limit row."""

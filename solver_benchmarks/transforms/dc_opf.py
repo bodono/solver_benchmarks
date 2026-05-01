@@ -1,30 +1,41 @@
 """DC Optimal Power Flow LP construction.
 
 Given a parsed MATPOWER case (buses, generators, branches, generator
-costs), build the DC OPF LP::
+costs), build the DC OPF LP. Implements MATPOWER's ``makeBdc``
+convention so cases with off-nominal transformer taps and phase
+shifters produce the LP MATPOWER itself would build.
 
-    minimize    sum_g (c1_g * Pg_g + c0_g)
-    subject to  power balance at each bus:
-                    sum_{g at bus i} Pg_g - Pd_i  =  sum_j B[i,j] * theta_j
-                reference bus angle:
-                    theta_ref = 0
-                generator limits:
-                    Pmin_g <= Pg_g <= Pmax_g
-                line flow limits:
-                    -rateA_l <= (theta_i - theta_j) / x_l <= rateA_l
-                                (only when rateA_l > 0; rateA_l = 0 means
-                                 unlimited per MATPOWER convention)
+Per-branch susceptance::
 
-where ``B`` is the bus susceptance matrix from the line reactances.
-This is a clean LP with structure typical of power-systems workloads:
-sparse equality constraints (power balance), sparse inequality
-constraints (line flows), and box bounds (generator limits).
+    b_l = 1 / (x_l * tau_l),    where tau_l = branch[8] if non-zero else 1
+    shift_l_rad = branch[9] * pi / 180   (MATPOWER ships shifts in degrees)
 
-The variable layout is ``x = [Pg_1, ..., Pg_G, theta_1, ..., theta_N]``
-with ``G`` generators and ``N`` buses. Costs are read from
-``gencost`` rows assuming the polynomial cost model (``model = 2``);
-quadratic terms are ignored (DC OPF in this benchmark is the linear
-relaxation, leaving QP-form OPF for a follow-up).
+Bus susceptance matrix and phase-shift injections::
+
+    B[f, f] += b_l;  B[t, t] += b_l;  B[f, t] -= b_l;  B[t, f] -= b_l;
+    P_inj[f] += -b_l * shift_l_rad
+    P_inj[t] += +b_l * shift_l_rad
+
+Power balance at each bus::
+
+    M Pg - B theta = Pd - P_inj
+
+Branch flow with phase shift::
+
+    flow_l = b_l * (theta_f - theta_t - shift_l_rad)
+    -rateA_l <= flow_l <= rateA_l   (when rateA_l > 0)
+
+Pre-fix the implementation used ``b_l = 1 / x_l`` and ignored both
+tap and shift, so cases with non-unity taps (common in IEEE
+benchmarks) built a different LP from the MATPOWER source.
+
+Variable layout: ``x = [Pg_1, ..., Pg_G, theta_1, ..., theta_N]``.
+
+Costs are linearized (MATPOWER polynomial ``model = 2``); quadratic
+terms and piecewise-linear (``model = 1``) cost rows are dropped
+with ``info["dropped_cost_rows"]`` recording which generators
+were affected, so reports do not present the resulting objective as
+the original MATPOWER OPF cost when it isn't.
 """
 
 from __future__ import annotations
@@ -77,13 +88,18 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     # Bus-level demand (Pd) at column 2.
     pd_pu = bus[:, 2] / base_mva
 
-    # Build the bus susceptance matrix B (DC). Only active branches
-    # (status = column 10, 1.0 = active) contribute.
+    # Build the bus susceptance matrix B (DC) following MATPOWER's
+    # ``makeBdc``: per-branch susceptance ``b_l = 1 / (x_l * tau_l)``
+    # with phase-shift injections at the from/to buses.
     b_rows: list[int] = []
     b_cols: list[int] = []
     b_data: list[float] = []
     line_susceptance = np.zeros(n_branch, dtype=float)
+    line_shift_rad = np.zeros(n_branch, dtype=float)
     line_status = np.ones(n_branch, dtype=bool)
+    p_businj = np.zeros(n_bus, dtype=float)
+    has_taps = False
+    has_phase_shifts = False
     for k in range(n_branch):
         status = float(branch[k, 10]) if branch.shape[1] > 10 else 1.0
         if status == 0.0:
@@ -94,15 +110,29 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
         # Reactance in column 3; resistance ignored in DC OPF.
         x = float(branch[k, 3])
         if x == 0.0:
-            # Avoid divide-by-zero; flag and skip.
             line_status[k] = False
             continue
-        susceptance = 1.0 / x
+        # Tap ratio (column 8): MATPOWER convention is "0 means 1".
+        tap_raw = float(branch[k, 8]) if branch.shape[1] > 8 else 0.0
+        tap = tap_raw if tap_raw != 0.0 else 1.0
+        if tap_raw not in (0.0, 1.0):
+            has_taps = True
+        # Phase shift (column 9, in degrees in MATPOWER).
+        shift_deg = float(branch[k, 9]) if branch.shape[1] > 9 else 0.0
+        shift_rad = float(np.deg2rad(shift_deg))
+        if shift_rad != 0.0:
+            has_phase_shifts = True
+        susceptance = 1.0 / (x * tap)
         line_susceptance[k] = susceptance
-        # B[f, t] -= susceptance; B[t, f] -= susceptance; B[f, f] += susceptance; B[t, t] += susceptance.
+        line_shift_rad[k] = shift_rad
         b_rows.extend([f, t, f, t])
         b_cols.extend([t, f, f, t])
         b_data.extend([-susceptance, -susceptance, susceptance, susceptance])
+        # Phase-shift injection: -b_l * shift_rad enters the from-bus
+        # power balance (treated as additional injection on the LHS),
+        # +b_l * shift_rad enters the to-bus.
+        p_businj[f] += -susceptance * shift_rad
+        p_businj[t] += susceptance * shift_rad
     b_matrix = sp.csc_matrix(
         (b_data, (b_rows, b_cols)), shape=(n_bus, n_bus)
     )
@@ -124,17 +154,22 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     # Variable ordering: x = [Pg (n_gen), theta (n_bus)].
     n_vars = n_gen + n_bus
 
-    # Power balance: M Pg - Pd = B theta  ⇔  M Pg - B theta = Pd.
+    # Power balance per bus, accounting for phase-shift injections::
+    #     M Pg - B theta + P_inj = Pd
+    #     ⇔  M Pg - B theta = Pd - P_inj
     eq_a = sp.hstack([m_matrix, -b_matrix], format="csc")
-    eq_b = pd_pu
+    eq_b = pd_pu - p_businj
 
     # Reference bus angle: theta_ref = 0.
     ref_row = sp.csc_matrix(
         ([1.0], ([0], [n_gen + ref_idx])), shape=(1, n_vars)
     )
 
-    # Line flow limits: rateA in column 5, in MW; convert to p.u.
-    # flow_l = (theta_f - theta_t) / x_l, |flow_l| <= rateA / baseMVA.
+    # Line flow limits with tap and phase-shift handling::
+    #     flow_l = b_l * (theta_f - theta_t - shift_l_rad)
+    #     -rateA <= flow_l <= rateA   (rateA in MW, converted to p.u.)
+    # Bring the constant ``b_l * shift_rad`` to the bound side:
+    #     -rateA + b_l * shift <= b_l * (theta_f - theta_t) <= rateA + b_l * shift
     flow_rows: list[sp.csc_matrix] = []
     flow_l: list[float] = []
     flow_u: list[float] = []
@@ -149,7 +184,7 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
         f = bus_index[int(branch[k, 0])]
         t = bus_index[int(branch[k, 1])]
         susceptance = line_susceptance[k]
-        # Flow: susceptance * (theta_f - theta_t).
+        shift_offset = susceptance * line_shift_rad[k]
         row_data = [susceptance, -susceptance]
         row_cols = [n_gen + f, n_gen + t]
         flow_rows.append(
@@ -157,8 +192,8 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
                 (row_data, ([0, 0], row_cols)), shape=(1, n_vars)
             )
         )
-        flow_l.append(-rate_pu)
-        flow_u.append(rate_pu)
+        flow_l.append(-rate_pu + shift_offset)
+        flow_u.append(rate_pu + shift_offset)
 
     # Generator bounds (in p.u.): cols 8 (Pmax) and 9 (Pmin), MW.
     gen_pmin = gen[:, 9] / base_mva
@@ -193,36 +228,50 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     l_full = np.concatenate(l_blocks)
     u_full = np.concatenate(u_blocks)
 
-    # Linear cost from gencost. MATPOWER polynomial model (model=2):
-    # cost(P) = c_n * P^n + ... + c_1 * P + c_0. We take c_1 (linear)
-    # only for the LP relaxation; quadratic terms are ignored. The
-    # last n columns of gencost are the polynomial coefficients in
-    # decreasing-degree order; row col 3 (0-indexed) is the polynomial
-    # degree count ``n``.
+    # Linear cost from gencost. MATPOWER polynomial model
+    # (``model = 2``): ``cost(P) = c_n P^n + ... + c_1 P + c_0``.
+    # We take only the linear term and constant; quadratic and
+    # higher-order coefficients are dropped because the QP-form
+    # solvers in this benchmark expect a *linear* OPF objective.
+    # Piecewise-linear (``model = 1``) rows are also dropped — they
+    # need additional epigraph variables that don't fit the LP
+    # surface this transform produces.
+    #
+    # Both drops are recorded on the metadata so reports can flag
+    # that the optimal value is the linearized OPF cost, not the
+    # original MATPOWER OPF cost.
     q_vec = np.zeros(n_vars, dtype=float)
     r_const = 0.0
+    dropped_quadratic_rows: list[int] = []
+    dropped_pwl_rows: list[int] = []
+    dropped_unknown_model_rows: list[tuple[int, float]] = []
     for g in range(n_gen):
         if g >= gencost.shape[0]:
             continue
         model = float(gencost[g, 0])
+        if model == 1.0:
+            dropped_pwl_rows.append(g)
+            continue
         if model != 2.0:
-            # Piecewise-linear (model=1) would need extra variables;
-            # treat unsupported cost model as linear-zero so the LP
-            # is well-formed but not meaningful for the cost. Caller
-            # can detect via metadata.
+            dropped_unknown_model_rows.append((g, model))
             continue
         n_coef = int(gencost[g, 3])
-        # Coefficients are in cols 4..(4+n_coef-1), in decreasing
-        # degree order: c_{n-1}, c_{n-2}, ..., c_1, c_0.
         coefs = gencost[g, 4 : 4 + n_coef]
         if n_coef >= 2:
-            # Linear term is the second-to-last coefficient.
             q_vec[g] += float(coefs[-2])
         if n_coef >= 1:
             r_const += float(coefs[-1])
         # Costs are in $/MWh per MW; the per-unit objective gets a
         # factor of baseMVA.
         q_vec[g] *= base_mva
+        # Track any quadratic/cubic terms we dropped so reports can
+        # surface the linearization.
+        if n_coef >= 3:
+            higher_order = [
+                float(c) for c in coefs[: n_coef - 2] if float(c) != 0.0
+            ]
+            if higher_order:
+                dropped_quadratic_rows.append(g)
 
     problem = {
         "P": sp.csc_matrix((n_vars, n_vars)),
@@ -242,5 +291,20 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
         "num_lines_with_flow_limit": len(flow_rows),
         "reference_bus_index": ref_idx,
         "base_mva": base_mva,
+        "has_transformer_taps": has_taps,
+        "has_phase_shifts": has_phase_shifts,
+        # Cost-linearization provenance: callers can detect that
+        # the LP objective is the linearized OPF cost rather than
+        # the original MATPOWER OPF cost. ``dropped_quadratic_rows``
+        # is generators whose quadratic / higher-order term was
+        # dropped; ``dropped_pwl_rows`` is generators with a
+        # piecewise-linear cost model (``model=1``) that we cannot
+        # represent without epigraph variables; ``dropped_unknown_*``
+        # is anything else.
+        "dropped_cost_rows": {
+            "quadratic": dropped_quadratic_rows,
+            "piecewise_linear": dropped_pwl_rows,
+            "unknown_model": dropped_unknown_model_rows,
+        },
     }
     return problem, metadata
