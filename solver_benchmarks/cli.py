@@ -9,14 +9,14 @@ from pathlib import Path
 import click
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
+from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.plots import write_analysis_plots
 from solver_benchmarks.analysis.profiles import (
     DEFAULT_FAILURE_PENALTY,
     performance_profile,
     shifted_geomean,
 )
-from solver_benchmarks.analysis.report import write_run_report
-from solver_benchmarks.analysis.reports import (
+from solver_benchmarks.analysis.tables import (
     completion_summary,
     failure_rates,
     missing_results,

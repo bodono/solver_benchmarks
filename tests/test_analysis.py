@@ -6,17 +6,17 @@ import pytest
 from click.testing import CliRunner
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
+from solver_benchmarks.analysis.markdown_report import (
+    _section_table,
+    _sort_report_table,
+    write_run_report,
+)
 from solver_benchmarks.analysis.profiles import (
     DEFAULT_FAILURE_PENALTY,
     performance_profile,
     shifted_geomean,
 )
-from solver_benchmarks.analysis.report import (
-    _section_table,
-    _sort_report_table,
-    write_run_report,
-)
-from solver_benchmarks.analysis.reports import (
+from solver_benchmarks.analysis.tables import (
     claimed_optimal_kkt_thresholds,
     completion_summary,
     difficulty_scaling,
@@ -1217,6 +1217,32 @@ def test_cactus_plot_denominator_uses_unique_dataset_problem_pairs(tmp_path: Pat
     out_dir.mkdir()
     path = _write_cactus(multi, out_dir, "run_time_seconds")
     assert path is not None and path.exists()
+
+
+def test_legacy_module_paths_still_importable_with_deprecation_warning():
+    """The PR 31 module rename ships compatibility shims so existing
+    user code, notebooks, and scripts that import the old paths keep
+    working — but each import emits a DeprecationWarning so users
+    know to migrate."""
+    import importlib
+    import warnings as _warnings
+
+    for legacy_name, expected_attr in (
+        ("solver_benchmarks.analysis.report", "write_run_report"),
+        ("solver_benchmarks.analysis.reports", "solver_metrics"),
+    ):
+        # Force a re-import so the warning fires even if the test
+        # session imported the module earlier.
+        import sys
+
+        sys.modules.pop(legacy_name, None)
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            module = importlib.import_module(legacy_name)
+        deps = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert deps, f"Expected DeprecationWarning when importing {legacy_name}"
+        # Re-exported public surface is intact.
+        assert hasattr(module, expected_attr)
 
 
 def test_cactus_plot_counts_zero_duration_successes(tmp_path: Path, repo_root: Path):
