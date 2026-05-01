@@ -40,8 +40,21 @@ def test_pop_time_limit_returns_none_when_unset():
 
 
 def test_pop_time_limit_rejects_non_numeric():
-    with pytest.raises(ValueError, match="must be a number"):
+    with pytest.raises(ValueError, match="finite non-negative"):
         pop_time_limit({"time_limit": "fast"})
+
+
+def test_pop_time_limit_rejects_bool():
+    with pytest.raises(ValueError, match="finite non-negative"):
+        pop_time_limit({"time_limit": True})
+    with pytest.raises(ValueError, match="finite non-negative"):
+        pop_time_limit({"time_limit": False})
+
+
+def test_pop_time_limit_rejects_nonfinite_and_negative():
+    for value in (float("nan"), float("inf"), -float("inf"), "nan", "inf", -1):
+        with pytest.raises(ValueError, match="finite non-negative"):
+            pop_time_limit({"time_limit": value})
 
 
 def test_pop_threads_basic():

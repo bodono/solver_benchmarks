@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -67,13 +68,29 @@ def pop_time_limit(settings: dict[str, Any]) -> float | None:
     for key in TIME_LIMIT_KEYS:
         value = settings.pop(key, None)
         if resolved is None and value is not None:
-            try:
-                resolved = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"Setting {key!r} must be a number or null (got {value!r})"
-                ) from exc
+            resolved = _coerce_time_limit(key, value)
     return resolved
+
+
+def _coerce_time_limit(key: str, value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Setting {key!r} must be a finite non-negative number or null "
+            f"(got {value!r})"
+        )
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Setting {key!r} must be a finite non-negative number or null "
+            f"(got {value!r})"
+        ) from exc
+    if not math.isfinite(coerced) or coerced < 0:
+        raise ValueError(
+            f"Setting {key!r} must be a finite non-negative number or null "
+            f"(got {value!r})"
+        )
+    return coerced
 
 
 def mark_time_limit_ignored(info: dict[str, Any], time_limit: float | None) -> None:
@@ -142,5 +159,4 @@ def mark_threads_ignored(info: dict[str, Any], threads: int | None) -> None:
     if threads is not None:
         info["threads_ignored"] = True
         info["threads_requested"] = int(threads)
-
 
