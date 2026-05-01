@@ -108,6 +108,29 @@ def test_performance_profile_is_deterministic_under_duplicate_rows():
     assert profile["b"].iloc[-1] == pytest.approx(1.0)
 
 
+def test_performance_profile_dedup_prefers_successful_retry_over_fast_failure():
+    """Deduplication used to sort only by metric, so a fast failure
+    (``solver_error`` at 0.1s) won over a slow successful retry
+    (``optimal`` at 1.0s) for the same (problem, solver_id) — and the
+    profile then incorrectly penalized the kept failure row.
+
+    Status-failure must dominate the sort key so the successful row is
+    kept regardless of its metric.
+    """
+    frame = pd.DataFrame(
+        [
+            {"problem": "p", "solver_id": "a", "status": "solver_error", "run_time_seconds": 0.1},
+            {"problem": "p", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p", "solver_id": "b", "status": "optimal", "run_time_seconds": 2.0},
+        ]
+    )
+    profile = performance_profile(frame, n_tau=4, tau_max=100.0)
+    # a's successful retry at 1.0s beats b's 2.0s, so a should be at
+    # ratio 1 (winning) and b at ratio 2.
+    assert profile["a"].iloc[0] == pytest.approx(1.0)
+    assert profile["b"].iloc[0] == pytest.approx(0.0)
+
+
 def test_performance_profile_drops_problems_where_every_solver_failed():
     """When no solver succeeded on a problem the row is undefined under
     Dolan-Moré; including it would inflate every curve at tau=1."""
@@ -177,6 +200,42 @@ def test_shifted_geomean_uses_metric_defaults_when_unspecified():
     geomean = shifted_geomean(frame, metric="iterations")
     # max_value should be 1e6 (per metric_defaults("iterations"))
     assert geomean.iloc[0]["max_value"] == 1.0e6
+
+
+def test_shifted_geomean_does_not_clamp_subunit_kkt_residuals():
+    """Pre-fix ``_shifted_geomean`` floored ``values + shift`` at 1.0,
+    which silently clobbered any KKT residual below 1.0 — so two
+    successful solves with residuals ``[1e-8, 1e-6]`` reported a
+    geomean of 1.0 regardless of magnitude. With ``shift=0`` and the
+    KKT defaults, the floor must be at the smallest positive float so
+    sub-unit residuals propagate through.
+    """
+    frame = pd.DataFrame(
+        [
+            {"solver_id": "a", "status": "optimal", "kkt.primal_res_rel": 1e-8},
+            {"solver_id": "a", "status": "optimal", "kkt.primal_res_rel": 1e-6},
+        ]
+    )
+    geomean = shifted_geomean(frame, metric="kkt.primal_res_rel")
+    # Expected: sqrt(1e-8 * 1e-6) = 1e-7 (with shift=0).
+    assert geomean.iloc[0]["kkt.primal_res_rel"] == pytest.approx(1e-7, rel=1e-9)
+
+
+def test_shifted_geomean_runtime_results_unchanged_by_floor_change():
+    """Replacing the 1.0 floor with the smallest-positive-float floor
+    must not change run-time-style aggregates (shift=10, values
+    measured in seconds, all ``values + shift >= 10``).
+    """
+    geomean = shifted_geomean(_analysis_frame(), max_value=100.0)
+    values = dict(zip(geomean["solver_id"], geomean["run_time_seconds"]))
+    # solver_a: success(1.0) + penalty(100.0) with shift=10
+    # exp(0.5*(log(11) + log(110))) - 10 = sqrt(11*110) - 10 ≈ 24.79
+    import math
+
+    expected_a = math.sqrt(11.0 * 110.0) - 10.0
+    expected_b = math.sqrt(12.0 * 14.0) - 10.0
+    assert values["solver_a"] == pytest.approx(expected_a)
+    assert values["solver_b"] == pytest.approx(expected_b)
 
 
 def test_default_failure_penalty_is_one_thousand_seconds():
