@@ -6,6 +6,7 @@ from .base import Dataset
 from .cblib import CBLIBDataset
 from .cutest_qp import CUTEstQPDataset
 from .dimacs import DIMACSDataset
+from .libsvm_qp import LibsvmQPDataset
 from .liu_pataki import LiuPatakiDataset
 from .maros_meszaros import MarosMeszarosDataset
 from .mpc_qpbenchmark import MPCQPBenchmarkDataset
@@ -19,6 +20,7 @@ DATASETS: dict[str, type[Dataset]] = {
     "cutest_qp": CUTEstQPDataset,
     "dimacs": DIMACSDataset,
     "kennington": KenningtonDataset,
+    "libsvm_qp": LibsvmQPDataset,
     "liu_pataki": LiuPatakiDataset,
     "maros_meszaros": MarosMeszarosDataset,
     "miplib": MiplibDataset,
