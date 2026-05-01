@@ -179,7 +179,7 @@ Default prepared subsets are intentionally small:
 | `kennington` | The 16 standard Kennington LP files. |
 | `miplib` | `markshare_4_0` |
 | `mittelmann` | `qap15` |
-| `mittelmann_sdp` | `G11`, `G14`, `G20`, `theta1`, `theta2`, `theta3` |
+| `mittelmann_sdp` | `trto3`, `rose13`, `cnhil8`, `buck3`, `biggs`, `G40mc` |
 | `tsplib_sdp` | `burma14`, `ulysses16`, `gr17`, `gr21`, `gr24`, `bayg29` |
 | `libsvm_qp` | `heart`, `breast-cancer`, `australian`, `diabetes`, `ionosphere`, `german-numer` |
 | `dc_opf` | `case5`, `case6ww`, `case9`, `case14`, `case30`, `case39` |

@@ -10,7 +10,7 @@ randomized graph instances and Lovász theta numbers.
 Default subset: a handful of small TSPLIB instances (14–29 cities)
 that solve in well under a second on modern interior-point SDP
 codes. Pass ``--problem`` / ``--all`` to ``prepare_tsplib_sdp.py`` to
-fetch larger ones from the TSPLIB archive.
+fetch larger ones from the TSPLIB mirror.
 
 Format support: TSPLIB95 ``.tsp`` files with EDGE_WEIGHT_TYPE in
 ``EUC_2D``, ``EUC_3D``, ``MAN_2D``, ``MAN_3D``, ``MAX_2D``,
@@ -36,15 +36,15 @@ from solver_benchmarks.transforms.maxcut_sdp import maxcut_sdp_cone_problem
 
 from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
-TSPLIB_BASE_URL = "http://comopt.ifi.uni-heidelberg.de/software/TSPLIB95/tsp"
+TSPLIB_BASE_URL = "https://raw.githubusercontent.com/mastqe/tsplib/master"
 
 TSPLIB_DEFAULT_SUBSET: dict[str, str] = {
-    "burma14": "burma14.tsp.gz",
-    "ulysses16": "ulysses16.tsp.gz",
-    "gr17": "gr17.tsp.gz",
-    "gr21": "gr21.tsp.gz",
-    "gr24": "gr24.tsp.gz",
-    "bayg29": "bayg29.tsp.gz",
+    "burma14": "burma14.tsp",
+    "ulysses16": "ulysses16.tsp",
+    "gr17": "gr17.tsp",
+    "gr21": "gr21.tsp",
+    "gr24": "gr24.tsp",
+    "bayg29": "bayg29.tsp",
 }
 
 
@@ -67,7 +67,7 @@ class TSPLIBSDPDataset(Dataset):
     )
     data_source = (
         "external download from "
-        "http://comopt.ifi.uni-heidelberg.de/software/TSPLIB95/tsp/"
+        "https://raw.githubusercontent.com/mastqe/tsplib/master/"
     )
     data_patterns = ("*.tsp", "*.tsp.gz")
     prepare_command = "python scripts/prepare_tsplib_sdp.py"
@@ -140,9 +140,9 @@ def download_tsplib_instance(name: str, folder: Path) -> Path:
 
     Names in the curated default subset map their remote filename via
     ``TSPLIB_DEFAULT_SUBSET``; for a custom name we assume the file
-    lives at ``<name>.tsp.gz`` on the remote host.
+    lives at ``<name>.tsp`` on the remote host.
     """
-    remote_filename = TSPLIB_DEFAULT_SUBSET.get(name, f"{name}.tsp.gz")
+    remote_filename = TSPLIB_DEFAULT_SUBSET.get(name, f"{name}.tsp")
     target = folder / Path(remote_filename).name
     if target.exists():
         return target

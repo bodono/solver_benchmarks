@@ -39,6 +39,7 @@ from __future__ import annotations
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import numpy as np
 import scipy.sparse as sp
@@ -54,9 +55,10 @@ LIBSVM_BASE_URL = (
 # Default curated subset: small binary classification datasets that
 # produce dense small QPs solvable in well under a second by IPM
 # solvers. Each entry maps the dataset id (used as the problem name)
-# to the LIBSVM filename hosted at ``LIBSVM_BASE_URL``.
+# to either the LIBSVM filename hosted at ``LIBSVM_BASE_URL`` or an
+# absolute URL for mirrors of files with problematic upstream TLS.
 LIBSVM_DEFAULT_SUBSET: dict[str, str] = {
-    "heart": "heart",
+    "heart": "https://raw.githubusercontent.com/cjlin1/libsvm/master/heart_scale",
     "breast-cancer": "breast-cancer",
     "australian": "australian",
     "diabetes": "diabetes",
@@ -208,10 +210,15 @@ def download_libsvm_dataset(name: str, folder: Path) -> Path:
     target = folder / f"{name}.libsvm"
     if target.exists():
         return target
-    url = f"{LIBSVM_BASE_URL}/{remote_filename}"
+    if remote_filename.startswith(("http://", "https://")):
+        url = remote_filename
+        source_name = Path(urlparse(url).path).name
+    else:
+        url = f"{LIBSVM_BASE_URL}/{remote_filename}"
+        source_name = remote_filename
     with urllib.request.urlopen(url, timeout=60) as response:
         body = response.read()
-    if remote_filename.endswith(".gz") or url.endswith(".gz"):
+    if source_name.endswith(".gz") or url.endswith(".gz"):
         validate_gzip_payload(body)
         # Decompress on disk so list_problems doesn't need to handle gz.
         import gzip as _gzip

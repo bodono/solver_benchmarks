@@ -12,15 +12,27 @@ from solver_benchmarks.core.config import parse_run_config
 from solver_benchmarks.core.runner import run_benchmark
 
 SETTINGS = {
-    "clarabel": {"verbose": False},
-    "highs": {"verbose": False},
-    "osqp": {"verbose": False, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
-    "pdlp": {"time_limit_sec": 10.0},
-    "piqp": {"verbose": False, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
-    "proxqp": {"verbose": False, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
-    "qtqp": {"verbose": False},
-    "scs": {"verbose": False, "eps_abs": 1.0e-6, "eps_rel": 1.0e-6, "max_iters": 1000},
-    "sdpa": {"verbose": False, "max_iter": 50, "optimality_tolerance": 1.0e-5},
+    "clarabel": {"verbose": True},
+    "cvxopt": {
+        "verbose": True,
+        "abstol": 1.0e-9,
+        "reltol": 1.0e-9,
+        "feastol": 1.0e-9,
+    },
+    "ecos": {
+        "verbose": True,
+        "abstol": 1.0e-9,
+        "reltol": 1.0e-9,
+        "feastol": 1.0e-9,
+    },
+    "highs": {"verbose": True},
+    "osqp": {"verbose": True, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
+    "pdlp": {"verbose": True, "time_limit_sec": 10.0},
+    "piqp": {"verbose": True, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
+    "proxqp": {"verbose": True, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
+    "qtqp": {"verbose": True},
+    "scs": {"verbose": True, "eps_abs": 1.0e-6, "eps_rel": 1.0e-6, "max_iters": 1000},
+    "sdpa": {"verbose": True, "max_iter": 50, "optimality_tolerance": 1.0e-5},
 }
 
 CONE_SOLVERS = {"sdpa"}
@@ -53,7 +65,12 @@ def main() -> int:
                 ],
             }
         )
-        store = run_benchmark(config, repo_root=args.repo_root)
+        store = run_benchmark(
+            config,
+            repo_root=args.repo_root,
+            stream_output=True,
+            stream_solver_output=True,
+        )
         df = load_results(store.run_dir)
     if len(df) != 1:
         raise RuntimeError(f"Expected exactly one result, got {len(df)}")
