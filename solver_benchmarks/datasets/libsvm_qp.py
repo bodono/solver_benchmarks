@@ -452,7 +452,8 @@ def _coerce_binary_labels(y) -> np.ndarray:
             "SVM dual QP requires exactly two distinct labels; got "
             f"{unique.tolist()!r}."
         )
-    low, high = float(unique.min()), float(unique.max())
+    # Map smaller→-1, larger→+1.
+    low = float(unique.min())
     return np.where(arr <= low, -1.0, 1.0)
 
 
