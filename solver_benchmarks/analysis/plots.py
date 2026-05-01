@@ -8,7 +8,19 @@ from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")
+# Only force the headless ``Agg`` backend if the user hasn't already
+# selected one. Importing this module from a notebook (or any process
+# that already configured an interactive backend) would otherwise
+# silently override that choice.
+if matplotlib.get_backend().lower() not in {
+    "agg",
+    "pdf",
+    "ps",
+    "svg",
+    "cairo",
+    "module://matplotlib_inline.backend_inline",
+}:
+    matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -129,7 +141,11 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
         return None
     successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
-    successful = successful[np.isfinite(successful[metric]) & (successful[metric] >= 0.0)]
+    # Filter strictly positive so log-scale plotting is well-defined.
+    # The previous `>= 0.0` filter let zeros through which then mapped
+    # to -inf on the log axis and produced empty bars in the cactus
+    # plot.
+    successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
     if successful.empty:
         return None
 
@@ -226,7 +242,12 @@ def _write_status_heatmap(results, output_dir: Path) -> Path | None:
         {str(value) for value in matrix.to_numpy().ravel() if pd.notna(value)}
     )
     palette = _status_palette(statuses)
-    encoded = matrix.replace({name: idx for idx, name in enumerate(statuses)}).astype(float)
+    # Use apply(map) instead of replace + astype: a stray cell whose
+    # string form is not in `statuses` would otherwise leak through
+    # replace() and crash astype(float). With map we get NaN for the
+    # unrecognized cell, which the colormap renders as `set_bad`.
+    encoding = {name: idx for idx, name in enumerate(statuses)}
+    encoded = matrix.apply(lambda col: col.map(encoding)).astype(float)
 
     fig_height = min(24, max(4, 0.12 * len(matrix.index)))
     fig_width = min(18, max(6, 1.8 * len(matrix.columns)))
@@ -330,7 +351,9 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
             ax.set_title(f"{label}\n(no data)")
             continue
         drew_any = True
-        ax.boxplot(data, labels=labels, showfliers=False)
+        # tick_labels is the matplotlib >=3.9 spelling; the legacy
+        # `labels` kwarg was deprecated in 3.9 and removed in 3.11.
+        ax.boxplot(data, tick_labels=labels, showfliers=False)
         rng = np.random.default_rng(42)
         for idx, arr in enumerate(data):
             xs = rng.normal(idx + 1, 0.07, arr.size)

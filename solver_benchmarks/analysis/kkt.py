@@ -129,10 +129,25 @@ def cone_residuals(
     r_dual_l2 = float(np.linalg.norm(stationarity))
 
     s_proj, y_proj, unsupported = _project_cones(cone, s, y)
-    r_s_cone = float(np.linalg.norm(s - s_proj, ord=np.inf)) if s_proj is not None else 0.0
-    r_y_cone = float(np.linalg.norm(y - y_proj, ord=np.inf)) if y_proj is not None else 0.0
+    # If any cone block was unsupported, the projection equals the input
+    # for that block by construction (see _project_cones), which would
+    # otherwise produce a misleadingly clean cone-residual reading.
+    # Surface NaN so the summary reports it as "unknown" instead of
+    # silently rolling unsupported blocks into a per-row "all good".
+    if unsupported:
+        r_s_cone = float("nan")
+        r_y_cone = float("nan")
+    else:
+        r_s_cone = float(np.linalg.norm(s - s_proj, ord=np.inf)) if s_proj is not None else 0.0
+        r_y_cone = float(np.linalg.norm(y - y_proj, ord=np.inf)) if y_proj is not None else 0.0
 
-    comp = float(s @ y)
+    # comp_slack is reported as |s.y|; the inner product should be 0 at
+    # complementarity but can be slightly negative from numerical noise.
+    # Downstream code (plots, aggregates) treats it as a magnitude, so
+    # report the absolute value here and keep the signed copy as
+    # comp_slack_signed for users who want to detect a duality leak.
+    comp_signed = float(s @ y)
+    comp = abs(comp_signed)
     primal_obj = float(0.5 * x @ Px + q @ x)
     dual_obj = float(-0.5 * x @ Px - b @ y)
     gap = primal_obj - dual_obj
@@ -152,6 +167,7 @@ def cone_residuals(
         "primal_cone_res": r_s_cone,
         "dual_cone_res": r_y_cone,
         "comp_slack": comp,
+        "comp_slack_signed": comp_signed,
         "primal_obj": primal_obj,
         "dual_obj": dual_obj,
         "duality_gap": gap,

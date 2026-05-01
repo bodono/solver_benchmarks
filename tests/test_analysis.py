@@ -77,11 +77,50 @@ def _analysis_frame() -> pd.DataFrame:
 
 
 def test_performance_profile_penalizes_failed_solves():
-    profile = performance_profile(_analysis_frame(), max_value=100.0, n_tau=3)
+    # Pin tau_max so the logspace endpoints are deterministic; the
+    # default now derives tau_max from ratios.max().
+    profile = performance_profile(
+        _analysis_frame(), max_value=100.0, n_tau=3, tau_max=10000.0
+    )
 
     assert profile["tau"].tolist() == pytest.approx([1.0, 100.0, 10000.0])
     assert profile["solver_a"].tolist() == pytest.approx([0.5, 1.0, 1.0])
     assert profile["solver_b"].tolist() == pytest.approx([0.5, 1.0, 1.0])
+
+
+def test_performance_profile_drops_problems_where_every_solver_failed():
+    """When no solver succeeded on a problem the row is undefined under
+    Dolan-Moré; including it would inflate every curve at tau=1."""
+    frame = pd.DataFrame(
+        [
+            {"problem": "ok", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "ok", "solver_id": "b", "status": "optimal", "run_time_seconds": 2.0},
+            {"problem": "doom", "solver_id": "a", "status": "solver_error", "run_time_seconds": None},
+            {"problem": "doom", "solver_id": "b", "status": "solver_error", "run_time_seconds": None},
+        ]
+    )
+    profile = performance_profile(frame, max_value=100.0, n_tau=3, tau_max=10000.0)
+    # Only the "ok" problem contributes; a wins, so rho_a(1) = 1.0
+    # and rho_b(1) = 0.0, rising to 1.0 at the b/a ratio of 2.
+    assert profile["a"].tolist() == pytest.approx([1.0, 1.0, 1.0])
+    assert profile["b"].tolist()[0] == pytest.approx(0.0)
+    assert profile["b"].tolist()[-1] == pytest.approx(1.0)
+
+
+def test_performance_profile_default_tau_max_is_dynamic():
+    """tau_max derives from ratios.max() so the right tail isn't clipped."""
+    frame = pd.DataFrame(
+        [
+            {"problem": "p", "solver_id": "fast", "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p", "solver_id": "slow", "status": "optimal", "run_time_seconds": 5.0},
+        ]
+    )
+    profile = performance_profile(frame, n_tau=4)
+    # Maximum ratio is 5.0; tau_max should cover it (next power of 10
+    # after log10(5+1) → 1e1).
+    assert profile["tau"].iloc[-1] >= 5.0
+    # Slow's curve must reach 1.0 within the plotted range.
+    assert profile["slow"].iloc[-1] == pytest.approx(1.0)
 
 
 def test_shifted_geomean_penalizes_failed_solves():
@@ -290,7 +329,9 @@ def test_inaccurate_statuses_are_not_successful_by_default():
         ]
     )
 
-    profile = performance_profile(frame, max_value=100.0, n_tau=3)
+    # Pin tau_max so the assertion targets are determined by the call,
+    # not by the now-dynamic upper bound.
+    profile = performance_profile(frame, max_value=100.0, n_tau=3, tau_max=10000.0)
     geomean = shifted_geomean(frame, max_value=100.0, shift=0.0)
     values = dict(zip(geomean["solver_id"], geomean["run_time_seconds"]))
 
@@ -1046,7 +1087,7 @@ def test_profile_speedup_spread_ratio_separate_datasets_with_shared_problem_name
         ]
     )
 
-    profile = performance_profile(frame, max_value=100.0, n_tau=3)
+    profile = performance_profile(frame, max_value=100.0, n_tau=3, tau_max=10000.0)
     # Two distinct (dataset, problem) rows, each solver wins one, so
     # rho(tau=1) = 0.5 for both. If keyed only on problem, aggfunc="first"
     # would keep one row and give 1.0 for the winner and 0.0 for the loser.
