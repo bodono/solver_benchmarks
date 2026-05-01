@@ -217,26 +217,116 @@ def test_ecos_solves_lp_in_qp_form_and_reports_kkt(tmp_path):
     assert result.kkt["duality_gap_rel"] < 1e-4
 
 
-def test_ecos_skips_qp_with_nonzero_p(tmp_path):
-    """ECOS does not solve QPs natively; the adapter must report
-    SKIPPED_UNSUPPORTED rather than secretly reformulating to SOCP."""
+def test_ecos_solves_qp_via_socp_reformulation(tmp_path):
+    """ECOS does not solve QPs natively; the adapter applies a standard
+    SOCP epigraph reformulation so QP datasets like Maros-Meszaros run
+    through ECOS. The result must be the actual ½ x'Px + q'x objective
+    (not the surrogate t + q'x)."""
     pytest.importorskip("ecos")
     from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
 
-    adapter = ECOSSolverAdapter({"verbose": False})
+    adapter = ECOSSolverAdapter(
+        {"verbose": False, "feastol": 1e-9, "abstol": 1e-9, "reltol": 1e-9}
+    )
     result = adapter.solve(_make_qp_problem(_qp_with_nonzero_p()), tmp_path)
+    assert result.status == status.OPTIMAL
+    # min 0.5(x1^2 + x2^2) + x1 + x2 → optimum at x = (-1, -1), value = -1.
+    assert result.objective_value == pytest.approx(-1.0, abs=1e-4)
+    # Marker on info so callers can tell the SOCP path was used.
+    assert result.info.get("socp_reformulation") is True
+    assert "socp_t_value" in result.info
+    assert result.kkt is not None
+    assert result.kkt["primal_res_rel"] < 1e-4
+    assert result.kkt["dual_res_rel"] < 1e-4
+
+
+def test_ecos_solves_rank_deficient_psd_qp(tmp_path):
+    """``P`` may be PSD but rank-deficient (e.g. diag(1, 0)). The
+    adapter falls back from Cholesky to an eigendecomposition that
+    drops zero eigenvalues; the SOCP gets dim ``rank(P) + 2``."""
+    pytest.importorskip("ecos")
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+    qp = {
+        "P": sp.csc_matrix(np.diag([1.0, 0.0])),
+        "q": np.array([1.0, 1.0]),
+        "A": sp.csc_matrix(np.eye(2)),
+        "l": np.array([-5.0, -5.0]),
+        "u": np.array([5.0, 5.0]),
+    }
+    adapter = ECOSSolverAdapter(
+        {"verbose": False, "feastol": 1e-9, "abstol": 1e-9, "reltol": 1e-9}
+    )
+    result = adapter.solve(_make_qp_problem(qp), tmp_path)
+    assert result.status == status.OPTIMAL
+    # min 0.5*x1^2 + x1 + x2 with -5 <= x <= 5: x1 = -1, x2 = -5. Value = -5.5.
+    assert result.objective_value == pytest.approx(-5.5, abs=1e-4)
+    assert result.info.get("socp_reformulation") is True
+
+
+def test_ecos_socp_reformulation_skips_non_psd_p(tmp_path):
+    """If ``P`` is not symmetric or has a negative eigenvalue, the
+    SOCP reformulation is invalid; the adapter must return
+    SKIPPED_UNSUPPORTED with a clear reason."""
+    pytest.importorskip("ecos")
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+    # Non-symmetric P.
+    qp = {
+        "P": sp.csc_matrix(np.array([[1.0, 1.0], [0.0, 1.0]])),
+        "q": np.array([0.0, 0.0]),
+        "A": sp.csc_matrix(np.eye(2)),
+        "l": np.array([-5.0, -5.0]),
+        "u": np.array([5.0, 5.0]),
+    }
+    adapter = ECOSSolverAdapter({"verbose": False})
+    result = adapter.solve(_make_qp_problem(qp), tmp_path)
     assert result.status == status.SKIPPED_UNSUPPORTED
-    assert "quadratic" in result.info["reason"].lower()
+    assert "PSD" in result.info["reason"] or "psd" in result.info["reason"].lower()
 
 
 def test_ecos_qp_with_nonzero_p_helper_detects_nnz():
-    """``_qp_has_nonzero_p`` is the gate; verify directly."""
+    """``_qp_has_nonzero_p`` is the gate that triggers the SOCP
+    reformulation path; verify directly."""
     from solver_benchmarks.solvers.ecos_adapter import _qp_has_nonzero_p
 
     assert _qp_has_nonzero_p({"P": sp.csc_matrix(np.eye(2))}) is True
     assert _qp_has_nonzero_p({"P": sp.csc_matrix((2, 2))}) is False
     assert _qp_has_nonzero_p({"P": None}) is False
     assert _qp_has_nonzero_p({}) is False
+
+
+def test_ecos_psd_square_root_returns_cholesky_for_pd():
+    """For positive-definite P, the Cholesky path returns a square
+    upper-triangular factor with R'R = P."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    p = sp.csc_matrix(np.array([[4.0, 1.0], [1.0, 3.0]]))
+    r = _psd_square_root(p)
+    assert r.shape == (2, 2)
+    reconstructed = r.T @ r
+    assert np.allclose(reconstructed, p.toarray())
+
+
+def test_ecos_psd_square_root_drops_zero_eigenvalues():
+    """For rank-deficient PSD P, the eigendecomposition path returns
+    a ``rank(P) × n`` factor that satisfies R'R = P."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    p = sp.csc_matrix(np.diag([4.0, 0.0, 1.0]))
+    r = _psd_square_root(p)
+    assert r.shape == (2, 3)  # rank 2, 3 columns
+    reconstructed = r.T @ r
+    assert np.allclose(reconstructed, p.toarray())
+
+
+def test_ecos_psd_square_root_returns_none_for_nonsymmetric():
+    """A non-symmetric ``P`` (within tolerance) is rejected — the
+    adapter then surfaces SKIPPED_UNSUPPORTED to the caller."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    p = sp.csc_matrix(np.array([[1.0, 1.0], [0.0, 1.0]]))
+    assert _psd_square_root(p) is None
 
 
 def test_ecos_lp_via_qp_form_reports_iteration_count(tmp_path):
