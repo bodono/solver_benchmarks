@@ -52,6 +52,8 @@ def run_payload(payload: dict) -> ProblemResult:
             "runtime": runtime_metadata(solver_config["solver"]),
             "solver_extra": to_jsonable(solver_result.extra),
         }
+        if payload.get("resume_signature") is not None:
+            metadata["resume_signature"] = payload["resume_signature"]
         error = None
         if solver_result.status == status.SKIPPED_UNSUPPORTED:
             error = str(solver_result.info.get("reason", "Unsupported solve"))
@@ -82,6 +84,8 @@ def run_payload(payload: dict) -> ProblemResult:
             "environment_metadata": payload.get("environment_metadata", {}),
             "runtime": runtime_metadata(solver_config["solver"]),
         }
+        if payload.get("resume_signature") is not None:
+            metadata["resume_signature"] = payload["resume_signature"]
         return ProblemResult(
             run_id=payload["run_id"],
             dataset=payload["dataset"],
