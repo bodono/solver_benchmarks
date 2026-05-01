@@ -11,6 +11,7 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import CONE, QP, cone_dimensions, qp_dimensions
 from solver_benchmarks.core.result import ProblemResult, to_jsonable
+from solver_benchmarks.core.storage import atomic_write_text
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.solvers import get_solver
 
@@ -22,7 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = json.loads(Path(args.payload).read_text())
     result = run_payload(payload)
     output = Path(payload["artifacts_dir"]) / "worker_result.json"
-    output.write_text(json.dumps(result.to_record(), indent=2))
+    # Atomic write so the parent never observes a half-serialized record.
+    atomic_write_text(output, json.dumps(result.to_record(), indent=2))
     return 0
 
 
@@ -118,12 +120,13 @@ def _problem_dimensions(problem):
 def _write_trace_if_needed(artifacts_dir: Path, trace: list[dict]) -> None:
     if not trace:
         return
+    # Always overwrite so a re-run on the same artifacts_dir does not
+    # leave a stale trace from a previous attempt.
     path = artifacts_dir / "trace.jsonl"
-    if path.exists():
-        return
-    with path.open("w") as handle:
-        for row in trace:
-            handle.write(json.dumps(to_jsonable(row), sort_keys=True) + "\n")
+    body = "".join(
+        json.dumps(to_jsonable(row), sort_keys=True) + "\n" for row in trace
+    )
+    atomic_write_text(path, body)
 
 
 if __name__ == "__main__":
