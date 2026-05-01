@@ -185,6 +185,11 @@ def run_benchmark(
     )
     progress.emit_plan()
     if not tasks:
+        # Planning-time skips already called store.write_result(). The
+        # parquet rewrite is rate-limited so without an explicit flush
+        # only the first rapid skip lands; load_results() prefers
+        # parquet and would silently miss later rows.
+        store.flush_parquet()
         progress.emit_final()
         return store
 

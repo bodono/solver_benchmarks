@@ -359,6 +359,63 @@ def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path, r
     assert store.events_path.exists()
 
 
+def test_skip_only_runs_flush_parquet_so_load_results_sees_every_skip(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """When every problem is skipped during planning, the runner must
+    still flush_parquet on the early-return path. Without the flush,
+    the rate-limited parquet rewrite leaves only the first rapid skip
+    on disk and load_results() (which prefers parquet) under-reports
+    skip rows."""
+
+    class FakeConeDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            # Two problems so multiple skip rows hit the rate limiter.
+            return [
+                ProblemSpec(dataset_id="fake_cone", name="cone_a", kind=CONE),
+                ProblemSpec(dataset_id="fake_cone", name="cone_b", kind=CONE),
+            ]
+
+    class FakeQPSolver(SolverAdapter):
+        solver_name = "fake_qp"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover - skip path
+            raise AssertionError("Unsupported solver should not be invoked")
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "fake_cone", FakeConeDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "fake_qp", FakeQPSolver)
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "fake_cone",
+                "output_dir": str(tmp_path / "runs"),
+                "include": ["cone_a", "cone_b"],
+                "parallelism": 1,
+            },
+            "solvers": [{"id": "fake_qp_skip", "solver": "fake_qp", "settings": {}}],
+        }
+    )
+
+    store = run_benchmark(config, repo_root=repo_root)
+
+    # Two rows in the JSONL — one per skip.
+    jsonl_lines = [
+        line for line in store.results_jsonl_path.read_text().splitlines() if line.strip()
+    ]
+    assert len(jsonl_lines) == 2
+
+    # And — most importantly — load_results() (which prefers parquet)
+    # must see both rows.
+    df = load_results(store.run_dir)
+    assert len(df) == 2
+    assert set(df["problem"]) == {"cone_a", "cone_b"}
+    assert set(df["status"]) == {"skipped_unsupported"}
+
+
 def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path, repo_root: Path):
     config = parse_run_config(
         {
