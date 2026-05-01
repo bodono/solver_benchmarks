@@ -5,6 +5,7 @@ from __future__ import annotations
 from .base import Dataset
 from .cblib import CBLIBDataset
 from .cutest_qp import CUTEstQPDataset
+from .dc_opf import DCOPFDataset
 from .dimacs import DIMACSDataset
 from .liu_pataki import LiuPatakiDataset
 from .maros_meszaros import MarosMeszarosDataset
@@ -17,6 +18,7 @@ from .synthetic import SyntheticConeDataset, SyntheticQPDataset
 DATASETS: dict[str, type[Dataset]] = {
     "cblib": CBLIBDataset,
     "cutest_qp": CUTEstQPDataset,
+    "dc_opf": DCOPFDataset,
     "dimacs": DIMACSDataset,
     "kennington": KenningtonDataset,
     "liu_pataki": LiuPatakiDataset,
