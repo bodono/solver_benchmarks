@@ -860,24 +860,37 @@ def problem_solver_comparison(
     if not dimensions.empty:
         output = output.merge(dimensions, on=keys, how="left")
 
+    # Build the master row index once. Each per-solver lookup is then a
+    # single vectorized reindex against this index, instead of a Python
+    # list-comprehension of MultiIndex .get() calls. New columns are
+    # accumulated in a dict and joined at the end with a single concat,
+    # which avoids the O(N*M) DataFrame fragmentation cost of inserting
+    # M columns one at a time (pandas' "highly fragmented" warning).
+    output_index = (
+        pd.Index(output[keys[0]])
+        if len(keys) == 1
+        else pd.MultiIndex.from_frame(output[keys])
+    )
+    new_cols: dict[str, np.ndarray] = {}
     for solver_id in sorted(results["solver_id"].dropna().unique()):
-        solver_rows = results[results["solver_id"] == solver_id]
+        solver_rows = (
+            results.loc[results["solver_id"] == solver_id]
+            .dropna(subset=["problem"])
+            .drop_duplicates(subset=keys)
+            .set_index(keys)
+        )
         for field in fields:
-            if field not in solver_rows:
+            if field not in solver_rows.columns:
                 continue
-            lookup = (
-                solver_rows.dropna(subset=["problem"])
-                .drop_duplicates(subset=keys)
-                .set_index(keys)[field]
+            new_cols[f"{solver_id}__{field}"] = (
+                solver_rows[field].reindex(output_index).to_numpy()
             )
-            output_keys = (
-                output[keys[0]]
-                if len(keys) == 1
-                else list(zip(*[output[key] for key in keys]))
-            )
-            output[f"{solver_id}__{field}"] = [
-                lookup.get(key) for key in output_keys
-            ]
+
+    if new_cols:
+        output = pd.concat(
+            [output, pd.DataFrame(new_cols, index=output.index)],
+            axis=1,
+        )
     return output
 
 
