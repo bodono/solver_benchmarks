@@ -58,6 +58,7 @@ def run_benchmark(
     store = ResultStore.create(config, run_dir=run_dir)
     if source_config_path is not None:
         store.copy_source_config(source_config_path)
+    store.results_parquet_path.unlink(missing_ok=True)
     completed = store.completed_keys() if config.resume else set()
 
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
@@ -182,6 +183,7 @@ def run_benchmark(
     )
     progress.emit_plan()
     if not tasks:
+        store.write_parquet()
         progress.emit_final()
         return store
 
@@ -223,6 +225,7 @@ def run_benchmark(
                 result = future.result()
                 store.write_result(result)
                 progress.record_result(result)
+    store.write_parquet()
     progress.emit_final()
     return store
 

@@ -261,6 +261,7 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
         )
     )
 
+    store.write_parquet()
     records = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
     df = load_results(store.run_dir)
 
@@ -310,7 +311,7 @@ def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
         + "\n"
     )
 
-    store.rewrite_parquet()
+    store.write_parquet()
     df = load_results(store.run_dir)
 
     assert len(df) == 2

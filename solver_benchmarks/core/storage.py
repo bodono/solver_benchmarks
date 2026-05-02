@@ -162,9 +162,8 @@ class ResultStore:
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
         with self.results_jsonl_path.open("a") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
-        self.rewrite_parquet()
 
-    def rewrite_parquet(self) -> None:
+    def write_parquet(self) -> None:
         if not self.results_jsonl_path.exists():
             return
         records = []
