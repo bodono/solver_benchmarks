@@ -10,7 +10,6 @@ import re
 import shutil
 import tempfile
 import threading
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,11 +22,6 @@ from .result import ProblemResult, to_jsonable
 from .system_info import system_metadata
 
 logger = logging.getLogger(__name__)
-
-# Minimum interval between parquet rewrites in `write_result`. Tight loops
-# of fast solves now do at most one rewrite per second, instead of one per
-# solve. The final rewrite is still forced via `flush_parquet`.
-_PARQUET_REWRITE_INTERVAL_SECONDS = 1.0
 
 
 def make_run_id(config: RunConfig) -> str:
@@ -84,10 +78,9 @@ def _is_resume_compatible(
 class ResultStore:
     run_dir: Path
     run_id: str
-    # Per-store lock and bookkeeping for the write paths. Using `field`
-    # with a default factory keeps `cls(root, run_id)` calls compatible.
+    # Per-store lock for the write paths. Using `field` with a default
+    # factory keeps `cls(root, run_id)` calls compatible.
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-    _last_parquet_rewrite: float = field(default=0.0, repr=False, compare=False)
 
     @classmethod
     def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> ResultStore:
@@ -274,61 +267,48 @@ class ResultStore:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
         line = json.dumps(record, sort_keys=True) + "\n"
-        with self._write_lock:
-            with self.results_jsonl_path.open("a") as handle:
-                handle.write(line)
-            now = time.monotonic()
-            # Amortize parquet rewrites: avoid the O(N^2) cost of
-            # re-serializing all completed records on every solve.
-            if now - self._last_parquet_rewrite >= _PARQUET_REWRITE_INTERVAL_SECONDS:
-                self._rewrite_parquet_locked()
-                self._last_parquet_rewrite = now
+        with self._write_lock, self.results_jsonl_path.open("a") as handle:
+            handle.write(line)
 
-    def flush_parquet(self) -> None:
-        """Force a parquet rewrite. Call at end of run."""
-        with self._write_lock:
-            self._rewrite_parquet_locked()
-            self._last_parquet_rewrite = time.monotonic()
+    def write_parquet(self) -> None:
+        """Materialize results.parquet from results.jsonl.
 
-    def rewrite_parquet(self) -> None:
+        Called once at end of a successful run by run_benchmark; the
+        parquet file's presence is the success sentinel. Safe to call
+        manually to rebuild a stale or missing parquet from jsonl.
+        """
         with self._write_lock:
-            self._rewrite_parquet_locked()
-            self._last_parquet_rewrite = time.monotonic()
-
-    def _rewrite_parquet_locked(self) -> None:
-        if not self.results_jsonl_path.exists():
-            return
-        records: list[dict] = []
-        with self.results_jsonl_path.open() as handle:
-            for lineno, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    records.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # A torn last line shouldn't kill the run; the next
-                    # rewrite (or a manual `bench` step) can recover once
-                    # the line is whole.
-                    logger.warning(
-                        "Skipping unparseable line %d in %s while rewriting parquet",
-                        lineno,
-                        self.results_jsonl_path,
-                    )
-        if not records:
-            return
-        df = pd.json_normalize(records)
-        df = normalize_table_for_parquet(df)
-        tmp = self.results_parquet_path.with_suffix(".parquet.tmp")
-        try:
-            df.to_parquet(tmp, index=False)
-            os.replace(tmp, self.results_parquet_path)
-        except Exception:
-            # Don't leave a half-written .parquet.tmp behind.
+            if not self.results_jsonl_path.exists():
+                return
+            records: list[dict] = []
+            with self.results_jsonl_path.open() as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        # A torn last line shouldn't kill the run.
+                        logger.warning(
+                            "Skipping unparseable line %d in %s while writing parquet",
+                            lineno,
+                            self.results_jsonl_path,
+                        )
+            if not records:
+                return
+            df = pd.json_normalize(records)
+            df = normalize_table_for_parquet(df)
+            tmp = self.results_parquet_path.with_suffix(".parquet.tmp")
             try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
+                df.to_parquet(tmp, index=False)
+                os.replace(tmp, self.results_parquet_path)
+            except Exception:
+                # Don't leave a half-written .parquet.tmp behind.
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
 
 
 _NUMERIC_COLUMNS: tuple[str, ...] = (
