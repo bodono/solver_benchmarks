@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from itertools import combinations
 from pathlib import Path
 
 import matplotlib
+
+logger = logging.getLogger(__name__)
+
+# Hard cap on the number of pairwise-scatter subplots in a single figure.
+# Each pair becomes its own axes; matplotlib's constrained_layout solver
+# (kiwisolver) is super-linear in the axes count and becomes pathological
+# well before the figure is human-readable anyway. With this many pairs
+# the CSV (pairwise_speedups_*.csv) remains the right artifact to inspect.
+_PAIRWISE_SCATTER_MAX_PAIRS = 20
 
 # Only force the headless ``Agg`` backend if the user hasn't already
 # selected one. Importing this module from a notebook (or any process
@@ -210,6 +220,20 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
         if not pivot[[solver_a, solver_b]].dropna().empty
     ]
     if not pairs:
+        return None
+    if len(pairs) > _PAIRWISE_SCATTER_MAX_PAIRS:
+        # Each pair would be its own axes in one figure; constrained_layout's
+        # constraint solver (kiwisolver) is the dominant cost at scale and
+        # the rendered image is not useful past a few dozen pairs. Skip the
+        # plot — pairwise_speedups_<metric>.csv still carries the data.
+        logger.info(
+            "Skipping pairwise scatter for %s: %d pairs exceeds cap of %d "
+            "(see pairwise_speedups_%s.csv for the underlying data).",
+            metric,
+            len(pairs),
+            _PAIRWISE_SCATTER_MAX_PAIRS,
+            metric,
+        )
         return None
 
     cols = min(3, len(pairs))
