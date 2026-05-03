@@ -35,7 +35,13 @@ osqp = ["osqp>=0.6"]
 clarabel = ["clarabel>=0.7"]
 cvxopt = ["cvxopt>=1.3"]
 ecos = ["ecos>=2.0"]
-qtqp = ["qtqp"]
+# `qdldl` is the Python binding for the QDLDL sparse LDLᵀ factorization
+# library, which qtqp loads at runtime when its `linear_solver` setting
+# is "QDLDL". qtqp doesn't pull it in itself, so we add it alongside
+# here. CHOLMOD and ACCELERATE backends would need their own packages
+# (scikit-sparse, system Accelerate); only QDLDL is supported on Linux
+# without extra system libraries.
+qtqp = ["qtqp", "qdldl>=0.1.7"]
 # Cloudflare R2 download support for the maros_meszaros_v2 dataset.
 # Triggered via ``auto_prepare_data: true`` when no .h5 files are
 # present at the configured ``data_dir``. Reads R2_ACCESS_KEY_ID +
@@ -61,6 +67,7 @@ all = [
     "cvxopt>=1.3",
     "ecos>=2.0",
     "qtqp",
+    "qdldl>=0.1.7",
     "ortools>=9.3.0",
     "piqp>=0.6.0",
     "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
