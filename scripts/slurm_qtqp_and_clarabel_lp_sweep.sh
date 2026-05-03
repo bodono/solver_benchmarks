@@ -28,9 +28,20 @@
 #     runner downloads (a) the miplib subset from miplib.zib.de and
 #     (b) the maros_meszaros_v2 zip from a private Cloudflare R2
 #     bucket. Savio compute nodes have outbound network access, so
-#     both work directly. To avoid downloading inside the job, run
-#     `uv run bench data prepare miplib` and `uv run bench data prepare
-#     maros_meszaros_v2` on a login node first.
+#     both work directly. To avoid paying the download time inside
+#     the job, prime the scratch caches once on a login node:
+#
+#         BASE=/global/scratch/users/matteosantamaria/solver_benchmarks_data
+#         uv run --extra qtqp --extra r2 \
+#             bench data prepare miplib \
+#                 --option max_size_mb=5.0 \
+#                 --option data_root="$BASE"
+#         uv run --extra qtqp --extra r2 \
+#             bench data prepare maros_meszaros_v2 \
+#                 --option data_dir="$BASE/maros_meszaros_v2_data"
+#
+#     Both commands are idempotent — they no-op if the target dir is
+#     already populated. Re-run when you want to refresh the caches.
 #   - The R2 download requires credentials. Export R2_ACCESS_KEY_ID
 #     and R2_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID /
 #     AWS_SECRET_ACCESS_KEY) before `sbatch`; sbatch propagates the

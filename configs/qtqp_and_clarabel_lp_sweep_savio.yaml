@@ -12,29 +12,31 @@ run:
   # If the cluster blocks outbound network on compute nodes, run
   # `bench data prepare miplib` from a login node and flip this to false.
   auto_prepare_data: true
+  # Shared scratch root for the two datasets that need cached data.
+  # Savio home dirs are quota-limited; scratch is large and fast, and
+  # one base path keeps every cache under a single easy-to-prune tree:
+  #     /global/scratch/users/matteosantamaria/solver_benchmarks_data/
+  #         miplib_data/                      (downloaded from miplib.zib.de)
+  #         maros_meszaros_v2_data/*.h5       (extracted from the R2 zip)
   datasets:
-    # `data_root` redirects miplib's downloaded MPS files to scratch
-    # (Savio home dirs are quota-limited; scratch is large and fast).
-    # Resolved as <data_root>/miplib_data/. Edit the path to match your
-    # Savio username; tilde expansion is supported.
     - id: miplib_under_5mb
       name: miplib
       dataset_options:
         max_size_mb: 5.0
-        data_root: /global/scratch/users/REPLACE_USERNAME/qtqp-data
+        # Resolved as <data_root>/miplib_data/.
+        data_root: /global/scratch/users/matteosantamaria/solver_benchmarks_data
     - name: netlib
     - name: kennington
     - name: maros_meszaros
     # `data_dir` is the directory the .h5 files live in (read from) and,
     # on first run, the directory the qpkit-data zip is downloaded and
-    # extracted into. The download is triggered by `auto_prepare_data`
-    # above and pulls from the private Cloudflare R2 bucket; the SLURM
-    # job needs R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY (or AWS_*) in
-    # env. Subsequent jobs against the same scratch dir reuse the
-    # extracted files and skip the download.
+    # extracted into. Triggered by `auto_prepare_data` above; pulls
+    # from the private Cloudflare R2 bucket. The SLURM job needs
+    # R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY (or AWS_*) in env.
+    # Subsequent jobs reuse the extracted files and skip the download.
     - name: maros_meszaros_v2
       dataset_options:
-        data_dir: /global/scratch/users/REPLACE_USERNAME/qpkit-data/processed/maros_meszaros
+        data_dir: /global/scratch/users/matteosantamaria/solver_benchmarks_data/maros_meszaros_v2_data
 
 # 3 inits × 2 refinement strategies × 3 equilibration cadences × 2
 # equilibration methods = 36 configs per solver, 72 total entries. Symmetric
