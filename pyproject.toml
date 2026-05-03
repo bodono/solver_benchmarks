@@ -30,10 +30,12 @@ osqp = ["osqp>=0.6"]
 clarabel = ["clarabel>=0.7"]
 cvxopt = ["cvxopt>=1.3"]
 ecos = ["ecos>=2.0"]
-qtqp = [
-    "qtqp>=0.0.3; python_version < '3.11'",
-    "qtqp>=0.0.5; python_version >= '3.11'",
-]
+qtqp = ["qtqp"]
+# Cloudflare R2 download support for the maros_meszaros_v2 dataset.
+# Triggered via ``auto_prepare_data: true`` when no .h5 files are
+# present at the configured ``data_dir``. Reads R2_ACCESS_KEY_ID +
+# R2_SECRET_ACCESS_KEY (or AWS_*) from the environment.
+r2 = ["boto3>=1.30"]
 gurobi = ["gurobipy>=11.0"]
 mosek = ["Mosek>=10.0"]
 pdlp = ["ortools>=9.3.0"]
@@ -53,8 +55,7 @@ all = [
     "clarabel>=0.7",
     "cvxopt>=1.3",
     "ecos>=2.0",
-    "qtqp>=0.0.3; python_version < '3.11'",
-    "qtqp>=0.0.5; python_version >= '3.11'",
+    "qtqp",
     "ortools>=9.3.0",
     "piqp>=0.6.0",
     "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
@@ -65,6 +66,14 @@ all = [
 
 [project.scripts]
 bench = "solver_benchmarks.cli:main"
+
+# Pin qtqp to a private branch on the google-deepmind/qtqp repo. Cloning
+# requires that the build environment has SSH access to the repo (an SSH
+# key on the runner / Savio compute node, or `ssh-add` of a forwarded key
+# during interactive `uv sync`). Switch to the https form with a
+# personal-access token in the URL if SSH is not available.
+[tool.uv.sources]
+qtqp = { git = "ssh://git@github.com/google-deepmind/qtqp.git", branch = "berkeley-slurm" }
 
 [tool.setuptools.packages.find]
 include = ["solver_benchmarks*", "problem_classes*"]

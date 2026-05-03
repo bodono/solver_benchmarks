@@ -166,7 +166,9 @@ class Dataset(ABC):
     def problem_classes_dir(self) -> Path:
         explicit = self.options.get("data_root")
         if explicit:
-            return Path(explicit).resolve()
+            # Honor ~ so configs can write ``~/scratch/...`` instead of
+            # hard-coding $HOME (relevant for HPC scratch paths).
+            return Path(explicit).expanduser().resolve()
         return self.repo_root / "problem_classes"
 
 
