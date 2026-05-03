@@ -11,7 +11,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from solver_benchmarks.core.problem import ProblemData, ProblemSpec
+# Point urllib (and any other consumer of the system trust store) at
+# certifi's CA bundle so the dataset downloaders work on HPC nodes whose
+# system trust store is missing or inaccessible. Importing certifi is a
+# no-op on systems where the system store is fine; the setdefault
+# preserves a user-provided override. This must run before any module
+# triggers urllib.request.urlopen, so it lives at the top of the
+# datasets package's base module — every concrete dataset imports from
+# here.
+try:  # pragma: no cover - exercised implicitly by every download test
+    import certifi as _certifi
+
+    os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
+except ImportError:
+    pass
+
+from solver_benchmarks.core.problem import ProblemData, ProblemSpec  # noqa: E402
 
 
 def validate_gzip_payload(compressed: bytes) -> None:

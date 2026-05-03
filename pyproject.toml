@@ -9,6 +9,11 @@ description = "Config-driven benchmark suite for convex optimization solvers."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    # certifi backstops urllib's CA trust on HPC interpreters whose
+    # system trust store is empty or inaccessible (the dataset
+    # downloaders use urllib.request.urlopen). datasets/base.py points
+    # SSL_CERT_FILE at certifi.where() at import time.
+    "certifi>=2023.0",
     "click>=8.1",
     "h5py>=3.0",
     "highspy>=1.0",
