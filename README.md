@@ -163,8 +163,8 @@ bench data prepare dc_opf
 ```
 
 (`bench data prepare kennington` is also valid but it copies from the
-bundled checkout rather than the network — see the Kennington note
-below.)
+bundled checkout rather than the network — see the Kennington note in
+the dataset table above.)
 
 Running with automatic preparation:
 

@@ -1,6 +1,10 @@
-"""Download Kennington LP instances from NETLIB.
+"""Stage Kennington LP instances into the dataset's data_root.
 
-Default behavior downloads the standard 16-problem Kennington subset.
+The Kennington files are bundled in the repository under
+``problem_classes/kennington/`` (decoded from NETLIB's EMPS format,
+which ``qpsreader`` cannot parse), so this script copies the requested
+instances from the bundle rather than fetching from the network.
+Default behavior stages the standard 16-problem Kennington subset.
 
 Examples:
   python scripts/prepare_kennington.py
