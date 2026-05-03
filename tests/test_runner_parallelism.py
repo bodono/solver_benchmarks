@@ -115,11 +115,11 @@ def test_parallel_run_writes_one_record_per_solve_no_torn_lines(
     assert all(r["status"] == "optimal" for r in records)
 
 
-def test_parallel_run_flushes_parquet_at_end(
+def test_parallel_run_writes_parquet_at_end(
     monkeypatch, tmp_path: Path, repo_root: Path
 ):
-    """Parquet rewrites are amortized to once-per-second; the runner
-    must flush at the end of the run so the parquet always reflects
+    """write_result only appends to jsonl during the run; the runner
+    must call store.write_parquet() at the end so the parquet reflects
     the complete jsonl."""
     monkeypatch.setitem(
         dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset

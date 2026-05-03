@@ -101,7 +101,7 @@ def test_rewrite_parquet_recovers_from_torn_last_line(tmp_path: Path):
     )
     with store.results_jsonl_path.open("a") as handle:
         handle.write('{"problem": "p2", "torn": ')
-    store.flush_parquet()
+    store.write_parquet()
 
     import pandas as pd
 
@@ -136,7 +136,7 @@ def test_rewrite_parquet_cleans_up_tmp_on_failure(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(pd.DataFrame, "to_parquet", failing_to_parquet)
 
     with pytest.raises(OSError):
-        store.flush_parquet()
+        store.write_parquet()
 
     leftover = list(store.run_dir.glob("results.parquet.tmp"))
     assert leftover == []
@@ -161,7 +161,7 @@ def test_normalize_table_for_parquet_does_not_scrub_string_columns(tmp_path: Pat
             error="solver hit inf during step",
         )
     )
-    store.flush_parquet()
+    store.write_parquet()
 
     import pandas as pd
 

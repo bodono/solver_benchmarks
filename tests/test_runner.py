@@ -469,9 +469,9 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
             run_time_seconds=0.2,
         )
     )
-    # Parquet writes are amortized across rapid successive
-    # write_result calls; force the final rewrite as run_benchmark does.
-    store.flush_parquet()
+    # write_result only appends to jsonl; materialize the parquet
+    # explicitly here as run_benchmark does at end of run.
+    store.write_parquet()
 
     records = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
     df = load_results(store.run_dir)
@@ -522,7 +522,7 @@ def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
         + "\n"
     )
 
-    store.rewrite_parquet()
+    store.write_parquet()
     df = load_results(store.run_dir)
 
     assert len(df) == 2
@@ -568,21 +568,20 @@ def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path, r
     assert store.events_path.exists()
 
 
-def test_skip_only_runs_flush_parquet_so_load_results_sees_every_skip(
+def test_skip_only_runs_write_parquet_so_load_results_sees_every_skip(
     monkeypatch, tmp_path: Path, repo_root: Path
 ):
     """When every problem is skipped during planning, the runner must
-    still flush_parquet on the early-return path. Without the flush,
-    the rate-limited parquet rewrite leaves only the first rapid skip
-    on disk and load_results() (which prefers parquet) under-reports
-    skip rows."""
+    still call store.write_parquet() on the early-return path so that
+    load_results() (which prefers parquet) sees every skip row, not
+    just whatever happens to be in jsonl at that moment."""
 
     class FakeConeDataset:
         def __init__(self, repo_root=None, **options):
             pass
 
         def list_problems(self):
-            # Two problems so multiple skip rows hit the rate limiter.
+            # Two problems so the test actually exercises >1 skip row.
             return [
                 ProblemSpec(dataset_id="fake_cone", name="cone_a", kind=CONE),
                 ProblemSpec(dataset_id="fake_cone", name="cone_b", kind=CONE),
