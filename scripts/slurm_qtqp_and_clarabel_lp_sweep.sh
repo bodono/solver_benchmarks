@@ -33,7 +33,7 @@
 #
 #         BASE=/global/scratch/users/matteosantamaria/solver_benchmarks_data
 #         uv run bench data prepare miplib --option max_size_mb=5.0 --option data_root="$BASE"
-#         uv run r2 bench data prepare maros_meszaros_v2 --option data_dir="$BASE/maros_meszaros_v2_data"
+#         uv run bench data prepare maros_meszaros_v2 --option data_dir="$BASE/maros_meszaros_v2_data"
 #
 #     Both commands are idempotent — they no-op if the target dir is
 #     already populated. Re-run when you want to refresh the caches.
