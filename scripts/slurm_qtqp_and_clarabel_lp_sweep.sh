@@ -55,10 +55,20 @@
 set -euo pipefail
 
 # --- Paths ------------------------------------------------------------------
-# Resolve repo root from this script's own location so the job runs the same
-# code regardless of where sbatch was invoked.
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+# Resolve repo root. Under SLURM the script body is staged into a slurmd
+# temp dir (e.g. /var/spool/slurmd/...) and BASH_SOURCE[0] points there,
+# not at the original file in your repo — so deriving REPO_ROOT from
+# "$BASH_SOURCE/.." would land on a system dir we can't write to and
+# `mkdir -p slurm` would fail with EACCES. SLURM_SUBMIT_DIR is the
+# directory you ran `sbatch` from; when present we trust it. Outside
+# SLURM we fall back to the script-relative path so `bash <path>` still
+# works for local debugging.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "$SLURM_SUBMIT_DIR/pyproject.toml" ]]; then
+    REPO_ROOT="$SLURM_SUBMIT_DIR"
+else
+    SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+fi
 cd "$REPO_ROOT"
 mkdir -p slurm
 
