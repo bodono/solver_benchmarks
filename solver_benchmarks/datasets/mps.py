@@ -96,7 +96,10 @@ class KenningtonDataset(MPSLPDataset):
     dataset_id = "kennington"
     description = "Kennington LP subset from the NETLIB LP collection."
     problem_folder = "kennington"
-    data_source = "external download from https://www.netlib.org/lp/data/kennington/"
+    data_source = (
+        "bundled in the repository (decoded from NETLIB EMPS); original "
+        "source https://www.netlib.org/lp/data/kennington/"
+    )
     prepare_command = "python scripts/prepare_kennington.py"
     automatic_download = True
 
@@ -113,7 +116,7 @@ class KenningtonDataset(MPSLPDataset):
             names = _KENNINGTON_PROBLEMS
         self.folder.mkdir(parents=True, exist_ok=True)
         for name in names:
-            _download_kennington_problem(name, self.folder)
+            _copy_bundled_kennington_problem(name, self.folder)
 
 
 class MiplibDataset(MPSLPDataset):
@@ -336,7 +339,21 @@ _KENNINGTON_PROBLEMS = [
 ]
 
 
-def _download_kennington_problem(name: str, folder: Path) -> None:
+def _copy_bundled_kennington_problem(name: str, folder: Path) -> None:
+    """Place a bundled Kennington MPS file at ``folder/<stem>.mps.gz``.
+
+    The Kennington files at NETLIB
+    (``https://www.netlib.org/lp/data/kennington/<stem>.gz``) are
+    distributed in NETLIB's **EMPS** (compressed MPS) format, not
+    standard MPS. ``qpsreader`` (and the HiGHS MPS reader it
+    delegates to) cannot parse EMPS, so the network path was
+    permanently broken. This adapter therefore ships a one-time
+    EMPS-decoded copy under the source repo's
+    ``problem_classes/kennington/`` and the prepare path simply
+    copies from there into the user's ``data_root``. If anyone ever
+    adds an EMPS decoder, restoring a ``urlopen`` fallback is a
+    clean two-line change.
+    """
     stem = _mps_name(Path(name))
     stem = stem if stem is not None else Path(name).name.removesuffix(".gz")
     if stem not in _KENNINGTON_PROBLEMS:
@@ -345,17 +362,31 @@ def _download_kennington_problem(name: str, folder: Path) -> None:
     target = folder / f"{stem}.mps.gz"
     if target.exists():
         return
+    bundled = _bundled_kennington_problem(stem)
+    if bundled is None:
+        raise RuntimeError(
+            f"Bundled Kennington problem {stem!r} is missing from the source "
+            f"repo. The dataset relies on the EMPS-decoded MPS files at "
+            f"problem_classes/kennington/; restore them or commit the file."
+        )
     folder.mkdir(parents=True, exist_ok=True)
-    url = f"https://www.netlib.org/lp/data/kennington/{stem}.gz"
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            compressed = response.read()
-        # Validate the full gzip stream (CRC + EOF marker), not just
-        # the header — see datasets/base.py for the rationale.
-        validate_gzip_payload(compressed)
-        atomic_write_bytes(target, compressed)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-        raise RuntimeError(f"Could not download Kennington problem {name!r}: {exc}") from exc
+    atomic_write_bytes(target, bundled.read_bytes())
+
+
+def _bundled_kennington_problem(stem: str) -> Path | None:
+    """Return the path of a bundled Kennington MPS file or ``None``.
+
+    Resolves to the *source-repo's* ``problem_classes/kennington/``
+    regardless of the user's ``data_root``, mirroring the DIMACS
+    bundled-lookup helper.
+    """
+    bundled = (
+        Path(__file__).resolve().parents[2]
+        / "problem_classes"
+        / "kennington"
+        / f"{stem}.mps.gz"
+    )
+    return bundled if bundled.exists() else None
 
 
 def _strip_mittelmann_suffix(name: str) -> str:

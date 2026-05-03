@@ -104,7 +104,7 @@ Current maintained adapters:
 |---|---|---|---|
 | Maros-Meszaros | `maros_meszaros` | QP | Loads `.mat` QP files. |
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
-| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset; prepare script downloads 16 instances. |
+| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset (16 instances). Bundled in the repo as decoded MPS — NETLIB hosts these in EMPS (compressed-MPS) format which our `qpsreader` cannot parse, so the prepare path copies from the bundled checkout instead of fetching from the network. |
 | Liu-Pataki | `liu_pataki` | Cone/SDP | Bundled infeasible and weakly infeasible SeDuMi `.mat` SDP instances; converted to canonical PSD triangle cones. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only; downloads official MIPLIB 2017 benchmark `.mps.gz` files on request. |
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
@@ -154,7 +154,6 @@ Download-backed examples:
 bench data prepare cblib
 bench data prepare mpc_qpbenchmark
 bench data prepare qplib
-bench data prepare kennington
 bench data prepare miplib
 bench data prepare mittelmann
 bench data prepare mittelmann_sdp
@@ -162,6 +161,10 @@ bench data prepare tsplib_sdp
 bench data prepare libsvm_qp
 bench data prepare dc_opf
 ```
+
+(`bench data prepare kennington` is also valid but it copies from the
+bundled checkout rather than the network — see the Kennington note in
+the dataset table above.)
 
 Running with automatic preparation:
 

@@ -24,7 +24,6 @@ TERMINAL_SOLVE_STATUSES = {
     [
         ("cblib", "nb", "nb", "cblib_data/nb.cbf.gz"),
         ("dc_opf", "case5", "case5", "dc_opf_data/case5.m"),
-        ("kennington", "ken-07", "ken-07", "kennington/ken-07.mps.gz"),
         ("libsvm_qp", "heart", "svm_dual_heart", "libsvm_data/heart.libsvm"),
         (
             "miplib",
@@ -138,18 +137,6 @@ def test_miplib_prepare_max_size_uses_real_manifest_and_downloads_small_files(
     [
         ("cblib", "nb", "nb"),
         ("dc_opf", "case5", "case5"),
-        pytest.param(
-            "kennington",
-            "ken-07",
-            "ken-07",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "Netlib Kennington downloads are gzip-wrapped compressed MPS; "
-                    "qpsreader currently cannot load them after download."
-                ),
-            ),
-        ),
         ("libsvm_qp", "heart", "svm_dual_heart"),
         ("miplib", "markshare_4_0", "markshare_4_0"),
         ("mittelmann", "qap15", "qap15"),
@@ -186,7 +173,7 @@ def _disable_dataset_network(monkeypatch, dataset_id: str, replacement) -> None:
         from solver_benchmarks.datasets import dc_opf
 
         monkeypatch.setattr(dc_opf.urllib.request, "urlopen", replacement)
-    elif dataset_id in {"kennington", "miplib", "mittelmann"}:
+    elif dataset_id in {"miplib", "mittelmann"}:
         from solver_benchmarks.datasets import mps
 
         monkeypatch.setattr(mps.urllib.request, "urlopen", replacement)
