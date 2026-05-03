@@ -138,18 +138,7 @@ def test_miplib_prepare_max_size_uses_real_manifest_and_downloads_small_files(
     [
         ("cblib", "nb", "nb"),
         ("dc_opf", "case5", "case5"),
-        pytest.param(
-            "kennington",
-            "ken-07",
-            "ken-07",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "Netlib Kennington downloads are gzip-wrapped compressed MPS; "
-                    "qpsreader currently cannot load them after download."
-                ),
-            ),
-        ),
+        ("kennington", "ken-07", "ken-07"),
         ("libsvm_qp", "heart", "svm_dual_heart"),
         ("miplib", "markshare_4_0", "markshare_4_0"),
         ("mittelmann", "qap15", "qap15"),
