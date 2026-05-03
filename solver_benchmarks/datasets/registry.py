@@ -10,6 +10,7 @@ from .dimacs import DIMACSDataset
 from .libsvm_qp import LibsvmQPDataset
 from .liu_pataki import LiuPatakiDataset
 from .maros_meszaros import MarosMeszarosDataset
+from .maros_meszaros_v2 import MarosMeszarosV2Dataset
 from .mittelmann_sdp import MittelmannSDPDataset
 from .mpc_qpbenchmark import MPCQPBenchmarkDataset
 from .mps import KenningtonDataset, MiplibDataset, MittelmannDataset, NetlibDataset
@@ -27,6 +28,7 @@ DATASETS: dict[str, type[Dataset]] = {
     "libsvm_qp": LibsvmQPDataset,
     "liu_pataki": LiuPatakiDataset,
     "maros_meszaros": MarosMeszarosDataset,
+    "maros_meszaros_v2": MarosMeszarosV2Dataset,
     "miplib": MiplibDataset,
     "miplib_lp_relaxation": MiplibDataset,
     "mpc_qpbenchmark": MPCQPBenchmarkDataset,

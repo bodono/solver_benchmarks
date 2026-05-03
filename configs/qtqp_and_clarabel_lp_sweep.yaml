@@ -1,0 +1,47 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 300
+  # miplib data must be prepared first; setting auto_prepare_data lets the
+  # runner download the matching subset (max_size_mb=5) on first invocation
+  # so the user doesn't have to remember `bench data prepare miplib` separately.
+  auto_prepare_data: true
+  datasets:
+    - id: miplib_under_5mb
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+    - name: netlib
+    - name: kennington
+    - name: maros_meszaros
+    - name: maros_meszaros_v2
+
+# 3 inits × 2 refinement strategies × 3 equilibration cadences × 2
+# equilibration methods = 36 configs per solver, 72 total entries. Symmetric
+# across both solver families so each (init, ref, epi, eq) cell can be
+# compared 1:1 between qtqp and qtqp_clarabel.
+solvers:
+  - id: qtqp
+    solver: qtqp
+    settings:
+      linear_solver: QDLDL
+      verbose: false
+    sweep:
+      initialization: [TRIVIAL, CVXOPT, LEAST_SQUARES]
+      refinement_strategy: [fixed_point, fgmres]
+      equilibrate_per_iteration: [0, 3, 10]
+      equilibration_method: [kkt, augmented_kkt]
+    id_template: "qtqp__init={initialization}__ref={refinement_strategy}__epi={equilibrate_per_iteration}__eq={equilibration_method}"
+
+  - id: qtqp_clarabel
+    solver: qtqp_clarabel
+    settings:
+      linear_solver: QDLDL
+      verbose: false
+    sweep:
+      initialization: [TRIVIAL, CVXOPT, LEAST_SQUARES]
+      refinement_strategy: [fixed_point, fgmres]
+      equilibrate_per_iteration: [0, 3, 10]
+      equilibration_method: [kkt, augmented_kkt]
+    id_template: "qtqp_clarabel__init={initialization}__ref={refinement_strategy}__epi={equilibrate_per_iteration}__eq={equilibration_method}"

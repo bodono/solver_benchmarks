@@ -15,6 +15,7 @@ from .pdlp_adapter import PDLPSolverAdapter
 from .piqp_adapter import PIQPSolverAdapter
 from .proxqp_adapter import ProxQPSolverAdapter
 from .qtqp_adapter import QTQPSolverAdapter
+from .qtqp_clarabel_adapter import QTQPClarabelSolverAdapter
 from .scs_adapter import SCSSolverAdapter
 from .sdpa_adapter import SDPASolverAdapter
 
@@ -31,6 +32,7 @@ SOLVERS: dict[str, type[SolverAdapter]] = {
     "piqp": PIQPSolverAdapter,
     "proxqp": ProxQPSolverAdapter,
     "qtqp": QTQPSolverAdapter,
+    "qtqp_clarabel": QTQPClarabelSolverAdapter,
     "sdpa": SDPASolverAdapter,
     "scs": SCSSolverAdapter,
 }

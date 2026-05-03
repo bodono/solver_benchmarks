@@ -41,6 +41,7 @@ def test_required_datasets_are_registered():
         "kennington",
         "liu_pataki",
         "maros_meszaros",
+        "maros_meszaros_v2",
         "mpc_qpbenchmark",
         "netlib",
         "miplib",
@@ -58,6 +59,7 @@ def test_required_datasets_are_registered():
 def test_required_solvers_are_registered():
     required = {
         "qtqp",
+        "qtqp_clarabel",
         "scs",
         "clarabel",
         "osqp",
@@ -73,6 +75,9 @@ def test_required_solvers_are_registered():
 
     assert required.issubset(set(list_solvers()))
     assert "cone" in get_solver("clarabel").supported_problem_kinds
+    # The qtqp-package Clarabel implementation is distinct from the Rust
+    # crate registered under "clarabel".
+    assert get_solver("qtqp_clarabel") is not get_solver("clarabel")
 
 
 def test_commercial_adapters_use_solver_specific_modules():
@@ -104,6 +109,54 @@ def test_synthetic_cone_dataset_loads_cone():
     assert problem.kind == "cone"
     assert problem.cone["A"].shape == (1, 1)
     assert problem.cone["cone"] == {"l": 1}
+
+
+def test_maros_meszaros_v2_loads_native_cone(tmp_path: Path, monkeypatch):
+    import h5py
+    import scipy.sparse as sp
+
+    from solver_benchmarks.datasets import maros_meszaros_v2 as v2_module
+
+    P = sp.csc_matrix([[2.0, 0.0], [0.0, 4.0]])
+    A = sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
+    b = np.array([2.0, 1.0, 1.0])
+    c = np.array([0.5, -0.25])
+    j = 1
+
+    h5_path = tmp_path / "TINY.h5"
+    with h5py.File(h5_path, "w") as f:
+        f.attrs["m"] = A.shape[0]
+        f.attrs["n"] = A.shape[1]
+        f["P.data"] = P.data
+        f["P.indices"] = P.indices
+        f["P.indptr"] = P.indptr
+        f["A.data"] = A.data
+        f["A.indices"] = A.indices
+        f["A.indptr"] = A.indptr
+        f["b"] = b
+        f["c"] = c
+        f["j"] = j
+
+    monkeypatch.setattr(v2_module, "_DATA_DIR", tmp_path)
+
+    dataset = get_dataset("maros_meszaros_v2")()
+    specs = dataset.list_problems()
+    assert [spec.name for spec in specs] == ["TINY"]
+    assert specs[0].kind == "cone"
+    assert specs[0].metadata["format"] == "qpkit_h5"
+
+    problem = dataset.load_problem("TINY")
+    assert problem.kind == "cone"
+    data = problem.cone
+    assert data["n"] == 2
+    assert data["m"] == 3
+    assert data["cone"] == {"z": 1, "l": 2}
+    assert data["r"] == 0.0
+    assert data["obj_type"] == "min"
+    assert data["P"].toarray() == pytest.approx(P.toarray())
+    assert data["A"].toarray() == pytest.approx(A.toarray())
+    assert data["b"].tolist() == pytest.approx(b.tolist())
+    assert data["q"].tolist() == pytest.approx(c.tolist())
 
 
 def test_liu_pataki_dataset_converts_sedumi_psd_blocks(tmp_path: Path):
@@ -173,7 +226,6 @@ def test_dataset_data_status_reports_local_problem_counts():
     assert dimacs.data_status().problem_count > 0
     assert liu_pataki.data_status().available
     assert liu_pataki.data_status().problem_count == 800
-
 
 
 def test_cblib_cbf_parser_loads_supported_continuous_problem(tmp_path: Path):
@@ -266,9 +318,7 @@ def test_validate_gzip_payload_accepts_well_formed_archive():
     validate_gzip_payload(_gzip.compress(b"hello"))
 
 
-def test_cblib_download_does_not_atomically_commit_truncated_gzip(
-    monkeypatch, tmp_path: Path
-):
+def test_cblib_download_does_not_atomically_commit_truncated_gzip(monkeypatch, tmp_path: Path):
     """Pin the contract that a truncated gzip from the network is
     rejected before atomic_write_bytes lands it on disk."""
     import gzip as _gzip
@@ -408,10 +458,7 @@ def test_dimacs_prepare_uses_bundled_cache_before_network(
 
     target = data_root / "dimacs_data" / "nb.mat.gz"
     assert target.exists()
-    assert (
-        target.read_bytes()
-        == (repo_root / "problem_classes/dimacs_data/nb.mat.gz").read_bytes()
-    )
+    assert target.read_bytes() == (repo_root / "problem_classes/dimacs_data/nb.mat.gz").read_bytes()
 
 
 def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):
@@ -579,7 +626,9 @@ def test_qplib_index_and_subset_filtering(tmp_path: Path):
     data_root = tmp_path / "problem_classes"
     folder = data_root / "qplib_data"
     folder.mkdir(parents=True)
-    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n8790\n\nDCL (1)\n--------\n8495\n")
+    (folder / "list_convex_qps.txt").write_text(
+        "CCB (1)\n-------\n8790\n\nDCL (1)\n--------\n8495\n"
+    )
     (folder / "QPLIB_8790.qplib").write_text("")
     (folder / "QPLIB_8495.qplib").write_text("")
 

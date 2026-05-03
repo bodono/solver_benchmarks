@@ -1,4 +1,11 @@
-"""QTQP adapter."""
+"""qtqp.clarabel.Clarabel adapter.
+
+This is the Clarabel-paper IPM implemented inside the ``qtqp`` package
+(``qtqp.clarabel.Clarabel``), distinct from the standalone Rust-based
+Clarabel registered under ``clarabel``. The class extends ``qtqp.QTQP``
+and takes the same ``(a, b, c, z, p)`` constructor, so this adapter
+reuses qtqp's CONE/QP input handling.
+"""
 
 from __future__ import annotations
 
@@ -22,21 +29,20 @@ from .base import (
     SolverAdapter,
     SolverUnavailable,
     mark_threads_ignored,
-    mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
     settings_with_defaults,
 )
 
 
-class QTQPSolverAdapter(SolverAdapter):
-    solver_name = "qtqp"
+class QTQPClarabelSolverAdapter(SolverAdapter):
+    solver_name = "qtqp_clarabel"
     supported_problem_kinds = {QP, CONE}
 
     @classmethod
     def is_available(cls) -> bool:
         try:
-            import qtqp  # noqa: F401
+            import qtqp.clarabel  # noqa: F401
         except ModuleNotFoundError:
             return False
         return True
@@ -44,15 +50,21 @@ class QTQPSolverAdapter(SolverAdapter):
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import qtqp
+            import qtqp.clarabel as qtqp_clarabel
         except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install QTQP to use the QTQP adapter") from exc
+            raise SolverUnavailable(
+                "Install QTQP to use the qtqp_clarabel adapter"
+            ) from exc
 
         settings = settings_with_defaults(self.settings)
-        # QTQP exposes neither a time-limit knob nor a thread-count
-        # setting; record the configured values on info so callers can
-        # detect they were ignored rather than silently dropping them.
+        # qtqp.clarabel.Clarabel.solve has no native thread knob. We pop
+        # threads/time_limit so the cross-adapter aliases don't surface
+        # as TypeErrors, then mark them on info if the user asked for
+        # something we couldn't honor.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        if time_limit is not None:
+            settings["time_limit_secs"] = float(time_limit)
         settings = _normalize_settings(settings, qtqp)
 
         if problem.kind == QP:
@@ -65,16 +77,17 @@ class QTQPSolverAdapter(SolverAdapter):
             cone_keys = dict(cone_problem["cone"])
             z = int(cone_keys.pop("z", 0))
             l_count = int(cone_keys.pop("l", 0))
-            # qtqp natively supports only the zero and nonneg cones. The
-            # legacy `f` key is not merged into `z` (unlike SCS/ECOS) —
-            # accepting it would be silently lossy if a future dataset
-            # used it differently.
+            # qtqp.clarabel.Clarabel inherits qtqp.QTQP's input shape:
+            # zero (z) and nonneg (l) cones only. The legacy `f` key is
+            # not merged into `z` here either — see qtqp_adapter for the
+            # rationale.
             if cone_keys:
                 return SolverResult(
                     status=status.SKIPPED_UNSUPPORTED,
                     info={
                         "reason": (
-                            f"qtqp only handles z/l cones; got extra keys {sorted(cone_keys)!r}"
+                            "qtqp_clarabel only handles z/l cones; got extra keys "
+                            f"{sorted(cone_keys)!r}"
                         )
                     },
                 )
@@ -92,10 +105,14 @@ class QTQPSolverAdapter(SolverAdapter):
             b = np.asarray(cone_problem["b"], dtype=float)
             c = np.asarray(cone_problem["q"], dtype=float)
             p_in = cone_problem.get("P")
-            p = sp.csc_matrix(p_in) if p_in is not None else sp.csc_matrix((a.shape[1], a.shape[1]))
+            p = (
+                sp.csc_matrix(p_in)
+                if p_in is not None
+                else sp.csc_matrix((a.shape[1], a.shape[1]))
+            )
 
         start = time.perf_counter()
-        solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
+        solver = qtqp_clarabel.Clarabel(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
         solve_kwargs = dict(settings)
         if "collect_stats" in inspect.signature(solver.solve).parameters:
             solve_kwargs["collect_stats"] = True
@@ -116,7 +133,7 @@ class QTQPSolverAdapter(SolverAdapter):
             iterations = None
             info = {}
 
-        mapped = _map_qtqp_status(raw_status)
+        mapped = _map_clarabel_status(raw_status)
         cone_dict: dict = {}
         if z:
             cone_dict["z"] = int(z)
@@ -124,7 +141,6 @@ class QTQPSolverAdapter(SolverAdapter):
             cone_dict["l"] = int(a.shape[0] - z)
         kkt_dict = _compute_kkt(mapped, solution, p, c, a, b, cone_dict)
         result_info = {"raw_status": raw_status, **info}
-        mark_time_limit_ignored(result_info, time_limit)
         mark_threads_ignored(result_info, threads)
         return SolverResult(
             status=mapped,
@@ -137,12 +153,13 @@ class QTQPSolverAdapter(SolverAdapter):
         )
 
 
-def _map_qtqp_status(raw_status) -> str:
+def _map_clarabel_status(raw_status) -> str:
     return {
         "solved": status.OPTIMAL,
         "infeasible": status.PRIMAL_INFEASIBLE,
         "unbounded": status.DUAL_INFEASIBLE,
         "hit_max_iter": status.MAX_ITER_REACHED,
+        "hit_time_limit": status.TIME_LIMIT,
         "unfinished": status.SOLVER_ERROR,
         "failed": status.SOLVER_ERROR,
     }.get(str(raw_status), status.SOLVER_ERROR)
@@ -179,8 +196,11 @@ def _normalize_settings(settings: dict, qtqp_module):
         settings["linear_solver"] = getattr(qtqp_module.LinearSolver, attr)
     initialization = settings.get("initialization")
     if isinstance(initialization, str):
-        # qtqp.solve only accepts qtqp.Initialization enum members; raw
-        # strings (TRIVIAL/LEAST_SQUARES/CVXOPT) raise ValueError.
+        # Clarabel.solve restricts initialization to TRIVIAL or CVXOPT
+        # (LEAST_SQUARES raises ValueError). We still convert the string
+        # to an enum here so the user gets the upstream solver's
+        # validation error rather than an "Unknown initialization"
+        # surprise from a string-comparison mismatch.
         settings["initialization"] = getattr(
             qtqp_module.Initialization, initialization.upper()
         )
