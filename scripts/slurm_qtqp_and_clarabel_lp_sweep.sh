@@ -9,6 +9,19 @@
 #SBATCH --cpus-per-task=56
 #SBATCH --mem=64G
 #SBATCH --account=fc_radar
+
+# uv's cache must live on a filesystem that supports flock(). The
+# default ~/.cache/uv lands on Savio's NFS-mounted home filesystem,
+# which advertises locks but errors on acquisition:
+#     error: Could not acquire shared lock for `~/.cache/uv` ...:
+#     No locks available (os error 37)
+# Scratch is Lustre and handles flock cleanly. Setting this here
+# (before any `uv` invocation in this script, including the
+# data-prepare snippet below) is enough; for interactive `uv`
+# commands on the login node, add the same line to your ~/.bashrc.
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/global/scratch/users/${USER}/uv-cache}"
+mkdir -p "$UV_CACHE_DIR"
+
 #
 # Run the QTQP + Clarabel LP sweep on Berkeley Savio's `savio4_htc`
 # partition. Pairs with configs/qtqp_and_clarabel_lp_sweep_savio.yaml,
