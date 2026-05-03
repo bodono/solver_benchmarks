@@ -391,6 +391,44 @@ def test_kennington_dataset_round_trips_through_qpsreader(tmp_path: Path):
     assert problem.qp["A"].shape[1] == 2
 
 
+def test_kennington_prepare_uses_bundled_cache_and_solves(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    # NETLIB serves Kennington in EMPS (compressed-MPS) format which
+    # qpsreader cannot parse, so the dataset is intentionally bundled-only.
+    # Pin that prepare never touches the network and that a real bundled
+    # instance round-trips through prepare → load → solve.
+    from solver_benchmarks.core import status
+
+    def fail_if_network_is_used(*args, **kwargs):
+        raise AssertionError("Kennington bundled prepare unexpectedly used the network")
+
+    monkeypatch.setattr(mps_module.urllib.request, "urlopen", fail_if_network_is_used)
+    data_root = tmp_path / "problem_classes"
+    dataset = get_dataset("kennington")(repo_root=repo_root, data_root=data_root)
+
+    dataset.prepare_data(["ken-07"])
+
+    target = data_root / "kennington" / "ken-07.mps.gz"
+    assert target.exists()
+    assert (
+        target.read_bytes()
+        == (repo_root / "problem_classes/kennington/ken-07.mps.gz").read_bytes()
+    )
+
+    problem = dataset.load_problem("ken-07")
+    solver_cls = get_solver("clarabel")
+    assert problem.kind in solver_cls.supported_problem_kinds
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result = solver_cls({"verbose": False, "max_iter": 200}).solve(problem, artifacts)
+    assert result.status in {
+        status.OPTIMAL,
+        status.OPTIMAL_INACCURATE,
+        *status.ANY_INFEASIBLE,
+    }
+
+
 def test_dimacs_prepare_uses_bundled_cache_before_network(
     monkeypatch, tmp_path: Path, repo_root: Path
 ):
