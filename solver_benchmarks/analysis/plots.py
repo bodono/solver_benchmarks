@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from itertools import combinations
 from pathlib import Path
@@ -40,6 +41,18 @@ from solver_benchmarks.analysis.tables import (
     status_matrix,
 )
 from solver_benchmarks.core import status
+
+logger = logging.getLogger(__name__)
+
+# Hard cap on the number of pairwise-scatter subplots in a single figure.
+# Each pair becomes its own axes; matplotlib's constrained_layout solver
+# (kiwisolver) is super-linear in the axes count and goes pathological
+# well before the figure is human-readable. The cap is set so common
+# multi-solver configs (~10 solvers ⇒ 45 pairs) still render — protection
+# is targeted at the runaway case (100s+ solvers ⇒ 1000s of axes), not at
+# normal benchmark sweeps. Past the cap, pairwise_speedups_*.csv remains
+# the right artifact to inspect.
+_PAIRWISE_SCATTER_MAX_PAIRS = 50
 
 
 def write_analysis_plots(
@@ -210,6 +223,23 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
         if not pivot[[solver_a, solver_b]].dropna().empty
     ]
     if not pairs:
+        return None
+    if len(pairs) > _PAIRWISE_SCATTER_MAX_PAIRS:
+        # Each pair would be its own axes in one figure; constrained_layout's
+        # constraint solver (kiwisolver) is the dominant cost at scale and
+        # the rendered image is not useful past a few dozen pairs. Skip the
+        # plot — pairwise_speedups_<metric>.csv still carries the data.
+        # Use warning level so users running `bench report` actually see
+        # the message under default Python logging (the package does not
+        # call logging.basicConfig, so info-level is silent).
+        logger.warning(
+            "Skipping pairwise scatter for %s: %d pairs exceeds cap of %d "
+            "(see pairwise_speedups_%s.csv for the underlying data).",
+            metric,
+            len(pairs),
+            _PAIRWISE_SCATTER_MAX_PAIRS,
+            metric,
+        )
         return None
 
     cols = min(3, len(pairs))
