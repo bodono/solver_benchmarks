@@ -9,15 +9,6 @@ from pathlib import Path
 
 import matplotlib
 
-logger = logging.getLogger(__name__)
-
-# Hard cap on the number of pairwise-scatter subplots in a single figure.
-# Each pair becomes its own axes; matplotlib's constrained_layout solver
-# (kiwisolver) is super-linear in the axes count and becomes pathological
-# well before the figure is human-readable anyway. With this many pairs
-# the CSV (pairwise_speedups_*.csv) remains the right artifact to inspect.
-_PAIRWISE_SCATTER_MAX_PAIRS = 20
-
 # Only force the headless ``Agg`` backend if the user hasn't already
 # selected one. Importing this module from a notebook (or any process
 # that already configured an interactive backend) would otherwise
@@ -50,6 +41,18 @@ from solver_benchmarks.analysis.tables import (
     status_matrix,
 )
 from solver_benchmarks.core import status
+
+logger = logging.getLogger(__name__)
+
+# Hard cap on the number of pairwise-scatter subplots in a single figure.
+# Each pair becomes its own axes; matplotlib's constrained_layout solver
+# (kiwisolver) is super-linear in the axes count and goes pathological
+# well before the figure is human-readable. The cap is set so common
+# multi-solver configs (~10 solvers ⇒ 45 pairs) still render — protection
+# is targeted at the runaway case (100s+ solvers ⇒ 1000s of axes), not at
+# normal benchmark sweeps. Past the cap, pairwise_speedups_*.csv remains
+# the right artifact to inspect.
+_PAIRWISE_SCATTER_MAX_PAIRS = 50
 
 
 def write_analysis_plots(
@@ -226,7 +229,10 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
         # constraint solver (kiwisolver) is the dominant cost at scale and
         # the rendered image is not useful past a few dozen pairs. Skip the
         # plot — pairwise_speedups_<metric>.csv still carries the data.
-        logger.info(
+        # Use warning level so users running `bench report` actually see
+        # the message under default Python logging (the package does not
+        # call logging.basicConfig, so info-level is silent).
+        logger.warning(
             "Skipping pairwise scatter for %s: %d pairs exceeds cap of %d "
             "(see pairwise_speedups_%s.csv for the underlying data).",
             metric,

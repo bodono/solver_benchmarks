@@ -457,6 +457,89 @@ def test_pairwise_and_outlier_reports():
     assert ratios.loc["one_variable_eq", "solver_b"] == pytest.approx(2.0)
 
 
+def test_pairwise_scatter_caps_pair_count_and_warns(
+    monkeypatch, tmp_path: Path, caplog
+):
+    """Above the pair-count cap, ``_write_pairwise_scatter`` must skip
+    rendering (matplotlib's constrained_layout is super-linear in axes
+    count) and surface a warning so users know why the file is missing.
+    Below the cap, normal rendering is unchanged."""
+    import logging
+
+    from solver_benchmarks.analysis import plots as plots_module
+
+    # 6 solvers ⇒ C(6, 2) = 15 pairs ⇒ under the cap of 50.
+    under_cap_solvers = [f"s{i}" for i in range(6)]
+    under_cap_frame = pd.DataFrame(
+        [
+            {
+                "problem": "p1",
+                "solver_id": solver_id,
+                "status": "optimal",
+                "run_time_seconds": float(idx + 1),
+            }
+            for idx, solver_id in enumerate(under_cap_solvers)
+        ]
+        + [
+            {
+                "problem": "p2",
+                "solver_id": solver_id,
+                "status": "optimal",
+                "run_time_seconds": float(idx + 1) * 2.0,
+            }
+            for idx, solver_id in enumerate(under_cap_solvers)
+        ]
+    )
+    under_dir = tmp_path / "under"
+    under_dir.mkdir()
+    under_path = plots_module._write_pairwise_scatter(
+        under_cap_frame, under_dir, "run_time_seconds"
+    )
+    assert under_path is not None and under_path.exists()
+
+    # Force the cap low so the test is fast and uses a synthetic frame.
+    monkeypatch.setattr(plots_module, "_PAIRWISE_SCATTER_MAX_PAIRS", 3)
+    # 4 solvers ⇒ C(4, 2) = 6 pairs ⇒ above the temporary cap of 3.
+    over_cap_solvers = ["a", "b", "c", "d"]
+    over_cap_frame = pd.DataFrame(
+        [
+            {
+                "problem": "p1",
+                "solver_id": solver_id,
+                "status": "optimal",
+                "run_time_seconds": float(idx + 1),
+            }
+            for idx, solver_id in enumerate(over_cap_solvers)
+        ]
+        + [
+            {
+                "problem": "p2",
+                "solver_id": solver_id,
+                "status": "optimal",
+                "run_time_seconds": float(idx + 1) * 2.0,
+            }
+            for idx, solver_id in enumerate(over_cap_solvers)
+        ]
+    )
+    over_dir = tmp_path / "over"
+    over_dir.mkdir()
+    with caplog.at_level(logging.WARNING, logger=plots_module.__name__):
+        over_path = plots_module._write_pairwise_scatter(
+            over_cap_frame, over_dir, "run_time_seconds"
+        )
+    assert over_path is None
+    assert not (over_dir / "pairwise_scatter_run_time_seconds.png").exists()
+    # The user-visible message must include the metric, the actual pair
+    # count, and a pointer to the CSV that still has the data.
+    skip_messages = [
+        record.message for record in caplog.records if "Skipping pairwise scatter" in record.message
+    ]
+    assert skip_messages, "expected a warning when the pair count exceeds the cap"
+    assert "run_time_seconds" in skip_messages[0]
+    assert "6 pairs" in skip_messages[0]
+    assert "pairwise_speedups_run_time_seconds.csv" in skip_messages[0]
+
+
 def test_inaccurate_statuses_are_not_successful_by_default():
     frame = pd.DataFrame(
         [
