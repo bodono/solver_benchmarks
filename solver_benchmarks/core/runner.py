@@ -66,6 +66,11 @@ def run_benchmark(
         else None
     )
     store = ResultStore.create(config, run_dir=run_dir)
+    # results.parquet is a success sentinel: it exists iff a run finished
+    # all queued tasks without raising. Clear any leftover parquet from
+    # a prior aborted attempt at the same run_dir (resume case) so that
+    # its eventual reappearance unambiguously means "this run completed".
+    store.results_parquet_path.unlink(missing_ok=True)
     if source_config_path is not None:
         store.copy_source_config(source_config_path)
     completed = (
@@ -196,11 +201,10 @@ def run_benchmark(
     )
     progress.emit_plan()
     if not tasks:
-        # Planning-time skips already called store.write_result(). The
-        # parquet rewrite is rate-limited so without an explicit flush
-        # only the first rapid skip lands; load_results() prefers
-        # parquet and would silently miss later rows.
-        store.flush_parquet()
+        # No work to do (e.g. every problem skipped during planning, or
+        # nothing left after resume) still counts as a successful run.
+        # Materialize the parquet so its existence reflects completion.
+        store.write_parquet()
         progress.emit_final()
         return store
 
@@ -242,10 +246,11 @@ def run_benchmark(
                 result = future.result()
                 store.write_result(result)
                 progress.record_result(result)
-    # Force a final parquet rewrite so the on-disk parquet always
-    # reflects the complete jsonl, even when interim writes were
-    # amortized via the rate limit.
-    store.flush_parquet()
+    # All queued tasks completed successfully — materialize the parquet
+    # exactly once. results.jsonl is the canonical live record during
+    # the run; results.parquet is the end-of-run derived artifact whose
+    # presence signals "this run completed".
+    store.write_parquet()
     progress.emit_final()
     return store
 

@@ -469,9 +469,9 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
             run_time_seconds=0.2,
         )
     )
-    # Parquet writes are amortized across rapid successive
-    # write_result calls; force the final rewrite as run_benchmark does.
-    store.flush_parquet()
+    # write_result only appends to jsonl; materialize the parquet
+    # explicitly here as run_benchmark does at end of run.
+    store.write_parquet()
 
     records = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
     df = load_results(store.run_dir)
@@ -482,7 +482,7 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
     assert df.loc[df["problem"] == "p2", "objective_value"].isna().all()
 
 
-def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
+def test_write_parquet_handles_legacy_string_nan(tmp_path: Path):
     config = parse_run_config(
         {
             "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
@@ -522,7 +522,7 @@ def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
         + "\n"
     )
 
-    store.rewrite_parquet()
+    store.write_parquet()
     df = load_results(store.run_dir)
 
     assert len(df) == 2
@@ -568,21 +568,20 @@ def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path, r
     assert store.events_path.exists()
 
 
-def test_skip_only_runs_flush_parquet_so_load_results_sees_every_skip(
+def test_skip_only_runs_write_parquet_so_load_results_sees_every_skip(
     monkeypatch, tmp_path: Path, repo_root: Path
 ):
     """When every problem is skipped during planning, the runner must
-    still flush_parquet on the early-return path. Without the flush,
-    the rate-limited parquet rewrite leaves only the first rapid skip
-    on disk and load_results() (which prefers parquet) under-reports
-    skip rows."""
+    still call store.write_parquet() on the early-return path so that
+    load_results() (which prefers parquet) sees every skip row, not
+    just whatever happens to be in jsonl at that moment."""
 
     class FakeConeDataset:
         def __init__(self, repo_root=None, **options):
             pass
 
         def list_problems(self):
-            # Two problems so multiple skip rows hit the rate limiter.
+            # Two problems so the test actually exercises >1 skip row.
             return [
                 ProblemSpec(dataset_id="fake_cone", name="cone_a", kind=CONE),
                 ProblemSpec(dataset_id="fake_cone", name="cone_b", kind=CONE),
@@ -623,6 +622,49 @@ def test_skip_only_runs_flush_parquet_so_load_results_sees_every_skip(
     assert len(df) == 2
     assert set(df["problem"]) == {"cone_a", "cone_b"}
     assert set(df["status"]) == {"skipped_unsupported"}
+
+
+def test_run_benchmark_unlinks_stale_parquet_at_start_and_writes_at_end(
+    tmp_path: Path, repo_root: Path
+):
+    """Pin the success-sentinel contract: a leftover parquet from a
+    prior aborted attempt must be removed at the start of run_benchmark
+    so it cannot be mistaken for the completion of *this* run, and the
+    parquet must reappear at the end with the new run's content."""
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "include": ["one_variable_eq"],
+                "parallelism": 1,
+            },
+            "solvers": [
+                {
+                    "id": "scs_sentinel",
+                    "solver": "scs",
+                    "settings": {"verbose": False, "max_iters": 1000},
+                }
+            ],
+        }
+    )
+
+    run_dir = tmp_path / "runs" / "fixed_run_id"
+    run_dir.mkdir(parents=True)
+    stale_parquet = run_dir / "results.parquet"
+    stale_parquet.write_bytes(b"definitely-not-a-parquet-file")
+    stale_mtime_ns = stale_parquet.stat().st_mtime_ns
+
+    store = run_benchmark(config, run_dir=run_dir, repo_root=repo_root)
+
+    assert store.results_parquet_path == stale_parquet
+    assert stale_parquet.exists()
+    # The byte payload was overwritten, not patched: the old contents
+    # would have failed pd.read_parquet, and the mtime advanced.
+    assert stale_parquet.stat().st_mtime_ns > stale_mtime_ns
+    df = load_results(store.run_dir)
+    assert len(df) == 1
+    assert df.loc[0, "problem"] == "one_variable_eq"
 
 
 def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path, repo_root: Path):
