@@ -482,7 +482,7 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
     assert df.loc[df["problem"] == "p2", "objective_value"].isna().all()
 
 
-def test_parquet_rewrite_handles_legacy_string_nan(tmp_path: Path):
+def test_write_parquet_handles_legacy_string_nan(tmp_path: Path):
     config = parse_run_config(
         {
             "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
@@ -622,6 +622,49 @@ def test_skip_only_runs_write_parquet_so_load_results_sees_every_skip(
     assert len(df) == 2
     assert set(df["problem"]) == {"cone_a", "cone_b"}
     assert set(df["status"]) == {"skipped_unsupported"}
+
+
+def test_run_benchmark_unlinks_stale_parquet_at_start_and_writes_at_end(
+    tmp_path: Path, repo_root: Path
+):
+    """Pin the success-sentinel contract: a leftover parquet from a
+    prior aborted attempt must be removed at the start of run_benchmark
+    so it cannot be mistaken for the completion of *this* run, and the
+    parquet must reappear at the end with the new run's content."""
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "include": ["one_variable_eq"],
+                "parallelism": 1,
+            },
+            "solvers": [
+                {
+                    "id": "scs_sentinel",
+                    "solver": "scs",
+                    "settings": {"verbose": False, "max_iters": 1000},
+                }
+            ],
+        }
+    )
+
+    run_dir = tmp_path / "runs" / "fixed_run_id"
+    run_dir.mkdir(parents=True)
+    stale_parquet = run_dir / "results.parquet"
+    stale_parquet.write_bytes(b"definitely-not-a-parquet-file")
+    stale_mtime_ns = stale_parquet.stat().st_mtime_ns
+
+    store = run_benchmark(config, run_dir=run_dir, repo_root=repo_root)
+
+    assert store.results_parquet_path == stale_parquet
+    assert stale_parquet.exists()
+    # The byte payload was overwritten, not patched: the old contents
+    # would have failed pd.read_parquet, and the mtime advanced.
+    assert stale_parquet.stat().st_mtime_ns > stale_mtime_ns
+    df = load_results(store.run_dir)
+    assert len(df) == 1
+    assert df.loc[0, "problem"] == "one_variable_eq"
 
 
 def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path, repo_root: Path):

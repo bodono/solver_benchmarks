@@ -82,7 +82,34 @@ def test_completed_keys_skips_torn_jsonl_lines(tmp_path: Path):
     assert keys == {("synthetic_qp", "p1", "scs")}
 
 
-def test_rewrite_parquet_recovers_from_torn_last_line(tmp_path: Path):
+def test_write_result_does_not_materialize_parquet_until_write_parquet(tmp_path: Path):
+    """Pin the central contract of the end-of-run model: ``write_result``
+    appends to jsonl only and never touches results.parquet. The parquet
+    is materialized exclusively by ``write_parquet`` so that the file's
+    presence on disk can be used as a "run completed" sentinel."""
+    store = _make_store(tmp_path)
+    for problem in ("p1", "p2", "p3"):
+        store.write_result(
+            ProblemResult(
+                run_id=store.run_id,
+                dataset="synthetic_qp",
+                problem=problem,
+                problem_kind=QP,
+                solver_id="scs",
+                solver="scs",
+                status="optimal",
+                objective_value=0.0,
+                iterations=1,
+                run_time_seconds=0.01,
+            )
+        )
+        assert not store.results_parquet_path.exists()
+
+    store.write_parquet()
+    assert store.results_parquet_path.exists()
+
+
+def test_write_parquet_recovers_from_torn_last_line(tmp_path: Path):
     """A torn jsonl line must not block subsequent parquet rewrites."""
     store = _make_store(tmp_path)
     store.write_result(
@@ -110,7 +137,7 @@ def test_rewrite_parquet_recovers_from_torn_last_line(tmp_path: Path):
     assert df.loc[0, "problem"] == "p1"
 
 
-def test_rewrite_parquet_cleans_up_tmp_on_failure(tmp_path: Path, monkeypatch):
+def test_write_parquet_cleans_up_tmp_on_failure(tmp_path: Path, monkeypatch):
     """If df.to_parquet raises, no .parquet.tmp file should remain."""
     store = _make_store(tmp_path)
     store.write_result(

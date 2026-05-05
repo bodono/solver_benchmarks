@@ -276,6 +276,11 @@ class ResultStore:
         Called once at end of a successful run by run_benchmark; the
         parquet file's presence is the success sentinel. Safe to call
         manually to rebuild a stale or missing parquet from jsonl.
+
+        If the jsonl is missing or contains no parseable records the
+        method returns without creating a parquet — consumers that need
+        a result frame should use ``analysis.load.load_results``, which
+        falls back to the jsonl when the parquet is absent.
         """
         with self._write_lock:
             if not self.results_jsonl_path.exists():
