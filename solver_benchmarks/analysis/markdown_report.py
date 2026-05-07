@@ -1139,13 +1139,23 @@ def _software_versions_table(results: pd.DataFrame, config: dict) -> pd.DataFram
         else set()
     )
     solver_ids = sorted(set(solver_names) | result_solver_ids)
+    # Group once instead of running a fresh ``results["solver_id"] == id``
+    # boolean mask per solver_id (each mask walks the entire results
+    # frame). ``get_group`` is an O(1) hashtable lookup against the
+    # precomputed groupby, and we fall back to an empty frame for
+    # solver_ids declared in the config that have no result rows.
+    groups = (
+        results.groupby("solver_id", observed=True)
+        if "solver_id" in results and not results.empty
+        else None
+    )
+    empty = pd.DataFrame()
     rows = []
     for solver_id in solver_ids:
-        subset = (
-            results[results["solver_id"] == solver_id]
-            if "solver_id" in results and not results.empty
-            else pd.DataFrame()
-        )
+        if groups is not None and solver_id in groups.groups:
+            subset = groups.get_group(solver_id)
+        else:
+            subset = empty
         row = {
             "solver_id": solver_id,
             "solver": solver_names.get(solver_id, ""),

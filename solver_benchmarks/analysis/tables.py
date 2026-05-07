@@ -691,34 +691,32 @@ def objective_spreads(
         values="objective_value",
         aggfunc="first",
     )
-    rows = []
-    for key, row in pivot.iterrows():
-        values = row.dropna()
-        if len(values) < 2:
-            continue
-        objective_min = float(values.min())
-        objective_max = float(values.max())
-        reference = max(1.0, abs(float(values.median())))
-        absolute_spread = objective_max - objective_min
-        record: dict[str, Any] = {}
-        if has_dataset:
-            record["dataset"] = key[0]
-            record["problem"] = key[1]
-        else:
-            record["problem"] = key
-        record.update(
-            {
-                "solver_count": int(len(values)),
-                "objective_min": objective_min,
-                "objective_max": objective_max,
-                "absolute_spread": absolute_spread,
-                "relative_spread": absolute_spread / reference,
-                "solver_min": str(values.idxmin()),
-                "solver_max": str(values.idxmax()),
-            }
-        )
-        rows.append(record)
-    return pd.DataFrame(rows, columns=columns).sort_values(
+    # Vectorized over the pivot's rows: replaces an iterrows loop where
+    # every problem incurred a Python-level dict construction plus six
+    # per-row pandas calls (.min/.max/.median/.idxmin/.idxmax/.dropna).
+    # The same statistics computed with axis=1 reductions skip all of
+    # the Python-loop overhead.
+    solver_count = pivot.notna().sum(axis=1)
+    keep = solver_count >= 2
+    if not keep.any():
+        return pd.DataFrame(columns=columns)
+    filt = pivot.loc[keep]
+    objective_min = filt.min(axis=1)
+    objective_max = filt.max(axis=1)
+    reference = filt.median(axis=1).abs().clip(lower=1.0)
+    absolute_spread = objective_max - objective_min
+    out = pd.DataFrame(
+        {
+            "solver_count": solver_count.loc[keep].astype(int),
+            "objective_min": objective_min.astype(float),
+            "objective_max": objective_max.astype(float),
+            "absolute_spread": absolute_spread.astype(float),
+            "relative_spread": (absolute_spread / reference).astype(float),
+            "solver_min": filt.idxmin(axis=1).astype(str),
+            "solver_max": filt.idxmax(axis=1).astype(str),
+        }
+    ).reset_index()
+    return out.reindex(columns=columns).sort_values(
         ["relative_spread", "absolute_spread"], ascending=False
     )
 
@@ -780,25 +778,23 @@ def failures_with_successful_alternatives(
 
     success_metric = metric if metric in successes else "solver_id"
     best_successes = successes.sort_values(success_metric).groupby(keys, observed=True).first()
-    rows = []
-    for _, failure in failures.iterrows():
-        key = tuple(failure[col] for col in keys) if len(keys) > 1 else failure[keys[0]]
-        if key not in best_successes.index:
-            continue
-        best = best_successes.loc[key]
-        row = {col: failure[col] for col in keys}
-        row.update(
-            {
-                "solver_id": failure["solver_id"],
-                "status": failure["status"],
-                "best_success_solver": best["solver_id"],
-                f"best_success_{metric}": best.get(metric),
-                "artifact_dir": failure.get("artifact_dir"),
-                "error": failure.get("error"),
-            }
-        )
-        rows.append(row)
-    return pd.DataFrame(rows, columns=columns)
+    # Vectorized join over (dataset, problem) keys: replaces a per-row
+    # iterrows loop that did one MultiIndex.get() per failure. Build the
+    # right-hand frame from best_successes with the columns the output
+    # actually needs, then inner-merge on keys (inner = drop failures
+    # whose problem has no successful alternative).
+    best_lookup = best_successes[["solver_id"]].rename(
+        columns={"solver_id": "best_success_solver"}
+    )
+    if metric in best_successes.columns:
+        best_lookup[f"best_success_{metric}"] = best_successes[metric]
+    best_lookup = best_lookup.reset_index()
+    failure_columns = [
+        col for col in (*keys, "solver_id", "status", "artifact_dir", "error")
+        if col in failures.columns
+    ]
+    merged = failures[failure_columns].merge(best_lookup, on=keys, how="inner")
+    return merged.reindex(columns=columns)
 
 
 def _problem_keys(results: pd.DataFrame) -> list[str]:
@@ -914,19 +910,26 @@ def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "artifact_dir",
         "error",
     ]
+    # The set of columns kept per solver and the per-solver dimension
+    # overlap don't actually depend on the solver — every group is a
+    # slice of the same parent frame. Hoist both out of the loop and
+    # build a single keys-indexed dimension frame for the join, instead
+    # of repeating ``merge`` (and a column-list rebuild) for every solver.
+    available = [column for column in base_columns if column in results.columns]
+    dim_indexed: pd.DataFrame | None = None
+    if not dimensions.empty:
+        overlapping = [
+            column
+            for column in dimensions.columns
+            if column in available and column not in keys
+        ]
+        dim_columns = dimensions.drop(columns=overlapping, errors="ignore")
+        if not dim_columns.empty and any(col not in keys for col in dim_columns.columns):
+            dim_indexed = dim_columns.set_index(keys)
     for solver_id, group in results.groupby("solver_id", observed=True):
-        available = [column for column in base_columns if column in group]
         table = group[available].sort_values(keys).reset_index(drop=True)
-        if not dimensions.empty:
-            dimension_columns = dimensions.drop(
-                columns=[
-                    column
-                    for column in dimensions.columns
-                    if column in table and column not in keys
-                ],
-                errors="ignore",
-            )
-            table = table.merge(dimension_columns, on=keys, how="left")
+        if dim_indexed is not None:
+            table = table.join(dim_indexed, on=keys, how="left")
         tables[str(solver_id)] = table
     return tables
 
