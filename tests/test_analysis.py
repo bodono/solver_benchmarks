@@ -457,6 +457,84 @@ def test_pairwise_and_outlier_reports():
     assert ratios.loc["one_variable_eq", "solver_b"] == pytest.approx(2.0)
 
 
+def test_failures_with_successful_alternatives_emits_one_row_per_failure():
+    # The vectorized version is a merge over the failures frame with
+    # the per-problem best success. Pin the contract on a frame with
+    # multiple failures and multiple successes per problem, so the
+    # merge can't silently dedup or duplicate rows.
+    frame = pd.DataFrame(
+        [
+            # p1: two failures (b, c), two successes (a fast, d slow)
+            {"problem": "p1", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p1", "solver_id": "b", "status": "time_limit", "run_time_seconds": 5.0,
+             "error": "b timed out"},
+            {"problem": "p1", "solver_id": "c", "status": "solver_error", "run_time_seconds": None,
+             "error": "c crashed"},
+            {"problem": "p1", "solver_id": "d", "status": "optimal", "run_time_seconds": 4.0},
+            # p2: one failure, one success — best success is the only success
+            {"problem": "p2", "solver_id": "a", "status": "optimal", "run_time_seconds": 2.0},
+            {"problem": "p2", "solver_id": "b", "status": "time_limit", "run_time_seconds": 9.0},
+            # p3: failure with no successful alternative — must be dropped
+            {"problem": "p3", "solver_id": "a", "status": "time_limit", "run_time_seconds": 9.0},
+        ]
+    )
+
+    table = failures_with_successful_alternatives(frame)
+
+    # Three failures with a successful alternative; p3 dropped.
+    by_pair = table.set_index(["problem", "solver_id"])
+    assert set(by_pair.index) == {("p1", "b"), ("p1", "c"), ("p2", "b")}
+
+    # Best success per problem is the fastest success: a (1.0) on p1, a (2.0) on p2.
+    assert by_pair.loc[("p1", "b"), "best_success_solver"] == "a"
+    assert by_pair.loc[("p1", "b"), "best_success_run_time_seconds"] == pytest.approx(1.0)
+    assert by_pair.loc[("p1", "c"), "best_success_solver"] == "a"
+    assert by_pair.loc[("p2", "b"), "best_success_solver"] == "a"
+    assert by_pair.loc[("p2", "b"), "best_success_run_time_seconds"] == pytest.approx(2.0)
+
+    # Failure-side columns (status, error) come from the failure row, not
+    # the success row — pin that the merge didn't accidentally pull
+    # status from best_successes.
+    assert by_pair.loc[("p1", "b"), "status"] == "time_limit"
+    assert by_pair.loc[("p1", "c"), "status"] == "solver_error"
+    assert by_pair.loc[("p1", "b"), "error"] == "b timed out"
+    assert by_pair.loc[("p1", "c"), "error"] == "c crashed"
+
+
+def test_objective_spreads_skips_single_solver_rows():
+    # ``objective_spreads`` only emits rows where the pivot has ≥2
+    # non-null objective values for a given problem. The vectorized
+    # implementation derives this from ``pivot.notna().sum(axis=1) >= 2``;
+    # a problem with a single successful solver must drop out.
+    frame = pd.DataFrame(
+        [
+            # p1: two successes ⇒ included
+            {"problem": "p1", "solver_id": "a", "status": "optimal", "objective_value": 1.0},
+            {"problem": "p1", "solver_id": "b", "status": "optimal", "objective_value": 1.5},
+            # p2: only one success ⇒ excluded
+            {"problem": "p2", "solver_id": "a", "status": "optimal", "objective_value": 7.0},
+            {"problem": "p2", "solver_id": "b", "status": "time_limit", "objective_value": None},
+            # p3: three successes ⇒ included, with the spread ratio computed
+            # against |median| (3.0) ⇒ relative_spread = (5 - 1) / 3.
+            {"problem": "p3", "solver_id": "a", "status": "optimal", "objective_value": 1.0},
+            {"problem": "p3", "solver_id": "b", "status": "optimal", "objective_value": 3.0},
+            {"problem": "p3", "solver_id": "c", "status": "optimal", "objective_value": 5.0},
+        ]
+    )
+
+    spreads = objective_spreads(frame)
+    by_problem = spreads.set_index("problem")
+
+    assert set(by_problem.index) == {"p1", "p3"}
+    assert by_problem.loc["p1", "solver_count"] == 2
+    assert by_problem.loc["p1", "absolute_spread"] == pytest.approx(0.5)
+    assert by_problem.loc["p1", "solver_min"] == "a"
+    assert by_problem.loc["p1", "solver_max"] == "b"
+    assert by_problem.loc["p3", "solver_count"] == 3
+    assert by_problem.loc["p3", "absolute_spread"] == pytest.approx(4.0)
+    assert by_problem.loc["p3", "relative_spread"] == pytest.approx(4.0 / 3.0)
+
+
 def test_pairwise_scatter_caps_pair_count_and_warns(
     monkeypatch, tmp_path: Path, caplog
 ):
