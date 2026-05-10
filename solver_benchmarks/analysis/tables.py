@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from itertools import combinations
@@ -448,6 +449,40 @@ def failure_rates(
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
 
 
+def _completed_by_pair(
+    results: pd.DataFrame, has_dataset_col: bool
+) -> tuple[dict[tuple[str, str | None], set[str]], dict[tuple[str, str | None], int]]:
+    """Per-``(solver_id, dataset)`` completed-problem set + duplicate-row count.
+
+    Replaces the per-(solver, dataset) ``results[results["solver_id"] == sid]``
+    boolean masks in ``completion_summary`` and ``missing_results`` (each O(N)
+    over the full results frame, called 144*N_datasets times on a big sweep)
+    with a single ``groupby`` pass and dict lookups. ``dataset`` key is
+    ``None`` for legacy single-dataset run dirs without a ``dataset`` column.
+    """
+    completed: dict[tuple[str, str | None], set[str]] = {}
+    duplicates: dict[tuple[str, str | None], int] = {}
+    if results.empty:
+        return completed, duplicates
+    # Split single-key vs multi-key explicitly: in current pandas,
+    # ``groupby(["solver_id"])`` (list of length 1) yields *tuple* keys
+    # while ``groupby("solver_id")`` yields scalars, and conflating the
+    # two silently breaks the dict lookup downstream.
+    if has_dataset_col:
+        for (sid, dname), group in results.groupby(
+            ["solver_id", "dataset"], observed=True
+        ):
+            key: tuple[str, str | None] = (str(sid), str(dname))
+            completed[key] = set(group["problem"])
+            duplicates[key] = int(group.duplicated(["problem", "solver_id"]).sum())
+    else:
+        for sid, group in results.groupby("solver_id", observed=True):
+            key = (str(sid), None)
+            completed[key] = set(group["problem"])
+            duplicates[key] = int(group.duplicated(["problem", "solver_id"]).sum())
+    return completed, duplicates
+
+
 def completion_summary(
     run_dir: str | Path,
     results: pd.DataFrame | None = None,
@@ -473,33 +508,27 @@ def completion_summary(
     if not manifest_path.exists():
         return pd.DataFrame(columns=columns)
 
+    expected_by_dataset = _expected_by_dataset_cached(
+        str(manifest_path.resolve()),
+        str(repo_root) if repo_root is not None else None,
+        manifest_path.stat().st_mtime_ns,
+    )
     config = json.loads(manifest_path.read_text())["config"]
-    expected_by_dataset = _expected_by_dataset(config, repo_root=repo_root)
     solvers = [solver["id"] for solver in config.get("solvers", [])]
 
-    rows = []
     has_dataset_col = not results.empty and "dataset" in results.columns
+    completed_by_pair, duplicates_by_pair = _completed_by_pair(results, has_dataset_col)
+
+    rows = []
     for solver_id in solvers:
-        solver_rows = (
-            results[results["solver_id"] == solver_id]
-            if not results.empty
-            else results
-        )
         for dataset_name, expected_set in expected_by_dataset.items():
-            if has_dataset_col:
-                dataset_rows = solver_rows[solver_rows["dataset"] == dataset_name]
-            else:
-                # Legacy single-dataset run dirs without a populated dataset
-                # column: every row belongs to the one configured dataset.
-                dataset_rows = solver_rows
-            completed_problems = (
-                set(dataset_rows["problem"]) if not dataset_rows.empty else set()
+            key: tuple[str, str | None] = (
+                (str(solver_id), str(dataset_name))
+                if has_dataset_col
+                else (str(solver_id), None)
             )
-            duplicate_rows = (
-                int(dataset_rows.duplicated(["problem", "solver_id"]).sum())
-                if not dataset_rows.empty
-                else 0
-            )
+            completed_problems = completed_by_pair.get(key, set())
+            duplicate_rows = duplicates_by_pair.get(key, 0)
             missing = len(expected_set - completed_problems)
             unexpected = len(completed_problems - expected_set)
             rows.append(
@@ -535,25 +564,26 @@ def missing_results(
     if not manifest_path.exists():
         return pd.DataFrame(columns=columns)
 
+    expected_by_dataset = _expected_by_dataset_cached(
+        str(manifest_path.resolve()),
+        str(repo_root) if repo_root is not None else None,
+        manifest_path.stat().st_mtime_ns,
+    )
     config = json.loads(manifest_path.read_text())["config"]
-    expected_by_dataset = _expected_by_dataset(config, repo_root=repo_root)
+
     has_dataset_col = not results.empty and "dataset" in results.columns
+    completed_by_pair, _ = _completed_by_pair(results, has_dataset_col)
+
     rows = []
     for solver in config.get("solvers", []):
         solver_id = solver["id"]
-        solver_rows = (
-            results[results["solver_id"] == solver_id]
-            if not results.empty
-            else results
-        )
         for dataset_name, expected_set in expected_by_dataset.items():
-            if has_dataset_col:
-                dataset_rows = solver_rows[solver_rows["dataset"] == dataset_name]
-            else:
-                dataset_rows = solver_rows
-            completed = (
-                set(dataset_rows["problem"]) if not dataset_rows.empty else set()
+            key: tuple[str, str | None] = (
+                (str(solver_id), str(dataset_name))
+                if has_dataset_col
+                else (str(solver_id), None)
             )
+            completed = completed_by_pair.get(key, set())
             for problem in sorted(expected_set - completed):
                 rows.append(
                     {
@@ -1118,5 +1148,32 @@ def _expected_by_dataset(
         )
         expected[entry["id"]] = {problem.name for problem in filtered_specs}
     return expected
+
+
+@functools.lru_cache(maxsize=8)
+def _expected_by_dataset_cached(
+    manifest_path_str: str,
+    repo_root_str: str | None,
+    manifest_mtime_ns: int,  # noqa: ARG001  (cache invalidator)
+) -> dict[str, set[str]]:
+    """Cached wrapper around ``_expected_by_dataset``.
+
+    ``write_run_report`` calls both ``completion_summary`` and
+    ``missing_results`` in sequence, and they each independently
+    instantiate every configured dataset adapter and call
+    ``list_problems()`` (which can hit the filesystem). For multi-dataset
+    sweeps that's measurable duplicate work; the CLI also calls them
+    independently. Keying the cache on the resolved manifest path means a
+    given run dir's expected sets are computed once per process.
+
+    ``manifest_mtime_ns`` is part of the cache key but unused in the body —
+    callers pass ``manifest_path.stat().st_mtime_ns`` so a long-lived
+    process (notebook, library use) that rewrites the manifest in place
+    automatically gets a fresh expected set instead of the stale cached
+    one. The mtime check only fires when callers thread the value
+    through; that's fine because every in-tree caller does so.
+    """
+    config = json.loads(Path(manifest_path_str).read_text())["config"]
+    return _expected_by_dataset(config, repo_root=repo_root_str)
 
 
