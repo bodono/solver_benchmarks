@@ -208,6 +208,32 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
     successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+
+    # Cheap upper-bound check before paying for the pivot/dropna/combinations
+    # work: with N successful solvers the maximum possible pair count is
+    # C(N, 2). If even that exceeds the cap, the actual filtered count
+    # cannot fit either, so skip immediately. On a 144-solver report this
+    # avoids pivoting a 33k × 144 frame and enumerating 10k pairs only to
+    # log "skipping" — that wasted work was ~16 s out of the 79 s spent
+    # in ``write_run_report`` on master.
+    n_solvers = int(successful["solver_id"].nunique()) if "solver_id" in successful else 0
+    max_possible_pairs = n_solvers * (n_solvers - 1) // 2
+    if max_possible_pairs > _PAIRWISE_SCATTER_MAX_PAIRS:
+        # Use warning level so users running `bench report` actually see
+        # the message under default Python logging (the package does not
+        # call logging.basicConfig, so info-level is silent).
+        logger.warning(
+            "Skipping pairwise scatter for %s: %d solvers => up to %d pairs "
+            "exceeds cap of %d (see pairwise_speedups_%s.csv for the "
+            "underlying data).",
+            metric,
+            n_solvers,
+            max_possible_pairs,
+            _PAIRWISE_SCATTER_MAX_PAIRS,
+            metric,
+        )
+        return None
+
     keys = ["dataset", "problem"] if "dataset" in successful.columns else ["problem"]
     index = keys[0] if len(keys) == 1 else keys
     successful = deduplicate_for_pivot(successful, keys, metric)
@@ -223,23 +249,6 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
         if not pivot[[solver_a, solver_b]].dropna().empty
     ]
     if not pairs:
-        return None
-    if len(pairs) > _PAIRWISE_SCATTER_MAX_PAIRS:
-        # Each pair would be its own axes in one figure; constrained_layout's
-        # constraint solver (kiwisolver) is the dominant cost at scale and
-        # the rendered image is not useful past a few dozen pairs. Skip the
-        # plot — pairwise_speedups_<metric>.csv still carries the data.
-        # Use warning level so users running `bench report` actually see
-        # the message under default Python logging (the package does not
-        # call logging.basicConfig, so info-level is silent).
-        logger.warning(
-            "Skipping pairwise scatter for %s: %d pairs exceeds cap of %d "
-            "(see pairwise_speedups_%s.csv for the underlying data).",
-            metric,
-            len(pairs),
-            _PAIRWISE_SCATTER_MAX_PAIRS,
-            metric,
-        )
         return None
 
     cols = min(3, len(pairs))

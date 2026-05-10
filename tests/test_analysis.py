@@ -618,6 +618,39 @@ def test_pairwise_scatter_caps_pair_count_and_warns(
     assert "pairwise_speedups_run_time_seconds.csv" in skip_messages[0]
 
 
+def test_pairwise_scatter_skips_pivot_when_above_cap(monkeypatch, tmp_path: Path):
+    """Pin the perf characteristic of the cap short-circuit: when the
+    ``C(n_solvers, 2)`` upper bound exceeds the cap, the function must
+    return without ever calling ``pivot_table``. On a 144-solver report
+    that pivot was a 33k × 144 frame and was the ~16 s of wasted work
+    this short-circuit is meant to eliminate."""
+    from solver_benchmarks.analysis import plots as plots_module
+
+    monkeypatch.setattr(plots_module, "_PAIRWISE_SCATTER_MAX_PAIRS", 2)
+
+    def boom(*args, **kwargs):
+        raise AssertionError(
+            "pivot_table should not be called when the cap is exceeded"
+        )
+
+    monkeypatch.setattr(pd.DataFrame, "pivot_table", boom)
+
+    # 4 solvers ⇒ max C(4, 2) = 6 pairs > cap of 2 ⇒ short-circuits before pivot.
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": s, "status": "optimal",
+             "run_time_seconds": float(idx + 1)}
+            for idx, s in enumerate(["a", "b", "c", "d"])
+        ]
+    )
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    result = plots_module._write_pairwise_scatter(frame, out_dir, "run_time_seconds")
+    assert result is None
+    assert not (out_dir / "pairwise_scatter_run_time_seconds.png").exists()
+
+
 def test_inaccurate_statuses_are_not_successful_by_default():
     frame = pd.DataFrame(
         [
