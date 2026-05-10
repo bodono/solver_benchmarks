@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import math
-from itertools import combinations
 from pathlib import Path
 
 import matplotlib
@@ -209,31 +208,6 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
 
-    # Cheap upper-bound check before paying for the pivot/dropna/combinations
-    # work: with N successful solvers the maximum possible pair count is
-    # C(N, 2). If even that exceeds the cap, the actual filtered count
-    # cannot fit either, so skip immediately. On a 144-solver report this
-    # avoids pivoting a 33k × 144 frame and enumerating 10k pairs only to
-    # log "skipping" — that wasted work was ~16 s out of the 79 s spent
-    # in ``write_run_report`` on master.
-    n_solvers = int(successful["solver_id"].nunique()) if "solver_id" in successful else 0
-    max_possible_pairs = n_solvers * (n_solvers - 1) // 2
-    if max_possible_pairs > _PAIRWISE_SCATTER_MAX_PAIRS:
-        # Use warning level so users running `bench report` actually see
-        # the message under default Python logging (the package does not
-        # call logging.basicConfig, so info-level is silent).
-        logger.warning(
-            "Skipping pairwise scatter for %s: %d solvers => up to %d pairs "
-            "exceeds cap of %d (see pairwise_speedups_%s.csv for the "
-            "underlying data).",
-            metric,
-            n_solvers,
-            max_possible_pairs,
-            _PAIRWISE_SCATTER_MAX_PAIRS,
-            metric,
-        )
-        return None
-
     keys = ["dataset", "problem"] if "dataset" in successful.columns else ["problem"]
     index = keys[0] if len(keys) == 1 else keys
     successful = deduplicate_for_pivot(successful, keys, metric)
@@ -243,13 +217,46 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
         values=metric,
         aggfunc="first",
     )
-    pairs = [
-        (solver_a, solver_b)
-        for solver_a, solver_b in combinations(sorted(pivot.columns), 2)
-        if not pivot[[solver_a, solver_b]].dropna().empty
-    ]
-    if not pairs:
+
+    # Compute the *actual* number of comparable pairs (those with at least
+    # one common non-NaN entry) before deciding to skip. The naive ``C(N, 2)``
+    # upper bound would over-skip in sparse-coverage configs (e.g. partial
+    # sweeps, multi-dataset runs where only a subset of solvers cover each
+    # dataset) — there can be many successful solvers but only a handful
+    # of comparable pairs. The dominant cost we want to avoid past the cap
+    # is the per-pair ``pivot[[a,b]].dropna()`` enumeration (~16 s on the
+    # 144-solver case), not the pivot itself; counting pairs from a single
+    # boolean matrix product on the finite-mask matrix is O(n_solvers²)
+    # and trivially fast.
+    sorted_solvers = sorted(pivot.columns)
+    if len(sorted_solvers) < 2:
         return None
+    pivot = pivot[sorted_solvers]
+    finite = pivot.notna().to_numpy()
+    overlap = finite.astype(np.int32).T @ finite.astype(np.int32)
+    upper_i, upper_j = np.triu_indices(overlap.shape[0], k=1)
+    pair_has_common = overlap[upper_i, upper_j] > 0
+    n_pairs = int(np.sum(pair_has_common))
+    if n_pairs == 0:
+        return None
+    if n_pairs > _PAIRWISE_SCATTER_MAX_PAIRS:
+        # Use warning level so users running `bench report` actually see
+        # the message under default Python logging (the package does not
+        # call logging.basicConfig, so info-level is silent).
+        logger.warning(
+            "Skipping pairwise scatter for %s: %d pairs exceeds cap of %d "
+            "(see pairwise_speedups_%s.csv for the underlying data).",
+            metric,
+            n_pairs,
+            _PAIRWISE_SCATTER_MAX_PAIRS,
+            metric,
+        )
+        return None
+    pairs = [
+        (sorted_solvers[upper_i[k]], sorted_solvers[upper_j[k]])
+        for k in range(len(upper_i))
+        if pair_has_common[k]
+    ]
 
     cols = min(3, len(pairs))
     rows = math.ceil(len(pairs) / cols)
