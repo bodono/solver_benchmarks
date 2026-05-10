@@ -1153,6 +1153,54 @@ def test_completion_summary_honors_dataset_size_filter(monkeypatch, tmp_path: Pa
     assert missing["problem"].tolist() == ["small"]
 
 
+def test_expected_by_dataset_memoized_across_completion_and_missing(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """``write_run_report`` calls completion_summary and missing_results
+    in sequence; both expand the configured dataset list to the set of
+    expected problems via the same helper. Pin that the dataset
+    instantiation + ``list_problems()`` work happens exactly once per
+    process for a given run dir, instead of once per caller. This is
+    real I/O for adapters that scan the filesystem."""
+    from solver_benchmarks.analysis import tables as tables_module
+
+    # Clear the cache so this test isn't influenced by prior calls.
+    tables_module._expected_by_dataset_cached.cache_clear()
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "synthetic_qp",
+            "include": ["one_variable_eq", "one_variable_lp"],
+            "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    (run_dir / "results.jsonl").write_text("")
+
+    call_count = {"n": 0}
+    real = tables_module._expected_by_dataset
+
+    def counting(config, **kwargs):
+        call_count["n"] += 1
+        return real(config, **kwargs)
+
+    monkeypatch.setattr(tables_module, "_expected_by_dataset", counting)
+    # The cache wraps the *helper at import time*, so the cached
+    # function still calls our patched helper.
+    tables_module._expected_by_dataset_cached.cache_clear()
+
+    completion_summary(run_dir, load_results(run_dir), repo_root=repo_root)
+    missing_results(run_dir, load_results(run_dir), repo_root=repo_root)
+    completion_summary(run_dir, load_results(run_dir), repo_root=repo_root)
+
+    # 3 caller invocations across 2 functions, but only one underlying
+    # dataset expansion thanks to the cache.
+    assert call_count["n"] == 1
+
+
 def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path, repo_root: Path):
     _register_fake_datasets(monkeypatch, "ds_a", "ds_b")
     run_dir = tmp_path / "run"
