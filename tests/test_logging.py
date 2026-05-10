@@ -14,7 +14,12 @@ from solver_benchmarks.core.config import (
 )
 from solver_benchmarks.core.problem import CONE, QP, ProblemData, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult, SolverResult
-from solver_benchmarks.core.runner import _run_one, _run_subprocess, run_benchmark
+from solver_benchmarks.core.runner import (
+    _ProgressReporter,
+    _run_one,
+    _run_subprocess,
+    run_benchmark,
+)
 from solver_benchmarks.core.storage import ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
@@ -296,6 +301,51 @@ def test_resume_progress_uses_total_expected_denominator(
     assert progress_event["completed_this_run"] == 1
     assert progress_event["queued"] == 1
     assert progress_event["remaining_queued"] == 0
+
+
+def test_resume_eta_uses_only_newly_queued_work(monkeypatch, tmp_path: Path):
+    times = iter([100.0, 120.0])
+    monkeypatch.setattr(
+        "solver_benchmarks.core.runner.time.monotonic",
+        lambda: next(times),
+    )
+    store = ResultStore(run_dir=tmp_path, run_id="resume_run")
+    progress = _ProgressReporter(
+        store=store,
+        stream_output=False,
+        total_expected=100,
+        already_complete=90,
+        skipped_during_planning=0,
+        queued=10,
+        parallelism=1,
+    )
+
+    progress.record_result(
+        ProblemResult(
+            run_id=store.run_id,
+            dataset="fake_resume",
+            problem="p91",
+            problem_kind=QP,
+            solver_id="fake_solver",
+            solver="fake_solver",
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=1.0,
+        )
+    )
+
+    [event] = [
+        json.loads(line)
+        for line in store.events_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert event["completed_total"] == 91
+    assert event["completed_this_run"] == 1
+    assert event["queued"] == 10
+    assert event["remaining_queued"] == 9
+    assert event["rate_solves_per_second"] == 0.05
+    assert event["eta_remaining_seconds"] == 180.0
 
 
 def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Path, repo_root: Path):
