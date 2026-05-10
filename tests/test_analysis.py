@@ -618,6 +618,75 @@ def test_pairwise_scatter_caps_pair_count_and_warns(
     assert "pairwise_speedups_run_time_seconds.csv" in skip_messages[0]
 
 
+def test_pairwise_scatter_uses_actual_pair_count_not_upper_bound(
+    monkeypatch, tmp_path: Path
+):
+    """Regression test: a previous attempt at the cap short-circuit
+    skipped on the ``C(n_solvers, 2)`` upper bound, which over-skipped
+    in sparse-coverage configs. With 4 successful solvers but only one
+    pair (a, b) sharing a common problem, the actual comparable-pair
+    count is 1 — the plot must render even when the upper bound (6)
+    exceeds the cap."""
+    from solver_benchmarks.analysis import plots as plots_module
+
+    monkeypatch.setattr(plots_module, "_PAIRWISE_SCATTER_MAX_PAIRS", 2)
+
+    # a and b share problem p1; c and d each have their own disjoint
+    # problem ⇒ the only comparable pair is (a, b).
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
+            {"problem": "p1", "solver_id": "b", "status": "optimal", "run_time_seconds": 2.0},
+            {"problem": "p2", "solver_id": "c", "status": "optimal", "run_time_seconds": 3.0},
+            {"problem": "p3", "solver_id": "d", "status": "optimal", "run_time_seconds": 4.0},
+        ]
+    )
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    result = plots_module._write_pairwise_scatter(frame, out_dir, "run_time_seconds")
+    assert result is not None
+    assert result.exists()
+
+
+def test_pairwise_scatter_skips_pair_enumeration_when_above_cap(
+    monkeypatch, tmp_path: Path
+):
+    """Pin the perf characteristic of the cap short-circuit: when the
+    actual pair count exceeds the cap, the per-pair list comprehension
+    that drives the per-axes rendering must not run. The pivot itself
+    is cheap (~0.5 s on 144 solvers); the per-pair enumeration is what
+    blew up to ~16 s. ``combinations`` is no longer used in this code
+    path (the pair list is built directly from ``np.triu_indices``), so
+    monkeypatch ``plt.subplots`` instead — that is the entry point to
+    the per-pair render loop and must not be reached above the cap."""
+    from solver_benchmarks.analysis import plots as plots_module
+
+    monkeypatch.setattr(plots_module, "_PAIRWISE_SCATTER_MAX_PAIRS", 2)
+
+    def boom(*args, **kwargs):
+        raise AssertionError(
+            "plt.subplots must not be called when the cap is exceeded"
+        )
+
+    monkeypatch.setattr(plots_module.plt, "subplots", boom)
+
+    # 4 solvers all sharing one problem ⇒ actual pair count = 6 > cap = 2.
+    frame = pd.DataFrame(
+        [
+            {"problem": "p1", "solver_id": s, "status": "optimal",
+             "run_time_seconds": float(idx + 1)}
+            for idx, s in enumerate(["a", "b", "c", "d"])
+        ]
+    )
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    result = plots_module._write_pairwise_scatter(frame, out_dir, "run_time_seconds")
+    assert result is None
+    assert not (out_dir / "pairwise_scatter_run_time_seconds.png").exists()
+
+
 def test_inaccurate_statuses_are_not_successful_by_default():
     frame = pd.DataFrame(
         [
