@@ -511,6 +511,7 @@ def completion_summary(
     expected_by_dataset = _expected_by_dataset_cached(
         str(manifest_path.resolve()),
         str(repo_root) if repo_root is not None else None,
+        manifest_path.stat().st_mtime_ns,
     )
     config = json.loads(manifest_path.read_text())["config"]
     solvers = [solver["id"] for solver in config.get("solvers", [])]
@@ -566,6 +567,7 @@ def missing_results(
     expected_by_dataset = _expected_by_dataset_cached(
         str(manifest_path.resolve()),
         str(repo_root) if repo_root is not None else None,
+        manifest_path.stat().st_mtime_ns,
     )
     config = json.loads(manifest_path.read_text())["config"]
 
@@ -1129,6 +1131,7 @@ def _expected_by_dataset(
 def _expected_by_dataset_cached(
     manifest_path_str: str,
     repo_root_str: str | None,
+    manifest_mtime_ns: int,  # noqa: ARG001  (cache invalidator)
 ) -> dict[str, set[str]]:
     """Cached wrapper around ``_expected_by_dataset``.
 
@@ -1139,6 +1142,13 @@ def _expected_by_dataset_cached(
     sweeps that's measurable duplicate work; the CLI also calls them
     independently. Keying the cache on the resolved manifest path means a
     given run dir's expected sets are computed once per process.
+
+    ``manifest_mtime_ns`` is part of the cache key but unused in the body —
+    callers pass ``manifest_path.stat().st_mtime_ns`` so a long-lived
+    process (notebook, library use) that rewrites the manifest in place
+    automatically gets a fresh expected set instead of the stale cached
+    one. The mtime check only fires when callers thread the value
+    through; that's fine because every in-tree caller does so.
     """
     config = json.loads(Path(manifest_path_str).read_text())["config"]
     return _expected_by_dataset(config, repo_root=repo_root_str)
