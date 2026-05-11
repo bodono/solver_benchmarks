@@ -1,0 +1,16 @@
+run:
+  dataset: mpc_clarabel
+  output_dir: results
+  resume: true
+  timeout_seconds: 300
+
+solvers:
+  - id: qtqp_qdldl
+    solver: qtqp
+    settings:
+      linear_solver: qdldl
+
+  - id: clarabel_default
+    solver: clarabel
+    settings:
+      max_iter: 200

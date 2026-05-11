@@ -114,6 +114,7 @@ Current maintained adapters:
 | TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
 | DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
 | CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. |
+| MPC Clarabel | `mpc_clarabel` | QP | Bundled MATLAB targets from the MPC Benchmarking Collection; converted at load time into sparse finite-horizon MPC QPs. |
 | MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
 | LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
 | DC OPF | `dc_opf` | LP as QP | DC Optimal Power Flow LPs from MATPOWER `.m` case files; sparse power-balance equalities, line-flow inequality limits, generator box bounds. |
@@ -166,6 +167,10 @@ bench data prepare dc_opf
 bundled checkout rather than the network — see the Kennington note in
 the dataset table above.)
 
+The `mpc_clarabel` compiled targets are bundled under
+`problem_classes/mpc_clarabel/targets`; `bench data prepare mpc_clarabel`
+validates that those local targets are present rather than downloading data.
+
 Running with automatic preparation:
 
 ```bash
@@ -217,6 +222,7 @@ python scripts/prepare_dc_opf.py
 python scripts/prepare_sdplib.py
 python scripts/prepare_dimacs.py
 python scripts/prepare_cutest_qp.py
+python scripts/prepare_mpc_clarabel.py
 ```
 
 The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
@@ -254,6 +260,7 @@ bench list problems maros_meszaros
 bench list problems qplib
 bench list problems qplib --option subset=ccb
 bench list problems liu_pataki --option classification=weak --option conditioning=messy
+bench list problems mpc_clarabel --option family=toyExample
 bench list problems mpc_qpbenchmark --option subset=default
 bench list problems cblib
 bench list problems cblib --option subset_kind=expcone
@@ -279,6 +286,7 @@ Useful dataset options:
 | `liu_pataki` | `constraint_count=10` or `constraint_count=20` | Select Liu-Pataki instances by equality count. |
 | `liu_pataki` | `block_dim=10` | Select Liu-Pataki instances by PSD block dimension. |
 | `mpc_qpbenchmark` | `subset=default`, `all`, or comma-separated names | Filter downloaded MPC QP `.npz` files. |
+| `mpc_clarabel` | `subset=default`, `all`, or comma-separated names; `family=toyExample`; `variant=1` | Filter bundled MPC Benchmarking Collection targets. |
 | `cutest_qp` | `subset=default`, `all`, or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
 | `cblib` | `subset=default`, `all`, or comma-separated names | Filter downloaded CBF files. |
 | `cblib` | `subset_kind=expcone`, `socp`, or `lp` | Filter CBF instances by cone shape rather than by name. Combines with `subset` (both filters must pass). |

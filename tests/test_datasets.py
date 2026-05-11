@@ -41,6 +41,7 @@ def test_required_datasets_are_registered():
         "kennington",
         "liu_pataki",
         "maros_meszaros",
+        "mpc_clarabel",
         "mpc_qpbenchmark",
         "netlib",
         "miplib",
@@ -328,6 +329,151 @@ def test_mpc_qpbenchmark_npz_loader_converts_qp_schema(tmp_path: Path):
     assert problem.qp["A"].shape == (4, 2)
     assert problem.qp["l"].tolist() == pytest.approx([-1.0e20, 4.0, -1.0, -2.0])
     assert problem.qp["u"].tolist() == pytest.approx([3.0, 4.0, 5.0, 6.0])
+
+
+def test_mpc_clarabel_mat_loader_builds_sparse_mpc_qp(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "mpc_clarabel" / "targets"
+    folder.mkdir(parents=True)
+    scipy.io.savemat(
+        folder / "tiny_1.mat",
+        {
+            "data": {
+                "info": {
+                    "ID": 99,
+                    "name": "tiny",
+                    "description": "Tiny MPC fixture.",
+                    "reference": "",
+                },
+                "variants": np.array([1]),
+                "curVariant": 1,
+                "A": np.array([[1.0]]),
+                "B": np.array([[1.0]]),
+                "f": np.array([]),
+                "C": np.array([]),
+                "D": np.array([]),
+                "e": np.array([]),
+                "Q": np.array([[1.0]]),
+                "R": np.array([[1.0]]),
+                "S": np.array([]),
+                "gy": np.array([]),
+                "gu": np.array([]),
+                "P": np.array([[1.0]]),
+                "yr": np.array([]),
+                "ur": np.array([]),
+                "xNr": np.array([]),
+                "ymin": np.array([]),
+                "ymax": np.array([]),
+                "umin": np.array([-1.0]),
+                "umax": np.array([1.0]),
+                "dmin": np.array([]),
+                "dmax": np.array([]),
+                "M": np.array([]),
+                "N": np.array([]),
+                "dNmin": np.array([]),
+                "dNmax": np.array([]),
+                "T": np.array([]),
+                "soft": np.array([]),
+                "softConstraints": np.array([]),
+                "deltaInput": np.array([]),
+                "ni": 2,
+                "uIdx": np.array([]),
+                "lookAhead": np.array([]),
+                "x0": np.array([2.0]),
+                "Ts": np.array([]),
+                "timeInstants": np.array([]),
+                "simModel": np.array([]),
+            }
+        },
+    )
+
+    dataset = get_dataset("mpc_clarabel")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("tiny_1")
+
+    assert problem.kind == "qp"
+    assert problem.metadata["family"] == "tiny"
+    assert problem.metadata["variant"] == 1
+    assert problem.metadata["horizon"] == 2
+    assert problem.qp["P"].toarray() == pytest.approx(2.0 * np.eye(4))
+    assert problem.qp["q"].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    assert problem.qp["A"].toarray() == pytest.approx(
+        np.array(
+            [
+                [1.0, 0.0, -1.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [-1.0, 1.0, 0.0, -1.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+    )
+    assert problem.qp["l"].tolist() == pytest.approx([2.0, -1.0, 0.0, -1.0])
+    assert problem.qp["u"].tolist() == pytest.approx([2.0, 1.0, 0.0, 1.0])
+
+
+def test_mpc_clarabel_move_blocking_reuses_control_variables(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "mpc_clarabel" / "targets"
+    folder.mkdir(parents=True)
+    scipy.io.savemat(
+        folder / "blocked_1.mat",
+        {
+            "data": {
+                "A": np.array([[1.0]]),
+                "B": np.array([[1.0]]),
+                "Q": np.array([[0.0]]),
+                "R": np.array([[0.0]]),
+                "ni": 3,
+                "uIdx": np.array([1, 3]),
+                "x0": np.array([0.0]),
+            }
+        },
+    )
+
+    problem = get_dataset("mpc_clarabel")(
+        repo_root=tmp_path,
+        data_root=data_root,
+    ).load_problem("blocked_1")
+
+    assert problem.metadata["control_blocks"] == 2
+    assert problem.qp["n"] == 5
+    assert problem.qp["A"].toarray()[:3] == pytest.approx(
+        np.array(
+            [
+                [1.0, 0.0, 0.0, -1.0, 0.0],
+                [-1.0, 1.0, 0.0, -1.0, 0.0],
+                [0.0, -1.0, 1.0, 0.0, -1.0],
+            ]
+        )
+    )
+
+
+def test_mpc_clarabel_lists_bundled_targets_with_filters():
+    dataset = get_dataset("mpc_clarabel")()
+
+    problems = dataset.list_problems()
+
+    assert len(problems) == 72
+    assert problems[0].name == "aircraft_1"
+    assert problems[1].name == "aircraft_2"
+    assert len(get_dataset("mpc_clarabel")(family="toyExample").list_problems()) == 5
+    assert {
+        spec.name
+        for spec in get_dataset("mpc_clarabel")(subset="toyExample_1,dcMotor_1").list_problems()
+    } == {"toyExample_1", "dcMotor_1"}
+
+
+def test_mpc_clarabel_bundled_target_loads():
+    dataset = get_dataset("mpc_clarabel")(subset="toyExample_1")
+
+    problem = dataset.load_problem("toyExample_1")
+
+    assert problem.kind == "qp"
+    assert problem.metadata["family"] == "toyExample"
+    assert problem.metadata["horizon"] == 10
+    assert problem.metadata["state_dim"] == 2
+    assert problem.metadata["input_dim"] == 1
+    assert problem.qp["P"].shape == (30, 30)
+    assert problem.qp["A"].shape[1] == 30
 
 
 def test_mpc_prepare_uses_default_small_subset(monkeypatch, tmp_path: Path):

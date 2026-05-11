@@ -11,6 +11,7 @@ from .libsvm_qp import LibsvmQPDataset
 from .liu_pataki import LiuPatakiDataset
 from .maros_meszaros import MarosMeszarosDataset
 from .mittelmann_sdp import MittelmannSDPDataset
+from .mpc_clarabel import MPCClarabelDataset
 from .mpc_qpbenchmark import MPCQPBenchmarkDataset
 from .mps import KenningtonDataset, MiplibDataset, MittelmannDataset, NetlibDataset
 from .qplib import QPLIBDataset
@@ -29,6 +30,7 @@ DATASETS: dict[str, type[Dataset]] = {
     "maros_meszaros": MarosMeszarosDataset,
     "miplib": MiplibDataset,
     "miplib_lp_relaxation": MiplibDataset,
+    "mpc_clarabel": MPCClarabelDataset,
     "mpc_qpbenchmark": MPCQPBenchmarkDataset,
     "mittelmann": MittelmannDataset,
     "mittelmann_sdp": MittelmannSDPDataset,
