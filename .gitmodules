@@ -1,0 +1,3 @@
+[submodule "problem_classes/mpc_clarabel/mpcBenchmarking"]
+	path = problem_classes/mpc_clarabel/mpcBenchmarking
+	url = https://github.com/goulart-paul/mpcBenchmarking.git
