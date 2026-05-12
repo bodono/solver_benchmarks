@@ -94,6 +94,23 @@ def write_run_report(
         path = _write_table(output_dir / name, table)
         if path is not None:
             outputs.append(path)
+    manifest = _load_manifest(run_dir)
+    config = manifest.get("config", {})
+    dataset_entries = manifest_dataset_entries(config)
+    dataset_label = _dataset_label(dataset_entries)
+    for name, table in _derived_report_tables(
+        run_dir=run_dir,
+        manifest=manifest,
+        config=config,
+        dataset_entries=dataset_entries,
+        dataset_label=dataset_label,
+        metric=metric,
+        results=results,
+        tables=tables,
+    ).items():
+        path = _write_table(output_dir / name, table)
+        if path is not None:
+            outputs.append(path)
     solver_tables_dir = output_dir / "solver_problem_tables"
     for solver_id, table in solver_problem_tables(results).items():
         table = _sort_solver_problem_table(table)
@@ -140,6 +157,52 @@ def _write_table(path: Path, table: pd.DataFrame) -> Path | None:
     return path
 
 
+def _derived_report_tables(
+    *,
+    run_dir: Path,
+    manifest: dict,
+    config: dict,
+    dataset_entries: list[dict],
+    dataset_label: str,
+    metric: str,
+    results: pd.DataFrame,
+    tables: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    derived = {
+        "run_scope.csv": _run_scope_table(
+            run_dir=run_dir,
+            manifest=manifest,
+            config=config,
+            dataset_label=dataset_label,
+            metric=metric,
+            results=results,
+            tables=tables,
+        ),
+        "headline_solver_performance.csv": _headline_solver_performance(
+            results=results,
+            tables=tables,
+            config=config,
+            metric=metric,
+        ),
+        "software_and_runtime.csv": _software_versions_table(results, config),
+    }
+    configured_solvers = _configured_solvers_table(config)
+    if not configured_solvers.empty:
+        derived["configured_solver_variants.csv"] = configured_solvers
+    runtime_environments = _runtime_environments_table(results)
+    if not runtime_environments.empty:
+        derived["runtime_environments.csv"] = runtime_environments
+    if len(dataset_entries) > 1 and "dataset" in results.columns:
+        derived.update(
+            _per_dataset_report_tables(
+                results,
+                dataset_entries,
+                metric=metric,
+            )
+        )
+    return derived
+
+
 def _render_markdown_report(
     *,
     run_dir: Path,
@@ -159,12 +222,7 @@ def _render_markdown_report(
     manifest = _load_manifest(run_dir)
     config = manifest.get("config", {})
     dataset_entries = manifest_dataset_entries(config)
-    dataset_labels = [_dataset_display_label(entry) for entry in dataset_entries] or [_unknown()]
-    dataset_label = (
-        dataset_labels[0]
-        if len(dataset_labels) == 1
-        else ", ".join(dataset_labels)
-    )
+    dataset_label = _dataset_label(dataset_entries)
 
     lines: list[str] = []
     lines.extend(_render_summary_block(dataset_entries, results, tables, metric))
@@ -229,32 +287,35 @@ def _render_scope_block(
     tables: dict[str, pd.DataFrame],
 ) -> list[str]:
     lines: list[str] = []
+    run_scope = _run_scope_table(
+        run_dir=run_dir,
+        manifest=manifest,
+        config=config,
+        dataset_label=dataset_label,
+        metric=metric,
+        results=results,
+        tables=tables,
+    )
     lines.extend(
         _section_table(
             "Run Scope",
-            _run_scope_table(
-                run_dir=run_dir,
-                manifest=manifest,
-                config=config,
-                dataset_label=dataset_label,
-                metric=metric,
-                results=results,
-                tables=tables,
-            ),
+            run_scope,
             level=3,
             max_rows=50,
             max_cols=2,
+            source_link="run_scope.csv",
         )
+    )
+    headline = _headline_solver_performance(
+        results=results,
+        tables=tables,
+        config=config,
+        metric=metric,
     )
     lines.extend(
         _section_table(
             "Headline Solver Performance",
-            _headline_solver_performance(
-                results=results,
-                tables=tables,
-                config=config,
-                metric=metric,
-            ),
+            headline,
             intro=(
                 "Sorted by penalized shifted geomean when available. Lower "
                 "geomean and median values are better; only accurate "
@@ -262,18 +323,21 @@ def _render_scope_block(
             ),
             max_rows=50,
             max_cols=12,
+            source_link="headline_solver_performance.csv",
         )
     )
+    software_versions = _software_versions_table(results, config)
     lines.extend(
         _section_table(
             "Software and Runtime",
-            _software_versions_table(results, config),
+            software_versions,
             intro=(
                 "Benchmark package and solver package versions captured in "
                 "result metadata."
             ),
             max_rows=50,
             max_cols=8,
+            source_link="software_and_runtime.csv",
         )
     )
     configured_solvers = _configured_solvers_table(config)
@@ -283,6 +347,7 @@ def _render_scope_block(
                 "Configured Solver Variants",
                 configured_solvers,
                 max_rows=50,
+                source_link="configured_solver_variants.csv",
             )
         )
     return lines
@@ -556,26 +621,17 @@ def _render_provenance_block(
 ) -> list[str]:
     lines: list[str] = ["## Provenance", ""]
     lines.extend(_system_summary_lines(manifest))
-    environment_columns = [
-        column
-        for column in [
-            "solver_id",
-            "metadata.environment_id",
-            "metadata.runtime.python_executable",
-            "metadata.runtime.python_version",
-            "metadata.runtime.platform",
-            "metadata.runtime.cpu_model",
-        ]
-        if column in results
-    ]
-    if environment_columns:
-        environment = (
-            results[environment_columns]
-            .drop_duplicates()
-            .sort_values(environment_columns[:1])
-            .reset_index(drop=True)
+    environment = _runtime_environments_table(results)
+    if not environment.empty:
+        lines.extend(
+            _section_table(
+                "Runtime Environments",
+                environment,
+                max_rows=50,
+                level=3,
+                source_link="runtime_environments.csv",
+            )
         )
-        lines.extend(_section_table("Runtime Environments", environment, max_rows=50, level=3))
     lines.extend(_source_config_section(run_dir, manifest))
     lines.extend(
         [
@@ -623,52 +679,101 @@ def _per_dataset_breakdown(
         if subset.empty:
             lines.extend([f"### {label}", "", "No rows for this dataset.", ""])
             continue
+        artifact_prefix = _per_dataset_artifact_prefix(entry)
+        solver_metrics_table = _sort_report_table(
+            "solver_metrics.csv",
+            solver_metrics(subset),
+            metric=metric,
+        )
+        failure_rates_table = _sort_report_table(
+            "failure_rates.csv",
+            failure_rates(subset),
+            metric=metric,
+        )
+        shifted_geomean_table = _sort_report_table(
+            f"shifted_geomean_{metric}.csv",
+            shifted_geomean(subset, metric=metric),
+            metric=metric,
+        )
+        kkt_summary_table = _sort_report_table(
+            "kkt_summary.csv",
+            kkt_summary(subset),
+            metric=metric,
+        )
         lines.extend([f"### {label}", ""])
         lines.extend(
             _section_table(
                 "Solver Metrics",
-                _sort_report_table(
-                    "solver_metrics.csv",
-                    solver_metrics(subset),
-                    metric=metric,
-                ),
+                solver_metrics_table,
                 level=4,
+                source_link=f"{artifact_prefix}/solver_metrics.csv",
             )
         )
         lines.extend(
             _section_table(
                 "Failure Rates",
-                _sort_report_table(
-                    "failure_rates.csv",
-                    failure_rates(subset),
-                    metric=metric,
-                ),
+                failure_rates_table,
                 level=4,
+                source_link=f"{artifact_prefix}/failure_rates.csv",
             )
         )
         lines.extend(
             _section_table(
                 f"Shifted Geomean ({metric})",
-                _sort_report_table(
-                    f"shifted_geomean_{metric}.csv",
-                    shifted_geomean(subset, metric=metric),
-                    metric=metric,
-                ),
+                shifted_geomean_table,
                 level=4,
+                source_link=f"{artifact_prefix}/shifted_geomean_{metric}.csv",
             )
         )
         lines.extend(
             _section_table(
                 "KKT Summary",
-                _sort_report_table(
-                    "kkt_summary.csv",
-                    kkt_summary(subset),
-                    metric=metric,
-                ),
+                kkt_summary_table,
                 level=4,
+                source_link=f"{artifact_prefix}/kkt_summary.csv",
             )
         )
     return lines
+
+
+def _per_dataset_report_tables(
+    results: pd.DataFrame,
+    dataset_entries: list[dict],
+    *,
+    metric: str,
+) -> dict[str, pd.DataFrame]:
+    tables: dict[str, pd.DataFrame] = {}
+    for entry in dataset_entries:
+        subset = results[results["dataset"] == entry["id"]]
+        if subset.empty:
+            continue
+        artifact_prefix = _per_dataset_artifact_prefix(entry)
+        tables[f"{artifact_prefix}/solver_metrics.csv"] = _sort_report_table(
+            "solver_metrics.csv",
+            solver_metrics(subset),
+            metric=metric,
+        )
+        tables[f"{artifact_prefix}/failure_rates.csv"] = _sort_report_table(
+            "failure_rates.csv",
+            failure_rates(subset),
+            metric=metric,
+        )
+        tables[f"{artifact_prefix}/shifted_geomean_{metric}.csv"] = _sort_report_table(
+            f"shifted_geomean_{metric}.csv",
+            shifted_geomean(subset, metric=metric),
+            metric=metric,
+        )
+        tables[f"{artifact_prefix}/kkt_summary.csv"] = _sort_report_table(
+            "kkt_summary.csv",
+            kkt_summary(subset),
+            metric=metric,
+        )
+    return tables
+
+
+def _per_dataset_artifact_prefix(entry: dict) -> str:
+    dataset_id = str(entry.get("id") or _dataset_display_label(entry))
+    return f"by_dataset/{safe_filename(dataset_id)}"
 
 
 def _section_table(
@@ -1169,6 +1274,29 @@ def _software_versions_table(results: pd.DataFrame, config: dict) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
+def _runtime_environments_table(results: pd.DataFrame) -> pd.DataFrame:
+    environment_columns = [
+        column
+        for column in [
+            "solver_id",
+            "metadata.environment_id",
+            "metadata.runtime.python_executable",
+            "metadata.runtime.python_version",
+            "metadata.runtime.platform",
+            "metadata.runtime.cpu_model",
+        ]
+        if column in results
+    ]
+    if not environment_columns:
+        return pd.DataFrame()
+    return (
+        results[environment_columns]
+        .drop_duplicates()
+        .sort_values(environment_columns[:1])
+        .reset_index(drop=True)
+    )
+
+
 def _system_summary_lines(manifest: dict) -> list[str]:
     """Render the manifest's ``system`` block as a Markdown summary.
 
@@ -1395,7 +1523,7 @@ def _dataframe_to_markdown(
 def _full_table_note(source_link: str | None) -> str:
     if source_link:
         return f"See [full CSV]({source_link}) for the full table."
-    return "See the linked CSV for the full table."
+    return "See the [artifact index](#artifact-index) for available CSVs."
 
 
 def _plot_block(
@@ -1456,6 +1584,13 @@ def _load_manifest(run_dir: Path) -> dict:
     if not path.exists():
         return {}
     return json.loads(path.read_text())
+
+
+def _dataset_label(dataset_entries: list[dict]) -> str:
+    dataset_labels = [_dataset_display_label(entry) for entry in dataset_entries] or [
+        _unknown()
+    ]
+    return dataset_labels[0] if len(dataset_labels) == 1 else ", ".join(dataset_labels)
 
 
 def _manifest_excerpt(manifest: dict) -> dict:

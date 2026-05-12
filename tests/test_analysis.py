@@ -309,6 +309,42 @@ def test_report_truncated_table_note_links_full_csv():
     assert "See [full CSV](long_table.csv) for the full table." in markdown
 
 
+def test_report_truncated_derived_tables_link_full_csv(tmp_path: Path, repo_root: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    solvers = [
+        {
+            "id": f"solver_{idx:03d}",
+            "solver": "scs",
+            "timeout_seconds": 1,
+            "settings": {"scale": idx},
+        }
+        for idx in range(55)
+    ]
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "synthetic_qp",
+            "include": ["one_variable_eq"],
+            "solvers": solvers,
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    record = _analysis_frame().to_dict("records")[0]
+    record["solver_id"] = "solver_000"
+    with (run_dir / "results.jsonl").open("w") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
+    markdown = (report_dir / "index.md").read_text()
+
+    assert (report_dir / "configured_solver_variants.csv").exists()
+    assert "Showing first 50 rows and 4 columns of 55 rows and 4 columns" in markdown
+    assert "See [full CSV](configured_solver_variants.csv) for the full table." in markdown
+    assert "See the linked CSV for the full table." not in markdown
+
+
 def test_report_table_sorting_prioritizes_useful_extremes():
     solver_metrics_table = pd.DataFrame(
         [
