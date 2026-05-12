@@ -379,6 +379,19 @@ def test_report_table_sorting_prioritizes_useful_extremes():
 
     assert sorted_metrics["solver_id"].tolist() == ["fast", "slow", "failed"]
 
+    failure_rates_table = _sort_report_table(
+        "failure_rates.csv",
+        pd.DataFrame(
+            [
+                {"solver_id": "failed", "failure_rate": 1.0, "failure_count": 10},
+                {"solver_id": "clean", "failure_rate": 0.0, "failure_count": 0},
+                {"solver_id": "partial", "failure_rate": 0.5, "failure_count": 2},
+            ]
+        ),
+        metric="run_time_seconds",
+    )
+    assert failure_rates_table["solver_id"].tolist() == ["clean", "partial", "failed"]
+
     slowest = _sort_report_table(
         "slowest_solves_run_time_seconds.csv",
         pd.DataFrame(
@@ -402,7 +415,7 @@ def test_report_table_sorting_prioritizes_useful_extremes():
         ),
         metric="run_time_seconds",
     )
-    assert kkt["solver_id"].tolist() == ["bad", "good"]
+    assert kkt["solver_id"].tolist() == ["good", "bad"]
 
 
 def test_shifted_geomean_can_use_successful_solves_only():
@@ -843,6 +856,8 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     assert (report_dir / "index.md").exists()
     assert (report_dir / "README.md").exists()
     assert (report_dir / "solver_metrics.csv").exists()
+    assert (report_dir / "headline_solver_metrics.csv").exists()
+    assert (report_dir / "shifted_geomean_iterations.csv").exists()
     assert (report_dir / "pairwise_speedups_run_time_seconds.csv").exists()
     assert (report_dir / "performance_ratios_run_time_seconds.csv").exists()
     assert (report_dir / "problem_solver_comparison.csv").exists()
@@ -852,10 +867,13 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     report_markdown = (report_dir / "index.md").read_text()
     assert "# Benchmark Report" in report_markdown
     assert "## Executive Summary" in report_markdown
-    assert "### Run Scope" in report_markdown
-    assert "## Headline Solver Performance" in report_markdown
-    assert "## Software and Runtime" in report_markdown
-    assert "## Solver Metrics" in report_markdown
+    assert "## Run Scope" in report_markdown
+    assert "## Headline Solver Metrics" in report_markdown
+    assert "### Software and Runtime" in report_markdown
+    assert "## Solver Metrics" not in report_markdown
+    assert "penalized_shifted_geomean_iterations" in report_markdown
+    assert "iterations_total" in report_markdown
+    assert "statuses" in report_markdown
     assert "## Performance Plots" in report_markdown
     assert (
         '<img src="performance_profile_run_time_seconds.png" '

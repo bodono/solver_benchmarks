@@ -60,6 +60,7 @@ def test_run_then_report_produces_artifacts(tmp_path: Path, repo_root: Path):
     assert "index.md" in output_paths
     assert "README.md" in output_paths
     assert "solver_metrics.csv" in output_paths
+    assert "headline_solver_metrics.csv" in output_paths
     assert "completion.csv" in output_paths
     assert "kkt_summary.csv" in output_paths
 
