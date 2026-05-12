@@ -56,18 +56,11 @@ def write_run_report(
 
     outputs: list[Path] = []
     tables = {
-        "solver_metrics.csv": solver_metrics(results),
+        **_solver_summary_tables(results, metric=metric),
         "status_counts.csv": solver_summary(run_dir),
         "completion.csv": completion_summary(run_dir, results, repo_root=repo_root),
-        "failure_rates.csv": failure_rates(results),
         "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root),
         f"performance_profile_{metric}.csv": performance_profile(results, metric=metric),
-        f"shifted_geomean_{metric}.csv": shifted_geomean(results, metric=metric),
-        f"shifted_geomean_{metric}_success_only.csv": shifted_geomean(
-            results,
-            metric=metric,
-            penalize_failures=False,
-        ),
         f"pairwise_speedups_{metric}.csv": pairwise_speedups(results, metric=metric),
         f"performance_ratios_{metric}.csv": performance_ratio_matrix(
             results,
@@ -86,16 +79,6 @@ def write_run_report(
         f"difficulty_scaling_{metric}.csv": difficulty_scaling(results, metric=metric),
         "setup_solve_breakdown.csv": setup_solve_breakdown(results),
     }
-    if metric != "iterations" and "iterations" in results:
-        tables["shifted_geomean_iterations.csv"] = shifted_geomean(
-            results,
-            metric="iterations",
-        )
-        tables["shifted_geomean_iterations_success_only.csv"] = shifted_geomean(
-            results,
-            metric="iterations",
-            penalize_failures=False,
-        )
     tables = {
         name: _sort_report_table(name, table, metric=metric)
         for name, table in tables.items()
@@ -264,7 +247,7 @@ def _render_markdown_report(
                 metric=metric,
             )
         )
-    lines.extend(_render_provenance_block(run_dir, manifest, config, results))
+    lines.extend(_render_provenance_block(run_dir, manifest, results, config=config))
     lines.extend(_render_artifact_index_block(output_dir, artifact_outputs))
     return "\n".join(lines)
 
@@ -605,9 +588,11 @@ def _render_kkt_diagnostics_block(
 def _render_provenance_block(
     run_dir: Path,
     manifest: dict,
-    config: dict,
     results: pd.DataFrame,
+    config: dict | None = None,
 ) -> list[str]:
+    if config is None:
+        config = manifest.get("config", {})
     lines: list[str] = ["## Provenance", ""]
     lines.extend(_system_summary_lines(manifest))
     software_versions = _software_versions_table(results, config)
@@ -749,16 +734,6 @@ def _per_dataset_report_tables(
             config=config,
             metric=metric,
         )
-        tables[f"{artifact_prefix}/failure_rates.csv"] = _sort_report_table(
-            "failure_rates.csv",
-            failure_rates(subset),
-            metric=metric,
-        )
-        tables[f"{artifact_prefix}/shifted_geomean_{metric}.csv"] = _sort_report_table(
-            f"shifted_geomean_{metric}.csv",
-            shifted_geomean(subset, metric=metric),
-            metric=metric,
-        )
         tables[f"{artifact_prefix}/kkt_summary.csv"] = _sort_report_table(
             "kkt_summary.csv",
             kkt_summary(subset),
@@ -773,6 +748,17 @@ def _per_dataset_artifact_prefix(entry: dict) -> str:
 
 
 def _subset_solver_summary_tables(
+    results: pd.DataFrame,
+    *,
+    metric: str,
+) -> dict[str, pd.DataFrame]:
+    return {
+        name: _sort_report_table(name, table, metric=metric)
+        for name, table in _solver_summary_tables(results, metric=metric).items()
+    }
+
+
+def _solver_summary_tables(
     results: pd.DataFrame,
     *,
     metric: str,
@@ -797,10 +783,7 @@ def _subset_solver_summary_tables(
             metric="iterations",
             penalize_failures=False,
         )
-    return {
-        name: _sort_report_table(name, table, metric=metric)
-        for name, table in tables.items()
-    }
+    return tables
 
 
 def _section_table(
@@ -879,10 +862,10 @@ _FIXED_SORTS: dict[str, list[tuple[str, bool]]] = {
         ("solver_id", True),
     ],
     "claimed_optimal_kkt_thresholds.csv": [
-        ("count_above_max", True),
-        ("worst_max", True),
-        ("worst_p95", True),
-        ("missing_residuals", True),
+        ("count_above_max", False),
+        ("worst_max", False),
+        ("worst_p95", False),
+        ("missing_residuals", False),
         ("solver_id", True),
     ],
     "kkt_certificate_summary.csv": [
@@ -1180,12 +1163,10 @@ def _headline_solver_metrics(
 
     table = metrics.copy()
     solver_names = _solver_name_by_id(config)
-    if "solver_id" in table:
-        table.insert(
-            1,
-            "solver",
-            table["solver_id"].map(solver_names).fillna(""),
-        )
+    if solver_names and "solver_id" in table:
+        solver_labels = table["solver_id"].map(solver_names).fillna("")
+        if solver_labels.astype(str).ne("").any():
+            table.insert(1, "solver", solver_labels)
 
     table = _merge_shifted_geomean_columns(table, tables, metric)
     if metric != "iterations" and "iterations" in results:

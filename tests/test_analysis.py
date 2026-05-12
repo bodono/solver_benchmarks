@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.markdown_report import (
+    _headline_solver_metrics,
     _section_table,
     _sort_report_table,
     write_run_report,
@@ -309,6 +310,15 @@ def test_report_truncated_table_note_links_full_csv():
     assert "See [full CSV](long_table.csv) for the full table." in markdown
 
 
+def test_report_truncated_table_without_source_links_artifact_index():
+    table = pd.DataFrame({"solver_id": ["a", "b"], "run_time_seconds": [1.0, 2.0]})
+
+    markdown = "\n".join(_section_table("Long Table", table, max_rows=1))
+
+    assert "Showing first 1 rows" in markdown
+    assert "See the [artifact index](#artifact-index) for available CSVs." in markdown
+
+
 def test_report_truncated_derived_tables_link_full_csv(tmp_path: Path, repo_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -416,6 +426,46 @@ def test_report_table_sorting_prioritizes_useful_extremes():
         metric="run_time_seconds",
     )
     assert kkt["solver_id"].tolist() == ["good", "bad"]
+
+    claimed_optimal_kkt = _sort_report_table(
+        "claimed_optimal_kkt_thresholds.csv",
+        pd.DataFrame(
+            [
+                {"solver_id": "clean", "count_above_max": 0, "worst_max": 1.0e-8},
+                {"solver_id": "suspect", "count_above_max": 3, "worst_max": 1.0e-1},
+            ]
+        ),
+        metric="run_time_seconds",
+    )
+    assert claimed_optimal_kkt["solver_id"].tolist() == ["suspect", "clean"]
+
+
+def test_headline_solver_metrics_omits_empty_solver_column():
+    frame = _analysis_frame()
+    tables = {
+        "solver_metrics.csv": solver_metrics(frame),
+        "failure_rates.csv": failure_rates(frame),
+        "shifted_geomean_run_time_seconds.csv": shifted_geomean(frame),
+        "shifted_geomean_run_time_seconds_success_only.csv": shifted_geomean(
+            frame,
+            penalize_failures=False,
+        ),
+        "shifted_geomean_iterations.csv": shifted_geomean(frame, metric="iterations"),
+        "shifted_geomean_iterations_success_only.csv": shifted_geomean(
+            frame,
+            metric="iterations",
+            penalize_failures=False,
+        ),
+    }
+
+    headline = _headline_solver_metrics(
+        results=frame,
+        tables=tables,
+        config={},
+        metric="run_time_seconds",
+    )
+
+    assert "solver" not in headline.columns
 
 
 def test_shifted_geomean_can_use_successful_solves_only():
@@ -1428,6 +1478,12 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path, repo
     assert "ds_a" in markdown and "ds_b" in markdown
     # The Run Scope should list both datasets.
     assert "| Datasets | ds_a, ds_b |" in markdown
+    for dataset_id in ["ds_a", "ds_b"]:
+        by_dataset = report_dir / "by_dataset" / dataset_id
+        assert (by_dataset / "headline_solver_metrics.csv").exists()
+        assert f"by_dataset/{dataset_id}/headline_solver_metrics.csv" in markdown
+        assert not (by_dataset / "failure_rates.csv").exists()
+        assert not (by_dataset / "shifted_geomean_run_time_seconds.csv").exists()
 
 
 def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
