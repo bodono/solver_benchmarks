@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.markdown_report import (
+    _headline_solver_metrics,
     _section_table,
     _sort_report_table,
     write_run_report,
@@ -309,6 +310,51 @@ def test_report_truncated_table_note_links_full_csv():
     assert "See [full CSV](long_table.csv) for the full table." in markdown
 
 
+def test_report_truncated_table_without_source_links_artifact_index():
+    table = pd.DataFrame({"solver_id": ["a", "b"], "run_time_seconds": [1.0, 2.0]})
+
+    markdown = "\n".join(_section_table("Long Table", table, max_rows=1))
+
+    assert "Showing first 1 rows" in markdown
+    assert "See the [artifact index](#artifact-index) for available CSVs." in markdown
+
+
+def test_report_truncated_derived_tables_link_full_csv(tmp_path: Path, repo_root: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    solvers = [
+        {
+            "id": f"solver_{idx:03d}",
+            "solver": "scs",
+            "timeout_seconds": 1,
+            "settings": {"scale": idx},
+        }
+        for idx in range(55)
+    ]
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "dataset": "synthetic_qp",
+            "include": ["one_variable_eq"],
+            "solvers": solvers,
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    record = _analysis_frame().to_dict("records")[0]
+    record["solver_id"] = "solver_000"
+    with (run_dir / "results.jsonl").open("w") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+    report_dir = tmp_path / "report"
+    write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
+    markdown = (report_dir / "index.md").read_text()
+
+    assert (report_dir / "configured_solver_variants.csv").exists()
+    assert "Showing first 50 rows and 4 columns of 55 rows and 4 columns" in markdown
+    assert "See [full CSV](configured_solver_variants.csv) for the full table." in markdown
+    assert "See the linked CSV for the full table." not in markdown
+
+
 def test_report_table_sorting_prioritizes_useful_extremes():
     solver_metrics_table = pd.DataFrame(
         [
@@ -343,6 +389,19 @@ def test_report_table_sorting_prioritizes_useful_extremes():
 
     assert sorted_metrics["solver_id"].tolist() == ["fast", "slow", "failed"]
 
+    failure_rates_table = _sort_report_table(
+        "failure_rates.csv",
+        pd.DataFrame(
+            [
+                {"solver_id": "failed", "failure_rate": 1.0, "failure_count": 10},
+                {"solver_id": "clean", "failure_rate": 0.0, "failure_count": 0},
+                {"solver_id": "partial", "failure_rate": 0.5, "failure_count": 2},
+            ]
+        ),
+        metric="run_time_seconds",
+    )
+    assert failure_rates_table["solver_id"].tolist() == ["clean", "partial", "failed"]
+
     slowest = _sort_report_table(
         "slowest_solves_run_time_seconds.csv",
         pd.DataFrame(
@@ -366,7 +425,47 @@ def test_report_table_sorting_prioritizes_useful_extremes():
         ),
         metric="run_time_seconds",
     )
-    assert kkt["solver_id"].tolist() == ["bad", "good"]
+    assert kkt["solver_id"].tolist() == ["good", "bad"]
+
+    claimed_optimal_kkt = _sort_report_table(
+        "claimed_optimal_kkt_thresholds.csv",
+        pd.DataFrame(
+            [
+                {"solver_id": "clean", "count_above_max": 0, "worst_max": 1.0e-8},
+                {"solver_id": "suspect", "count_above_max": 3, "worst_max": 1.0e-1},
+            ]
+        ),
+        metric="run_time_seconds",
+    )
+    assert claimed_optimal_kkt["solver_id"].tolist() == ["suspect", "clean"]
+
+
+def test_headline_solver_metrics_omits_empty_solver_column():
+    frame = _analysis_frame()
+    tables = {
+        "solver_metrics.csv": solver_metrics(frame),
+        "failure_rates.csv": failure_rates(frame),
+        "shifted_geomean_run_time_seconds.csv": shifted_geomean(frame),
+        "shifted_geomean_run_time_seconds_success_only.csv": shifted_geomean(
+            frame,
+            penalize_failures=False,
+        ),
+        "shifted_geomean_iterations.csv": shifted_geomean(frame, metric="iterations"),
+        "shifted_geomean_iterations_success_only.csv": shifted_geomean(
+            frame,
+            metric="iterations",
+            penalize_failures=False,
+        ),
+    }
+
+    headline = _headline_solver_metrics(
+        results=frame,
+        tables=tables,
+        config={},
+        metric="run_time_seconds",
+    )
+
+    assert "solver" not in headline.columns
 
 
 def test_shifted_geomean_can_use_successful_solves_only():
@@ -807,6 +906,8 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     assert (report_dir / "index.md").exists()
     assert (report_dir / "README.md").exists()
     assert (report_dir / "solver_metrics.csv").exists()
+    assert (report_dir / "headline_solver_metrics.csv").exists()
+    assert (report_dir / "shifted_geomean_iterations.csv").exists()
     assert (report_dir / "pairwise_speedups_run_time_seconds.csv").exists()
     assert (report_dir / "performance_ratios_run_time_seconds.csv").exists()
     assert (report_dir / "problem_solver_comparison.csv").exists()
@@ -816,10 +917,13 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     report_markdown = (report_dir / "index.md").read_text()
     assert "# Benchmark Report" in report_markdown
     assert "## Executive Summary" in report_markdown
-    assert "### Run Scope" in report_markdown
-    assert "## Headline Solver Performance" in report_markdown
-    assert "## Software and Runtime" in report_markdown
-    assert "## Solver Metrics" in report_markdown
+    assert "## Run Scope" in report_markdown
+    assert "## Headline Solver Metrics" in report_markdown
+    assert "### Software and Runtime" in report_markdown
+    assert "## Solver Metrics" not in report_markdown
+    assert "penalized_shifted_geomean_iterations" in report_markdown
+    assert "iterations_total" in report_markdown
+    assert "statuses" in report_markdown
     assert "## Performance Plots" in report_markdown
     assert (
         '<img src="performance_profile_run_time_seconds.png" '
@@ -1374,6 +1478,12 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path, repo
     assert "ds_a" in markdown and "ds_b" in markdown
     # The Run Scope should list both datasets.
     assert "| Datasets | ds_a, ds_b |" in markdown
+    for dataset_id in ["ds_a", "ds_b"]:
+        by_dataset = report_dir / "by_dataset" / dataset_id
+        assert (by_dataset / "headline_solver_metrics.csv").exists()
+        assert f"by_dataset/{dataset_id}/headline_solver_metrics.csv" in markdown
+        assert not (by_dataset / "failure_rates.csv").exists()
+        assert not (by_dataset / "shifted_geomean_run_time_seconds.csv").exists()
 
 
 def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
