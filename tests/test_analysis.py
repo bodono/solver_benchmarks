@@ -466,6 +466,14 @@ def test_headline_solver_metrics_omits_empty_solver_column():
     )
 
     assert "solver" not in headline.columns
+    assert "run_time_median_seconds" in headline.columns
+    assert "run_time_max_seconds" in headline.columns
+    assert "iterations_median" in headline.columns
+    assert "run_time_total_seconds" not in headline.columns
+    assert "run_time_mean_seconds" not in headline.columns
+    assert "iterations_total" not in headline.columns
+    assert "iterations_mean" not in headline.columns
+    assert "iterations_max" not in headline.columns
 
 
 def test_shifted_geomean_can_use_successful_solves_only():
@@ -922,7 +930,11 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     assert "### Software and Runtime" in report_markdown
     assert "## Solver Metrics" not in report_markdown
     assert "penalized_shifted_geomean_iterations" in report_markdown
-    assert "iterations_total" in report_markdown
+    assert "iterations_median" in report_markdown
+    assert "iterations_total" not in report_markdown
+    assert "iterations_mean" not in report_markdown
+    assert "run_time_total_seconds" not in report_markdown
+    assert "run_time_mean_seconds" not in report_markdown
     assert "statuses" in report_markdown
     assert "## Performance Plots" in report_markdown
     assert (

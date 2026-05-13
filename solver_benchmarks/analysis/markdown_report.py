@@ -1258,20 +1258,14 @@ def _headline_solver_metric_columns(metric: str) -> list[str]:
             "failure_count",
             "success_rate",
             "failure_rate",
-            "run_time_total_seconds",
-            "run_time_mean_seconds",
             "run_time_median_seconds",
             "run_time_max_seconds",
-            "iterations_total",
-            "iterations_mean",
             "iterations_median",
-            "iterations_max",
         ]
     )
     if metric not in {"run_time_seconds", "iterations"}:
         columns.extend(
             [
-                f"total_{metric}",
                 f"median_{metric}",
                 f"max_{metric}",
             ]
