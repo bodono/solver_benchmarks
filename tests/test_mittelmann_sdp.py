@@ -11,6 +11,9 @@ end-to-end solving with a real SDP solver.
 from __future__ import annotations
 
 import gzip
+import io
+import urllib.error
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +71,20 @@ def _write_dat_s(folder: Path, name: str, body: str) -> Path:
     path = folder / f"{name}.dat-s"
     path.write_text(body)
     return path
+
+
+class _FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
 
 
 def _local_dataset(folder: Path, **options):
@@ -440,3 +457,54 @@ def test_sdpa_name_recognizes_dat_s_extensions(tmp_path: Path):
     assert _sdpa_name(tmp_path / "trto3.dat-s") == "trto3"
     assert _sdpa_name(tmp_path / "G40mc.dat-s.gz") == "G40mc"
     assert _sdpa_name(tmp_path / "not_an_sdp.txt") is None
+
+
+def test_download_mittelmann_sdp_retries_primary_timeout(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import mittelmann_sdp
+
+    payload = gzip.compress(TRACE_ONE_SDP.encode("utf-8"))
+    calls = []
+
+    def fake_urlopen(url, timeout):
+        calls.append((url, timeout))
+        if len(calls) == 1:
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(mittelmann_sdp.urllib.request, "urlopen", fake_urlopen)
+
+    path = mittelmann_sdp.download_mittelmann_sdp_problem("trto3", tmp_path)
+
+    assert path == tmp_path / "trto3.dat-s.gz"
+    assert gzip.decompress(path.read_bytes()).decode("utf-8") == TRACE_ONE_SDP
+    assert len(calls) == 2
+    assert calls[0][1] == mittelmann_sdp.MITTELMANN_SDP_DOWNLOAD_TIMEOUT
+
+
+def test_download_mittelmann_sdp_uses_kocvara_zip_fallback(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import mittelmann_sdp
+
+    raw = TRACE_ONE_SDP.encode("utf-8")
+    archive_body = io.BytesIO()
+    with zipfile.ZipFile(archive_body, "w") as archive:
+        archive.writestr("trto3.dat-s", raw)
+    primary_url = f"{mittelmann_sdp.MITTELMANN_SDP_BASE_URL}/trto3.dat-s.gz"
+    fallback_url = f"{mittelmann_sdp.KOCVARA_SDP_BASE_URL}/trto.zip"
+    calls = []
+
+    def fake_urlopen(url, timeout):
+        calls.append((url, timeout))
+        if url == primary_url:
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        if url == fallback_url:
+            return _FakeResponse(archive_body.getvalue())
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(mittelmann_sdp.urllib.request, "urlopen", fake_urlopen)
+
+    path = mittelmann_sdp.download_mittelmann_sdp_problem("trto3", tmp_path)
+
+    assert path == tmp_path / "trto3.dat-s.gz"
+    assert gzip.decompress(path.read_bytes()) == raw
+    assert [url for url, _ in calls].count(primary_url) == 3
+    assert (fallback_url, mittelmann_sdp.MITTELMANN_SDP_DOWNLOAD_TIMEOUT) in calls
