@@ -18,7 +18,11 @@ or by passing a ``subset`` list.
 
 from __future__ import annotations
 
+import gzip
+import io
+import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
@@ -30,6 +34,9 @@ from solver_benchmarks.transforms.sdpa import (
 from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
 MITTELMANN_SDP_BASE_URL = "https://plato.asu.edu/ftp/sdp"
+KOCVARA_SDP_BASE_URL = "https://web.mat.bham.ac.uk/kocvara/pennon/problems"
+MITTELMANN_SDP_DOWNLOAD_ATTEMPTS = 3
+MITTELMANN_SDP_DOWNLOAD_TIMEOUT = 30
 
 # Curated default: small-to-medium SDPLIB-style instances (Lovász
 # theta numbers and graph-coloring SDPs) that ship in SDPA-S format.
@@ -42,6 +49,10 @@ MITTELMANN_SDP_DEFAULT_SUBSET: dict[str, str] = {
     "buck3": "buck3.dat-s.gz",
     "biggs": "biggs.dat-s.gz",
     "G40mc": "G40mc.dat-s.gz",
+}
+KOCVARA_SDP_FALLBACK_ARCHIVES: dict[str, str] = {
+    "buck": "buck.zip",
+    "trto": "trto.zip",
 }
 
 
@@ -147,13 +158,68 @@ def download_mittelmann_sdp_problem(name: str, folder: Path) -> Path:
     if target.exists():
         return target
     url = f"{MITTELMANN_SDP_BASE_URL}/{remote_filename}"
-    with urllib.request.urlopen(url, timeout=120) as response:
-        body = response.read()
+    try:
+        body = _download_url_bytes_with_retries(url)
+    except RuntimeError as primary_error:
+        try:
+            body = _download_kocvara_fallback_bytes(name, remote_filename)
+        except KeyError:
+            raise primary_error
+        except RuntimeError as fallback_error:
+            raise RuntimeError(
+                f"Could not download Mittelmann SDP problem {name!r}: "
+                f"{primary_error}; fallback failed: {fallback_error}"
+            ) from fallback_error
     if remote_filename.endswith(".gz"):
         validate_gzip_payload(body)
     folder.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(target, body)
     return target
+
+
+def _download_url_bytes_with_retries(
+    url: str,
+    *,
+    attempts: int = MITTELMANN_SDP_DOWNLOAD_ATTEMPTS,
+    timeout: int = MITTELMANN_SDP_DOWNLOAD_TIMEOUT,
+) -> bytes:
+    last_error: BaseException | None = None
+    for _ in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                return response.read()
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+    raise RuntimeError(f"Could not download {url!r}: {last_error}")
+
+
+def _download_kocvara_fallback_bytes(name: str, remote_filename: str) -> bytes:
+    archive_filename = _kocvara_archive_filename(name)
+    if archive_filename is None:
+        raise KeyError(name)
+    archive_url = f"{KOCVARA_SDP_BASE_URL}/{archive_filename}"
+    archive_body = _download_url_bytes_with_retries(archive_url)
+    member = Path(remote_filename).name
+    if member.endswith(".gz"):
+        member = member[: -len(".gz")]
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_body)) as archive:
+            raw = archive.read(member)
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise RuntimeError(
+            f"Kocvara archive {archive_filename!r} did not contain {member!r}"
+        ) from exc
+    if remote_filename.endswith(".gz"):
+        return gzip.compress(raw, mtime=0)
+    return raw
+
+
+def _kocvara_archive_filename(name: str) -> str | None:
+    for prefix, archive_filename in KOCVARA_SDP_FALLBACK_ARCHIVES.items():
+        suffix = name.removeprefix(prefix)
+        if suffix != name and suffix.isdigit():
+            return archive_filename
+    return None
 
 
 def _sdpa_name(path: Path) -> str | None:
