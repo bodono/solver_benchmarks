@@ -11,7 +11,9 @@ requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
     "h5py>=3.0",
-    "highspy>=1.0",
+    # highspy 1.15.0 Linux wheels conflict with OR-Tools 9.15.6755 at
+    # PDLP import time (undefined HighsLogOptions symbol).
+    "highspy>=1.0,<1.15",
     # Matplotlib 3.9 is the floor: analysis/plots.py uses the
     # `tick_labels=` keyword on ax.boxplot, which was added in 3.9
     # (replacing the deprecated `labels=` keyword).
@@ -24,7 +26,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-highs = ["highspy>=1.0"]
+highs = ["highspy>=1.0,<1.15"]
 scs = ["scs>=3.0"]
 osqp = ["osqp>=0.6"]
 clarabel = ["clarabel>=0.7"]
