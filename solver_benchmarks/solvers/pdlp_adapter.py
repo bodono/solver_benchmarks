@@ -44,12 +44,10 @@ class PDLPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         try:
-            import google.protobuf  # noqa: F401
-            import ortools
-            _import_model_builder_helper()
-        except ModuleNotFoundError:
+            _import_ortools()
+        except SolverUnavailable:
             return False
-        return _version_tuple(getattr(ortools, "__version__", "0")) >= (9, 3, 0)
+        return True
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         _import_ortools()
@@ -105,8 +103,11 @@ def _import_ortools() -> None:
         from ortools.pdlp import solve_log_pb2, solvers_pb2  # noqa: F401
 
         _import_model_builder_helper()
-    except ModuleNotFoundError as exc:
-        raise SolverUnavailable("Install with the pdlp extra to use PDLP") from exc
+    except ImportError as exc:
+        raise SolverUnavailable(
+            "Install with the pdlp extra to use PDLP; "
+            f"OR-Tools could not be imported ({exc})"
+        ) from exc
     if _version_tuple(getattr(ortools, "__version__", "0")) < (9, 3, 0):
         version_str = getattr(ortools, "__version__", "unknown")
         raise SolverUnavailable(
