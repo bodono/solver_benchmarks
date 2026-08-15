@@ -6,6 +6,14 @@ import numpy as np
 import scipy.sparse as sp
 
 INF_BOUND = 1.0e20
+# Sentinel detection must tolerate representation noise: several
+# Maros-Meszaros .mat files store the +-1e20 infinity sentinel with a few
+# ULPs of error (e.g. -9.999999999999998e+19), which a strict comparison
+# against +-1e20 misclassifies as a genuine finite bound. Materializing
+# those rows injects 1e20-magnitude data into the cone form and silently
+# poisons the solve. Anything within a relative 1e-9 of the sentinel (or
+# beyond it) is treated as infinite.
+_INF_THRESHOLD = INF_BOUND * (1.0 - 1.0e-9)
 
 
 def split_qp_bounds(qp: dict):
@@ -20,9 +28,9 @@ def split_qp_bounds(qp: dict):
     # is well below floating-point precision of the bounds themselves).
     abs_diff = np.abs(u - l)
     scale = np.maximum.reduce([np.abs(l), np.abs(u), np.ones_like(l)])
-    eq = (abs_diff <= 1.0e-12 * scale) & (u < INF_BOUND) & (l > -INF_BOUND)
-    finite_u = (~eq) & (u < INF_BOUND)
-    finite_l = (~eq) & (l > -INF_BOUND)
+    eq = (abs_diff <= 1.0e-12 * scale) & (u < _INF_THRESHOLD) & (l > -_INF_THRESHOLD)
+    finite_u = (~eq) & (u < _INF_THRESHOLD)
+    finite_l = (~eq) & (l > -_INF_THRESHOLD)
     return a, l, u, eq, finite_l, finite_u
 
 
