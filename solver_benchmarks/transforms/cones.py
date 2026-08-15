@@ -2,24 +2,79 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import scipy.sparse as sp
 
 INF_BOUND = 1.0e20
-# Sentinel detection must tolerate representation noise: several
-# Maros-Meszaros .mat files store the +-1e20 infinity sentinel with a few
-# ULPs of error (e.g. -9.999999999999998e+19), which a strict comparison
-# against +-1e20 misclassifies as a genuine finite bound. Materializing
-# those rows injects 1e20-magnitude data into the cone form and silently
-# poisons the solve. Anything within a relative 1e-9 of the sentinel (or
-# beyond it) is treated as infinite.
-_INF_THRESHOLD = INF_BOUND * (1.0 - 1.0e-9)
+# Bound-hygiene thresholds. The datasets document +-1e20 as the infinity
+# sentinel, but several Maros-Meszaros .mat files store it with a few ULPs
+# of representation error (e.g. -9.999999999999998e+19); a strict equality
+# test misclassified those as genuine finite bounds and materialized
+# 1e20-magnitude rows that silently poisoned every downstream solve.
+# Policy:
+#   |bound| >= _INF_CUT           -> treated as infinite (dropped). Silent
+#                                    only within _CANONICAL_RTOL of the
+#                                    documented +-1e20 sentinel; warned
+#                                    otherwise.
+#   _BIG_WARN <= |bound| < _INF_CUT -> kept, but warned: either a corrupted
+#                                    sentinel or data scaled badly enough
+#                                    to deserve a look.
+#   Wrong-signed huge bounds (u <= -_INF_CUT or l >= +_INF_CUT) are kept
+#   and warned: they encode an infeasible-scale demand, not infinity, and
+#   dropping them would hide a modeling error.
+# The canonical band must admit +-inf and float32-stored sentinels
+# (float32(1e20) converts to ~1.00000002e+20, relative error 2e-8), so it
+# is set well above float32 epsilon but far below any plausible genuine
+# value in the cut band.
+_INF_CUT = 1.0e19
+_BIG_WARN = 1.0e10
+_CANONICAL_RTOL = 1.0e-6
+
+_logger = logging.getLogger(__name__)
+
+
+def _warn_bound_hygiene(l: np.ndarray, u: np.ndarray, inf_l, inf_u) -> None:
+    noncanon_u = (inf_u & np.isfinite(u)
+                  & (np.abs(u - INF_BOUND) > _CANONICAL_RTOL * INF_BOUND))
+    noncanon_l = (inf_l & np.isfinite(l)
+                  & (np.abs(l + INF_BOUND) > _CANONICAL_RTOL * INF_BOUND))
+    n_noncanon = int(noncanon_u.sum() + noncanon_l.sum())
+    if n_noncanon:
+        _logger.warning(
+            "%d bound(s) with magnitude >= %.0e treated as infinite but not "
+            "the canonical +-%.0e sentinel (corrupted sentinel?).",
+            n_noncanon, _INF_CUT, INF_BOUND,
+        )
+    big_u = (~inf_u) & (np.abs(u) >= _BIG_WARN)
+    big_l = (~inf_l) & (np.abs(l) >= _BIG_WARN)
+    n_big = int(big_u.sum() + big_l.sum())
+    if n_big:
+        _logger.warning(
+            "%d finite bound(s) with magnitude in [%.0e, %.0e) kept as "
+            "genuine data; if these are meant to be infinite the problem is "
+            "badly scaled.",
+            n_big, _BIG_WARN, _INF_CUT,
+        )
+    wrong_u = u <= -_INF_CUT
+    wrong_l = l >= _INF_CUT
+    n_wrong = int(wrong_u.sum() + wrong_l.sum())
+    if n_wrong:
+        _logger.warning(
+            "%d bound(s) encode an infeasible-scale demand (u <= -%.0e or "
+            "l >= +%.0e); kept as data — check the model.",
+            n_wrong, _INF_CUT, _INF_CUT,
+        )
 
 
 def split_qp_bounds(qp: dict):
     a = sp.csc_matrix(qp["A"])
     l = np.asarray(qp["l"], dtype=float)
     u = np.asarray(qp["u"], dtype=float)
+    inf_u = u >= _INF_CUT
+    inf_l = l <= -_INF_CUT
+    _warn_bound_hygiene(l, u, inf_l, inf_u)
     # Equality detection uses a relative tolerance against the larger
     # of |l|, |u|, falling back to an absolute tolerance for tiny
     # bounds. The previous fixed |u-l| < 1e-8 silently treated tiny
@@ -28,9 +83,9 @@ def split_qp_bounds(qp: dict):
     # is well below floating-point precision of the bounds themselves).
     abs_diff = np.abs(u - l)
     scale = np.maximum.reduce([np.abs(l), np.abs(u), np.ones_like(l)])
-    eq = (abs_diff <= 1.0e-12 * scale) & (u < _INF_THRESHOLD) & (l > -_INF_THRESHOLD)
-    finite_u = (~eq) & (u < _INF_THRESHOLD)
-    finite_l = (~eq) & (l > -_INF_THRESHOLD)
+    eq = (abs_diff <= 1.0e-12 * scale) & ~inf_u & ~inf_l
+    finite_u = (~eq) & ~inf_u
+    finite_l = (~eq) & ~inf_l
     return a, l, u, eq, finite_l, finite_u
 
 
