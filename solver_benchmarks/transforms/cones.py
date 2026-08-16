@@ -121,6 +121,12 @@ def qp_to_scs_box_cone(qp: dict):
     a, l, u, eq, _, _ = split_qp_bounds(qp)
     m, n = a.shape
     p = sp.csc_matrix(qp["P"])
+    # Sanitize sentinel bounds to true infinities for the box cone: the
+    # same corrupted / near-sentinel values handled in split_qp_bounds
+    # would otherwise reach SCS as finite 1e19..1e20-magnitude box
+    # bounds and poison the solve (SCS accepts +-inf natively).
+    l = np.where(l <= -_INF_CUT, -np.inf, l)
+    u = np.where(u >= _INF_CUT, np.inf, u)
     if np.all(eq):
         a_scs = a.copy()
         b_scs = u.copy()
