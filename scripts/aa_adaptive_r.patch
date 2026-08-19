@@ -1,0 +1,98 @@
+--- /tmp/aa.c.original	2026-05-12 20:57:42
++++ /Users/bodonoghue/git/scs-python/scs_source/src/aa.c	2026-05-14 21:22:32
+@@ -180,6 +180,13 @@
+   aa_float regularization;   /* regularization */
+   aa_float safeguard_factor; /* safeguard tolerance factor */
+   aa_float max_weight_norm;  /* maximum norm of AA weights */
++
++  /* ADAPTIVE-R: r-space trust region. Start large (AA ≈ DRS), shrink on
++   * every accepted AA step, grow on every rejection. Effective r is
++   * a->r_adaptive (absolute, ignores ||S||*||Y|| scaling). */
++  aa_float r_adaptive;
++  aa_float r_adaptive_floor;
++  aa_float r_adaptive_ceil;
+ 
+   aa_float *x;     /* x input to map*/
+   aa_float *f;     /* f(x) output of map */
+@@ -279,12 +286,10 @@
+  * fresh nrm2 over dim·mem entries. */
+ static aa_float compute_regularization(AaWork *a) {
+   TIME_TIC
+-  aa_float nrm_y = frob_from_col_norms(a->nrm_y_col, a->mem);
+-  aa_float nrm_a = a->type1 ? frob_from_col_norms(a->nrm_s_col, a->mem) : nrm_y;
+-  aa_float r = a->regularization * nrm_a * nrm_y;
++  /* ADAPTIVE-R: pure adaptive r, ignores ||S||*||Y|| scaling. */
++  aa_float r = a->r_adaptive;
+   if (a->verbosity > 2) {
+-    scs_printf("iter: %i, ||A||_F %.2e, ||Y||_F %.2e, r: %.2e\n",
+-               (int)a->iter, nrm_a, nrm_y, r);
++    scs_printf("iter: %i, r %.2e (adaptive)\n", (int)a->iter, r);
+   }
+   TIME_TOC
+   return r;
+@@ -630,6 +635,9 @@
+     } else {
+       a->n_reject_weight_cap++;
+     }
++    /* ADAPTIVE-R: any internal rejection grows r */
++    a->r_adaptive *= 10.0;
++    if (a->r_adaptive > a->r_adaptive_ceil) a->r_adaptive = a->r_adaptive_ceil;
+     a->success = 0;
+     aa_reset(a);
+     TIME_TOC
+@@ -637,6 +645,26 @@
+     return (aa_norm < 0) ? aa_norm : -aa_norm;
+   }
+ 
++  /* TRUST: cap on ||D γ|| relative to ||g||, type-II only.
++   * (Trust hurts type-I working cases — slows down LASER, CONT-050.) */
++  if (!a->type1) {
++    aa_float zerof = 0.0;
++    aa_float d_gamma_norm;
++    BLAS(gemv)
++    ("NoTrans", &bdim, &blen, &onef, a->D, &bdim, gamma, &one, &zerof,
++     a->c_aug, &one);
++    d_gamma_norm = BLAS(nrm2)(&bdim, a->c_aug, &one);
++    if (isfinite(d_gamma_norm) && d_gamma_norm > 10.0 * a->norm_g) {
++      a->n_reject_weight_cap++;
++      a->r_adaptive *= 10.0;
++      if (a->r_adaptive > a->r_adaptive_ceil) a->r_adaptive = a->r_adaptive_ceil;
++      a->success = 0;
++      aa_reset(a);
++      TIME_TOC
++      return -aa_norm;
++    }
++  }
++
+   /* f -= D γ */
+   BLAS(gemv)
+   ("NoTrans", &bdim, &blen, &neg_onef, a->D, &bdim, gamma, &one, &onef, f,
+@@ -692,6 +720,11 @@
+   }
+   a->min_len = mem_clamped > 0 ? MIN(min_len, mem_clamped) : 0;
+   a->regularization = regularization;
++  /* ADAPTIVE-R-HYBRID: absolute floor on r, starts huge so γ ≈ 0.
++   * Adapts via accept/reject feedback. */
++  a->r_adaptive = 1.0;   /* start large: AA ≈ DRS initially */
++  a->r_adaptive_floor = 1e-12;
++  a->r_adaptive_ceil = 1e6;
+   a->relaxation = relaxation;
+   a->safeguard_factor = safeguard_factor;
+   a->max_weight_norm = max_weight_norm;
+@@ -892,10 +925,16 @@
+                  (int)a->iter, norm_diff, a->norm_g);
+     }
+     a->n_safeguard_reject++;
++    /* ADAPTIVE-R: bad AA step — grow r toward DRS-like behavior */
++    a->r_adaptive *= 10.0;
++    if (a->r_adaptive > a->r_adaptive_ceil) a->r_adaptive = a->r_adaptive_ceil;
+     aa_reset(a);
+     TIME_TOC
+     return -1;
+   }
++  /* ADAPTIVE-R: simple shrink on accept */
++  a->r_adaptive *= 0.9;
++  if (a->r_adaptive < a->r_adaptive_floor) a->r_adaptive = a->r_adaptive_floor;
+   TIME_TOC
+   return 0;
+ }

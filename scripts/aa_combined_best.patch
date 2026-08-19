@@ -1,0 +1,69 @@
+--- /tmp/aa.c.original	2026-05-12 20:57:42
++++ /Users/bodonoghue/git/scs-python/scs_source/src/aa.c	2026-05-14 10:40:21
+@@ -280,11 +280,19 @@
+ static aa_float compute_regularization(AaWork *a) {
+   TIME_TIC
+   aa_float nrm_y = frob_from_col_norms(a->nrm_y_col, a->mem);
+-  aa_float nrm_a = a->type1 ? frob_from_col_norms(a->nrm_s_col, a->mem) : nrm_y;
+-  aa_float r = a->regularization * nrm_a * nrm_y;
++  aa_float nrm_s = frob_from_col_norms(a->nrm_s_col, a->mem);
++  /* EXP01: type-II uses ||S||*||Y|| (was ||Y||^2). Type-I keeps the same. */
++  aa_float r;
++  if (a->type1) {
++    r = a->regularization * nrm_s * nrm_y;
++  } else {
++    r = a->regularization * nrm_s * nrm_y;  /* sym for type-II too */
++  }
++  /* EXP-T1-E: absolute floor on r for type-I only */
++  if (a->type1 && r > 0 && r < 1e-10) r = 1e-10;
+   if (a->verbosity > 2) {
+-    scs_printf("iter: %i, ||A||_F %.2e, ||Y||_F %.2e, r: %.2e\n",
+-               (int)a->iter, nrm_a, nrm_y, r);
++    scs_printf("iter: %i, ||S||_F %.2e, ||Y||_F %.2e, r: %.2e\n",
++               (int)a->iter, nrm_s, nrm_y, r);
+   }
+   TIME_TOC
+   return r;
+@@ -609,6 +617,7 @@
+                aa_norm);
+   }
+ 
++  /* EXP-T1-B: trust-region DISABLED for type-I (was net-negative) */
+   if (info != 0 || !isfinite(aa_norm) || aa_norm >= a->max_weight_norm) {
+     if (a->verbosity > 0) {
+       scs_printf("Error in AA type %i, iter: %i, len %i, rank %i, info: %i, "
+@@ -635,6 +644,23 @@
+     TIME_TOC
+     if (!isfinite(aa_norm)) aa_norm = -1.0;
+     return (aa_norm < 0) ? aa_norm : -aa_norm;
++  }
++
++  /* EXP05+adaptive: trust region for type-II, only after first safeguard fire */
++  if (!a->type1 && a->n_safeguard_reject > 0) {
++    aa_float zerof = 0.0;
++    aa_float d_gamma_norm;
++    BLAS(gemv)
++    ("NoTrans", &bdim, &blen, &onef, a->D, &bdim, gamma, &one, &zerof,
++     a->c_aug, &one);
++    d_gamma_norm = BLAS(nrm2)(&bdim, a->c_aug, &one);
++    if (isfinite(d_gamma_norm) && d_gamma_norm > 10.0 * a->norm_g) {
++      a->n_reject_weight_cap++;
++      a->success = 0;
++      aa_reset(a);
++      TIME_TOC
++      return -aa_norm;
++    }
+   }
+ 
+   /* f -= D γ */
+@@ -883,7 +909,9 @@
+   /* norm_diff = || f_new - x_new || */
+   norm_diff = BLAS(nrm2)(&bdim, a->work, &one);
+   /* g = f - x */
+-  if (norm_diff > a->safeguard_factor * a->norm_g) {
++  /* EXP02: tighter safeguard for type-II */
++  aa_float effective_sg = a->type1 ? a->safeguard_factor : 0.90 * a->safeguard_factor;
++  if (norm_diff > effective_sg * a->norm_g) {
+     /* in this case we reject the AA step and reset */
+     memcpy(f_new, a->f, a->dim * sizeof(aa_float));
+     memcpy(x_new, a->x, a->dim * sizeof(aa_float));

@@ -1,0 +1,53 @@
+run:
+  output_dir: results
+  parallelism: 6
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - name: maros_meszaros
+
+# Validation sweep for PR #54: best known type-I and type-II AA settings,
+# plus a disabled baseline. Run this on (a) HEAD scs-python (PR #54 not
+# applied) and (b) PR #54 applied with AA_TRUST_FACTOR=10. Compare the
+# penalized shifted-geomean numbers between the two runs to measure the
+# performance impact.
+
+solvers:
+  - id: scs_aa_disabled
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      acceleration_lookback: 0
+      linear_solver: qdldl
+
+  - id: scs_aa_t1_best
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      linear_solver: qdldl
+      acceleration_lookback: 10
+      acceleration_interval: 5
+      acceleration_type_1: true
+      acceleration_regularization: 1.0e-8
+      acceleration_relaxation: 1.2
+
+  - id: scs_aa_t2_best
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      linear_solver: qdldl
+      acceleration_lookback: 10
+      acceleration_interval: 5
+      acceleration_type_1: false
+      acceleration_regularization: 1.0e-8
+      acceleration_relaxation: 1.2

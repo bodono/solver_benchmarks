@@ -1,0 +1,56 @@
+# rho_x refinement micro-sweep on the new base (sweep v3 follow-up):
+# rho_x 1e-7 was the only strict improvement over center. Probe 1e-8,
+# and whether the column-heating floor (which caps col range at
+# rho_x/floor) is binding at low base rho_x. All three datasets so a
+# default-change PR has cross-family evidence.
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - name: maros_meszaros
+    - id: miplib_small
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+
+solvers:
+  - id: rx_center
+    solver: scs
+    settings: &base
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_interval: 5
+
+  - id: rx_1e7
+    solver: scs
+    settings:
+      <<: *base
+      rho_x: 1.0e-7
+
+  - id: rx_1e8
+    solver: scs
+    settings:
+      <<: *base
+      rho_x: 1.0e-8
+
+  - id: rx_1e7_floor10
+    solver: scs
+    settings:
+      <<: *base
+      rho_x: 1.0e-7
+      diag_rho_x_floor: 1.0e-10
+
+  - id: rx_1e8_floor10
+    solver: scs
+    settings:
+      <<: *base
+      rho_x: 1.0e-8
+      diag_rho_x_floor: 1.0e-10

@@ -1,0 +1,283 @@
+{
+  "label": "t1_full_combo",
+  "type": "t1",
+  "n_problems": 13,
+  "n_clean_solved": 0,
+  "n_max_iters_inaccurate": 13,
+  "total_wall_time_s": 40.0521283345297,
+  "results": [
+    {
+      "dataset": "netlib_feasible",
+      "problem": "afiro",
+      "status": "unbounded (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 0.13344908319413662,
+      "accepted_accel": 1932,
+      "rejected_accel": 1601,
+      "aa_stats": {
+        "iter": 1,
+        "n_accept": 3533,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 41,
+        "n_safeguard_reject": 1601,
+        "last_rank": 10,
+        "last_aa_norm": 1.7229144131628555,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "israel",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.2018183749169111,
+      "accepted_accel": 460,
+      "rejected_accel": 529,
+      "aa_stats": {
+        "iter": 4,
+        "n_accept": 989,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1368,
+        "n_safeguard_reject": 529,
+        "last_rank": 10,
+        "last_aa_norm": 0.6995159055048171,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "maros_meszaros",
+      "problem": "QISRAEL",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.230174415744841,
+      "accepted_accel": 0,
+      "rejected_accel": 1,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 1,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1998,
+        "n_safeguard_reject": 1,
+        "last_rank": 10,
+        "last_aa_norm": 155.9568254035331,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "vtp.base",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.075988500379026,
+      "accepted_accel": 12,
+      "rejected_accel": 42,
+      "aa_stats": {
+        "iter": 6,
+        "n_accept": 54,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1949,
+        "n_safeguard_reject": 42,
+        "last_rank": 10,
+        "last_aa_norm": 4551.7250333668335,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "lotfi",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.2821599589660764,
+      "accepted_accel": 0,
+      "rejected_accel": 1,
+      "aa_stats": {
+        "iter": 9,
+        "n_accept": 1,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1991,
+        "n_safeguard_reject": 1,
+        "last_rank": 10,
+        "last_aa_norm": 125.8152776190118,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "forplan",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 2.238664499949664,
+      "accepted_accel": 180,
+      "rejected_accel": 878,
+      "aa_stats": {
+        "iter": 2,
+        "n_accept": 1058,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1013,
+        "n_safeguard_reject": 878,
+        "last_rank": 10,
+        "last_aa_norm": 0.043663874500031306,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "agg3",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.6705162092112005,
+      "accepted_accel": 17,
+      "rejected_accel": 121,
+      "aa_stats": {
+        "iter": 2,
+        "n_accept": 138,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1861,
+        "n_safeguard_reject": 121,
+        "last_rank": 10,
+        "last_aa_norm": 56.705018443511634,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "agg2",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.67924770899117,
+      "accepted_accel": 65,
+      "rejected_accel": 209,
+      "aa_stats": {
+        "iter": 7,
+        "n_accept": 274,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1759,
+        "n_safeguard_reject": 209,
+        "last_rank": 10,
+        "last_aa_norm": 5.2126939444841085,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "tuff",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.4616956249810755,
+      "accepted_accel": 87,
+      "rejected_accel": 534,
+      "aa_stats": {
+        "iter": 3,
+        "n_accept": 621,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1386,
+        "n_safeguard_reject": 534,
+        "last_rank": 10,
+        "last_aa_norm": 331.20872281071036,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "maros_meszaros",
+      "problem": "QFFFFF80",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 6.12676287535578,
+      "accepted_accel": 0,
+      "rejected_accel": 462,
+      "aa_stats": {
+        "iter": 3,
+        "n_accept": 462,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1490,
+        "n_safeguard_reject": 462,
+        "last_rank": 10,
+        "last_aa_norm": 1.3563151946675864,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "pilot4",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 4.503824415616691,
+      "accepted_accel": 0,
+      "rejected_accel": 4,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 4,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1991,
+        "n_safeguard_reject": 4,
+        "last_rank": 10,
+        "last_aa_norm": 6235.644787472366,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "maros_meszaros",
+      "problem": "QGFRDXPN",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.4966729171574116,
+      "accepted_accel": 0,
+      "rejected_accel": 1,
+      "aa_stats": {
+        "iter": 9,
+        "n_accept": 1,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1992,
+        "n_safeguard_reject": 1,
+        "last_rank": 10,
+        "last_aa_norm": 290.6132991866274,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "perold",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 7.951153750065714,
+      "accepted_accel": 4,
+      "rejected_accel": 6,
+      "aa_stats": {
+        "iter": 2,
+        "n_accept": 10,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1988,
+        "n_safeguard_reject": 6,
+        "last_rank": 10,
+        "last_aa_norm": 22288.841954234824,
+        "last_regularization": 1e-10
+      }
+    }
+  ]
+}

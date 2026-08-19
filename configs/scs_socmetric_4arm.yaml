@@ -1,0 +1,57 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 300
+  datasets:
+  - id: dimacs
+    name: dimacs
+    dataset_options:
+      max_size_mb: 5.0
+  - id: cblib
+    name: cblib
+    dataset_options:
+      max_size_mb: 5.0
+
+solvers:
+- id: ads3_soc0
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    num_l2_passes: -1
+
+- id: ads3_soc1
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    num_l2_passes: -1
+    soc_metric: 1
+
+- id: ads0_soc0
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 0
+    acceleration_interval: 5
+    num_l2_passes: -1
+
+- id: ads0_soc1
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 0
+    acceleration_interval: 5
+    num_l2_passes: -1
+    soc_metric: 1

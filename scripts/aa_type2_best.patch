@@ -1,0 +1,51 @@
+--- /tmp/aa.c.original	2026-05-12 20:57:42
++++ /Users/bodonoghue/git/scs-python/scs_source/src/aa.c	2026-05-14 00:19:30
+@@ -280,7 +280,7 @@
+ static aa_float compute_regularization(AaWork *a) {
+   TIME_TIC
+   aa_float nrm_y = frob_from_col_norms(a->nrm_y_col, a->mem);
+-  aa_float nrm_a = a->type1 ? frob_from_col_norms(a->nrm_s_col, a->mem) : nrm_y;
++  aa_float nrm_a = frob_from_col_norms(a->nrm_s_col, a->mem); /* EXP01: sym */
+   aa_float r = a->regularization * nrm_a * nrm_y;
+   if (a->verbosity > 2) {
+     scs_printf("iter: %i, ||A||_F %.2e, ||Y||_F %.2e, r: %.2e\n",
+@@ -635,6 +635,28 @@
+     TIME_TOC
+     if (!isfinite(aa_norm)) aa_norm = -1.0;
+     return (aa_norm < 0) ? aa_norm : -aa_norm;
++  }
++
++  /* EXP05: trust-region cap on ||D γ|| relative to ||g||, type-II only.
++   * Catches "creep" steps where γ looks fine but the resulting f -= D γ
++   * pushes the iterate too far for marginal residual gain. Hard rejection
++   * + reset; uses c_aug as a dim-sized scratch (not needed again until
++   * next iter). Known regression: kills LASER-style problems where AA
++   * naturally produces large but useful jumps. */
++  if (!a->type1) {
++    aa_float zerof = 0.0;
++    aa_float d_gamma_norm;
++    BLAS(gemv)
++    ("NoTrans", &bdim, &blen, &onef, a->D, &bdim, gamma, &one, &zerof,
++     a->c_aug, &one);
++    d_gamma_norm = BLAS(nrm2)(&bdim, a->c_aug, &one);
++    if (isfinite(d_gamma_norm) && d_gamma_norm > 10.0 * a->norm_g) {
++      a->n_reject_weight_cap++;
++      a->success = 0;
++      aa_reset(a);
++      TIME_TOC
++      return -aa_norm;
++    }
+   }
+ 
+   /* f -= D γ */
+@@ -883,7 +905,9 @@
+   /* norm_diff = || f_new - x_new || */
+   norm_diff = BLAS(nrm2)(&bdim, a->work, &one);
+   /* g = f - x */
+-  if (norm_diff > a->safeguard_factor * a->norm_g) {
++  /* EXP02: tighter safeguard for type-II to compensate for min-residual creep */
++  aa_float effective_sg = a->type1 ? a->safeguard_factor : 0.90 * a->safeguard_factor;
++  if (norm_diff > effective_sg * a->norm_g) {
+     /* in this case we reject the AA step and reset */
+     memcpy(f_new, a->f, a->dim * sizeof(aa_float));
+     memcpy(x_new, a->x, a->dim * sizeof(aa_float));

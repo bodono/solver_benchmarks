@@ -1,0 +1,26 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: false
+  timeout_seconds: 60
+  datasets:
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - id: maros_meszaros
+    name: maros_meszaros
+
+solvers:
+- id: alpha_1.2
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, alpha: 1.2}
+- id: alpha_1.5
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, alpha: 1.5}
+- id: alpha_1.7
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, alpha: 1.7}
+- id: alpha_1.9
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, alpha: 1.9}

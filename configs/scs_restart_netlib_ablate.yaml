@@ -1,0 +1,26 @@
+run:
+  dataset: netlib
+  output_dir: results
+  dataset_options:
+    subset: feasible
+  parallelism: 6
+  resume: true
+  timeout_seconds: 100
+
+solvers:
+  - id: scs_restart
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      restart: true
+
+  - id: scs_restart_pr
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      restart: true
+      alpha: 2.0

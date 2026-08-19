@@ -1,0 +1,23 @@
+run:
+  dataset: miplib
+  output_dir: results
+  dataset_options:
+    max_size_mb: 5.0
+  parallelism: 4
+  resume: true
+  timeout_seconds: 100
+
+solvers:
+  - id: scs_baseline
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+
+  - id: pdlp_default
+    solver: pdlp
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      time_limit_sec: 100

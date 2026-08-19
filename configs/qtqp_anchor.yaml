@@ -1,0 +1,24 @@
+run:
+  name: qtqp_anchor
+  output_dir: results
+  parallelism: 6
+  resume: true
+  timeout_seconds: 1800
+  datasets:
+  - id: maros_meszaros
+    name: maros_meszaros
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - id: miplib
+    name: miplib
+
+solvers:
+- id: qtqp
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl

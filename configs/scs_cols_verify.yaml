@@ -1,0 +1,35 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - id: maros_meszaros
+    name: maros_meszaros
+  - id: miplib
+    name: miplib
+    dataset_options:
+      max_size_mb: 5.0
+  - id: dimacs
+    name: dimacs
+    dataset_options:
+      max_size_mb: 5.0
+  - id: cblib
+    name: cblib
+    dataset_options:
+      max_size_mb: 5.0
+
+solvers:
+- id: rows_only
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 1, acceleration_interval: 5, num_l2_passes: -1}
+- id: static_cols_k10
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 6, diag_rho_x_floor: 1.0e-07, acceleration_interval: 5, num_l2_passes: -1}
+- id: rows_only_denfloor
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 9, acceleration_interval: 5, num_l2_passes: -1}

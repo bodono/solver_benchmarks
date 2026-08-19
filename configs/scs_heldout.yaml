@@ -1,0 +1,39 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+  - id: sdplib
+    name: sdplib
+    dataset_options:
+      max_size_mb: 5.0
+  - id: qplib
+    name: qplib
+    dataset_options:
+      max_size_mb: 5.0
+  - id: dc_opf
+    name: dc_opf
+  - id: libsvm_qp
+    name: libsvm_qp
+  - id: mpc_qpbenchmark
+    name: mpc_qpbenchmark
+  - id: mittelmann_sdp
+    name: mittelmann_sdp
+    dataset_options:
+      max_size_mb: 5.0
+  - id: tsplib_sdp
+    name: tsplib_sdp
+    dataset_options:
+      max_size_mb: 5.0
+
+solvers:
+- id: diag_off
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 0, acceleration_interval: 5, num_l2_passes: -1}
+- id: rows_nofloor
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 1, acceleration_interval: 5, num_l2_passes: -1}
+- id: rows_floor_1e3
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1}

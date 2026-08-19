@@ -1,0 +1,41 @@
+# l2-pass ablation addendum (sweep v3 follow-up): l2-off structurally
+# rescued dfl001 (11.6k iters, verified, unsolved all campaign) and
+# LISWET9, but broke stair. Test generality on all three datasets and
+# composition with the rho_x=1e-7 candidate center.
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - name: maros_meszaros
+    - id: miplib_small
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+
+solvers:
+  - id: l2off
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_interval: 5
+      num_l2_passes: 0
+
+  - id: l2off_rx1e7
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_interval: 5
+      num_l2_passes: 0
+      rho_x: 1.0e-7

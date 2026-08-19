@@ -1,0 +1,50 @@
+run:
+  output_dir: results
+  parallelism: 6
+  resume: true
+  timeout_seconds: 300
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - name: maros_meszaros
+
+# Refinement of scs_anderson_sweep based on the 2026-04-27 run.
+# Key findings that motivate this config:
+#   - acceleration_type_1=true dominates (mean geomean 16.7 vs 30.9 for type-II);
+#     best type-II config (15.47) is even worse than disabled (14.88), so we fix
+#     type_1=true here and treat the type-II path as a separate investigation.
+#   - acceleration_relaxation monotonically improves on the mean from 0.5 -> 2.0,
+#     with the best single point at 1.2. We drop the 0.5/0.8 cells and densify
+#     the 1.0-2.0 range.
+#   - acceleration_interval=5 was the best single point; interval=1 produced the
+#     worst tail. Zoom in to 3-10.
+#   - acceleration_lookback=10 was the best single point; lb=100 was robust on
+#     average. Zoom in to 8-30 (drops the lb=5 and lb=100 extremes).
+#   - acceleration_regularization had weak effect; keep two values to bracket.
+
+solvers:
+  - id: scs_aa_disabled
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      acceleration_lookback: 0
+      linear_solver: qdldl
+
+  - id: scs_aa
+    solver: scs
+    settings:
+      eps_abs: 1.0e-4
+      eps_rel: 1.0e-4
+      max_iters: 100000
+      linear_solver: qdldl
+      acceleration_type_1: true
+    sweep:
+      acceleration_lookback: [8, 10, 15, 20, 30]
+      acceleration_interval: [3, 5, 7]
+      acceleration_regularization: [1.0e-12, 1.0e-8]
+      acceleration_relaxation: [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
+    id_template: "scs_aa_lb{acceleration_lookback}_int{acceleration_interval}_reg{acceleration_regularization:g}_relax{acceleration_relaxation:g}"

@@ -1,0 +1,28 @@
+# RMS-normalized l2 pass test: does dimension-corrected l2 capture both
+# the l2-on and l2-off gain sets? (num_l2_passes: -1 = one RMS pass.)
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - name: maros_meszaros
+    - id: miplib_small
+      name: miplib
+      dataset_options:
+        max_size_mb: 5.0
+
+solvers:
+  - id: l2rms
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_interval: 5
+      num_l2_passes: -1

@@ -1,0 +1,191 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+  - id: netlib_feasible
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - name: maros_meszaros
+solvers:
+- id: v3_center
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+- id: v3_alpha12
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    alpha: 1.2
+- id: v3_alpha18
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    alpha: 1.8
+- id: v3_scale003
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    scale: 0.03
+- id: v3_scale03
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    scale: 0.3
+- id: v3_rhox1e7
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    rho_x: 1.0e-07
+- id: v3_rhox1e5
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    rho_x: 1.0e-05
+- id: v3_damp0125
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    diag_scale_damp: 0.125
+- id: v3_damp05
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    diag_scale_damp: 0.5
+- id: v3_rmi50
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    rescaling_min_iters: 50
+- id: v3_rmi200
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    rescaling_min_iters: 200
+- id: v3_ruiz10
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    num_ruiz_passes: 10
+- id: v3_ruiz50
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    num_ruiz_passes: 50
+- id: v3_l2off
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    num_l2_passes: 0
+- id: v3_reg1e12
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    acceleration_regularization: 1.0e-12
+- id: v3_reg1e10
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    acceleration_regularization: 1.0e-10
+- id: v3_reg1e6
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    acceleration_regularization: 1.0e-06
+- id: v3_relax08
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    acceleration_relaxation: 0.8
+- id: v3_relax12
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    acceleration_relaxation: 1.2
+- id: v3_relax15
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 3
+    acceleration_interval: 5
+    acceleration_relaxation: 1.5

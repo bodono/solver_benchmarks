@@ -1,0 +1,34 @@
+run:
+  dataset: netlib
+  output_dir: results
+  dataset_options:
+    subset: feasible
+  parallelism: 6
+  resume: true
+  timeout_seconds: 100
+
+solvers:
+  - id: scs_diag3_aa
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+
+  - id: scs_diag2_aa
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 2
+
+  - id: scs_diag3_noaa
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_lookback: 0

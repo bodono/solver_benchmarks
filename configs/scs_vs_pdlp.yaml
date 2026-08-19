@@ -1,0 +1,36 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: false
+  timeout_seconds: 100
+  datasets:
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+
+solvers:
+- id: scs_landing
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 10
+    den_floor_frac: 1.0e-03
+    acceleration_interval: 5
+    num_l2_passes: -1
+- id: scs_master_equiv
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    adaptive_diag_scale: 0
+    acceleration_interval: 10
+    num_l2_passes: 1
+- id: pdlp
+  solver: pdlp
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06

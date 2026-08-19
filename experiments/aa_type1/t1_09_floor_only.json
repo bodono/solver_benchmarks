@@ -1,0 +1,283 @@
+{
+  "label": "t1_09_floor_only",
+  "type": "t1",
+  "n_problems": 13,
+  "n_clean_solved": 1,
+  "n_max_iters_inaccurate": 12,
+  "total_wall_time_s": 39.82700987858698,
+  "results": [
+    {
+      "dataset": "netlib_feasible",
+      "problem": "afiro",
+      "status": "unbounded (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 0.19141566706821322,
+      "accepted_accel": 9600,
+      "rejected_accel": 941,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 10541,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 941,
+        "last_rank": 10,
+        "last_aa_norm": 582.9346003853202,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "israel",
+      "status": "unbounded (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.3879067092202604,
+      "accepted_accel": 4356,
+      "rejected_accel": 1418,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 5774,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1418,
+        "last_rank": 10,
+        "last_aa_norm": 0.09225145950958133,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "maros_meszaros",
+      "problem": "QISRAEL",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.2199738342314959,
+      "accepted_accel": 2,
+      "rejected_accel": 1817,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 1819,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1817,
+        "last_rank": 10,
+        "last_aa_norm": 154.06686269991553,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "vtp.base",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 1.0724463341757655,
+      "accepted_accel": 182,
+      "rejected_accel": 1799,
+      "aa_stats": {
+        "iter": 4,
+        "n_accept": 1981,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1799,
+        "last_rank": 10,
+        "last_aa_norm": 1135.5004343217406,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "lotfi",
+      "status": "solved",
+      "iters": 50925,
+      "wall_time_s": 0.6408261670731008,
+      "accepted_accel": 17,
+      "rejected_accel": 920,
+      "aa_stats": {
+        "iter": 3,
+        "n_accept": 937,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 920,
+        "last_rank": 10,
+        "last_aa_norm": 899.2642601642772,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "forplan",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 2.536798082757741,
+      "accepted_accel": 4351,
+      "rejected_accel": 1420,
+      "aa_stats": {
+        "iter": 1,
+        "n_accept": 5771,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1420,
+        "last_rank": 10,
+        "last_aa_norm": 8.555336782833108e-06,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "agg3",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.6604979592375457,
+      "accepted_accel": 10,
+      "rejected_accel": 1813,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 1823,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1813,
+        "last_rank": 10,
+        "last_aa_norm": 48.61363782853437,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "agg2",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.6892088330350816,
+      "accepted_accel": 99,
+      "rejected_accel": 1805,
+      "aa_stats": {
+        "iter": 9,
+        "n_accept": 1904,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1805,
+        "last_rank": 10,
+        "last_aa_norm": 8.148300192177512,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "tuff",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.4503835840150714,
+      "accepted_accel": 111,
+      "rejected_accel": 1803,
+      "aa_stats": {
+        "iter": 1,
+        "n_accept": 1914,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1803,
+        "last_rank": 10,
+        "last_aa_norm": 41.48230430029803,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "maros_meszaros",
+      "problem": "QFFFFF80",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 6.116697125136852,
+      "accepted_accel": 100,
+      "rejected_accel": 1807,
+      "aa_stats": {
+        "iter": 0,
+        "n_accept": 1907,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1807,
+        "last_rank": 10,
+        "last_aa_norm": 168.07567921782996,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "pilot4",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 4.516445165965706,
+      "accepted_accel": 5,
+      "rejected_accel": 1814,
+      "aa_stats": {
+        "iter": 4,
+        "n_accept": 1819,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1814,
+        "last_rank": 10,
+        "last_aa_norm": 547.4683170770869,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "maros_meszaros",
+      "problem": "QGFRDXPN",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.451609999872744,
+      "accepted_accel": 0,
+      "rejected_accel": 1813,
+      "aa_stats": {
+        "iter": 9,
+        "n_accept": 1813,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1813,
+        "last_rank": 10,
+        "last_aa_norm": 267.5545912630891,
+        "last_regularization": 1e-10
+      }
+    },
+    {
+      "dataset": "netlib_feasible",
+      "problem": "perold",
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 7.8928004167973995,
+      "accepted_accel": 23,
+      "rejected_accel": 1812,
+      "aa_stats": {
+        "iter": 0,
+        "n_accept": 1835,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 0,
+        "n_safeguard_reject": 1812,
+        "last_rank": 10,
+        "last_aa_norm": 885.0338178039,
+        "last_regularization": 1e-10
+      }
+    }
+  ]
+}

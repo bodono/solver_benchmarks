@@ -1,0 +1,408 @@
+{
+  "label": "13_adaptive_trust",
+  "n_problems": 19,
+  "n_clean_solved": 17,
+  "n_max_iters_inaccurate": 2,
+  "total_wall_time_s": 23.950900373980403,
+  "results": [
+    {
+      "status": "solved",
+      "iters": 84000,
+      "wall_time_s": 3.7746307090856135,
+      "accepted_accel": 27,
+      "rejected_accel": 404,
+      "aa_stats": {
+        "iter": 6,
+        "n_accept": 431,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1228,
+        "n_safeguard_reject": 404,
+        "last_rank": 10,
+        "last_aa_norm": 338.9504266876525,
+        "last_regularization": 6.3331788671064845e-15
+      },
+      "dataset": "netlib_feasible",
+      "problem": "scfxm2"
+    },
+    {
+      "status": "solved",
+      "iters": 61200,
+      "wall_time_s": 3.4188108341768384,
+      "accepted_accel": 43,
+      "rejected_accel": 42,
+      "aa_stats": {
+        "iter": 4,
+        "n_accept": 85,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1169,
+        "n_safeguard_reject": 42,
+        "last_rank": 10,
+        "last_aa_norm": 3.230850151750724,
+        "last_regularization": 9.214897422051103e-14
+      },
+      "dataset": "netlib_feasible",
+      "problem": "fffff800"
+    },
+    {
+      "status": "solved",
+      "iters": 52950,
+      "wall_time_s": 1.5543782920576632,
+      "accepted_accel": 25,
+      "rejected_accel": 85,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 110,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 962,
+        "n_safeguard_reject": 85,
+        "last_rank": 10,
+        "last_aa_norm": 36.657791161712495,
+        "last_regularization": 8.013429160041473e-15
+      },
+      "dataset": "netlib_feasible",
+      "problem": "finnis"
+    },
+    {
+      "status": "solved",
+      "iters": 5700,
+      "wall_time_s": 0.14816541597247124,
+      "accepted_accel": 106,
+      "rejected_accel": 16,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 122,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 79,
+        "n_safeguard_reject": 16,
+        "last_rank": 10,
+        "last_aa_norm": 2.3726730100821123,
+        "last_regularization": 9.7694926799099e-12
+      },
+      "dataset": "netlib_feasible",
+      "problem": "boeing1"
+    },
+    {
+      "status": "solved",
+      "iters": 64400,
+      "wall_time_s": 1.5182906254194677,
+      "accepted_accel": 68,
+      "rejected_accel": 284,
+      "aa_stats": {
+        "iter": 2,
+        "n_accept": 352,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 968,
+        "n_safeguard_reject": 284,
+        "last_rank": 10,
+        "last_aa_norm": 11.67163022538473,
+        "last_regularization": 1.7697744519793308e-14
+      },
+      "dataset": "netlib_feasible",
+      "problem": "scfxm1"
+    },
+    {
+      "status": "solved",
+      "iters": 8475,
+      "wall_time_s": 0.2114214589819312,
+      "accepted_accel": 17,
+      "rejected_accel": 2,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 19,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 162,
+        "n_safeguard_reject": 2,
+        "last_rank": 10,
+        "last_aa_norm": 60.80199432834705,
+        "last_regularization": 5.199810525315698e-17
+      },
+      "dataset": "maros_meszaros",
+      "problem": "PRIMALC8"
+    },
+    {
+      "status": "solved (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 3.140560833271593,
+      "accepted_accel": 226,
+      "rejected_accel": 56,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 282,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1913,
+        "n_safeguard_reject": 56,
+        "last_rank": 10,
+        "last_aa_norm": 451.31372747778516,
+        "last_regularization": 5.073558337896524e-16
+      },
+      "dataset": "netlib_feasible",
+      "problem": "stair"
+    },
+    {
+      "status": "solved",
+      "iters": 64975,
+      "wall_time_s": 1.252284541260451,
+      "accepted_accel": 269,
+      "rejected_accel": 65,
+      "aa_stats": {
+        "iter": 2,
+        "n_accept": 334,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1196,
+        "n_safeguard_reject": 65,
+        "last_rank": 10,
+        "last_aa_norm": 8.178134675665618,
+        "last_regularization": 1.2053143611587838e-13
+      },
+      "dataset": "netlib_feasible",
+      "problem": "capri"
+    },
+    {
+      "status": "solved",
+      "iters": 10550,
+      "wall_time_s": 0.11583341704681516,
+      "accepted_accel": 2,
+      "rejected_accel": 1,
+      "aa_stats": {
+        "iter": 7,
+        "n_accept": 3,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 209,
+        "n_safeguard_reject": 1,
+        "last_rank": 10,
+        "last_aa_norm": 56.83759119510366,
+        "last_regularization": 9.679325848418626e-17
+      },
+      "dataset": "maros_meszaros",
+      "problem": "PRIMALC2"
+    },
+    {
+      "status": "unbounded (inaccurate - reached max_iters)",
+      "iters": 100000,
+      "wall_time_s": 0.9220056249760091,
+      "accepted_accel": 275,
+      "rejected_accel": 73,
+      "aa_stats": {
+        "iter": 3,
+        "n_accept": 348,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1887,
+        "n_safeguard_reject": 73,
+        "last_rank": 10,
+        "last_aa_norm": 49.19984787515907,
+        "last_regularization": 1.8912622625110846e-15
+      },
+      "dataset": "netlib_feasible",
+      "problem": "boeing2"
+    },
+    {
+      "status": "solved",
+      "iters": 7900,
+      "wall_time_s": 0.36025258293375373,
+      "accepted_accel": 8,
+      "rejected_accel": 14,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 22,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 141,
+        "n_safeguard_reject": 14,
+        "last_rank": 10,
+        "last_aa_norm": 12.998866753247489,
+        "last_regularization": 1.1270952461177876e-13
+      },
+      "dataset": "maros_meszaros",
+      "problem": "QSCFXM2"
+    },
+    {
+      "status": "solved",
+      "iters": 13600,
+      "wall_time_s": 0.32639670791104436,
+      "accepted_accel": 9,
+      "rejected_accel": 8,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 17,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 258,
+        "n_safeguard_reject": 8,
+        "last_rank": 10,
+        "last_aa_norm": 22.967636323046,
+        "last_regularization": 7.343897870971562e-14
+      },
+      "dataset": "maros_meszaros",
+      "problem": "QSCFXM1"
+    },
+    {
+      "status": "solved",
+      "iters": 12325,
+      "wall_time_s": 0.5893914168700576,
+      "accepted_accel": 437,
+      "rejected_accel": 9,
+      "aa_stats": {
+        "iter": 1,
+        "n_accept": 446,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 191,
+        "n_safeguard_reject": 9,
+        "last_rank": 10,
+        "last_aa_norm": 9.07123380850789,
+        "last_regularization": 4.922100774905522e-16
+      },
+      "dataset": "maros_meszaros",
+      "problem": "QSHIP04S"
+    },
+    {
+      "status": "solved",
+      "iters": 76775,
+      "wall_time_s": 2.7772572920657694,
+      "accepted_accel": 44,
+      "rejected_accel": 3,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 47,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1527,
+        "n_safeguard_reject": 3,
+        "last_rank": 10,
+        "last_aa_norm": 19.156131911858754,
+        "last_regularization": 4.355071931438593e-13
+      },
+      "dataset": "netlib_feasible",
+      "problem": "standgub"
+    },
+    {
+      "status": "solved",
+      "iters": 76775,
+      "wall_time_s": 2.5975475409068167,
+      "accepted_accel": 44,
+      "rejected_accel": 3,
+      "aa_stats": {
+        "iter": 8,
+        "n_accept": 47,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1527,
+        "n_safeguard_reject": 3,
+        "last_rank": 10,
+        "last_aa_norm": 19.156131911528657,
+        "last_regularization": 4.0042426372089416e-13
+      },
+      "dataset": "netlib_feasible",
+      "problem": "standata"
+    },
+    {
+      "status": "solved",
+      "iters": 25650,
+      "wall_time_s": 0.3096379158087075,
+      "accepted_accel": 4,
+      "rejected_accel": 1,
+      "aa_stats": {
+        "iter": 10,
+        "n_accept": 5,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 510,
+        "n_safeguard_reject": 1,
+        "last_rank": 10,
+        "last_aa_norm": 300.3017677945054,
+        "last_regularization": 1.6577921899801846e-17
+      },
+      "dataset": "maros_meszaros",
+      "problem": "PRIMALC1"
+    },
+    {
+      "status": "solved",
+      "iters": 30925,
+      "wall_time_s": 0.164663041010499,
+      "accepted_accel": 69,
+      "rejected_accel": 5,
+      "aa_stats": {
+        "iter": 7,
+        "n_accept": 74,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 605,
+        "n_safeguard_reject": 5,
+        "last_rank": 10,
+        "last_aa_norm": 311.73188897188675,
+        "last_regularization": 3.368114961517107e-16
+      },
+      "dataset": "netlib_feasible",
+      "problem": "share2b"
+    },
+    {
+      "status": "solved",
+      "iters": 35900,
+      "wall_time_s": 0.35821316624060273,
+      "accepted_accel": 14,
+      "rejected_accel": 41,
+      "aa_stats": {
+        "iter": 3,
+        "n_accept": 55,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 669,
+        "n_safeguard_reject": 41,
+        "last_rank": 10,
+        "last_aa_norm": 525.3536627169092,
+        "last_regularization": 8.849295331554353e-18
+      },
+      "dataset": "maros_meszaros",
+      "problem": "QSHARE1B"
+    },
+    {
+      "status": "solved",
+      "iters": 78000,
+      "wall_time_s": 0.41115895798429847,
+      "accepted_accel": 1,
+      "rejected_accel": 47,
+      "aa_stats": {
+        "iter": 9,
+        "n_accept": 48,
+        "n_reject_lapack": 0,
+        "n_reject_rank0": 0,
+        "n_reject_nonfinite": 0,
+        "n_reject_weight_cap": 1505,
+        "n_safeguard_reject": 47,
+        "last_rank": 10,
+        "last_aa_norm": 715.0708323212987,
+        "last_regularization": 3.860681687591057e-18
+      },
+      "dataset": "maros_meszaros",
+      "problem": "QSHARE2B"
+    }
+  ]
+}

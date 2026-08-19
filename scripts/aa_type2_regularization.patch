@@ -1,0 +1,12 @@
+--- /tmp/aa.c.original	2026-05-12 20:57:42
++++ /Users/bodonoghue/git/scs-python/scs_source/src/aa.c	2026-05-12 21:40:36
+@@ -280,7 +280,8 @@
+ static aa_float compute_regularization(AaWork *a) {
+   TIME_TIC
+   aa_float nrm_y = frob_from_col_norms(a->nrm_y_col, a->mem);
+-  aa_float nrm_a = a->type1 ? frob_from_col_norms(a->nrm_s_col, a->mem) : nrm_y;
++  /* DIAGNOSTIC PATCH: symmetric ||S||_F*||Y||_F for both types. */
++  aa_float nrm_a = frob_from_col_norms(a->nrm_s_col, a->mem);
+   aa_float r = a->regularization * nrm_a * nrm_y;
+   if (a->verbosity > 2) {
+     scs_printf("iter: %i, ||A||_F %.2e, ||Y||_F %.2e, r: %.2e\n",

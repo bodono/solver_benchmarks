@@ -1,0 +1,49 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 300
+  datasets:
+  - id: dimacs
+    name: dimacs
+    dataset_options:
+      max_size_mb: 5.0
+  - id: qplib
+    name: qplib
+    dataset_options:
+      max_size_mb: 5.0
+  - id: kennington
+    name: kennington
+    dataset_options:
+      max_size_mb: 5.0
+  - id: mittelmann_sdp
+    name: mittelmann_sdp
+    dataset_options:
+      max_size_mb: 5.0
+  - id: tsplib_sdp
+    name: tsplib_sdp
+    dataset_options:
+      max_size_mb: 5.0
+  - id: cblib
+    name: cblib
+    dataset_options:
+      max_size_mb: 5.0
+  - id: dc_opf
+    name: dc_opf
+    dataset_options:
+      max_size_mb: 5.0
+  - id: libsvm_qp
+    name: libsvm_qp
+    dataset_options:
+      max_size_mb: 5.0
+  - id: mpc_qpbenchmark
+    name: mpc_qpbenchmark
+    dataset_options:
+      max_size_mb: 5.0
+solvers:
+- id: scs_baseline
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000

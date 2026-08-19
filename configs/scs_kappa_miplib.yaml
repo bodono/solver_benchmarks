@@ -1,0 +1,27 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+  - id: miplib
+    name: miplib
+    dataset_options:
+      max_size_mb: 5.0
+
+solvers:
+- id: ratchet
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 3, acceleration_interval: 5, num_l2_passes: -1}
+- id: k2
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 6, diag_rho_x_floor: 5.0e-07, acceleration_interval: 5, num_l2_passes: -1}
+- id: k5
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 6, diag_rho_x_floor: 2.0e-07, acceleration_interval: 5, num_l2_passes: -1}
+- id: k10
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 6, diag_rho_x_floor: 1.0e-07, acceleration_interval: 5, num_l2_passes: -1}
+- id: k30
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 6, diag_rho_x_floor: 3.3e-08, acceleration_interval: 5, num_l2_passes: -1}

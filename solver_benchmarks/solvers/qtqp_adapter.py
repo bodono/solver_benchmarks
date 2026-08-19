@@ -105,6 +105,7 @@ class QTQPSolverAdapter(SolverAdapter):
 def _map_qtqp_status(raw_status) -> str:
     return {
         "solved": status.OPTIMAL,
+        "almost_solved": status.OPTIMAL_INACCURATE,
         "infeasible": status.PRIMAL_INFEASIBLE,
         "unbounded": status.DUAL_INFEASIBLE,
         "hit_max_iter": status.MAX_ITER_REACHED,

@@ -1,0 +1,74 @@
+# AA hyperparameter sweep v2 — on the new base algorithm (stacked-Q Ruiz
+# equilibration + adaptive_diag_scale + hardened certificates), eps 1e-6.
+#
+# Redesigned from the 960-arm 2026-04-27 sweep, whose analysis showed:
+#   - the whole sweep's ceiling on the old base was +3 solved / -7% time vs
+#     AA-off (conditioning was the binding constraint, since fixed);
+#   - the only real structure is a lookback x interval ridge (memory vs
+#     frequency trade: lb10/int5 and lb100/int1 tied at the top);
+#   - relaxation is flat *within type-I* (the pooled monotone trend was
+#     type-II being rescued by over-relaxation) -> fixed at 1.0;
+#   - regularization flat across five decades -> fixed per-type at its
+#     preferred value (type-I 1e-8, type-II 1e-12).
+# New dimensions the old sweep could not see: acceleration_trust_factor
+# (opt-in trust region), and the interaction with diag-scale refactors
+# which reset AA memory.
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+    - id: netlib_feasible
+      name: netlib
+      dataset_options:
+        subset: feasible
+    - name: maros_meszaros
+
+solvers:
+  - id: scs_diag3_noaa
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_lookback: 0
+
+  - id: scs_diag3_aa_default
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+
+  - id: scs_aa1
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_type_1: true
+      acceleration_regularization: 1.0e-8
+    sweep:
+      acceleration_lookback: [10, 20, 50]
+      acceleration_interval: [1, 2, 5]
+      acceleration_trust_factor: [.inf, 10.0]
+    id_template: "scs_aa1_lb{acceleration_lookback}_int{acceleration_interval}_tf{acceleration_trust_factor:g}"
+
+  - id: scs_aa2
+    solver: scs
+    settings:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-6
+      max_iters: 1000000
+      adaptive_diag_scale: 3
+      acceleration_type_1: false
+      acceleration_regularization: 1.0e-12
+    sweep:
+      acceleration_lookback: [10, 20, 50]
+      acceleration_interval: [1, 2, 5]
+      acceleration_trust_factor: [.inf, 10.0]
+    id_template: "scs_aa2_lb{acceleration_lookback}_int{acceleration_interval}_tf{acceleration_trust_factor:g}"

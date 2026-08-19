@@ -1,0 +1,33 @@
+run:
+  output_dir: results
+  parallelism: 8
+  resume: true
+  timeout_seconds: 100
+  datasets:
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - id: maros_meszaros
+    name: maros_meszaros
+  - id: miplib
+    name: miplib
+    dataset_options:
+      max_size_mb: 5.0
+
+solvers:
+- id: tau_1
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, tau_factor: 1.0}
+- id: tau_3
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, tau_factor: 3.0}
+- id: tau_10
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, tau_factor: 10.0}
+- id: tau_30
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, tau_factor: 30.0}
+- id: tau_100
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000, adaptive_diag_scale: 10, den_floor_frac: 1.0e-03, acceleration_interval: 5, num_l2_passes: -1, tau_factor: 100.0}
