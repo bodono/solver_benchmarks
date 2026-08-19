@@ -1,0 +1,37 @@
+run:
+  name: qtqp_baselines
+  output_dir: results
+  parallelism: 6
+  resume: true
+  timeout_seconds: 1800
+  datasets:
+  - id: maros_meszaros
+    name: maros_meszaros
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - id: miplib
+    name: miplib
+
+solvers:
+# Best previous QTQP configuration ("origin-v7"): origin-anchored path,
+# mu-schedule governor on, certificate veto, strict 1e-9 tolerances.
+# Run without QTQP_PROXIMAL in the environment.
+- id: qtqp_origin_v7
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl
+
+# Clarabel on matched linear algebra: same QDLDL factorization, static
+# regularization only (dynamic pivot perturbation disabled), its own
+# default tolerances and iteration cap.
+- id: clarabel_qdldl_nodyn
+  solver: clarabel
+  settings:
+    direct_solve_method: qdldl
+    dynamic_regularization_enable: false
+    max_iter: 200
