@@ -143,6 +143,16 @@ def _normalize_settings(settings: dict, qtqp_module):
         }
         attr = lookup.get(linear_solver.lower(), linear_solver.upper())
         settings["linear_solver"] = getattr(qtqp_module.LinearSolver, attr)
+    # QTQP's enum-valued knobs are named in YAML as plain strings; map any
+    # that the installed build exposes.
+    for key, enum_name in (
+        ("init_strategy", "InitStrategy"),
+        ("equilibration_strategy", "EquilibrationStrategy"),
+        ("refinement_strategy", "RefinementStrategy"),
+    ):
+        value = settings.get(key)
+        if isinstance(value, str) and hasattr(qtqp_module, enum_name):
+            settings[key] = getattr(getattr(qtqp_module, enum_name), value.upper())
     return settings
 
 
