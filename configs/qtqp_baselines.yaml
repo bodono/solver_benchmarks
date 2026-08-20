@@ -3,6 +3,20 @@ run:
   output_dir: results
   parallelism: 6
   resume: true
+  # Instances with z == m (all rows equalities, no inequality cone).
+  # QTQP's homogeneous embedding requires z < m and cannot accept
+  # them; they are excluded from every reported comparison so the
+  # denominators match across solvers and against the paper.
+  exclude:
+  - AUG2D
+  - AUG2DC
+  - AUG3D
+  - AUG3DC
+  - DPKLO1
+  - DTOC3
+  - GENHS28
+  - HS51
+  - HS52
   timeout_seconds: 1800
   datasets:
   - id: maros_meszaros
