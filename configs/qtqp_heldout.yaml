@@ -9,8 +9,6 @@ run:
     name: kennington
   - id: qplib
     name: qplib
-  - id: liu_pataki
-    name: liu_pataki
   - id: dc_opf
     name: dc_opf
   - id: libsvm_qp
@@ -18,7 +16,7 @@ run:
   - id: mpc_qpbenchmark
     name: mpc_qpbenchmark
   - id: netlib
-    name: netlib_infeasible
+    name: netlib
     dataset_options:
       subset: infeasible
 solvers:
