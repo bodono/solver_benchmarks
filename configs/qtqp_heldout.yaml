@@ -1,0 +1,45 @@
+run:
+  name: qtqp_heldout
+  output_dir: results
+  parallelism: 6
+  resume: true
+  timeout_seconds: 1800
+  datasets:
+  - id: kennington
+    name: kennington
+  - id: qplib
+    name: qplib
+  - id: liu_pataki
+    name: liu_pataki
+  - id: dc_opf
+    name: dc_opf
+  - id: libsvm_qp
+    name: libsvm_qp
+  - id: mpc_qpbenchmark
+    name: mpc_qpbenchmark
+  - id: netlib
+    name: netlib_infeasible
+    dataset_options:
+      subset: infeasible
+solvers:
+- id: qtqp_trivial
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl
+- id: qtqp_cvxopt
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl
+    init_strategy: cvxopt
+- id: clarabel_qdldl_nodyn
+  solver: clarabel
+  settings:
+    direct_solve_method: qdldl
+    dynamic_regularization_enable: false
+    max_iter: 200
