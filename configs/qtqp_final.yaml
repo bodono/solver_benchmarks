@@ -1,0 +1,47 @@
+run:
+  name: qtqp_final
+  output_dir: results
+  parallelism: 6
+  resume: true
+  exclude:
+  - AUG2D
+  - AUG2DC
+  - AUG3D
+  - AUG3DC
+  - DPKLO1
+  - DTOC3
+  - GENHS28
+  - HS51
+  - HS52
+  timeout_seconds: 1800
+  datasets:
+  - id: maros_meszaros
+    name: maros_meszaros
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+  - id: miplib
+    name: miplib
+solvers:
+- id: qtqp_trivial
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl
+- id: qtqp_cvxopt
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl
+    init_strategy: cvxopt
+- id: clarabel_qdldl_nodyn
+  solver: clarabel
+  settings:
+    direct_solve_method: qdldl
+    dynamic_regularization_enable: false
+    max_iter: 200
