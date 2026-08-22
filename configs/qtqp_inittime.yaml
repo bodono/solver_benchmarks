@@ -1,0 +1,18 @@
+run:
+  name: qtqp_inittime
+  output_dir: results
+  parallelism: 6
+  resume: true
+  timeout_seconds: 1800
+  datasets:
+  - id: kennington
+    name: kennington
+solvers:
+- id: qtqp_cvxopt
+  solver: qtqp
+  settings:
+    atol: 1.0e-09
+    rtol: 1.0e-09
+    max_iter: 200
+    linear_solver: qdldl
+    init_strategy: cvxopt
