@@ -120,7 +120,7 @@ def test_qp_to_scs_box_cone_mixed_structure():
     # Equalities first, then a dummy row for the box cone 't' component,
     # then negated inequality rows.
     assert cone["z"] == 1
-    assert cone["bl"] == [-INF_BOUND, -1.0]
+    assert cone["bl"] == [-np.inf, -1.0]
     assert cone["bu"] == [5.0, 4.0]
     # Rows: 1 eq + 1 box-t + 2 inequalities.
     assert data["A"].shape == (4, 2)
