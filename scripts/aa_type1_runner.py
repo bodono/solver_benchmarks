@@ -8,11 +8,11 @@ import sys
 import time
 from pathlib import Path
 
-csv.field_size_limit(sys.maxsize)
-
 from solver_benchmarks.datasets.maros_meszaros import MarosMeszarosDataset
 from solver_benchmarks.datasets.mps import NetlibDataset
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone
+
+csv.field_size_limit(sys.maxsize)
 
 # Type-I weak spots — problems where best type-I config did NOT solve cleanly
 # but the problem IS solvable (excludes genuine infeasibility detections and timeouts)

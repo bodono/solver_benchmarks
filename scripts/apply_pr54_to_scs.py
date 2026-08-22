@@ -6,7 +6,7 @@ canonical aa.c) into scs-python's vendored copy + scs.c + glbopts.h.
 Idempotent: bails out if AA_TRUST_FACTOR is already defined.
 """
 from __future__ import annotations
-import sys
+
 from pathlib import Path
 
 SCS = Path("/Users/bodonoghue/git/scs-python/scs_source")

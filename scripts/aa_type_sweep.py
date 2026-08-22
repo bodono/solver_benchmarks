@@ -6,11 +6,11 @@ import sys
 import time
 from pathlib import Path
 
-csv.field_size_limit(sys.maxsize)
-
 from solver_benchmarks.datasets.maros_meszaros import MarosMeszarosDataset
 from solver_benchmarks.datasets.mps import NetlibDataset
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone
+
+csv.field_size_limit(sys.maxsize)
 
 REPORT = Path("results/scs_anderson_sweep_2026-04-27_08-44-15_UTC/report/problem_solver_comparison.csv")
 
@@ -19,8 +19,10 @@ T2_ID = "scs_aa_lb10_int5_t1False_reg1e-08_relax1.2"
 
 
 def f2(s):
-    try: return float(s)
-    except: return None
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
 
 
 def list_gap_problems():
@@ -74,8 +76,10 @@ def main():
         t_t1, info_t1 = run(qp, {**common, "acceleration_type_1": True})
         t_t2, info_t2 = run(qp, {**common, "acceleration_type_1": False})
         s1, s2 = info_t1["status"], info_t2["status"]
-        if "solved" in s1 and "inaccurate" not in s1: t1_solved += 1
-        if "solved" in s2 and "inaccurate" not in s2: t2_solved += 1
+        if "solved" in s1 and "inaccurate" not in s1:
+            t1_solved += 1
+        if "solved" in s2 and "inaccurate" not in s2:
+            t2_solved += 1
         print(f"{ds_id:18s} {name:30s} {t_t1:9.3f} {s1:>20s} {t_t2:9.3f} {s2:>22s}")
     print(f"\nType-I optimal: {t1_solved}/{len(problems)}  Type-II optimal: {t2_solved}/{len(problems)}")
 

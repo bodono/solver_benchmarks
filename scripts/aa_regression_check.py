@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 import csv
-import json
 import sys
 import time
 from pathlib import Path
 
-csv.field_size_limit(sys.maxsize)
-
 from solver_benchmarks.datasets.maros_meszaros import MarosMeszarosDataset
 from solver_benchmarks.datasets.mps import NetlibDataset
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone
+
+csv.field_size_limit(sys.maxsize)
 
 REPORT = Path("results/scs_anderson_sweep_2026-04-27_08-44-15_UTC/report/problem_solver_comparison.csv")
 T1_ID = "scs_aa_lb10_int5_t1True_reg1e-08_relax1.2"
@@ -19,8 +18,10 @@ T2_ID = "scs_aa_lb10_int5_t1False_reg1e-08_relax1.2"
 
 
 def f2(s):
-    try: return float(s)
-    except: return None
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
 
 
 _ds_cache = {}
@@ -75,18 +76,20 @@ def main():
         qp = load_qp(ds, name)
         t, status = time_solve(qp, {**common, "acceleration_type_1": True})
         regressed = status != "solved"
-        if regressed: regressed_t1 += 1
+        if regressed:
+            regressed_t1 += 1
         flag = " REGRESS" if regressed else ""
         print(f"{name:18s} {orig_t:8.2f} {t:8.2f} {status:>30s}{flag}")
 
-    print(f"\n=== TYPE-II regression (problems originally solving) ===")
+    print("\n=== TYPE-II regression (problems originally solving) ===")
     print(f"{'problem':18s} {'orig_t':>8s} {'new_t':>8s} {'status':>30s}")
     regressed_t2 = 0
     for ds, name, orig_t in t2_sample:
         qp = load_qp(ds, name)
         t, status = time_solve(qp, {**common, "acceleration_type_1": False})
         regressed = status != "solved"
-        if regressed: regressed_t2 += 1
+        if regressed:
+            regressed_t2 += 1
         flag = " REGRESS" if regressed else ""
         print(f"{name:18s} {orig_t:8.2f} {t:8.2f} {status:>30s}{flag}")
 

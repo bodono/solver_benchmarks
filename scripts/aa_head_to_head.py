@@ -1,14 +1,15 @@
 """Head-to-head: type-I vs type-II on the union of both 'weak' sets."""
 from __future__ import annotations
-import time
+
 import csv
 import sys
-from pathlib import Path
-csv.field_size_limit(sys.maxsize)
+import time
 
 from solver_benchmarks.datasets.maros_meszaros import MarosMeszarosDataset
 from solver_benchmarks.datasets.mps import NetlibDataset
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone
+
+csv.field_size_limit(sys.maxsize)
 
 # Type-II's failure set (33 problems where t2 originally failed)
 T2_FAIL_SET = [
@@ -70,8 +71,10 @@ def head_to_head(problems, label):
         d, c, _ = qp_to_scs_box_cone(qp.qp)
         t1_t, t1_s = run_one(d, c, True)
         t2_t, t2_s = run_one(d, c, False)
-        if t1_s == "solved": t1_solved += 1
-        if t2_s == "solved": t2_solved += 1
+        if t1_s == "solved":
+            t1_solved += 1
+        if t2_s == "solved":
+            t2_solved += 1
         t1_total += t1_t
         t2_total += t2_t
         print(f"{name:18s}  {t1_t:8.2f}  {t1_s:>30s}  {t2_t:8.2f}  {t2_s:>30s}")

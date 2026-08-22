@@ -4,8 +4,6 @@ from __future__ import annotations
 import argparse
 import time
 
-import numpy as np
-
 from solver_benchmarks.datasets.maros_meszaros import MarosMeszarosDataset
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone
 
@@ -32,7 +30,7 @@ def run_one(qp, settings, label):
     print(f"  accel_time(scs)     : {info['accel_time']/1000:.3f}s")
     print(f"  accepted_accel      : {info['accepted_accel_steps']}")
     print(f"  rejected_accel      : {info['rejected_accel_steps']}")
-    print(f"  aa_stats:")
+    print("  aa_stats:")
     for k, v in aa.items():
         print(f"    {k:24s} {v}")
     return info, aa
