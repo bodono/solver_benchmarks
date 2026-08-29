@@ -35,6 +35,23 @@ BOUNDS
 ENDATA
 """
 
+_SENTINEL_BOUND_MPS = """\
+NAME          SENT
+ROWS
+ N  COST
+ G  C1
+COLUMNS
+    X1   COST        1.0   C1   1.0
+    X2   COST        1.0   C1   1.0
+RHS
+    RHS   C1   1.0
+BOUNDS
+ UP BND   X1   1.0e+20
+ LO BND   X2   -1.0e+20
+ UP BND   X2   1.0e+20
+ENDATA
+"""
+
 
 def _write(path: Path, body: str) -> Path:
     path.write_text(body)
@@ -119,8 +136,9 @@ def test_readMpsLp_accepts_highs_warning_with_populated_model(monkeypatch, tmp_p
 
     assert a.shape == (2, 1)
     assert c.tolist() == [1.0]
-    assert l.tolist() == [-1.0e30, 0.0]
-    assert u.tolist() == [1.0, 1.0e30]
+    # HiGHS-style 1e30 infinities are normalized to true np.inf.
+    assert l.tolist() == [-np.inf, 0.0]
+    assert u.tolist() == [1.0, np.inf]
 
 
 def test_readMpsLp_missing_file_raises(tmp_path: Path):
@@ -173,3 +191,16 @@ def test_readMpsLp_does_not_warn_on_plain_lp(tmp_path: Path):
         w for w in record if issubclass(w.category, qpsreader.QuadraticDataIgnoredWarning)
     ]
     assert quadratic_warnings == []
+
+
+def test_readMpsLp_normalizes_sentinel_bounds_to_inf(tmp_path: Path):
+    # +-1e20 bound values are infinity sentinels, not data: they must come
+    # back as true np.inf, and a variable whose bounds are both sentinels
+    # must not get a bound row at all (previously X1's u leaked as 1e20).
+    path = _write(tmp_path / "sent.mps", _SENTINEL_BOUND_MPS)
+    a, c, l, u = qpsreader.readMpsLp(str(path))
+    # 1 constraint row + 1 bound row for X1 (finite default lower of 0);
+    # X2 is free after sentinel normalization so its row is dropped.
+    assert a.shape == (2, 2)
+    assert l.tolist() == [1.0, 0.0]
+    assert u.tolist() == [np.inf, np.inf]

@@ -27,6 +27,23 @@ class QuadraticDataIgnoredWarning(UserWarning):
     """Raised when an MPS file contains quadratic data that we cannot represent."""
 
 
+# Bound magnitudes at or beyond this are infinity sentinels (the MPS
+# datasets document +-1e20, sometimes stored with representation error;
+# HiGHS hands the literal values back). Normalized to true np.inf on the
+# correct side only — a wrong-signed huge bound (u <= -1e19 or
+# l >= +1e19) encodes an infeasible-scale demand, not infinity, and is
+# kept as data (same policy as transforms/cones.py).
+_INF_SENTINEL = 1.0e19
+
+
+def _sanitize_lower(v: np.ndarray) -> np.ndarray:
+    return np.where(v <= -_INF_SENTINEL, -np.inf, v)
+
+
+def _sanitize_upper(v: np.ndarray) -> np.ndarray:
+    return np.where(v >= _INF_SENTINEL, np.inf, v)
+
+
 def _opener_for(path: Path):
     suffix = "".join(path.suffixes[-2:]).lower() if path.suffixes else ""
     if suffix.endswith(".gz") or path.suffix.lower() == ".gz":
@@ -119,12 +136,12 @@ def _read_uncompressed_mps(filename: str):
     )
     c = np.asarray(lp.col_cost_, dtype=float)
     n = c.size
-    x_low = np.asarray(lp.col_lower_, dtype=float)
-    x_upper = np.asarray(lp.col_upper_, dtype=float)
-    c_low = np.asarray(lp.row_lower_, dtype=float)
-    c_upper = np.asarray(lp.row_upper_, dtype=float)
+    x_low = _sanitize_lower(np.asarray(lp.col_lower_, dtype=float))
+    x_upper = _sanitize_upper(np.asarray(lp.col_upper_, dtype=float))
+    c_low = _sanitize_lower(np.asarray(lp.row_lower_, dtype=float))
+    c_upper = _sanitize_upper(np.asarray(lp.row_upper_, dtype=float))
 
-    finite_var_bounds = (x_low > -1.0e20) | (x_upper < 1.0e20)
+    finite_var_bounds = np.isfinite(x_low) | np.isfinite(x_upper)
     l = np.hstack((c_low, x_low[finite_var_bounds]))
     u = np.hstack((c_upper, x_upper[finite_var_bounds]))
     mat = sparse.vstack(
