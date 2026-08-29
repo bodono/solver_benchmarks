@@ -57,6 +57,31 @@ def test_qp_residuals_detect_infeasible_point():
     assert res["primal_res"] >= 3.0
 
 
+def test_qp_residuals_sentinel_bounds_gap_immune_to_tiny_multiplier():
+    # Regression: dataset readers emit +-1e20 infinity sentinels rather
+    # than true infinities (e.g. Maros-Meszaros AUG2DCQP has 20,200 upper
+    # bounds at exactly 1e20). A numerically tiny multiplier on a
+    # sentinel-bounded row — harmless solver noise — used to add
+    # u*y ~ 1e20 * 1e-11 = 1e9 of garbage to the dual objective and comp
+    # slack, reporting duality_gap_rel ~ 1.0 at a true optimum.
+    # min 0.5 x^2 - x  s.t.  0 <= x <= 0.5 (upper active), sentinel row free.
+    P = sp.csc_matrix(np.array([[1.0]]))
+    q = np.array([-1.0])
+    A = sp.csc_matrix(np.array([[1.0], [1.0]]))
+    l = np.array([0.0, -1.0e20])
+    u = np.array([0.5, 1.0e20])
+    x = np.array([0.5])
+    tiny = 1.0e-11
+    # Stationarity x + q + y0 + y1 = 0 holds exactly: y0 + y1 = 0.5.
+    y = np.array([0.5 - tiny, tiny])
+    res = kkt.qp_residuals(P, q, A, l, u, x, y)
+    assert res["primal_res"] < 1e-12
+    assert res["dual_res"] < 1e-12
+    assert res["comp_slack"] < 1e-10
+    assert abs(res["duality_gap"]) < 1e-10
+    assert res["duality_gap_rel"] < 1e-10
+
+
 def test_cone_residuals_nonnegative_lp_optimum():
     # min -x s.t. x + s = 1, s >= 0  =>  x* = 1, s* = 0, y* = 1.
     P = sp.csc_matrix((1, 1))

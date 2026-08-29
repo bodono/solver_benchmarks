@@ -16,6 +16,14 @@ import numpy as np
 import scipy.sparse as sp
 
 _EPS = 1.0e-16
+# Bounds at or beyond this magnitude are treated as infinite. The datasets
+# document +-1e20 as their infinity sentinel and the transform layer drops
+# anything >= 1e19 (see transforms/cones.py); the checker cuts a decade
+# lower still so a sentinel that slips through any reader cannot leak an
+# O(1e20) term into the dual objective, complementarity, or the residual
+# normalizations (a 1e20 sentinel u against a harmless y ~ 1e-11 used to
+# report duality_gap_rel ~ 1.0 on half of Maros-Meszaros).
+_INF_BOUND = 1.0e18
 
 
 def qp_residuals(
@@ -52,26 +60,28 @@ def qp_residuals(
     r_dual = float(np.linalg.norm(stationarity, ord=np.inf))
     r_dual_l2 = float(np.linalg.norm(stationarity))
 
+    finite_l = _finite_bounds(l)
+    finite_u = _finite_bounds(u)
     y_pos = np.maximum(y, 0.0)
     y_neg = np.maximum(-y, 0.0)
-    comp_upper = y_pos * np.where(np.isfinite(u), u - Ax, 0.0)
-    comp_lower = y_neg * np.where(np.isfinite(l), Ax - l, 0.0)
+    comp_upper = y_pos * np.where(finite_u, u - Ax, 0.0)
+    comp_lower = y_neg * np.where(finite_l, Ax - l, 0.0)
     comp = np.concatenate([comp_upper, comp_lower])
     r_comp = float(np.linalg.norm(comp, ord=np.inf))
 
     primal_obj = float(0.5 * x @ Px + q @ x)
     dual_obj = float(
         -0.5 * x @ Px
-        + np.where(np.isfinite(l), l, 0.0) @ y_neg
-        - np.where(np.isfinite(u), u, 0.0) @ y_pos
+        + np.where(finite_l, l, 0.0) @ y_neg
+        - np.where(finite_u, u, 0.0) @ y_pos
     )
     gap = primal_obj - dual_obj
     gap_norm = 1.0 + abs(primal_obj) + abs(dual_obj)
 
     norm_pri = 1.0 + max(
         _inf_norm(Ax),
-        _inf_norm(np.where(np.isfinite(l), l, 0.0)),
-        _inf_norm(np.where(np.isfinite(u), u, 0.0)),
+        _inf_norm(np.where(finite_l, l, 0.0)),
+        _inf_norm(np.where(finite_u, u, 0.0)),
     )
     norm_dual = 1.0 + max(_inf_norm(Px), _inf_norm(Aty), _inf_norm(q))
 
@@ -253,8 +263,8 @@ def qp_primal_infeasibility_cert(
     y_pos = np.maximum(y, 0.0)
     y_neg = np.maximum(-y, 0.0)
     support = (
-        float(np.where(np.isfinite(u), u, 0.0) @ y_pos)
-        - float(np.where(np.isfinite(l), l, 0.0) @ y_neg)
+        float(np.where(_finite_bounds(u), u, 0.0) @ y_pos)
+        - float(np.where(_finite_bounds(l), l, 0.0) @ y_neg)
     )
     y_scale = max(_inf_norm(y), _EPS)
     return {
@@ -283,8 +293,8 @@ def qp_dual_infeasibility_cert(
     u = np.asarray(u, dtype=float).ravel()
     Px = P @ x
     Ax = A @ x
-    finite_l = np.isfinite(l)
-    finite_u = np.isfinite(u)
+    finite_l = _finite_bounds(l)
+    finite_u = _finite_bounds(u)
     both_finite = finite_l & finite_u
     upper_only = finite_u & ~finite_l
     lower_only = finite_l & ~finite_u
@@ -456,6 +466,11 @@ def _project_psd_triangle(v: np.ndarray, n: int) -> np.ndarray:
             out[idx] = val
             idx += 1
     return out
+
+
+def _finite_bounds(v: np.ndarray) -> np.ndarray:
+    """Mask of genuine finite bounds: excludes inf, nan, and inf sentinels."""
+    return np.isfinite(v) & (np.abs(v) < _INF_BOUND)
 
 
 def _as_dense(value):

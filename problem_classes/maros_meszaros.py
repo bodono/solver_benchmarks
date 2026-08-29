@@ -1,4 +1,11 @@
+import numpy as np
 import scipy.io as spio
+
+# The archived .mat files use +-1e20 as their infinity sentinel, in a few
+# files stored with ULPs of representation error (e.g. -9.99...e+19).
+# Anything at or beyond this magnitude on the correct side is normalized
+# to a true infinity (same 1e19 cut as transforms/cones.py).
+_INF_SENTINEL = 1.0e19
 
 
 class MarosMeszaros:
@@ -28,6 +35,8 @@ class MarosMeszaros:
         A = m['A'].astype(float).tocsc()
         l = m['l'].T.flatten().astype(float)
         u = m['u'].T.flatten().astype(float)
+        l = np.where(l <= -_INF_SENTINEL, -np.inf, l)
+        u = np.where(u >= _INF_SENTINEL, np.inf, u)
         n = m['n'].T.flatten().astype(int)[0]
         m = m['m'].T.flatten().astype(int)[0]
 

@@ -330,6 +330,35 @@ def test_mpc_qpbenchmark_npz_loader_converts_qp_schema(tmp_path: Path):
     assert problem.qp["u"].tolist() == pytest.approx([3.0, 4.0, 5.0, 6.0])
 
 
+def test_maros_meszaros_loader_normalizes_sentinel_bounds(tmp_path: Path):
+    # The archived .mat files store +-1e20 infinity sentinels, in a few
+    # files with ULPs of representation error; the loader must hand back
+    # true infinities so no finite 1e20-scale bound reaches solvers or
+    # the KKT checker.
+    import scipy.sparse
+
+    from problem_classes.maros_meszaros import MarosMeszaros
+
+    scipy.io.savemat(
+        tmp_path / "TOY.mat",
+        {
+            "P": scipy.sparse.eye(2, format="csc"),
+            "q": np.zeros(2),
+            "r": 0.0,
+            "A": scipy.sparse.eye(2, format="csc"),
+            "l": np.array([-1.0e20, 0.0]),
+            "u": np.array([9.999999999999998e19, 2.0]),
+            "n": 2,
+            "m": 2,
+        },
+    )
+
+    instance = MarosMeszaros(str(tmp_path / "TOY"), "TOY")
+
+    assert instance.l.tolist() == [-np.inf, 0.0]
+    assert instance.u.tolist() == [np.inf, 2.0]
+
+
 def test_mpc_prepare_uses_default_small_subset(monkeypatch, tmp_path: Path):
     calls = []
 
