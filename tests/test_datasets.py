@@ -407,6 +407,28 @@ def test_netlib_dataset_loads_gzipped_mps_problem(tmp_path: Path):
     assert problem.qp["q"].tolist() == [1.0, 2.0]
 
 
+def test_bundled_netlib_greenbea_infeasible_variant_is_infeasible(
+    tmp_path: Path, repo_root: Path
+):
+    """Guard against replacing the infeasible original with the repaired LP."""
+    from solver_benchmarks.core import status
+
+    data_dir = repo_root / "problem_classes" / "netlib_data"
+    with gzip.open(data_dir / "feasible" / "greenbea.mps.gz", "rb") as handle:
+        feasible_payload = handle.read().replace(b"\r\n", b"\n")
+    with gzip.open(data_dir / "infeasible" / "greenbea.mps.gz", "rb") as handle:
+        infeasible_payload = handle.read().replace(b"\r\n", b"\n")
+    assert infeasible_payload != feasible_payload
+
+    dataset = get_dataset("netlib")(repo_root=repo_root, subset="infeasible")
+    problem = dataset.load_problem("greenbea")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    result = get_solver("highs")({"verbose": False}).solve(problem, artifacts)
+
+    assert result.status == status.PRIMAL_INFEASIBLE
+
+
 def test_kennington_dataset_round_trips_through_qpsreader(tmp_path: Path):
     # Regression test for the qpsreader ``.gz`` handling bug — previously
     # ``.mps.gz`` files were silently treated as missing and loaded as 0x0.
