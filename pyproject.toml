@@ -27,7 +27,9 @@ dependencies = [
 
 [project.optional-dependencies]
 highs = ["highspy>=1.0,<1.16"]
-scs = ["scs>=3.0"]
+# SCS 3.3.0 manylinux x86_64 wheels abort when oneMKL cannot load
+# libmkl_def.so.3. Exclude that release until fixed wheels are published.
+scs = ["scs>=3.0,!=3.3.0"]
 osqp = ["osqp>=0.6"]
 clarabel = ["clarabel>=0.7"]
 cvxopt = ["cvxopt>=1.3"]
@@ -50,7 +52,8 @@ test = ["pytest>=7.0", "pytest-timeout>=2.1"]
 # soft dep.
 system_info = ["psutil>=5.9"]
 all = [
-    "scs>=3.0",
+    # Keep this constraint aligned with the standalone `scs` extra above.
+    "scs>=3.0,!=3.3.0",
     "osqp>=0.6",
     "clarabel>=0.7",
     "cvxopt>=1.3",
