@@ -71,14 +71,19 @@ class QTQPSolverAdapter(SolverAdapter):
         trace = list(getattr(solution, "stats", []) or [])
         _write_trace(artifacts_dir / "trace.jsonl", trace)
         stats = pd.DataFrame(trace) if trace else pd.DataFrame()
+        # qtqp reports completed IPM steps on ``Solution.iterations`` (main
+        # after google-deepmind/qtqp#131). The last trace row's ``iter`` is a
+        # zero-based label, one below the completed count for any solve that
+        # took a step, and is kept only as the fallback for older builds.
+        iterations = _maybe_int(getattr(solution, "iterations", None))
         if not stats.empty:
             last = stats.tail(1).iloc[0]
             objective = _maybe_float(last.get("pcost"))
-            iterations = _maybe_int(last.get("iter"))
+            if iterations is None:
+                iterations = _maybe_int(last.get("iter"))
             info = to_jsonable(last.to_dict())
         else:
             objective = None
-            iterations = None
             info = {}
 
         mapped = _map_qtqp_status(raw_status)
