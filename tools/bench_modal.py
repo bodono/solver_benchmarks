@@ -97,13 +97,17 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
     t0 = time.time()
-    proc = subprocess.run(
-        [sys.executable, "-m", "solver_benchmarks.cli", "run", str(cfg), "--run-dir", str(run_dir),
-         "--repo-root", "/data", "--no-stream-output"],
-        cwd="/root/repo", env=env, capture_output=True, text=True,
-    )
-    (run_dir / "modal_stdout.log").write_text(proc.stdout[-200_000:])
-    (run_dir / "modal_stderr.log").write_text(proc.stderr[-200_000:])
+    with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "solver_benchmarks.cli", "run", str(cfg), "--run-dir", str(run_dir),
+             "--repo-root", "/data", "--no-stream-output"],
+            cwd="/root/repo", env=env, stdout=out, stderr=err, text=True,
+        )
+        # Commit the volume every two minutes so that a shard cancelled by the
+        # budget guard (or a container limit) resumes from its last result.
+        while proc.poll() is None:
+            time.sleep(120)
+            results_vol.commit()
     results_vol.commit()
     rows = 0
     if (run_dir / "results.jsonl").exists():
@@ -111,17 +115,17 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     return {"name": name, "exit": proc.returncode, "rows": rows, "seconds": round(time.time() - t0, 1)}
 
 
-@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=8 * 3600)
+@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=8 * 3600, max_containers=16)
 def run_shard_cpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600)
+@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600, max_containers=2)
 def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600)
+@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600, max_containers=1)
 def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
@@ -200,8 +204,28 @@ def probe_cuopt() -> str:
     return "\n".join(out)
 
 
+# Approximate Modal list prices, USD per container-hour, with a 20% margin on
+# top. Check against https://modal.com/pricing; the workspace spending limit
+# in the Modal dashboard is the true hard stop, this guard is an estimate.
+#   CPU shard: 4 cores x $0.135 + 16 GiB x $0.024  ~ $0.92/h
+#   GPU shard: A100-80GB $2.50 + 8 cores x $0.135 + 32 GiB x $0.024 ~ $4.35/h
+RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "gpu": 4.35 * 1.2, "cuopt": 4.35 * 1.2}
+MAX_IN_FLIGHT = {"cpu": 16, "gpu": 2, "cuopt": 1}
+
+
 @app.local_entrypoint()
-def main(campaign: str = "", spec: str = "", only: str = "", exclude: str = "", probe: bool = False, probe_cuopt_only: bool = False):
+def main(
+    campaign: str = "",
+    spec: str = "",
+    only: str = "",
+    exclude: str = "",
+    budget_usd: float = 300.0,
+    probe: bool = False,
+    probe_cuopt_only: bool = False,
+):
+    import time
+    from collections import deque
+
     if probe:
         print(probe_cpu.remote()); print(probe_gpu.remote()); print(probe_cuopt.remote()); return
     if probe_cuopt_only:
@@ -211,13 +235,56 @@ def main(campaign: str = "", spec: str = "", only: str = "", exclude: str = "", 
         shards = [s for s in shards if only in s["name"]]
     if exclude:
         shards = [s for s in shards if exclude not in s["name"]]
-    runners = {"cpu": run_shard_cpu, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
-    calls = []
     for s in shards:
-        kind = s.get("runner") or ("gpu" if s["gpu"] else "cpu")
-        calls.append(runners[kind].spawn(campaign, s["name"], Path(s["config"]).read_text()))
-    print(f"launched {len(calls)} shards ({sum(1 for s in shards if s['gpu'])} GPU) for campaign {campaign!r}")
-    for call in calls:
-        r = call.get()
-        flag = "" if r["exit"] == 0 else f"  EXIT {r['exit']}"
-        print(f"{r['name']:60s} rows={r['rows']:4d} {r['seconds']:8.1f}s{flag}")
+        s["kind"] = s.get("runner") or ("gpu" if s["gpu"] else "cpu")
+    runners = {"cpu": run_shard_cpu, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
+    pending = deque(shards)
+    running: dict = {}  # call -> (shard, start)
+    spent = 0.0
+    done = failed = 0
+    print(f"campaign {campaign!r}: {len(shards)} shards, caps {MAX_IN_FLIGHT}, budget ${budget_usd:.0f}")
+    while pending or running:
+        in_flight = {k: sum(1 for (_, (sh, _)) in running.items() if sh["kind"] == k) for k in MAX_IN_FLIGHT}
+        projected = spent + sum((time.time() - t0) / 3600 * RATES_PER_HOUR[sh["kind"]] for sh, t0 in running.values())
+        if projected >= budget_usd:
+            print(f"BUDGET REACHED: projected ${projected:.2f} >= ${budget_usd:.0f}; cancelling {len(running)} running, dropping {len(pending)} pending")
+            for call in running:
+                try:
+                    call.cancel()
+                except Exception as exc:
+                    print(f"cancel failed: {exc}")
+            break
+        launched = 0
+        for _ in range(len(pending)):
+            sh = pending[0]
+            k = sh["kind"]
+            # leave headroom: do not start a shard the budget could not afford for an hour
+            if in_flight[k] >= MAX_IN_FLIGHT[k] or projected + RATES_PER_HOUR[k] > budget_usd:
+                pending.rotate(-1)
+                continue
+            pending.popleft()
+            call = runners[k].spawn(campaign, sh["name"], Path(sh["config"]).read_text())
+            running[call] = (sh, time.time())
+            in_flight[k] += 1
+            launched += 1
+        for call in list(running):
+            sh, t0 = running[call]
+            try:
+                r = call.get(timeout=0)
+            except TimeoutError:
+                continue
+            except Exception as exc:
+                r = {"name": sh["name"], "exit": -1, "rows": 0, "seconds": time.time() - t0, "error": str(exc)[:200]}
+            del running[call]
+            hours = (time.time() - t0) / 3600
+            spent += hours * RATES_PER_HOUR[sh["kind"]]
+            if r.get("exit") == 0:
+                done += 1
+            else:
+                failed += 1
+            flag = "" if r.get("exit") == 0 else f"  EXIT {r.get('exit')} {r.get('error', '')}"
+            print(f"{r['name']:58s} rows={r.get('rows', 0):4d} {hours * 60:7.1f} min  spent~${spent:7.2f}{flag}", flush=True)
+        if launched or not running:
+            print(f"  [{time.strftime('%H:%M')}] running={len(running)} pending={len(pending)} done={done} failed={failed} spent~${spent:.2f}", flush=True)
+        time.sleep(20)
+    print(f"finished: done={done} failed={failed} pending={len(pending)} spent~${spent:.2f}")
