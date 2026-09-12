@@ -11,6 +11,7 @@ from .gurobi_adapter import GurobiSolverAdapter
 from .highs_adapter import HighsSolverAdapter
 from .mosek_adapter import MosekSolverAdapter
 from .osqp_adapter import OSQPSolverAdapter
+from .cuopt_adapter import CuOptSolverAdapter
 from .pdlp_adapter import PDLPSolverAdapter
 from .piqp_adapter import PIQPSolverAdapter
 from .proxqp_adapter import ProxQPSolverAdapter
@@ -28,6 +29,7 @@ SOLVERS: dict[str, type[SolverAdapter]] = {
     "mosek": MosekSolverAdapter,
     "osqp": OSQPSolverAdapter,
     "pdlp": PDLPSolverAdapter,
+    "cuopt": CuOptSolverAdapter,
     "piqp": PIQPSolverAdapter,
     "proxqp": ProxQPSolverAdapter,
     "qtqp": QTQPSolverAdapter,

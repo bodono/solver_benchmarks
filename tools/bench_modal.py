@@ -68,6 +68,19 @@ gpu_image = (
         "-Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true . 2>&1 | tail -5",
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
     )
+    # NVIDIA cuOpt: GPU PDLP for LP and QP, the like-for-like GPU comparator.
+    .pip_install("cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
+    .run_commands("pip install --no-deps -e /root/repo")
+)
+
+# cuOpt gets its own image: it bundles its own CUDA 12.9 runtime and cuDSS, and
+# the apt cuDSS the SCS build uses shadows them (its barrier QP path then fails
+# inside cudssMatrixCreateCsr).
+cuopt_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
+    .pip_install(*HARNESS_PKGS, "scs", "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -108,6 +121,11 @@ def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
+@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600)
+def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
+    return _run(campaign, name, config_yaml)
+
+
 @app.function(image=cpu_image, cpu=2.0)
 def probe_cpu() -> str:
     import platform, scs, numpy as np, scipy.sparse as sp
@@ -125,17 +143,79 @@ def probe_gpu() -> str:
     return f"{gpu} scs {scs.__version__} backend: {info['lin_sys_solver']}"
 
 
+@app.function(image=cuopt_image, gpu="A100-80GB", cpu=8.0, timeout=900)
+def probe_cuopt() -> str:
+    """Check the cuOpt API on the installed version: parameter names, the
+    termination enum, the QP objective convention and the dual sign."""
+    import numpy as np, scipy.sparse as sp, importlib.metadata as md
+    from cuopt.linear_programming import data_model, solver, solver_settings
+    from solver_benchmarks.analysis import kkt
+    out = [f"cuopt version: {md.version('cuopt-cu12')}"]
+    ss = solver_settings.SolverSettings()
+    out.append("SolverSettings methods: " + ", ".join(a for a in dir(ss) if not a.startswith('_'))[:700])
+    names = None
+    for getter in ("get_parameter_names", "parameter_names", "get_all_parameter_names"):
+        if hasattr(ss, getter):
+            try: names = getattr(ss, getter)(); break
+            except Exception as e: out.append(f"{getter} failed: {e}")
+    mod = solver_settings.solver_settings if hasattr(solver_settings, "solver_settings") else solver_settings
+    consts = [a for a in dir(mod) if a.startswith("CUOPT_")]
+    out.append(f"param names via getter: {names}")
+    for getter in ("toDict", "settings_dict"):
+        if hasattr(ss, getter):
+            try:
+                val = getattr(ss, getter)
+                val = val() if callable(val) else val
+                out.append(f"{getter}: {val}"[:900]); break
+            except Exception as e: out.append(f"{getter} failed: {e}")
+    out.append("CUOPT_* constants: " + ", ".join(consts)[:900])
+    # min 1/2 x'Px + q'x  s.t. l <= A x <= u, with P = diag(2, 4): solution x = -P^{-1} q if interior
+    P = sp.csc_matrix(np.diag([2.0, 4.0])); q = np.array([-2.0, -4.0]); A = sp.csr_matrix(np.eye(2))
+    l = np.array([-10.0, -10.0]); u = np.array([10.0, 10.0])
+    for scale, label in [(0.5, "Q = P/2"), (1.0, "Q = P")]:
+        m = data_model.DataModel()
+        m.set_csr_constraint_matrix(A.data, A.indices.astype(np.int32), A.indptr.astype(np.int32))
+        m.set_constraint_lower_bounds(l); m.set_constraint_upper_bounds(u)
+        m.set_objective_coefficients(q)
+        m.set_variable_lower_bounds(np.full(2, -np.inf)); m.set_variable_upper_bounds(np.full(2, np.inf))
+        Q = sp.csr_matrix(P * scale)
+        m.set_quadratic_objective_matrix(Q.data, Q.indices.astype(np.int32), Q.indptr.astype(np.int32))
+        s = solver_settings.SolverSettings(); s.set_optimality_tolerance(1e-8)
+        sol = solver.Solve(m, s)
+        x = np.asarray(sol.get_primal_solution()); y = np.asarray(sol.get_dual_solution())
+        term = sol.get_termination_status()
+        out.append(f"{label}: x={np.round(x,4).tolist()} (expect [1,1] for the harness objective) term={term!r} name={getattr(term,'name',None)} obj={sol.get_primal_objective()}")
+    # dual sign on an LP with an active constraint: min x s.t. 1 <= x <= 10
+    m = data_model.DataModel()
+    A = sp.csr_matrix(np.eye(1)); m.set_csr_constraint_matrix(A.data, A.indices.astype(np.int32), A.indptr.astype(np.int32))
+    m.set_constraint_lower_bounds(np.array([1.0])); m.set_constraint_upper_bounds(np.array([10.0]))
+    m.set_objective_coefficients(np.array([1.0]))
+    m.set_variable_lower_bounds(np.array([-np.inf])); m.set_variable_upper_bounds(np.array([np.inf]))
+    s = solver_settings.SolverSettings(); s.set_optimality_tolerance(1e-8)
+    sol = solver.Solve(m, s); x = np.asarray(sol.get_primal_solution()); y = np.asarray(sol.get_dual_solution())
+    r_plus = kkt.qp_residuals(sp.csc_matrix((1,1)), np.array([1.0]), sp.csc_matrix(A), np.array([1.0]), np.array([10.0]), x, y)
+    r_minus = kkt.qp_residuals(sp.csc_matrix((1,1)), np.array([1.0]), sp.csc_matrix(A), np.array([1.0]), np.array([10.0]), x, -y)
+    out.append(f"LP x={x.tolist()} y={y.tolist()} dual_res(+y)={r_plus['dual_res_rel']:.2e} dual_res(-y)={r_minus['dual_res_rel']:.2e}")
+    out.append("termination type: " + str(type(sol.get_termination_status())) + " dir: " + ", ".join(a for a in dir(sol.get_termination_status()) if not a.startswith('_'))[:300])
+    return "\n".join(out)
+
+
 @app.local_entrypoint()
-def main(campaign: str = "", spec: str = "", only: str = "", probe: bool = False):
+def main(campaign: str = "", spec: str = "", only: str = "", exclude: str = "", probe: bool = False, probe_cuopt_only: bool = False):
     if probe:
-        print(probe_cpu.remote()); print(probe_gpu.remote()); return
+        print(probe_cpu.remote()); print(probe_gpu.remote()); print(probe_cuopt.remote()); return
+    if probe_cuopt_only:
+        print(probe_cuopt.remote()); return
     shards = json.loads(Path(spec).read_text())
     if only:
         shards = [s for s in shards if only in s["name"]]
+    if exclude:
+        shards = [s for s in shards if exclude not in s["name"]]
+    runners = {"cpu": run_shard_cpu, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
     calls = []
     for s in shards:
-        fn = run_shard_gpu if s["gpu"] else run_shard_cpu
-        calls.append(fn.spawn(campaign, s["name"], Path(s["config"]).read_text()))
+        kind = s.get("runner") or ("gpu" if s["gpu"] else "cpu")
+        calls.append(runners[kind].spawn(campaign, s["name"], Path(s["config"]).read_text()))
     print(f"launched {len(calls)} shards ({sum(1 for s in shards if s['gpu'])} GPU) for campaign {campaign!r}")
     for call in calls:
         r = call.get()

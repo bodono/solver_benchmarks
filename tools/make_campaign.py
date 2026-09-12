@@ -74,6 +74,12 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"proxqp_{tag}", "solver": "proxqp",
              "settings": {"eps_abs": t, "eps_rel": t, "max_iter": 1_000_000, "time_limit": timeout}, "gpu": False}
         )
+    if family in ("qp", "lp"):
+        # NVIDIA cuOpt: GPU PDLP for LP, GPU barrier for QP; the like-for-like GPU comparator.
+        variants.append(
+            {"id": f"cuopt_{tag}", "solver": "cuopt",
+             "settings": {"eps": t, "time_limit": timeout}, "gpu": True, "runner": "cuopt"}
+        )
     if family == "lp":
         variants.append(
             {"id": f"pdlp_{tag}", "solver": "pdlp",
@@ -90,7 +96,7 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
 
 
 def shard_config(family: str, dataset: dict, variant: dict, timeout: float) -> dict:
-    solver = {k: v for k, v in variant.items() if k != "gpu"}
+    solver = {k: v for k, v in variant.items() if k not in ("gpu", "runner")}
     return {
         "run": {
             "name": f"{family}_{dataset['id']}_{variant['id']}",
@@ -129,6 +135,7 @@ def main() -> None:
                     path.write_text(yaml.safe_dump(cfg, sort_keys=False))
                     shards.append({"name": name, "family": family, "dataset": dataset["id"],
                                    "solver_id": variant["id"], "tol": tol, "gpu": variant["gpu"],
+                                   "runner": variant.get("runner", "gpu" if variant["gpu"] else "cpu"),
                                    "config": str(path)})
     spec = args.out_dir / "campaign.json"
     spec.write_text(json.dumps(shards, indent=2))
