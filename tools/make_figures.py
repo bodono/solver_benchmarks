@@ -30,7 +30,7 @@ FAMILY_TITLES = {"qp": "Quadratic programs", "lp": "Linear programs", "sdp": "Se
 SOLVER_LABELS = {
     "scs_cpu": "SCS (CPU, MKL Pardiso)",
     "scs_cudss": "SCS (GPU, cuDSS)",
-    "cuopt": "cuOpt (GPU, PDLP)",
+    "cuopt": "cuOpt (GPU)",
     "osqp": "OSQP", "clarabel": "Clarabel", "piqp": "PIQP", "proxqp": "ProxQP",
     "highs": "HiGHS", "pdlp": "PDLP (OR-Tools)", "cvxopt": "CVXOPT", "sdpa": "SDPA",
 }
@@ -48,9 +48,12 @@ def solver_tol(solver_id: str) -> str | None:
 
 
 def problem_size(df: pd.DataFrame) -> pd.Series:
-    nnz_a = pd.to_numeric(df.get("metadata.nnz_a"), errors="coerce").fillna(0)
-    nnz_p = pd.to_numeric(df.get("metadata.nnz_p"), errors="coerce").fillna(0)
-    return nnz_a + nnz_p
+    def col(name: str) -> pd.Series:
+        if name not in df.columns:
+            return pd.Series(0.0, index=df.index)
+        return pd.to_numeric(df[name], errors="coerce").fillna(0)
+
+    return col("metadata.nnz_a") + col("metadata.nnz_p")
 
 
 def largest_quartile(df: pd.DataFrame) -> pd.DataFrame:
@@ -68,8 +71,16 @@ def style_for(solver_id: str, i: int):
     return OTHER_COLORS[i % len(OTHER_COLORS)], "--", 1.6
 
 
+TIME_FLOOR = 0.01
+TAU_MAX = 1.0e4
+
+
 def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
-    prof = performance_profile(df, metric="run_time_seconds")
+    # Failures count as "never solved" (infinite ratio), a 10 ms floor keeps
+    # sub-millisecond timings from producing meaningless ratios, and the
+    # tau axis is capped at 1e4.
+    df = df.assign(run_time_seconds=df["run_time_seconds"].clip(lower=TIME_FLOOR))
+    prof = performance_profile(df, metric="run_time_seconds", max_value=float("inf"), tau_max=TAU_MAX)
     if prof.empty:
         return
     fig, ax = plt.subplots(figsize=(7.2, 4.6))
@@ -84,7 +95,7 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     ax.set_ylim(0, 1.0)
     ax.set_xlabel("time ratio to fastest solver, τ")
     ax.set_ylabel("fraction of problems solved within τ")
-    ax.set_title(title)
+    ax.set_title(title, fontsize=11)
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
     fig.tight_layout()
@@ -103,7 +114,7 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
     ax.barh([SOLVER_LABELS.get(base_solver(s), base_solver(s)) for s in gm["solver_id"]], gm[value_col], color=colors)
     ax.set_xscale("log")
     ax.set_xlabel("shifted geometric mean of solve time (s), failures penalised")
-    ax.set_title(title)
+    ax.set_title(title, fontsize=10)
     ax.invert_yaxis()
     ax.grid(True, axis="x", which="both", alpha=0.3)
     fig.tight_layout()
