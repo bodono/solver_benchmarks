@@ -85,12 +85,13 @@ cuopt_image = (
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
-# PDLP (OR-Tools) cannot be imported in a process that also has highspy's
-# Linux wheel loaded, so it gets an image with everything except highspy.
+# OR-Tools 9.15 and highspy 1.15 cannot be loaded in one Linux process, and
+# the harness's MPS reader needs highspy, so the PDLP image pins highspy 1.11,
+# which was verified to coexist with OR-Tools 9.15 (tools/pair probe).
 pdlp_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "ortools", "scs")
+    .pip_install(*HARNESS_PKGS, "ortools==9.15.6755", "highspy==1.11.0", "scs")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
