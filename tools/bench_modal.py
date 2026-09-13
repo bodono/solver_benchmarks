@@ -80,7 +80,17 @@ gpu_image = (
 cuopt_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "scs", "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
+    .run_commands("pip install --no-deps -e /root/repo")
+)
+
+# PDLP (OR-Tools) cannot be imported in a process that also has highspy's
+# Linux wheel loaded, so it gets an image with everything except highspy.
+pdlp_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
+    .pip_install(*HARNESS_PKGS, "ortools", "scs")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -134,6 +144,11 @@ def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
 
 @app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=20 * 3600, max_containers=1)
 def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
+    return _run(campaign, name, config_yaml)
+
+
+@app.function(image=pdlp_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=20 * 3600, max_containers=8)
+def run_shard_pdlp(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
@@ -217,8 +232,8 @@ def probe_cuopt() -> str:
 #   CPU shard: 4 cores x $0.135 + 16 GiB x $0.024  ~ $0.92/h
 #   GPU shard: A100-80GB $2.50 + 8 cores x $0.135 + 32 GiB x $0.024 ~ $4.35/h
 #   big CPU shard: 4 cores x $0.135 + 64 GiB x $0.024 ~ $2.08/h
-RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "gpu": 4.35 * 1.2, "cuopt": 4.35 * 1.2}
-MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 4, "gpu": 2, "cuopt": 1}
+RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 0.92 * 1.2, "gpu": 4.35 * 1.2, "cuopt": 4.35 * 1.2}
+MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 4, "pdlp": 8, "gpu": 2, "cuopt": 1}
 
 
 @app.local_entrypoint()
@@ -254,7 +269,7 @@ def main(
         s["kind"] = s.get("runner") or ("gpu" if s["gpu"] else "cpu")
         if s["kind"] == "cpu" and (cpu_kind != "cpu" or s["name"] in big_set):
             s["kind"] = "cpu_big" if s["name"] in big_set else cpu_kind
-    runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
+    runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "pdlp": run_shard_pdlp, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
     pending = deque(shards)
     running: dict = {}  # call -> (shard, start)
     spent = 0.0

@@ -83,7 +83,7 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     if family == "lp":
         variants.append(
             {"id": f"pdlp_{tag}", "solver": "pdlp",
-             "settings": {"eps_abs": t, "eps_rel": t, "solver_time_limit_sec": timeout}, "gpu": False}
+             "settings": {"eps_abs": t, "eps_rel": t, "solver_time_limit_sec": timeout}, "gpu": False, "runner": "pdlp"}
         )
     if family == "sdp":
         variants += [
