@@ -1,0 +1,16 @@
+run:
+  name: sdp_sdplib_cvxopt_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: sdplib
+    id: sdplib
+solvers:
+- id: cvxopt_1e-4
+  solver: cvxopt
+  settings:
+    abstol: 0.0001
+    reltol: 0.0001
+    feastol: 0.0001

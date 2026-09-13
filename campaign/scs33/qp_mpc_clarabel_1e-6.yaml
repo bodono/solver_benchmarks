@@ -1,0 +1,19 @@
+run:
+  name: qp_mpc_clarabel_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: mpc_qpbenchmark
+    id: mpc
+    dataset_options:
+      subset: all
+solvers:
+- id: clarabel_1e-6
+  solver: clarabel
+  settings:
+    tol_feas: 1.0e-06
+    tol_gap_abs: 1.0e-06
+    tol_gap_rel: 1.0e-06
+    time_limit: 300.0

@@ -1,0 +1,18 @@
+run:
+  name: lp_miplib_relax_highs_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    dataset_options:
+      max_size_mb: 20
+solvers:
+- id: highs_1e-6
+  solver: highs
+  settings:
+    primal_feasibility_tolerance: 1.0e-06
+    dual_feasibility_tolerance: 1.0e-06
+    time_limit: 300.0

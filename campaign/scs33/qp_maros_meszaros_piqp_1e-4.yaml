@@ -1,0 +1,17 @@
+run:
+  name: qp_maros_meszaros_piqp_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: maros_meszaros
+    id: maros_meszaros
+solvers:
+- id: piqp_1e-4
+  solver: piqp
+  settings:
+    eps_abs: 0.0001
+    eps_rel: 0.0001
+    max_iter: 1000000
+    time_limit: 300.0

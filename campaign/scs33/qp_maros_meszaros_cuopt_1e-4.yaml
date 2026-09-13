@@ -1,0 +1,15 @@
+run:
+  name: qp_maros_meszaros_cuopt_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: maros_meszaros
+    id: maros_meszaros
+solvers:
+- id: cuopt_1e-4
+  solver: cuopt
+  settings:
+    eps: 0.0001
+    time_limit: 300.0

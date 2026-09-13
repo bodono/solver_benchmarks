@@ -1,0 +1,19 @@
+run:
+  name: qp_mpc_osqp_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: mpc_qpbenchmark
+    id: mpc
+    dataset_options:
+      subset: all
+solvers:
+- id: osqp_1e-4
+  solver: osqp
+  settings:
+    eps_abs: 0.0001
+    eps_rel: 0.0001
+    max_iter: 1000000
+    time_limit: 300.0

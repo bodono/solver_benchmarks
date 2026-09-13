@@ -1,0 +1,17 @@
+run:
+  name: lp_kennington_piqp_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: kennington
+    id: kennington
+solvers:
+- id: piqp_1e-6
+  solver: piqp
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iter: 1000000
+    time_limit: 300.0

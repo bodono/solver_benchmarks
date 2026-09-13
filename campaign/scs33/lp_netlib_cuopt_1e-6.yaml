@@ -1,0 +1,17 @@
+run:
+  name: lp_netlib_cuopt_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: netlib
+    id: netlib
+    dataset_options:
+      subset: feasible
+solvers:
+- id: cuopt_1e-6
+  solver: cuopt
+  settings:
+    eps: 1.0e-06
+    time_limit: 300.0

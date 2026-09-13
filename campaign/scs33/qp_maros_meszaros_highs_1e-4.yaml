@@ -1,0 +1,16 @@
+run:
+  name: qp_maros_meszaros_highs_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: maros_meszaros
+    id: maros_meszaros
+solvers:
+- id: highs_1e-4
+  solver: highs
+  settings:
+    primal_feasibility_tolerance: 0.0001
+    dual_feasibility_tolerance: 0.0001
+    time_limit: 300.0

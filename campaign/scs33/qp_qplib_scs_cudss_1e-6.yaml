@@ -1,0 +1,20 @@
+run:
+  name: qp_qplib_scs_cudss_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: qplib
+    id: qplib
+    dataset_options:
+      subset: all
+solvers:
+- id: scs_cudss_1e-6
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    time_limit_secs: 300.0
+    linear_solver: cudss
