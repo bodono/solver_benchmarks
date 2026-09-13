@@ -115,24 +115,24 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     return {"name": name, "exit": proc.returncode, "rows": rows, "seconds": round(time.time() - t0, 1)}
 
 
-@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=8 * 3600, max_containers=16)
+@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=20 * 3600, max_containers=16)
 def run_shard_cpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
 # For shards that die at the 16 GiB limit (interior-point solvers on the large
 # SDPLIB instances): same image, four times the memory, fewer at a time.
-@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=8 * 3600, max_containers=4)
+@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=4)
 def run_shard_cpu_big(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600, max_containers=2)
+@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=20 * 3600, max_containers=2)
 def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=8 * 3600, max_containers=1)
+@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=20 * 3600, max_containers=1)
 def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
@@ -227,6 +227,8 @@ def main(
     spec: str = "",
     only: str = "",
     exclude: str = "",
+    names: str = "",
+    big: str = "",
     budget_usd: float = 300.0,
     cpu_kind: str = "cpu",
     probe: bool = False,
@@ -244,10 +246,14 @@ def main(
         shards = [s for s in shards if only in s["name"]]
     if exclude:
         shards = [s for s in shards if exclude not in s["name"]]
+    if names:
+        wanted = [n.strip() for n in names.split(",") if n.strip()]
+        shards = [s for s in shards if s["name"] in wanted]
+    big_set = {n.strip() for n in big.split(",") if n.strip()}
     for s in shards:
         s["kind"] = s.get("runner") or ("gpu" if s["gpu"] else "cpu")
-        if s["kind"] == "cpu" and cpu_kind != "cpu":
-            s["kind"] = cpu_kind  # e.g. --cpu-kind cpu_big to re-run shards that ran out of memory
+        if s["kind"] == "cpu" and (cpu_kind != "cpu" or s["name"] in big_set):
+            s["kind"] = "cpu_big" if s["name"] in big_set else cpu_kind
     runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
     pending = deque(shards)
     running: dict = {}  # call -> (shard, start)
