@@ -95,8 +95,26 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     return variants
 
 
+# Instances a solver cannot attempt at all, counted as failures for it. Clarabel
+# forms a dense scaling block per PSD cone, which for a block of side >= 500 is
+# hundreds of GiB; the process dies rather than reporting a failure, taking the
+# rest of the shard with it.
+LARGE_PSD_BLOCKS = [
+    "equalG11", "equalG51", "maxG11", "maxG32", "maxG51", "maxG55", "maxG60",
+    "thetaG11", "thetaG51", "gpp500-1", "gpp500-2", "gpp500-3", "gpp500-4",
+    "mcp500-1", "mcp500-2", "mcp500-3", "mcp500-4", "qpG11", "qpG51",
+]
+SOLVER_DATASET_EXCLUDE = {
+    ("clarabel", "sdplib"): LARGE_PSD_BLOCKS,
+    ("clarabel", "mittelmann_sdp"): ["G40mc"],
+}
+
+
 def shard_config(family: str, dataset: dict, variant: dict, timeout: float) -> dict:
     solver = {k: v for k, v in variant.items() if k not in ("gpu", "runner")}
+    excluded = SOLVER_DATASET_EXCLUDE.get((variant["solver"], dataset["id"]))
+    if excluded:
+        dataset = {**dataset, "exclude": list(excluded)}
     return {
         "run": {
             "name": f"{family}_{dataset['id']}_{variant['id']}",
