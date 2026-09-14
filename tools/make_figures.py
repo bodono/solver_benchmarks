@@ -26,7 +26,8 @@ import pandas as pd
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 
-FAMILY_TITLES = {"qp": "Quadratic programs", "lp": "Linear programs", "sdp": "Semidefinite programs"}
+FAMILY_TITLES = {"qp": "Quadratic programs", "lp": "Linear programs", "sdp": "Semidefinite programs",
+                 "lpbig": "Mittelmann LP benchmark set"}
 SOLVER_LABELS = {
     "scs_cpu": "SCS (CPU, MKL Pardiso)",
     "scs_cudss": "SCS (GPU, cuDSS)",

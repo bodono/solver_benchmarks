@@ -133,22 +133,22 @@ def run_shard_cpu(campaign: str, name: str, config_yaml: str) -> dict:
 
 # For shards that die at the 16 GiB limit (interior-point solvers on the large
 # SDPLIB instances): same image, four times the memory, fewer at a time.
-@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=4)
+@app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
 def run_shard_cpu_big(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=20 * 3600, max_containers=2)
+@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=2)
 def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=32768, timeout=20 * 3600, max_containers=1)
+@app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=1)
 def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=pdlp_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=20 * 3600, max_containers=8)
+@app.function(image=pdlp_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
 def run_shard_pdlp(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
@@ -231,10 +231,10 @@ def probe_cuopt() -> str:
 # top. Check against https://modal.com/pricing; the workspace spending limit
 # in the Modal dashboard is the true hard stop, this guard is an estimate.
 #   CPU shard: 4 cores x $0.135 + 16 GiB x $0.024  ~ $0.92/h
-#   GPU shard: A100-80GB $2.50 + 8 cores x $0.135 + 32 GiB x $0.024 ~ $4.35/h
-#   big CPU shard: 4 cores x $0.135 + 64 GiB x $0.024 ~ $2.08/h
-RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 0.92 * 1.2, "gpu": 4.35 * 1.2, "cuopt": 4.35 * 1.2}
-MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 4, "pdlp": 8, "gpu": 2, "cuopt": 1}
+#   GPU shard: A100-80GB $2.50 + 8 cores x $0.135 + 64 GiB x $0.024 ~ $5.12/h
+#   big CPU shard (also the PDLP shard): 4 cores x $0.135 + 64 GiB x $0.024 ~ $2.08/h
+RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, "gpu": 5.12 * 1.2, "cuopt": 5.12 * 1.2}
+MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 8, "pdlp": 8, "gpu": 2, "cuopt": 1}
 
 
 @app.local_entrypoint()

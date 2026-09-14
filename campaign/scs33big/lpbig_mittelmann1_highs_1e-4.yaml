@@ -1,0 +1,29 @@
+run:
+  name: lpbig_mittelmann1_highs_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 1860.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann1
+    include:
+    - Primal2_1000
+    - bharat
+    - datt256_lp
+    - dlr1
+    - dlr2
+    - irish-electricity
+    - neos-5052403-cygnet
+    - physiciansched3-3
+    - s100
+    - supportcase10
+    - thk_63
+    - tpl-tub-ws1617
+solvers:
+- id: highs_1e-4
+  solver: highs
+  settings:
+    primal_feasibility_tolerance: 0.0001
+    dual_feasibility_tolerance: 0.0001
+    time_limit: 1800.0

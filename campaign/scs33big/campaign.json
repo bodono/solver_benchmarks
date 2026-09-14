@@ -1,0 +1,212 @@
+[
+  {
+    "name": "lpbig_mittelmann0_scs_cpu_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "scs_cpu_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann0_scs_cpu_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_scs_cudss_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "scs_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33big/lpbig_mittelmann0_scs_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_clarabel_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "clarabel_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann0_clarabel_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_piqp_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "piqp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann0_piqp_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_highs_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "highs_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann0_highs_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_cuopt_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "cuopt_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33big/lpbig_mittelmann0_cuopt_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_pdlp_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "pdlp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33big/lpbig_mittelmann0_pdlp_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_scs_cpu_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "scs_cpu_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann1_scs_cpu_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_scs_cudss_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "scs_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33big/lpbig_mittelmann1_scs_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_clarabel_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "clarabel_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann1_clarabel_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_piqp_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "piqp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann1_piqp_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_highs_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "highs_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann1_highs_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_cuopt_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "cuopt_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33big/lpbig_mittelmann1_cuopt_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_pdlp_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "pdlp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33big/lpbig_mittelmann1_pdlp_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_scs_cpu_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "scs_cpu_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann2_scs_cpu_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_scs_cudss_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "scs_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33big/lpbig_mittelmann2_scs_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_clarabel_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "clarabel_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann2_clarabel_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_piqp_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "piqp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann2_piqp_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_highs_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "highs_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big/lpbig_mittelmann2_highs_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_cuopt_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "cuopt_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33big/lpbig_mittelmann2_cuopt_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_pdlp_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "pdlp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33big/lpbig_mittelmann2_pdlp_1e-4.yaml"
+  }
+]

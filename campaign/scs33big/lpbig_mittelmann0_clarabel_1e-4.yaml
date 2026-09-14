@@ -1,0 +1,31 @@
+run:
+  name: lpbig_mittelmann0_clarabel_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 1860.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann0
+    include:
+    - Dual2_5000
+    - a2864
+    - bdry2
+    - chromaticindex1024-7
+    - ex10
+    - fhnw-binschedule1
+    - graph40-40
+    - neos-3025225
+    - neos-5251015
+    - qap15
+    - scpm1
+    - supportcase19
+    - thk_48
+solvers:
+- id: clarabel_1e-4
+  solver: clarabel
+  settings:
+    tol_feas: 0.0001
+    tol_gap_abs: 0.0001
+    tol_gap_rel: 0.0001
+    time_limit: 1800.0

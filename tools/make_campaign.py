@@ -19,6 +19,21 @@ import yaml
 
 QP_LP_TIMEOUT = 300.0
 SDP_TIMEOUT = 900.0
+LPBIG_TIMEOUT = 1800.0
+
+# Mittelmann LP benchmark set (plato.asu.edu/ftp/lptestset), largest first by
+# download size, dealt round-robin into three chunks so that no shard can run
+# longer than ~13 x (LPBIG_TIMEOUT + 60 s) and every chunk carries a mix of
+# large and small instances.
+MITTELMANN_LP = [
+    "Dual2_5000", "dlr2", "L2CTA3D", "thk_48", "thk_63", "set-cover-model", "a2864", "dlr1",
+    "L1_sixm1000obs", "fhnw-binschedule1", "tpl-tub-ws1617", "s82", "scpm1", "Primal2_1000",
+    "square41", "supportcase19", "bharat", "L1_sixm250obs", "neos-3025225", "neos-5052403-cygnet",
+    "woodlands09", "neos-5251015", "s100", "savsched1", "graph40-40", "datt256_lp", "s250r10",
+    "ex10", "physiciansched3-3", "rmine15", "bdry2", "supportcase10", "Linf_520c",
+    "chromaticindex1024-7", "irish-electricity", "brazil3", "qap15",
+]
+MITTELMANN_CHUNKS = [sorted(MITTELMANN_LP[i::3]) for i in range(3)]
 
 # Datasets per family. `id` is the result-table label; options select subsets.
 FAMILIES: dict[str, list[dict]] = {
@@ -36,6 +51,11 @@ FAMILIES: dict[str, list[dict]] = {
     "sdp": [
         {"name": "sdplib", "id": "sdplib"},
         {"name": "mittelmann_sdp", "id": "mittelmann_sdp", "dataset_options": {"subset": "all"}},
+    ],
+    # Large LPs, 1e-4 only, 1800 s limit, 64 GB containers (see bench_modal --cpu-kind cpu_big).
+    "lpbig": [
+        {"name": "mittelmann", "id": f"mittelmann{k}", "include": chunk}
+        for k, chunk in enumerate(MITTELMANN_CHUNKS)
     ],
 }
 
@@ -56,10 +76,15 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
         {"id": f"clarabel_{tag}", "solver": "clarabel",
          "settings": {"tol_feas": t, "tol_gap_abs": t, "tol_gap_rel": t, "time_limit": timeout}, "gpu": False},
     ]
+    if family == "lpbig":
+        pass
     if family in ("qp", "lp"):
         variants += [
             {"id": f"osqp_{tag}", "solver": "osqp",
              "settings": {"eps_abs": t, "eps_rel": t, "max_iter": 1_000_000, "time_limit": timeout}, "gpu": False},
+        ]
+    if family in ("qp", "lp", "lpbig"):
+        variants += [
             {"id": f"piqp_{tag}", "solver": "piqp",
              "settings": {"eps_abs": t, "eps_rel": t, "max_iter": 1_000_000, "time_limit": timeout}, "gpu": False},
             {"id": f"highs_{tag}", "solver": "highs",
@@ -74,13 +99,13 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"proxqp_{tag}", "solver": "proxqp",
              "settings": {"eps_abs": t, "eps_rel": t, "max_iter": 1_000_000, "time_limit": timeout}, "gpu": False}
         )
-    if family in ("qp", "lp"):
+    if family in ("qp", "lp", "lpbig"):
         # NVIDIA cuOpt: GPU PDLP for LP, GPU barrier for QP; the like-for-like GPU comparator.
         variants.append(
             {"id": f"cuopt_{tag}", "solver": "cuopt",
              "settings": {"eps": t, "time_limit": timeout}, "gpu": True, "runner": "cuopt"}
         )
-    if family == "lp":
+    if family in ("lp", "lpbig"):
         variants.append(
             {"id": f"pdlp_{tag}", "solver": "pdlp",
              "settings": {"eps_abs": t, "eps_rel": t, "solver_time_limit_sec": timeout}, "gpu": False, "runner": "pdlp"}
@@ -139,7 +164,7 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     shards = []
     for family in args.families.split(","):
-        timeout = SDP_TIMEOUT if family == "sdp" else QP_LP_TIMEOUT
+        timeout = {"sdp": SDP_TIMEOUT, "lpbig": LPBIG_TIMEOUT}.get(family, QP_LP_TIMEOUT)
         for dataset in FAMILIES[family]:
             if args.only_dataset and args.only_dataset not in dataset["id"]:
                 continue
