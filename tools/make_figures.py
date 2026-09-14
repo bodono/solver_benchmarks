@@ -114,6 +114,7 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
     colors = [SCS_STYLE[base_solver(s)][0] if base_solver(s) in SCS_STYLE else "#9e9e9e" for s in gm["solver_id"]]
     ax.barh([SOLVER_LABELS.get(base_solver(s), base_solver(s)) for s in gm["solver_id"]], gm[value_col], color=colors)
     ax.set_xscale("log")
+    ax.set_xlim(left=float(gm[value_col].min()) / 2.0)
     ax.set_xlabel("shifted geometric mean of solve time (s), failures penalised")
     ax.set_title(title, fontsize=10)
     ax.invert_yaxis()
