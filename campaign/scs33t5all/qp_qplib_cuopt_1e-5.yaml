@@ -1,0 +1,17 @@
+run:
+  name: qp_qplib_cuopt_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: qplib
+    id: qplib
+    dataset_options:
+      subset: all
+solvers:
+- id: cuopt_1e-5
+  solver: cuopt
+  settings:
+    eps: 1.0e-05
+    time_limit: 300.0

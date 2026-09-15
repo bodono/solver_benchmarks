@@ -1,0 +1,18 @@
+run:
+  name: lp_miplib_relax_pdlp_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    dataset_options:
+      max_size_mb: 20
+solvers:
+- id: pdlp_1e-5
+  solver: pdlp
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    solver_time_limit_sec: 300.0

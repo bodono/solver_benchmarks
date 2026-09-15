@@ -1,0 +1,18 @@
+run:
+  name: lp_netlib_pdlp_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: netlib
+    id: netlib
+    dataset_options:
+      subset: feasible
+solvers:
+- id: pdlp_1e-5
+  solver: pdlp
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    solver_time_limit_sec: 300.0

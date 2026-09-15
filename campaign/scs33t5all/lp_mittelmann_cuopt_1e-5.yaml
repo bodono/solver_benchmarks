@@ -1,0 +1,15 @@
+run:
+  name: lp_mittelmann_cuopt_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann
+solvers:
+- id: cuopt_1e-5
+  solver: cuopt
+  settings:
+    eps: 1.0e-05
+    time_limit: 300.0

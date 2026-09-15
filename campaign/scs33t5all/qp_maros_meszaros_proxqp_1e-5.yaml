@@ -1,0 +1,17 @@
+run:
+  name: qp_maros_meszaros_proxqp_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: maros_meszaros
+    id: maros_meszaros
+solvers:
+- id: proxqp_1e-5
+  solver: proxqp
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    max_iter: 1000000
+    time_limit: 300.0

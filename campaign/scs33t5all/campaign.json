@@ -1,0 +1,292 @@
+[
+  {
+    "name": "qp_maros_meszaros_scs_cudss_1e-5",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/qp_maros_meszaros_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_osqp_1e-5",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "osqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/qp_maros_meszaros_osqp_1e-5.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_proxqp_1e-5",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "proxqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/qp_maros_meszaros_proxqp_1e-5.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_cuopt_1e-5",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/qp_maros_meszaros_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "qp_qplib_scs_cudss_1e-5",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/qp_qplib_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "qp_qplib_osqp_1e-5",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "osqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/qp_qplib_osqp_1e-5.yaml"
+  },
+  {
+    "name": "qp_qplib_proxqp_1e-5",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "proxqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/qp_qplib_proxqp_1e-5.yaml"
+  },
+  {
+    "name": "qp_qplib_cuopt_1e-5",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/qp_qplib_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lp_netlib_scs_cudss_1e-5",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/lp_netlib_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lp_netlib_osqp_1e-5",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "osqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/lp_netlib_osqp_1e-5.yaml"
+  },
+  {
+    "name": "lp_netlib_cuopt_1e-5",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/lp_netlib_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lp_netlib_pdlp_1e-5",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33t5all/lp_netlib_pdlp_1e-5.yaml"
+  },
+  {
+    "name": "lp_kennington_scs_cudss_1e-5",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/lp_kennington_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lp_kennington_osqp_1e-5",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "osqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/lp_kennington_osqp_1e-5.yaml"
+  },
+  {
+    "name": "lp_kennington_cuopt_1e-5",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/lp_kennington_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lp_kennington_pdlp_1e-5",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33t5all/lp_kennington_pdlp_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cudss_1e-5",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/lp_miplib_relax_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_osqp_1e-5",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "osqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5all/lp_miplib_relax_osqp_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_cuopt_1e-5",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/lp_miplib_relax_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_pdlp_1e-5",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33t5all/lp_miplib_relax_pdlp_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_scs_cudss_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/lpbig_mittelmann0_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_cuopt_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/lpbig_mittelmann0_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_pdlp_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33t5all/lpbig_mittelmann0_pdlp_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_scs_cudss_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/lpbig_mittelmann1_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_cuopt_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/lpbig_mittelmann1_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_pdlp_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33t5all/lpbig_mittelmann1_pdlp_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_scs_cudss_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33t5all/lpbig_mittelmann2_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_cuopt_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33t5all/lpbig_mittelmann2_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_pdlp_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33t5all/lpbig_mittelmann2_pdlp_1e-5.yaml"
+  }
+]

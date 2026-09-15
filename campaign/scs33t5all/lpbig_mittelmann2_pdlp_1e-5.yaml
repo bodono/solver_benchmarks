@@ -1,0 +1,29 @@
+run:
+  name: lpbig_mittelmann2_pdlp_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 1860.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann2
+    include:
+    - L1_sixm1000obs
+    - L1_sixm250obs
+    - L2CTA3D
+    - Linf_520c
+    - brazil3
+    - rmine15
+    - s250r10
+    - s82
+    - savsched1
+    - set-cover-model
+    - square41
+    - woodlands09
+solvers:
+- id: pdlp_1e-5
+  solver: pdlp
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    solver_time_limit_sec: 1800.0

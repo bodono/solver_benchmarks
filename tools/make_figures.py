@@ -267,8 +267,16 @@ def main() -> None:
             sub = df[df["solver_id"].str.endswith(f"_{tag}")]
             LABEL_OVERRIDE.clear()
             for solver, run_tag in use_run.items():
+                # Use the requested run; if this family lacks it, fall back to the
+                # tightest run that exists (interior-point solvers overshoot anyway).
                 alt = df[df["solver_id"] == f"{solver}_{run_tag}"]
-                if run_tag == tag or alt.empty:  # no such run for this family: keep the plot's own run
+                if alt.empty:
+                    for fallback in ("1e-6", "1e-5", "1e-4"):
+                        alt = df[df["solver_id"] == f"{solver}_{fallback}"]
+                        if not alt.empty:
+                            run_tag = fallback
+                            break
+                if run_tag == tag or alt.empty:
                     continue
                 sub = pd.concat([sub[sub["solver_id"] != f"{solver}_{tag}"], alt.assign(solver_id=f"{solver}_{tag}")],
                                 ignore_index=True)
@@ -282,7 +290,7 @@ def main() -> None:
             title_big = f"{sets_title(family, big)}, largest quartile ({n_big} problems), tolerance {tag}"
             plot_profile(big, title_big, args.out_dir / f"{family}_{tag}_profile_largest.png")
             gm_big = plot_geomean(big, title_big, args.out_dir / f"{family}_{tag}_geomean_largest.png")
-            if tag == "1e-4":
+            if tag == (args.tol_tag or "1e-4"):
                 frames[(family, "all")] = (sub, title, dict(LABEL_OVERRIDE))
                 frames[(family, "largest")] = (big, title_big, dict(LABEL_OVERRIDE))
             for label, table in (("all", gm), ("largest", gm_big)):

@@ -1,0 +1,19 @@
+run:
+  name: qp_qplib_osqp_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: qplib
+    id: qplib
+    dataset_options:
+      subset: all
+solvers:
+- id: osqp_1e-5
+  solver: osqp
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    max_iter: 1000000
+    time_limit: 300.0
