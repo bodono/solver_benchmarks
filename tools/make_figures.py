@@ -20,6 +20,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
 
@@ -138,18 +139,39 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
     if gm.empty:
         return gm
     value_col = "run_time_seconds"  # shifted_geomean names its value column after the metric
-    gm = gm.sort_values(value_col)
-    fig, ax = plt.subplots(figsize=(7.2, 3.8))
-    colors = [SCS_STYLE[base_solver(s)][0] if base_solver(s) in SCS_STYLE else "#9e9e9e" for s in gm["solver_id"]]
-    ax.barh([solver_label(s) for s in gm["solver_id"]], gm[value_col], color=colors)
+    gm = gm.sort_values(value_col).reset_index(drop=True)
+    n_problems = df.groupby(["dataset", "problem"]).ngroups
+    fig, ax = plt.subplots(figsize=(8.0, 0.42 * len(gm) + 1.6))
+    labels = [solver_label(s) for s in gm["solver_id"]]
+    is_scs = [base_solver(s) in SCS_STYLE for s in gm["solver_id"]]
+    colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs)]
+    edges = [SCS_STYLE[base_solver(s)][0] if scs else "#9a9a9a" for s, scs in zip(gm["solver_id"], is_scs)]
+    y = np.arange(len(gm))
+    ax.barh(y, gm[value_col], height=0.68, color=colors, edgecolor=edges, linewidth=0.8, zorder=3)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=10)
+    for tick, scs in zip(ax.get_yticklabels(), is_scs):
+        if scs:
+            tick.set_fontweight("bold")
     ax.set_xscale("log")
-    ax.set_xlim(left=float(gm[value_col].min()) / 2.0)
-    ax.set_xlabel("shifted geometric mean of solve time (s), failures penalised")
-    ax.set_title(title, fontsize=10)
+    lo, hi = float(gm[value_col].min()), float(gm[value_col].max())
+    ax.set_xlim(lo / 1.8, hi * 2.6)
+    for yi, (v, solved) in enumerate(zip(gm[value_col], gm["success_count"])):
+        ax.text(v * 1.08, yi, f"{v:.1f} s" if v < 20 else f"{v:.0f} s", va="center", ha="left", fontsize=9, color="#222222")
+        ax.text(v * 1.08, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=7, color="#666666", linespacing=0.6)
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.tick_params(axis="x", labelsize=9)
+    ax.set_xlabel("shifted geometric mean of solve time (s), lower is better; failures charged 1000 s", fontsize=9)
+    ax.set_title(title, fontsize=10.5, loc="left", pad=10, wrap=True)
     ax.invert_yaxis()
-    ax.grid(True, axis="x", which="both", alpha=0.3)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+    ax.grid(True, axis="x", which="major", color="#e0e0e0", linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
     fig.tight_layout()
-    fig.savefig(path, dpi=160)
+    fig.savefig(path, dpi=220)
     plt.close(fig)
     return gm
 
