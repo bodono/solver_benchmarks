@@ -1,0 +1,20 @@
+run:
+  name: lpbig_mittelmann1_clarabel_1e-6_b
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 1860.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann1
+    include:
+    - s100
+    - supportcase10
+solvers:
+- id: clarabel_1e-6
+  solver: clarabel
+  settings:
+    tol_feas: 1.0e-06
+    tol_gap_abs: 1.0e-06
+    tol_gap_rel: 1.0e-06
+    time_limit: 1800.0

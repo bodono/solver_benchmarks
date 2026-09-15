@@ -35,6 +35,14 @@ SOLVER_LABELS = {
     "osqp": "OSQP", "clarabel": "Clarabel", "piqp": "PIQP", "proxqp": "ProxQP",
     "highs": "HiGHS", "pdlp": "PDLP (OR-Tools)", "cvxopt": "CVXOPT", "sdpa": "SDPA",
 }
+LABEL_OVERRIDE: dict[str, str] = {}
+
+
+def solver_label(solver_id: str) -> str:
+    base = base_solver(solver_id)
+    return LABEL_OVERRIDE.get(base, SOLVER_LABELS.get(base, base))
+
+
 SCS_STYLE = {"scs_cpu": ("#1f77b4", "-", 2.8), "scs_cudss": ("#d62728", "-", 2.8)}
 OTHER_COLORS = ["#7f7f7f", "#2ca02c", "#9467bd", "#8c564b", "#e377c2", "#bcbd22", "#17becf", "#ff7f0e"]
 
@@ -90,7 +98,7 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     for i, s in enumerate(others + [s for s in solvers if base_solver(s) in SCS_STYLE]):
         color, ls, lw = style_for(s, others.index(s) if s in others else 0)
         ax.plot(prof["tau"], prof[s], color=color, linestyle=ls, linewidth=lw,
-                label=SOLVER_LABELS.get(base_solver(s), base_solver(s)), zorder=3 if base_solver(s) in SCS_STYLE else 2)
+                label=solver_label(s), zorder=3 if base_solver(s) in SCS_STYLE else 2)
     ax.set_xscale("log")
     ax.set_xlim(1, prof["tau"].max())
     ax.set_ylim(0, 1.0)
@@ -133,7 +141,7 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
     gm = gm.sort_values(value_col)
     fig, ax = plt.subplots(figsize=(7.2, 3.8))
     colors = [SCS_STYLE[base_solver(s)][0] if base_solver(s) in SCS_STYLE else "#9e9e9e" for s in gm["solver_id"]]
-    ax.barh([SOLVER_LABELS.get(base_solver(s), base_solver(s)) for s in gm["solver_id"]], gm[value_col], color=colors)
+    ax.barh([solver_label(s) for s in gm["solver_id"]], gm[value_col], color=colors)
     ax.set_xscale("log")
     ax.set_xlim(left=float(gm[value_col].min()) / 2.0)
     ax.set_xlabel("shifted geometric mean of solve time (s), failures penalised")
@@ -151,6 +159,9 @@ def main() -> None:
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("runs", nargs="+", help="family=run_dir pairs")
     ap.add_argument("--tol-tag", default=None, help="only solver ids ending in this tag, e.g. 1e-4")
+    ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
+                    help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend says so "
+                         "when TAG differs from the plot's tolerance")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = []
@@ -160,11 +171,20 @@ def main() -> None:
         if df.empty:
             print(f"{family}: no results in {run_dir}")
             continue
+        use_run = dict(kv.split("=", 1) for kv in args.use_run)
         tags = sorted({solver_tol(s) for s in df["solver_id"].unique() if solver_tol(s)})
         if args.tol_tag:
             tags = [t for t in tags if t == args.tol_tag]
         for tag in tags:
             sub = df[df["solver_id"].str.endswith(f"_{tag}")]
+            LABEL_OVERRIDE.clear()
+            for solver, run_tag in use_run.items():
+                alt = df[df["solver_id"] == f"{solver}_{run_tag}"]
+                if run_tag == tag or alt.empty:  # no such run for this family: keep the plot's own run
+                    continue
+                sub = pd.concat([sub[sub["solver_id"] != f"{solver}_{tag}"], alt.assign(solver_id=f"{solver}_{tag}")],
+                                ignore_index=True)
+                LABEL_OVERRIDE[solver] = f"{SOLVER_LABELS.get(solver, solver)} (tol {run_tag})"
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{FAMILY_TITLES.get(family, family)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
@@ -177,6 +197,7 @@ def main() -> None:
             for label, table in (("all", gm), ("largest", gm_big)):
                 if table is not None and not table.empty:
                     t = table.copy(); t.insert(0, "subset", label); t.insert(0, "tol", tag); t.insert(0, "family", family)
+                    t["label"] = [solver_label(s) for s in t["solver_id"]]
                     summary.append(t)
             print(f"{family} {tag}: {n_all} problems, largest quartile {n_big}")
     if summary:

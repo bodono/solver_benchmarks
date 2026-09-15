@@ -1,0 +1,22 @@
+[
+  {
+    "name": "lpbig_mittelmann1_clarabel_1e-6_b",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "clarabel_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big_cl6b/lpbig_mittelmann1_clarabel_1e-6_b.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_clarabel_1e-6_b",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "clarabel_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big_cl6b/lpbig_mittelmann2_clarabel_1e-6_b.yaml"
+  }
+]
