@@ -246,7 +246,7 @@ def main() -> None:
                     continue
                 sub = pd.concat([sub[sub["solver_id"] != f"{solver}_{tag}"], alt.assign(solver_id=f"{solver}_{tag}")],
                                 ignore_index=True)
-                LABEL_OVERRIDE[solver] = f"{SOLVER_LABELS.get(solver, solver)} (tol {run_tag})"
+                # The substituted run is documented in the methodology text rather than in the legend.
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{FAMILY_TITLES.get(family, family)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
