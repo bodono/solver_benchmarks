@@ -93,7 +93,7 @@ def draw_profile(ax, df: pd.DataFrame, title: str, compact: bool = False) -> boo
     prof = performance_profile(df, metric="run_time_seconds", max_value=float("inf"), tau_max=TAU_MAX)
     if prof.empty:
         return False
-    fs = 8.5 if compact else 10
+    fs = 9.5 if compact else 10
     solvers = [c for c in prof.columns if c != "tau"]
     others = [s for s in solvers if base_solver(s) not in SCS_STYLE]
     for i, s in enumerate(others + [s for s in solvers if base_solver(s) in SCS_STYLE]):
@@ -108,7 +108,7 @@ def draw_profile(ax, df: pd.DataFrame, title: str, compact: bool = False) -> boo
     ax.tick_params(labelsize=fs - 1)
     ax.set_title(title, fontsize=10.5 if compact else 11, loc="left" if compact else "center")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(loc="lower right", fontsize=7 if compact else 8, framealpha=0.9)
+    ax.legend(loc="lower right", fontsize=8 if compact else 8, framealpha=0.9)
     return True
 
 
@@ -148,7 +148,7 @@ def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False) -> pd.
     value_col = "run_time_seconds"  # shifted_geomean names its value column after the metric
     gm = gm.sort_values(value_col).reset_index(drop=True)
     n_problems = df.groupby(["dataset", "problem"]).ngroups
-    fs = 8.5 if compact else 10
+    fs = 9.5 if compact else 10
     labels = [solver_label(s) for s in gm["solver_id"]]
     is_scs = [base_solver(s) in SCS_STYLE for s in gm["solver_id"]]
     colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs)]
@@ -201,7 +201,7 @@ def plot_grid(frames: dict, path: Path) -> None:
     rows = [(fam, sub) for fam, sub in GRID_ROWS if (fam, sub) in frames]
     if not rows:
         return
-    fig, axes = plt.subplots(len(rows), 2, figsize=(11.0, 3.6 * len(rows)), gridspec_kw={"width_ratios": [1.0, 1.05]})
+    fig, axes = plt.subplots(len(rows), 2, figsize=(9.6, 3.5 * len(rows)), gridspec_kw={"width_ratios": [1.0, 1.0]})
     axes = np.atleast_2d(axes)
     for (fam, sub), (ax_p, ax_g) in zip(rows, axes):
         df, title, overrides = frames[(fam, sub)]
