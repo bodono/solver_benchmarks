@@ -104,8 +104,29 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     plt.close(fig)
 
 
+def with_missing_as_failures(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a failed row for every (dataset, problem) a solver has no row for.
+
+    Instances a solver could not attempt (Clarabel's large PSD blocks, for
+    example) are excluded from its shard rather than recorded, and the
+    shifted geometric mean only sees the rows that exist. Without this the
+    exclusions would not be charged as failures in the bars, although the
+    profiles already treat them that way.
+    """
+    keys = ["dataset", "problem"]
+    problems = df[keys].drop_duplicates()
+    solvers = df["solver_id"].unique()
+    full = problems.merge(pd.DataFrame({"solver_id": solvers}), how="cross")
+    present = df[keys + ["solver_id"]].drop_duplicates()
+    missing = full.merge(present, how="left", indicator=True).query("_merge == 'left_only'").drop(columns="_merge")
+    if missing.empty:
+        return df
+    missing = missing.assign(status="not_attempted", run_time_seconds=float("nan"))
+    return pd.concat([df, missing], ignore_index=True)
+
+
 def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
-    gm = shifted_geomean(df, metric="run_time_seconds")
+    gm = shifted_geomean(with_missing_as_failures(df), metric="run_time_seconds")
     if gm.empty:
         return gm
     value_col = "run_time_seconds"  # shifted_geomean names its value column after the metric
