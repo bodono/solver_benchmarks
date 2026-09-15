@@ -32,6 +32,26 @@ FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kenni
 # The LP family's copy of the Mittelmann set only ever held qap15; the set is
 # its own family (lpbig), so drop it here to keep the title honest.
 FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}}
+DATASET_NAMES = {"maros_meszaros": "Maros-Meszaros", "qplib": "QPLIB", "mpc": "MPC", "netlib": "Netlib",
+                 "kennington": "Kennington", "miplib_relax": "MIPLIB-relaxation", "sdplib": "SDPLIB",
+                 "mittelmann_sdp": "Mittelmann", "mittelmann0": "Mittelmann", "mittelmann1": "Mittelmann",
+                 "mittelmann2": "Mittelmann"}
+FAMILY_NOUN = {"qp": "QPs", "lp": "LPs", "sdp": "SDPs"}
+
+
+def sets_title(family: str, df: pd.DataFrame) -> str:
+    """'Maros-Meszaros and QPLIB QPs' from the data sets actually present."""
+    if family not in FAMILY_NOUN:
+        return FAMILY_TITLES.get(family, family)
+    names = []
+    for d in df["dataset"].unique():
+        n = DATASET_NAMES.get(d, d)
+        if n not in names:
+            names.append(n)
+    order = list(DATASET_NAMES.values())
+    names.sort(key=lambda n: order.index(n) if n in order else 99)
+    joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return f"{joined} {FAMILY_NOUN[family]}"
 SOLVER_LABELS = {
     "scs_cpu": "SCS (CPU, MKL Pardiso)",
     "scs_cudss": "SCS (GPU, cuDSS)",
@@ -254,12 +274,12 @@ def main() -> None:
                                 ignore_index=True)
                 # The substituted run is documented in the methodology text rather than in the legend.
             n_all = sub.groupby(["dataset", "problem"]).ngroups
-            title = f"{FAMILY_TITLES.get(family, family)}, tolerance {tag}, {n_all} problems"
+            title = f"{sets_title(family, sub)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
             gm = plot_geomean(sub, title, args.out_dir / f"{family}_{tag}_geomean.png")
             big = largest_quartile(sub)
             n_big = big.groupby(["dataset", "problem"]).ngroups
-            title_big = f"{FAMILY_TITLES.get(family, family)}, largest quartile ({n_big} problems), tolerance {tag}"
+            title_big = f"{sets_title(family, big)}, largest quartile ({n_big} problems), tolerance {tag}"
             plot_profile(big, title_big, args.out_dir / f"{family}_{tag}_profile_largest.png")
             gm_big = plot_geomean(big, title_big, args.out_dir / f"{family}_{tag}_geomean_largest.png")
             if tag == "1e-4":
