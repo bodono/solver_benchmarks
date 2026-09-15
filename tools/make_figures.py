@@ -27,8 +27,11 @@ import pandas as pd
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 
-FAMILY_TITLES = {"qp": "Quadratic programs", "lp": "Linear programs", "sdp": "Semidefinite programs",
-                 "lpbig": "Mittelmann LP benchmark set"}
+FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
+                 "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set"}
+# The LP family's copy of the Mittelmann set only ever held qap15; the set is
+# its own family (lpbig), so drop it here to keep the title honest.
+FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}}
 SOLVER_LABELS = {
     "scs_cpu": "SCS (CPU, MKL Pardiso)",
     "scs_cudss": "SCS (GPU, cuDSS)",
@@ -233,6 +236,9 @@ def main() -> None:
         if df.empty:
             print(f"{family}: no results in {run_dir}")
             continue
+        drop = FAMILY_DROP_DATASETS.get(family)
+        if drop:
+            df = df[~df["dataset"].isin(drop)]
         use_run = dict(kv.split("=", 1) for kv in args.use_run)
         tags = sorted({solver_tol(s) for s in df["solver_id"].unique() if solver_tol(s)})
         if args.tol_tag:
