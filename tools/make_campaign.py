@@ -40,7 +40,6 @@ FAMILIES: dict[str, list[dict]] = {
     "qp": [
         {"name": "maros_meszaros", "id": "maros_meszaros"},
         {"name": "qplib", "id": "qplib", "dataset_options": {"subset": "all"}},
-        {"name": "mpc_qpbenchmark", "id": "mpc", "dataset_options": {"subset": "all"}},
     ],
     "lp": [
         {"name": "netlib", "id": "netlib", "dataset_options": {"subset": "feasible"}},

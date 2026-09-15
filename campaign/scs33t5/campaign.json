@@ -1,0 +1,112 @@
+[
+  {
+    "name": "qp_maros_meszaros_scs_cpu_1e-5",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/qp_maros_meszaros_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "qp_qplib_scs_cpu_1e-5",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/qp_qplib_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lp_netlib_scs_cpu_1e-5",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lp_netlib_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lp_kennington_scs_cpu_1e-5",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lp_kennington_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cpu_1e-5",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lp_miplib_relax_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lp_mittelmann_scs_cpu_1e-5",
+    "family": "lp",
+    "dataset": "mittelmann",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lp_mittelmann_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "sdp_sdplib_scs_cpu_1e-5",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/sdp_sdplib_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "sdp_mittelmann_sdp_scs_cpu_1e-5",
+    "family": "sdp",
+    "dataset": "mittelmann_sdp",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/sdp_mittelmann_sdp_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_scs_cpu_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lpbig_mittelmann0_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_scs_cpu_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lpbig_mittelmann1_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_scs_cpu_1e-5",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33t5/lpbig_mittelmann2_scs_cpu_1e-5.yaml"
+  }
+]

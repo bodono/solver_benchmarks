@@ -1,0 +1,17 @@
+run:
+  name: lp_mittelmann_scs_cpu_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann
+solvers:
+- id: scs_cpu_1e-5
+  solver: scs
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    max_iters: 1000000
+    time_limit_secs: 300.0

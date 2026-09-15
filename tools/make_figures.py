@@ -31,7 +31,7 @@ FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kenni
                  "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set"}
 # The LP family's copy of the Mittelmann set only ever held qap15; the set is
 # its own family (lpbig), so drop it here to keep the title honest.
-FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}}
+FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
 DATASET_NAMES = {"maros_meszaros": "Maros-Meszaros", "qplib": "QPLIB", "mpc": "MPC", "netlib": "Netlib",
                  "kennington": "Kennington", "miplib_relax": "MIPLIB-relaxation", "sdplib": "SDPLIB",
                  "mittelmann_sdp": "Mittelmann", "mittelmann0": "Mittelmann", "mittelmann1": "Mittelmann",
