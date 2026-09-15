@@ -85,15 +85,15 @@ TIME_FLOOR = 0.01
 TAU_MAX = 1.0e4
 
 
-def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
+def draw_profile(ax, df: pd.DataFrame, title: str, compact: bool = False) -> bool:
     # Failures count as "never solved" (infinite ratio), a 10 ms floor keeps
     # sub-millisecond timings from producing meaningless ratios, and the
     # tau axis is capped at 1e4.
     df = df.assign(run_time_seconds=df["run_time_seconds"].clip(lower=TIME_FLOOR))
     prof = performance_profile(df, metric="run_time_seconds", max_value=float("inf"), tau_max=TAU_MAX)
     if prof.empty:
-        return
-    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+        return False
+    fs = 8.5 if compact else 10
     solvers = [c for c in prof.columns if c != "tau"]
     others = [s for s in solvers if base_solver(s) not in SCS_STYLE]
     for i, s in enumerate(others + [s for s in solvers if base_solver(s) in SCS_STYLE]):
@@ -103,13 +103,20 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     ax.set_xscale("log")
     ax.set_xlim(1, prof["tau"].max())
     ax.set_ylim(0, 1.0)
-    ax.set_xlabel("time ratio to fastest solver, τ")
-    ax.set_ylabel("fraction of problems solved within τ")
-    ax.set_title(title, fontsize=11)
+    ax.set_xlabel("time ratio to fastest solver, τ", fontsize=fs)
+    ax.set_ylabel("fraction of problems solved within τ", fontsize=fs)
+    ax.tick_params(labelsize=fs - 1)
+    ax.set_title(title, fontsize=10.5 if compact else 11, loc="left" if compact else "center")
     ax.grid(True, which="both", alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(path, dpi=160)
+    ax.legend(loc="lower right", fontsize=7 if compact else 8, framealpha=0.9)
+    return True
+
+
+def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
+    if draw_profile(ax, df, title):
+        fig.tight_layout()
+        fig.savefig(path, dpi=160)
     plt.close(fig)
 
 
@@ -134,14 +141,14 @@ def with_missing_as_failures(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, missing], ignore_index=True)
 
 
-def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
+def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False) -> pd.DataFrame:
     gm = shifted_geomean(with_missing_as_failures(df), metric="run_time_seconds")
     if gm.empty:
         return gm
     value_col = "run_time_seconds"  # shifted_geomean names its value column after the metric
     gm = gm.sort_values(value_col).reset_index(drop=True)
     n_problems = df.groupby(["dataset", "problem"]).ngroups
-    fig, ax = plt.subplots(figsize=(8.0, 0.42 * len(gm) + 1.6))
+    fs = 8.5 if compact else 10
     labels = [solver_label(s) for s in gm["solver_id"]]
     is_scs = [base_solver(s) in SCS_STYLE for s in gm["solver_id"]]
     colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs)]
@@ -149,7 +156,7 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
     y = np.arange(len(gm))
     ax.barh(y, gm[value_col], height=0.68, color=colors, edgecolor=edges, linewidth=0.8, zorder=3)
     ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=10)
+    ax.set_yticklabels(labels, fontsize=fs)
     for tick, scs in zip(ax.get_yticklabels(), is_scs):
         if scs:
             tick.set_fontweight("bold")
@@ -157,23 +164,53 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
     lo, hi = float(gm[value_col].min()), float(gm[value_col].max())
     ax.set_xlim(lo / 1.8, hi * 2.6)
     for yi, (v, solved) in enumerate(zip(gm[value_col], gm["success_count"])):
-        ax.text(v * 1.08, yi, f"{v:.1f} s" if v < 20 else f"{v:.0f} s", va="center", ha="left", fontsize=9, color="#222222")
-        ax.text(v * 1.08, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=7, color="#666666", linespacing=0.6)
+        ax.text(v * 1.08, yi, f"{v:.1f} s" if v < 20 else f"{v:.0f} s", va="center", ha="left", fontsize=fs - 1, color="#222222")
+        ax.text(v * 1.08, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=fs - 2.5, color="#666666", linespacing=0.6)
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     ax.xaxis.set_minor_formatter(NullFormatter())
-    ax.tick_params(axis="x", labelsize=9)
-    ax.set_xlabel("shifted geometric mean of solve time (s), lower is better; failures charged 1000 s", fontsize=9)
-    ax.set_title(title, fontsize=10.5, loc="left", pad=10, wrap=True)
+    ax.tick_params(axis="x", labelsize=fs - 1)
+    ax.set_xlabel("shifted geometric mean solve time (s), lower is better" if compact else
+                  "shifted geometric mean of solve time (s), lower is better; failures charged 1000 s", fontsize=fs - 1)
+    if title:
+        ax.set_title(title, fontsize=10.5, loc="left", pad=10, wrap=True)
     ax.invert_yaxis()
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.tick_params(axis="y", length=0)
     ax.grid(True, axis="x", which="major", color="#e0e0e0", linewidth=0.8, zorder=0)
     ax.set_axisbelow(True)
-    fig.tight_layout()
-    fig.savefig(path, dpi=220)
+    return gm
+
+
+def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
+    n = df["solver_id"].nunique()
+    fig, ax = plt.subplots(figsize=(8.0, 0.42 * n + 1.6))
+    gm = draw_geomean(ax, df, title)
+    if not gm.empty:
+        fig.tight_layout()
+        fig.savefig(path, dpi=220)
     plt.close(fig)
     return gm
+
+
+GRID_ROWS = (("qp", "largest"), ("lp", "largest"), ("lpbig", "all"))
+
+
+def plot_grid(frames: dict, path: Path) -> None:
+    """3 x 2 landing-page figure: one family per row, profile left, bars right."""
+    rows = [(fam, sub) for fam, sub in GRID_ROWS if (fam, sub) in frames]
+    if not rows:
+        return
+    fig, axes = plt.subplots(len(rows), 2, figsize=(11.0, 3.6 * len(rows)), gridspec_kw={"width_ratios": [1.0, 1.05]})
+    axes = np.atleast_2d(axes)
+    for (fam, sub), (ax_p, ax_g) in zip(rows, axes):
+        df, title, overrides = frames[(fam, sub)]
+        LABEL_OVERRIDE.clear(); LABEL_OVERRIDE.update(overrides)
+        draw_profile(ax_p, df, title, compact=True)
+        draw_geomean(ax_g, df, "", compact=True)
+    fig.tight_layout(h_pad=2.0, w_pad=1.5)
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
 
 
 def main() -> None:
@@ -181,12 +218,15 @@ def main() -> None:
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("runs", nargs="+", help="family=run_dir pairs")
     ap.add_argument("--tol-tag", default=None, help="only solver ids ending in this tag, e.g. 1e-4")
+    ap.add_argument("--grid", type=Path, default=None,
+                    help="also write a 3x2 landing-page grid (QP largest, LP largest, Mittelmann) to this path")
     ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
                     help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend says so "
                          "when TAG differs from the plot's tolerance")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = []
+    frames: dict = {}
     for pair in args.runs:
         family, run_dir = pair.split("=", 1)
         df = load_results(run_dir)
@@ -216,12 +256,18 @@ def main() -> None:
             title_big = f"{FAMILY_TITLES.get(family, family)}, largest quartile ({n_big} problems), tolerance {tag}"
             plot_profile(big, title_big, args.out_dir / f"{family}_{tag}_profile_largest.png")
             gm_big = plot_geomean(big, title_big, args.out_dir / f"{family}_{tag}_geomean_largest.png")
+            if tag == "1e-4":
+                frames[(family, "all")] = (sub, title, dict(LABEL_OVERRIDE))
+                frames[(family, "largest")] = (big, title_big, dict(LABEL_OVERRIDE))
             for label, table in (("all", gm), ("largest", gm_big)):
                 if table is not None and not table.empty:
                     t = table.copy(); t.insert(0, "subset", label); t.insert(0, "tol", tag); t.insert(0, "family", family)
                     t["label"] = [solver_label(s) for s in t["solver_id"]]
                     summary.append(t)
             print(f"{family} {tag}: {n_all} problems, largest quartile {n_big}")
+    if args.grid:
+        plot_grid(frames, args.grid)
+        print(args.grid)
     if summary:
         pd.concat(summary).to_csv(args.out_dir / "geomean_summary.csv", index=False)
         print(args.out_dir / "geomean_summary.csv")
