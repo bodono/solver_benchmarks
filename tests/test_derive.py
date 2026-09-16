@@ -183,6 +183,15 @@ def test_cone_distances_are_checked_relative_to_problem_scale():
         assert kkt["primal_cone_res"] == 1e-7 * scale
         assert kkt["primal_cone_res_rel"] < 1e-6
         assert worst_relative_residual({"kkt": kkt}) < 1e-6
+    # a dual point outside K* must not pass because A and q are large: the LP
+    # min M x s.t. M x + s = 0, s >= 0 is unbounded, and x = 0, s = 0, y = -1
+    # has zero equality, stationarity and gap residuals for every M
+    for m in (1.0, 1e12):
+        kkt = cone_residuals(sp.csc_matrix((1, 1)), np.array([m]), sp.csc_matrix([[m]]), np.array([0.0]),
+                             {"l": 1}, np.array([0.0]), np.array([-1.0]), np.array([0.0]))
+        assert kkt["primal_res_rel"] == 0.0 and kkt["dual_res_rel"] == 0.0 and kkt["duality_gap_rel"] == 0.0
+        assert kkt["dual_cone_res_rel"] == 0.5
+        assert worst_relative_residual({"kkt": kkt}) == 0.5
     # records written before the relative distances existed fall back to the absolute ones
     old = {"kkt": {"form": "cone", "primal_res_rel": 0.0, "dual_res_rel": 0.0, "duality_gap_rel": 0.0,
                    "primal_cone_res": 0.5, "dual_cone_res": 0.0}}
@@ -210,3 +219,55 @@ def test_merge_preserves_each_shards_problem_selection(tmp_path):
     merge_runs([a, c], tmp_path / "merged2", overwrite=True)
     (entry,) = manifest_dataset_entries(json.loads((tmp_path / "merged2" / "manifest.json").read_text())["config"])
     assert entry["include"] == []
+
+
+def _synthetic_run(path, rows, *, datasets, solvers, **run_level):
+    config = {"datasets": datasets, "solvers": [{"id": s, "solver": "scs", "settings": {}} for s in solvers], **run_level}
+    _write_run_at(path, [{"dataset": "synthetic_qp", "problem": p, "solver_id": s, "status": "optimal",
+                          "run_time_seconds": 1.0, "kkt": None, "metadata": {}} for p, s in rows], config=config)
+    (path / "run_config.yaml").write_text("run: {}\n")
+
+
+def test_merged_completion_does_not_cross_solvers_and_datasets(tmp_path):
+    from solver_benchmarks.analysis.derive import merge_runs
+    from solver_benchmarks.analysis.load import load_results
+    from solver_benchmarks.analysis.tables import completion_summary, missing_results
+
+    # shard a ran s1 on one problem, shard b ran s2 on another; both complete
+    a, b = tmp_path / "a", tmp_path / "b"
+    _synthetic_run(a, [("one_variable_eq", "s1")], datasets=[{"name": "synthetic_qp", "include": ["one_variable_eq"]}], solvers=["s1"])
+    _synthetic_run(b, [("one_variable_lp", "s2")], datasets=[{"name": "synthetic_qp", "include": ["one_variable_lp"]}], solvers=["s2"])
+    out = tmp_path / "merged"
+    merge_runs([a, b], out, overwrite=True)
+    completion = completion_summary(out, load_results(out))
+    assert completion["complete"].all() and len(completion) == 2
+    assert missing_results(out, load_results(out)).empty
+    # nested merge and kkt-verify keep the selections
+    c = tmp_path / "c"
+    _synthetic_run(c, [("one_variable_eq", "s2")], datasets=[{"name": "synthetic_qp", "include": ["one_variable_eq"]}], solvers=["s2"])
+    merge_runs([out, c], tmp_path / "merged2", overwrite=True)
+    m2 = json.loads((tmp_path / "merged2" / "manifest.json").read_text())
+    assert len(m2["derived"]["selections"]) == 3
+    kkt_verify(tmp_path / "merged2", tmp_path / "verified", tol=1e-6, missing_is_failure=False)
+    verified = json.loads((tmp_path / "verified" / "manifest.json").read_text())
+    assert len(verified["derived"]["selections"]) == 3
+    assert missing_results(tmp_path / "verified", load_results(tmp_path / "verified")).empty
+
+
+def test_merged_completion_applies_each_shards_excludes_before_union(tmp_path):
+    from solver_benchmarks.analysis.derive import merge_runs
+    from solver_benchmarks.analysis.load import load_results
+    from solver_benchmarks.analysis.tables import completion_summary
+    from solver_benchmarks.datasets import get_dataset
+
+    names = [p.name for p in get_dataset("synthetic_qp")().list_problems()]
+    assert "one_variable_lp" in names
+    # shard a: everything except the LP; shard b: only one_variable_eq (no rows yet)
+    a, b = tmp_path / "a", tmp_path / "b"
+    _synthetic_run(a, [(n, "s1") for n in names if n != "one_variable_lp"],
+                   datasets=[{"name": "synthetic_qp"}], solvers=["s1"], exclude=["one_variable_lp"])
+    _synthetic_run(b, [], datasets=[{"name": "synthetic_qp", "include": ["one_variable_eq"]}], solvers=["s1"])
+    out = tmp_path / "merged"
+    merge_runs([a, b], out, overwrite=True)
+    (row,) = completion_summary(out, load_results(out)).to_dict("records")
+    assert row["expected"] == len(names) - 1 and row["missing"] == 0 and row["complete"]

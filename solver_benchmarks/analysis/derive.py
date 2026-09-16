@@ -23,9 +23,10 @@ KKT_FIELDS = ("primal_res_rel", "dual_res_rel", "duality_gap_rel")
 # Cone-form records also carry the distance of s and y to their cones; a point
 # that satisfies Ax + s = b with s outside K is not feasible, so these are part
 # of the check whenever the record has them (QP-form records have none). The
-# distances are scaled like the equality residuals (by 1 + the size of the
-# primal, respectively dual, data) so the check does not depend on the units
-# of the problem or on projection roundoff in a large cone.
+# distance of s is scaled like the primal equality residual and the distance
+# of y by 1 + |y|, so the check depends neither on the units of the problem
+# nor on the size of A and q, and projection roundoff in a large cone stays
+# small.
 CONE_FIELDS = ("primal_cone_res_rel", "dual_cone_res_rel")
 # Records written before the relative distances existed only carry the
 # absolute ones; they are used in that case.
@@ -126,10 +127,28 @@ def merge_runs(
         for entry in (m.get("config") or {}).get("solvers") or []:
             solvers.setdefault(str(entry.get("id")), entry)
     cfg["solvers"] = list(solvers.values())
+    # What each shard actually planned, as (dataset entries, solver ids)
+    # groups; completion and missing-results checks union these instead of
+    # crossing the merged dataset and solver lists, which are informative
+    # only. A merged source contributes its own groups, so nesting is exact.
+    selections: list[dict[str, Any]] = []
+    for m in manifests:
+        nested = (m.get("derived") or {}).get("selections")
+        if nested:
+            selections.extend(nested)
+        else:
+            source_cfg = m.get("config") or {}
+            selections.append(
+                {
+                    "datasets": manifest_dataset_entries(source_cfg),
+                    "solvers": [str(entry.get("id")) for entry in source_cfg.get("solvers") or []],
+                }
+            )
     manifest["derived"] = {
         "kind": "merge",
         "sources": per_source,
         "source_manifests": manifests,
+        "selections": selections,
         "duplicate_keys": duplicates,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -297,7 +316,9 @@ def kkt_verify(
         demoted[solver_id] = demoted.get(solver_id, 0) + 1
     _write_jsonl(out / "results.jsonl", records)
     manifest = _read_manifest(src)
-    summary = {
+    # a verified merge keeps the merge's per-source selections (see merge_runs)
+    selections = (manifest.get("derived") or {}).get("selections")
+    summary: dict[str, Any] = {
         "kind": "kkt_verify",
         "source": str(src),
         "tol": tol,
@@ -309,6 +330,8 @@ def kkt_verify(
         "promoted": promoted,
         "missing_residuals": missing,
     }
+    if selections:
+        summary["selections"] = selections
     manifest["derived"] = summary
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for name in _COPIED_FILES:

@@ -483,6 +483,61 @@ def _completed_by_pair(
     return completed, duplicates
 
 
+def expected_jobs(
+    manifest: dict, *, repo_root: str | Path | None = None
+) -> dict[tuple[str, str], set[str]]:
+    """Return ``{(solver_id, dataset_id): expected problem names}`` for a manifest.
+
+    A plain run expects every configured solver on every configured dataset.
+    A merged run (``bench merge``) records each source's own selection under
+    ``derived.selections`` as ``{"datasets": [entries], "solvers": [ids]}``
+    groups; the expectation is then the union of the groups, so shards that
+    ran different solvers on different datasets, or different problem
+    selections per solver, do not cross into jobs nobody planned.
+    """
+    config = manifest.get("config") or {}
+    selections = (manifest.get("derived") or {}).get("selections") or [
+        {
+            "datasets": manifest_dataset_entries(config),
+            "solvers": [str(solver.get("id")) for solver in config.get("solvers") or []],
+        }
+    ]
+    jobs: dict[tuple[str, str], set[str]] = {}
+    for group in selections:
+        expected = _expected_by_dataset({"datasets": group.get("datasets") or []}, repo_root=repo_root)
+        for solver_id in group.get("solvers") or []:
+            for dataset_id, problems in expected.items():
+                jobs.setdefault((str(solver_id), str(dataset_id)), set()).update(problems)
+    return jobs
+
+
+@functools.lru_cache(maxsize=8)
+def _expected_jobs_cached(
+    manifest_path_str: str,
+    repo_root_str: str | None,
+    manifest_mtime_ns: int,  # noqa: ARG001  (cache invalidator)
+) -> dict[tuple[str, str], set[str]]:
+    """Cached ``expected_jobs``, keyed like ``_expected_by_dataset_cached``."""
+    manifest = json.loads(Path(manifest_path_str).read_text())
+    return expected_jobs(manifest, repo_root=repo_root_str)
+
+
+def _ordered_jobs(jobs: dict[tuple[str, str], set[str]], manifest_path: Path) -> list[tuple[str, str]]:
+    """Order ``(solver, dataset)`` jobs by the configured solver order, then dataset."""
+    config = json.loads(manifest_path.read_text()).get("config") or {}
+    solver_order = {str(s.get("id")): i for i, s in enumerate(config.get("solvers") or [])}
+    dataset_order = {str(d.get("id") or d.get("name")): i for i, d in enumerate(config.get("datasets") or [])}
+    return sorted(
+        jobs,
+        key=lambda job: (
+            solver_order.get(job[0], len(solver_order)),
+            job[0],
+            dataset_order.get(job[1], len(dataset_order)),
+            job[1],
+        ),
+    )
+
+
 def completion_summary(
     run_dir: str | Path,
     results: pd.DataFrame | None = None,
@@ -508,43 +563,42 @@ def completion_summary(
     if not manifest_path.exists():
         return pd.DataFrame(columns=columns)
 
-    expected_by_dataset = _expected_by_dataset_cached(
+    jobs = _expected_jobs_cached(
         str(manifest_path.resolve()),
         str(repo_root) if repo_root is not None else None,
         manifest_path.stat().st_mtime_ns,
     )
-    config = json.loads(manifest_path.read_text())["config"]
-    solvers = [solver["id"] for solver in config.get("solvers", [])]
 
     has_dataset_col = not results.empty and "dataset" in results.columns
     completed_by_pair, duplicates_by_pair = _completed_by_pair(results, has_dataset_col)
 
     rows = []
-    for solver_id in solvers:
-        for dataset_name, expected_set in expected_by_dataset.items():
-            key: tuple[str, str | None] = (
-                (str(solver_id), str(dataset_name))
-                if has_dataset_col
-                else (str(solver_id), None)
-            )
-            completed_problems = completed_by_pair.get(key, set())
-            duplicate_rows = duplicates_by_pair.get(key, 0)
-            missing = len(expected_set - completed_problems)
-            unexpected = len(completed_problems - expected_set)
-            rows.append(
-                {
-                    "solver_id": solver_id,
-                    "dataset": dataset_name,
-                    "expected": len(expected_set),
-                    "completed": len(completed_problems),
-                    "missing": int(missing),
-                    "unexpected": int(unexpected),
-                    "duplicate_rows": duplicate_rows,
-                    "complete": missing == 0
-                    and unexpected == 0
-                    and duplicate_rows == 0,
-                }
-            )
+    for solver_id, dataset_name in _ordered_jobs(jobs, manifest_path):
+        expected_set = jobs[(solver_id, dataset_name)]
+        key: tuple[str, str | None] = (
+            (str(solver_id), str(dataset_name))
+            if has_dataset_col
+            else (str(solver_id), None)
+        )
+        completed_problems = completed_by_pair.get(key, set())
+        duplicate_rows = duplicates_by_pair.get(key, 0)
+        missing = len(expected_set - completed_problems)
+        unexpected = len(completed_problems - expected_set)
+        rows.append(
+            {
+                "solver_id": solver_id,
+                "dataset": dataset_name,
+                "expected": len(expected_set),
+                "completed": len(completed_problems),
+                "missing": int(missing),
+                "unexpected": int(unexpected),
+                "duplicate_rows": duplicate_rows,
+                "complete": missing == 0
+                and unexpected == 0
+                and duplicate_rows == 0,
+            }
+        )
+
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -564,34 +618,33 @@ def missing_results(
     if not manifest_path.exists():
         return pd.DataFrame(columns=columns)
 
-    expected_by_dataset = _expected_by_dataset_cached(
+    jobs = _expected_jobs_cached(
         str(manifest_path.resolve()),
         str(repo_root) if repo_root is not None else None,
         manifest_path.stat().st_mtime_ns,
     )
-    config = json.loads(manifest_path.read_text())["config"]
 
     has_dataset_col = not results.empty and "dataset" in results.columns
     completed_by_pair, _ = _completed_by_pair(results, has_dataset_col)
 
     rows = []
-    for solver in config.get("solvers", []):
-        solver_id = solver["id"]
-        for dataset_name, expected_set in expected_by_dataset.items():
-            key: tuple[str, str | None] = (
-                (str(solver_id), str(dataset_name))
-                if has_dataset_col
-                else (str(solver_id), None)
+    for solver_id, dataset_name in _ordered_jobs(jobs, manifest_path):
+        expected_set = jobs[(solver_id, dataset_name)]
+        key: tuple[str, str | None] = (
+            (str(solver_id), str(dataset_name))
+            if has_dataset_col
+            else (str(solver_id), None)
+        )
+        completed = completed_by_pair.get(key, set())
+        for problem in sorted(expected_set - completed):
+            rows.append(
+                {
+                    "solver_id": solver_id,
+                    "dataset": dataset_name,
+                    "problem": problem,
+                }
             )
-            completed = completed_by_pair.get(key, set())
-            for problem in sorted(expected_set - completed):
-                rows.append(
-                    {
-                        "solver_id": solver_id,
-                        "dataset": dataset_name,
-                        "problem": problem,
-                    }
-                )
+
     return pd.DataFrame(rows, columns=columns)
 
 
