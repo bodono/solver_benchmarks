@@ -338,6 +338,11 @@ def main(
             except TimeoutError:
                 continue
             except Exception as exc:
+                # Transient Modal client/API errors (deadline exceeded, connection
+                # reset) are not shard failures: the container keeps running.
+                if "Deadline" in str(exc) or "Connection" in type(exc).__name__ or "ServiceError" in type(exc).__name__:
+                    print(f"  transient error polling {sh['name']}: {str(exc)[:80]}; will retry", flush=True)
+                    continue
                 r = {"name": sh["name"], "exit": -1, "rows": 0, "seconds": time.time() - t0, "error": str(exc)[:200]}
             del running[call]
             hours = (time.time() - t0) / 3600
