@@ -197,7 +197,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.14"]
+        # Also compatible with the Python 3.11 floor introduced by PR #95.
+        python-version: ["3.11", "3.14"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
