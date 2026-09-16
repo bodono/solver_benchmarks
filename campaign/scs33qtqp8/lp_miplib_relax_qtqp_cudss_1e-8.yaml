@@ -1,5 +1,5 @@
 run:
-  name: lp_miplib_relax_qtqp_cudss_1e-6
+  name: lp_miplib_relax_qtqp_cudss_1e-8
   output_dir: results
   parallelism: 1
   resume: true
@@ -15,12 +15,12 @@ run:
     - toll-like
     - mad_BAK
 solvers:
-- id: qtqp_cudss_1e-6
+- id: qtqp_cudss_1e-8
   solver: qtqp
   settings:
-    tol_feas: 1.0e-06
-    tol_gap_abs: 1.0e-06
-    tol_gap_rel: 1.0e-06
+    tol_feas: 1.0e-08
+    tol_gap_abs: 1.0e-08
+    tol_gap_rel: 1.0e-08
     max_iter: 200
     verbose: false
     linear_solver: cudss

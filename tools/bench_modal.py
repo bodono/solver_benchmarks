@@ -98,7 +98,7 @@ pdlp_image = (
 
 # QTQP (google-deepmind/qtqp, local checkout) on its MKL Pardiso backend and on
 # its cuDSS backend (pip cuDSS + nvmath + cupy; no SCS build in that image).
-QTQP_REPO = Path.home() / "git" / "qtqp"
+QTQP_REPO = Path.home() / "git" / "qtqp-main"  # clean worktree of origin/main (0.0.7)
 QTQP_IGNORE = ["build", "figures", ".git", "**/__pycache__", "*.tex"]
 qtqp_cpu_image = (
     cpu_image

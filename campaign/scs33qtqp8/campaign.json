@@ -1,0 +1,102 @@
+[
+  {
+    "name": "qp_maros_meszaros_qtqp_mkl_1e-8",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "qtqp_mkl_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp8/qp_maros_meszaros_qtqp_mkl_1e-8.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_qtqp_cudss_1e-8",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "qtqp_cudss_1e-8",
+    "tol": 1e-08,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp8/qp_maros_meszaros_qtqp_cudss_1e-8.yaml"
+  },
+  {
+    "name": "qp_qplib_qtqp_mkl_1e-8",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "qtqp_mkl_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp8/qp_qplib_qtqp_mkl_1e-8.yaml"
+  },
+  {
+    "name": "qp_qplib_qtqp_cudss_1e-8",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "qtqp_cudss_1e-8",
+    "tol": 1e-08,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp8/qp_qplib_qtqp_cudss_1e-8.yaml"
+  },
+  {
+    "name": "lp_netlib_qtqp_mkl_1e-8",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "qtqp_mkl_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp8/lp_netlib_qtqp_mkl_1e-8.yaml"
+  },
+  {
+    "name": "lp_netlib_qtqp_cudss_1e-8",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "qtqp_cudss_1e-8",
+    "tol": 1e-08,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp8/lp_netlib_qtqp_cudss_1e-8.yaml"
+  },
+  {
+    "name": "lp_kennington_qtqp_mkl_1e-8",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "qtqp_mkl_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp8/lp_kennington_qtqp_mkl_1e-8.yaml"
+  },
+  {
+    "name": "lp_kennington_qtqp_cudss_1e-8",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "qtqp_cudss_1e-8",
+    "tol": 1e-08,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp8/lp_kennington_qtqp_cudss_1e-8.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_qtqp_mkl_1e-8",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "qtqp_mkl_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp8/lp_miplib_relax_qtqp_mkl_1e-8.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_qtqp_cudss_1e-8",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "qtqp_cudss_1e-8",
+    "tol": 1e-08,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp8/lp_miplib_relax_qtqp_cudss_1e-8.yaml"
+  }
+]

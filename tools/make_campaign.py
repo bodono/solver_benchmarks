@@ -108,7 +108,8 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
         # QTQP (pure-Python interior point): MKL Pardiso and cuDSS backends. Kept for
         # the record, not shown on the SCS site. No time-limit knob: the harness
         # worker timeout is the only stop.
-        qtqp_common = {"atol": t, "rtol": t, "max_iter": 200, "verbose": False}
+        # QTQP 0.0.7 uses Clarabel-style termination settings.
+        qtqp_common = {"tol_feas": t, "tol_gap_abs": t, "tol_gap_rel": t, "max_iter": 200, "verbose": False}
         variants += [
             {"id": f"qtqp_mkl_{tag}", "solver": "qtqp", "settings": {**qtqp_common, "linear_solver": "pardiso"},
              "gpu": False, "runner": "qtqp_cpu"},
