@@ -13,9 +13,9 @@ We convert it to the CONE-form dual problem this codebase uses::
     minimize    q' x
     subject to  A x + s = b,  s in K
 
-where x is the SDP dual ``y``, ``q = -b_sdpa`` (we minimize the dual,
-hence the sign flip), columns of ``A`` are the vectorized ``A_k``,
-``b = vec(C)``, and ``K`` is the product of the SDP's PSD / NN blocks
+where ``x`` is the SDPA-S primal variable, ``q = c``, columns of ``A`` are
+``-vec(F_k)``, ``b = -vec(F_0)`` (so that ``s = sum_k x_k F_k - F_0``), and
+``K`` is the product of the SDP's PSD / NN blocks
 in the canonical layout (``s``: list of PSD orders; ``l``: count of
 diagonal/NN-block rows). PSD entries are vectorized in column-major
 lower order with √2 scaling on off-diagonals — matching the layout
@@ -172,7 +172,7 @@ def parse_sdpa_s_file(path: Path) -> SDPAProblem:
 
 
 def sdpa_to_cone_problem(problem: SDPAProblem) -> dict:
-    """Convert a parsed primal SDP into the CONE-form dual problem.
+    """Convert a parsed SDPA-S problem into the canonical CONE form.
 
     Layout of the cone-form rows (matching the schema's iteration
     order over cone keys ``z`` < ``l`` < ``q`` < ``s``):
@@ -261,12 +261,18 @@ def sdpa_to_cone_problem(problem: SDPAProblem) -> dict:
     if psd_orders:
         cone["s"] = [int(order) for order in psd_orders]
 
+    # SDPA-S encodes  min c'x  s.t.  sum_k x_k F_k - F_0 in PSD  (block-diagonal),
+    # with ``problem.b`` holding c and the block entries F_0 (index 0) and F_k.
+    # In cone form  A x + s = b, s in K  that is  A = -vec(F_k), b = -vec(F_0),
+    # q = c.  (Negating all three instead yields  max c'x s.t. F_0 - sum x_k F_k
+    # in PSD, a different problem: mcp100 then solves to 4.19 instead of the
+    # SDPLIB optimum 226.157.)
     return {
         "P": None,
-        "q": -problem.b.copy(),  # dual objective: max b'y → min -b'y
+        "q": problem.b.copy(),
         "r": 0.0,
-        "A": a_matrix,
-        "b": b_dense,
+        "A": -a_matrix,
+        "b": -b_dense,
         "n": int(problem.m),
         "m": int(total_rows),
         "cone": cone,

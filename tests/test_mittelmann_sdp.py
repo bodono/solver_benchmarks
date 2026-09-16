@@ -272,15 +272,13 @@ def test_sdpa_to_cone_problem_translates_psd_block_to_canonical_layout():
     parsed = parse_sdpa_s(TRACE_ONE_SDP)
     cone = sdpa_to_cone_problem(parsed)
     assert cone["cone"] == {"s": [2]}
-    # b = vec(C) in canonical layout: [C[0,0], √2 * C[1,0], C[1,1]]
-    # but our C has only diagonal entries, so [1.0, 0.0, 2.0].
-    assert cone["b"].tolist() == [1.0, 0.0, 2.0]
-    # q = -b_sdpa (we minimize the SDP dual). b_sdpa = [1.0].
-    assert cone["q"].tolist() == [-1.0]
-    # A is one column (one constraint y_1) and 3 rows (the canonical
-    # PSD-2 vec). Constraint: trace(X) = X[0,0] + X[1,1] = 1, so the
-    # vec of A_1 is [1.0, 0.0, 1.0].
-    assert cone["A"].toarray().flatten().tolist() == [1.0, 0.0, 1.0]
+    # SDPA-S: min c'x s.t. sum_i x_i F_i - F_0 is PSD.  In cone form
+    # (A x + s = b) that is A = -vec(F_i), b = -vec(F_0), q = c.
+    # F_0 = diag(1, 2) in canonical layout [F[0,0], √2 F[1,0], F[1,1]].
+    assert cone["b"].tolist() == [-1.0, 0.0, -2.0]
+    assert cone["q"].tolist() == [1.0]
+    # One column (x_1) and 3 rows (canonical PSD-2 vec); F_1 = I.
+    assert cone["A"].toarray().flatten().tolist() == [-1.0, 0.0, -1.0]
 
 
 def test_sdpa_to_cone_problem_handles_off_diagonal_with_sqrt2_scaling():
@@ -307,10 +305,11 @@ def test_sdpa_to_cone_problem_handles_off_diagonal_with_sqrt2_scaling():
     # which after sorting i ≤ j is also (1,1) entry (zero) - but we
     # specified ``0 1 1 1 0.0`` so C is the zero matrix.
     assert cone["b"].tolist() == [0.0, 0.0, 0.0]
-    # A_1 has X[1,0] = 0.5 → canonical entry at index 1 with √2 scaling.
+    # F_1 has (1,0) = 0.5 → canonical entry at index 1 with √2 scaling,
+    # negated because A = -vec(F_1).
     a_col = cone["A"].toarray().flatten()
     assert a_col[0] == 0.0
-    assert a_col[1] == pytest.approx(0.5 * np.sqrt(2.0))
+    assert a_col[1] == pytest.approx(-0.5 * np.sqrt(2.0))
     assert a_col[2] == 0.0
 
 
@@ -403,8 +402,9 @@ def test_load_problem_returns_canonical_cone_problem(tmp_path: Path):
 
 
 def test_trace_one_sdp_solves_to_known_optimum(tmp_path: Path):
-    """The trace-one SDP fixture has known optimum value = 1
-    (X = diag(1, 0)). Verify Clarabel reaches it."""
+    """The fixture is min x s.t. x I - diag(1, 2) is PSD, whose optimum
+    is x = 2 (the SDPA-S convention: min c'x, sum x_i F_i - F_0 PSD).
+    Verify Clarabel reaches it."""
     pytest.importorskip("clarabel")
     from solver_benchmarks.core import status
     from solver_benchmarks.solvers.clarabel_adapter import ClarabelSolverAdapter
@@ -419,10 +419,7 @@ def test_trace_one_sdp_solves_to_known_optimum(tmp_path: Path):
     artifacts.mkdir()
     result = adapter.solve(pd, artifacts)
     assert result.status == status.OPTIMAL
-    # The CONE form's ``q'x = -b'y``; at optimum y_1 = 1 (so trace
-    # constraint is tight) gives q'x = -1. The "primal" SDP optimum
-    # 1.0 corresponds to dual y_1 = 1, hence -1.
-    assert result.objective_value == pytest.approx(-1.0, abs=1e-4)
+    assert result.objective_value == pytest.approx(2.0, abs=1e-4)
     assert result.kkt is not None
     assert result.kkt["primal_res_rel"] < 1e-3
     assert result.kkt["dual_res_rel"] < 1e-3
