@@ -176,6 +176,10 @@ def cone_residuals(
         "dual_res_rel": r_dual / norm_dual,
         "primal_cone_res": r_s_cone,
         "dual_cone_res": r_y_cone,
+        # the cone distances scaled like the equality residuals, so a check
+        # against a relative tolerance does not depend on the problem's units
+        "primal_cone_res_rel": r_s_cone / norm_pri,
+        "dual_cone_res_rel": r_y_cone / norm_dual,
         "comp_slack": comp,
         "comp_slack_signed": comp_signed,
         "primal_obj": primal_obj,

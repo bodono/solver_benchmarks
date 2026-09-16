@@ -17,12 +17,19 @@ from pathlib import Path
 from typing import Any
 
 from solver_benchmarks.core import status
+from solver_benchmarks.core.config import manifest_dataset_entries
 
 KKT_FIELDS = ("primal_res_rel", "dual_res_rel", "duality_gap_rel")
 # Cone-form records also carry the distance of s and y to their cones; a point
 # that satisfies Ax + s = b with s outside K is not feasible, so these are part
-# of the check whenever the record has them (QP-form records have none).
-CONE_FIELDS = ("primal_cone_res", "dual_cone_res")
+# of the check whenever the record has them (QP-form records have none). The
+# distances are scaled like the equality residuals (by 1 + the size of the
+# primal, respectively dual, data) so the check does not depend on the units
+# of the problem or on projection roundoff in a large cone.
+CONE_FIELDS = ("primal_cone_res_rel", "dual_cone_res_rel")
+# Records written before the relative distances existed only carry the
+# absolute ones; they are used in that case.
+_CONE_FALLBACK = {"primal_cone_res_rel": "primal_cone_res", "dual_cone_res_rel": "dual_cone_res"}
 # Statuses that carry a returned point which may still pass the check.
 PROMOTABLE = {status.OPTIMAL_INACCURATE, status.MAX_ITER_REACHED, status.TIME_LIMIT}
 _COPIED_FILES = ("run_config.yaml", "run_config.json", "events.jsonl")
@@ -109,12 +116,16 @@ def merge_runs(
     # completion / missing-results checks see every selection, and keep the
     # full source manifests for provenance (settings, environments).
     cfg = manifest.setdefault("config", {})
-    for section in ("datasets", "solvers"):
-        merged: dict[str, dict] = {}
-        for m in manifests:
-            for entry in (m.get("config") or {}).get(section) or []:
-                merged.setdefault(str(entry.get("id")), entry)
-        cfg[section] = list(merged.values())
+    cfg["datasets"] = _union_dataset_entries(m.get("config") or {} for m in manifests)
+    # The per-entry selections above already fold in each shard's run-level
+    # include / exclude, which must not survive as a global filter.
+    for key in ("include", "exclude", "dataset", "dataset_options"):
+        cfg.pop(key, None)
+    solvers: dict[str, dict] = {}
+    for m in manifests:
+        for entry in (m.get("config") or {}).get("solvers") or []:
+            solvers.setdefault(str(entry.get("id")), entry)
+    cfg["solvers"] = list(solvers.values())
     manifest["derived"] = {
         "kind": "merge",
         "sources": per_source,
@@ -128,33 +139,75 @@ def merge_runs(
     return {"rows": len(records), "sources": len(sources), "duplicate_keys": duplicates}
 
 
+def _union_dataset_entries(configs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Union the dataset selections of several shard configs, by dataset id.
+
+    Each shard's entries are resolved with ``manifest_dataset_entries`` (which
+    applies run-level ``include`` / ``exclude`` and the legacy single-dataset
+    shape). A problem is expected from the merged run if any shard expected
+    it: an entry with no ``include`` list expects every problem, so it wins
+    over an explicit list, and a problem stays excluded only if every shard
+    excluded it.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for config in configs:
+        for entry in manifest_dataset_entries(config):
+            current = merged.get(entry["id"])
+            if current is None:
+                merged[entry["id"]] = {**entry, "include": list(entry["include"]), "exclude": list(entry["exclude"])}
+                continue
+            if not current["include"] or not entry["include"]:
+                current["include"] = []
+            else:
+                current["include"] = sorted({*current["include"], *entry["include"]})
+            current["exclude"] = sorted(set(current["exclude"]) & set(entry["exclude"]))
+    return list(merged.values())
+
+
+def residual_summary(
+    record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
+) -> tuple[float | None, bool]:
+    """Return ``(worst, complete)`` for the listed KKT residuals of a record.
+
+    ``worst`` is the largest finite residual among the wanted fields (None if
+    there is none) and ``complete`` says whether every wanted field was
+    present and finite. Cone-form records also need the cone distances
+    (``CONE_FIELDS``, falling back to the absolute distances of older
+    records). The two are reported separately so that a residual known to
+    fail is never hidden by another one being missing.
+    """
+    kkt = record.get("kkt") or {}
+    wanted = list(fields)
+    if kkt.get("form") == "cone" or any(f in kkt or _CONE_FALLBACK[f] in kkt for f in CONE_FIELDS):
+        wanted += [f for f in CONE_FIELDS if f not in wanted]
+    worst: float | None = None
+    complete = True
+    for field in wanted:
+        value = kkt.get(field)
+        if value is None and field in _CONE_FALLBACK:
+            value = kkt.get(_CONE_FALLBACK[field])
+        try:
+            number = float(value) if value is not None else None
+        except (TypeError, ValueError):
+            number = None
+        if number is None or not math.isfinite(number):
+            complete = False
+            continue
+        worst = number if worst is None else max(worst, number)
+    return worst, complete
+
+
 def worst_relative_residual(
     record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
 ) -> float | None:
     """Largest of the listed KKT residuals, or None if any is missing or not finite.
 
-    A missing or non-finite component means the point could not be checked,
-    and an unchecked point must never count as verified: the caller treats
-    None as a failed check. Cone-form records must also have finite cone
-    residuals (``CONE_FIELDS``).
+    A missing or non-finite component means the point could not be fully
+    checked, and an unchecked point must never count as verified: the caller
+    treats None as a failed check.
     """
-    kkt = record.get("kkt") or {}
-    wanted = list(fields)
-    if kkt.get("form") == "cone" or any(f in kkt for f in CONE_FIELDS):
-        wanted += [f for f in CONE_FIELDS if f not in wanted]
-    values = []
-    for field in wanted:
-        value = kkt.get(field)
-        if value is None:
-            return None
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(value):
-            return None
-        values.append(value)
-    return max(values) if values else None
+    worst, complete = residual_summary(record, fields)
+    return worst if complete else None
 
 
 def kkt_verify(
@@ -215,15 +268,19 @@ def kkt_verify(
             continue
         if row.get("status") not in status.SOLUTION_PRESENT:
             continue
-        worst = worst_relative_residual(row, fields)
-        if worst is None:
+        worst, complete = residual_summary(row, fields)
+        if worst is not None and worst > tol:
+            # A residual that demonstrably fails demotes the row even when
+            # other residuals are missing and missing ones are tolerated.
+            reason = f"worst relative residual {worst:.3e} > {tol:.1e}"
+            if not complete:
+                reason += " (some residuals missing)"
+        elif not complete:
             missing[solver_id] = missing.get(solver_id, 0) + 1
             if not missing_is_failure:
                 kept[solver_id] = kept.get(solver_id, 0) + 1
                 continue
-            reason = "no KKT residuals recorded"
-        elif worst > tol:
-            reason = f"worst relative residual {worst:.3e} > {tol:.1e}"
+            reason = "no KKT residuals recorded" if worst is None else "incomplete KKT residuals"
         else:
             kept[solver_id] = kept.get(solver_id, 0) + 1
             continue
