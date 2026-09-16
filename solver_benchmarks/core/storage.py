@@ -296,6 +296,16 @@ class ResultStore:
                             "Worker-error retry limit reached for %s/%s/%s; "
                             "increase run.max_worker_error_retries to retry again", *key
                         )
+                        self.append_event(
+                            "warning",
+                            "Worker-error retry limit reached; increase "
+                            "run.max_worker_error_retries to retry again",
+                            dataset=key[0],
+                            problem=key[1],
+                            solver_id=key[2],
+                            worker_error_retries=retries,
+                            max_worker_error_retries=max_retries,
+                        )
                         continue
                     self._retry_rows.setdefault(key, set()).add(line.strip())
                     self._retry_counts[key] = max(retries, self._retry_counts.get(key, 0))

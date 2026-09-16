@@ -462,12 +462,25 @@ def test_resume_caps_deterministic_worker_errors_and_can_extend_budget(
     rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
     assert len(rows) == 2 and {row["status"] for row in rows} == {"worker_error"}
     assert {row["metadata"].get("worker_error_retries", 0) for row in rows} == {retry_limit}
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    cap_events = [event for event in events if "max_worker_error_retries" in event]
+    assert len(cap_events) == 4  # Two problems on each of the two capped resumes.
+    for event in cap_events:
+        assert event["level"] == "warning"
+        assert "increase run.max_worker_error_retries" in event["message"]
+        assert event["dataset"] == "synthetic_qp"
+        assert event["solver_id"] == "broken"
+        assert event["problem"] in {row["problem"] for row in rows}
+        assert event["worker_error_retries"] == retry_limit
+        assert event["max_worker_error_retries"] == retry_limit
 
     raw["run"]["max_worker_error_retries"] = retry_limit + 1
     extended = parse_run_config(raw)
     assert extended.config_hash == config.config_hash
     run_benchmark(extended, run_dir=store.run_dir, repo_root=repo_root)
     assert len(calls) == 2 * (retry_limit + 2)
+    extended_events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    assert [event for event in extended_events if "max_worker_error_retries" in event] == cap_events
 
 
 def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path, repo_root: Path):
