@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
+
 import numpy as np
 import pandas as pd
 
 from solver_benchmarks.core import status
 
 DEFAULT_FAILURE_PENALTY = 1.0e3
+TIME_METRICS = frozenset({"run_time_seconds", "setup_time_seconds", "solve_time_seconds"})
 
-# Per-metric defaults used by shifted_geomean
-# when the caller hasn't pinned ``max_value`` and ``shift``. The
-# original globals (1e3 / 10) made sense only for run_time_seconds;
-# applying them to ``iterations`` or KKT residuals gave nonsense
-# aggregates. The dispatch is opt-in: callers can still pass explicit
-# values, and unknown metrics fall back to the run-time-style defaults.
+# Fixed defaults for non-time failure penalties and metric-specific shifts.
+# Time geomeans require a declared limit or explicit penalty; historical time
+# penalty values remain available through metric_defaults for compatibility.
+# Unknown metrics retain the historical defaults until callers override them.
 _METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
     "run_time_seconds": (1.0e3, 10.0),
     "setup_time_seconds": (1.0e3, 10.0),
@@ -42,7 +44,8 @@ def metric_defaults(metric: str) -> tuple[float, float]:
 
     Falls back to the run-time-style defaults for unknown metrics so
     aggregates remain useful for ad-hoc columns (e.g. wall-time
-    derivatives).
+    derivatives). Time geomeans use the shift but require a time limit or
+    explicit penalty instead of using the historical failure-penalty default.
     """
     return _METRIC_DEFAULTS.get(metric, (DEFAULT_FAILURE_PENALTY, 10.0))
 
@@ -253,6 +256,7 @@ def shifted_geomean(
     max_value: float | None = None,
     penalize_failures: bool = True,
     expected: pd.DataFrame | None = None,
+    timeout_seconds: float | Mapping[str, float] | None = None,
 ) -> pd.DataFrame:
     """Compute per-solver means over the expected comparison universe.
 
@@ -260,35 +264,32 @@ def shifted_geomean(
     problem/solver identities to include completely absent problems or solvers;
     otherwise the observed sets are crossed. Success-only means still omit
     failures, while their counts describe the same comparison universe.
-    The penalty (default or explicit ``max_value``) is raised to the largest
-    successful metric in this comparison, so each failure costs at least as
-    much as every admitted success. The returned ``max_value`` records that effective
-    penalty. Larger explicit penalties are retained.
+    For time metrics, the default failure penalty is three times
+    ``timeout_seconds`` (a positive finite scalar or a mapping by dataset ID).
+    A time limit or explicit ``max_value`` is required. An explicit penalty is
+    preserved as given; other metrics retain their fixed metric defaults.
+    Penalties never depend on observed successful values or solver membership.
+    The returned ``max_value`` records the fixed penalty, or is null for a
+    mixed-dataset comparison with different penalties; ``max_value_by_dataset``
+    then records the applied penalties as a JSON mapping. Success-only means
+    do not require a penalty or time limit.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
-    if max_value is None or shift is None:
-        default_max, default_shift = metric_defaults(metric)
-        if max_value is None:
-            max_value = default_max
-        if shift is None:
-            shift = default_shift
+    if shift is None:
+        _, shift = metric_defaults(metric)
     results = complete_results(results, expected=expected)
     if "problem" in results:
         keys = ["dataset", "problem"] if "dataset" in results else ["problem"]
         results = deduplicate_for_pivot(results, keys, metric, success_statuses=success_statuses)
-    columns = ["solver_id", metric, "mode", "shift", "max_value", "success_count", "failure_count"]
+    columns = ["solver_id", metric, "mode", "shift", "max_value", "success_count", "failure_count",
+               "max_value_by_dataset"]
     if results.empty:
         return pd.DataFrame(columns=columns)
-    numeric = pd.to_numeric(
-        results.get(metric, pd.Series(np.nan, index=results.index)), errors="coerce"
-    )
-    valid_success = results["status"].isin(success_statuses) & np.isfinite(numeric) & numeric.ge(0)
-    if penalize_failures:
-        if np.isnan(max_value) or max_value < 0:
-            raise ValueError("max_value must be nonnegative and not NaN")
-        if valid_success.any():
-            max_value = max(max_value, float(numeric[valid_success].max()))
+    results = results.assign(__failure_penalty=(
+        _geomean_penalties(results, metric, max_value, timeout_seconds)
+        if penalize_failures else np.nan
+    ))
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
         values = pd.to_numeric(
@@ -297,9 +298,19 @@ def shifted_geomean(
         successful = group["status"].isin(success_statuses).to_numpy() & np.isfinite(values) & (values >= 0)
         success_count = int(successful.sum())
         failure_count = int(len(group) - success_count)
+        reported_max = None
+        max_by_dataset = None
         if penalize_failures:
-            values[~successful] = max_value
-            values = np.nan_to_num(values, nan=max_value, posinf=max_value, neginf=max_value)
+            penalties = group["__failure_penalty"].to_numpy(dtype=float)
+            values[~successful] = penalties[~successful]
+            if len(np.unique(penalties)) == 1:
+                reported_max = float(penalties[0])
+            else:
+                max_by_dataset = json.dumps(
+                    {str(dataset): float(penalty) for dataset, penalty in
+                     group.groupby("dataset", observed=True)["__failure_penalty"].first().items()},
+                    sort_keys=True,
+                )
             mode = "penalized"
         else:
             values = values[successful]
@@ -312,12 +323,49 @@ def shifted_geomean(
                 metric: geomean,
                 "mode": mode,
                 "shift": shift,
-                "max_value": max_value if penalize_failures else None,
+                "max_value": reported_max,
                 "success_count": success_count,
                 "failure_count": failure_count,
+                "max_value_by_dataset": max_by_dataset,
             }
         )
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
+
+
+def _geomean_penalties(
+    results: pd.DataFrame,
+    metric: str,
+    max_value: float | None,
+    timeout_seconds: float | Mapping[str, float] | None,
+) -> pd.Series:
+    if max_value is not None:
+        if np.isnan(max_value) or max_value < 0:
+            raise ValueError("max_value must be nonnegative and not NaN")
+        return pd.Series(max_value, index=results.index, dtype=float)
+    if metric not in TIME_METRICS:
+        penalty, _ = metric_defaults(metric)
+        return pd.Series(penalty, index=results.index, dtype=float)
+    if timeout_seconds is None:
+        raise ValueError("Time geomeans require timeout_seconds or an explicit max_value failure penalty")
+    if isinstance(timeout_seconds, Mapping):
+        penalties = {str(dataset): _time_failure_penalty(limit) for dataset, limit in timeout_seconds.items()}
+        if "dataset" not in results:
+            if len(penalties) != 1:
+                raise ValueError("Dataset identities are required for per-dataset time limits")
+            return pd.Series(next(iter(penalties.values())), index=results.index, dtype=float)
+        values = results["dataset"].astype(str).map(penalties)
+        if values.isna().any():
+            missing = sorted(set(results.loc[values.isna(), "dataset"].astype(str)))
+            raise ValueError(f"Missing time limit for datasets {missing}; supply timeout_seconds or max_value")
+        return values
+    return pd.Series(_time_failure_penalty(timeout_seconds), index=results.index, dtype=float)
+
+
+def _time_failure_penalty(timeout_seconds: float) -> float:
+    penalty = 3.0 * timeout_seconds
+    if not np.isfinite(timeout_seconds) or timeout_seconds <= 0 or not np.isfinite(penalty):
+        raise ValueError("timeout_seconds must be positive and finite, with a finite three-times penalty")
+    return penalty
 
 
 def _shifted_geomean(values: np.ndarray, shift: float) -> float:
