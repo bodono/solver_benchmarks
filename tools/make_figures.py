@@ -20,12 +20,12 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import FuncFormatter
 
 from solver_benchmarks.analysis.load import load_results
-from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
+from solver_benchmarks.analysis.profiles import shifted_geomean
 
 FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
                  "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set"}
@@ -41,6 +41,9 @@ FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
 # solver, whatever status it reported.
 FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0}
 LIMIT_GRACE = 60.0
+# Failures are charged this multiple of the family's time limit in the shifted
+# geometric mean, so a failure always costs more than any admitted success.
+FAILURE_PENALTY_FACTOR = 3.0
 DATASET_NAMES = {"maros_meszaros": "Maros-Meszaros", "qplib": "QPLIB", "mpc": "MPC", "netlib": "Netlib",
                  "kennington": "Kennington", "miplib_relax": "MIPLIB-relaxation", "sdplib": "SDPLIB",
                  "mittelmann_sdp": "Mittelmann", "mittelmann0": "Mittelmann", "mittelmann1": "Mittelmann",
@@ -118,18 +121,44 @@ TIME_FLOOR = 0.01
 TAU_MAX = 1.0e4
 
 
+def full_denominator_profile(df: pd.DataFrame) -> pd.DataFrame:
+    """Dolan-More profile whose denominator is every problem in ``df``.
+
+    The harness helper drops problems on which every solver failed, which
+    lets curves reach 1.0 while the bars report fewer solves. Here failures
+    have an infinite ratio and never count, and the y axis is the fraction of
+    all problems, matching the solved counts shown next to the bars.
+    """
+    from solver_benchmarks.core import status as st
+    keys = ["dataset", "problem"]
+    ok = df["status"].isin(set(st.SOLUTION_PRESENT))
+    times = df.assign(t=df["run_time_seconds"].where(ok, np.inf)).pivot_table(index=keys, columns="solver_id", values="t", aggfunc="min")
+    n = times.shape[0]
+    if n == 0:
+        return pd.DataFrame()
+    best = times.min(axis=1)
+    ratios = times.divide(best, axis=0)
+    tau = np.logspace(0, np.log10(TAU_MAX), 1000)
+    out = {"tau": tau}
+    for sid in ratios.columns:
+        r = np.sort(ratios[sid].to_numpy(dtype=float))
+        r = r[np.isfinite(r)]
+        out[sid] = np.searchsorted(r, tau, side="right") / float(n)
+    return pd.DataFrame(out)
+
+
 def draw_profile(ax, df: pd.DataFrame, title: str, compact: bool = False) -> bool:
     # Failures count as "never solved" (infinite ratio), a 10 ms floor keeps
     # sub-millisecond timings from producing meaningless ratios, and the
     # tau axis is capped at 1e4.
     df = df.assign(run_time_seconds=df["run_time_seconds"].clip(lower=TIME_FLOOR))
-    prof = performance_profile(df, metric="run_time_seconds", max_value=float("inf"), tau_max=TAU_MAX)
+    prof = full_denominator_profile(df)
     if prof.empty:
         return False
     fs = 9.5 if compact else 10
     solvers = [c for c in prof.columns if c != "tau"]
     others = [s for s in solvers if base_solver(s) not in SCS_STYLE]
-    for i, s in enumerate(others + [s for s in solvers if base_solver(s) in SCS_STYLE]):
+    for _i, s in enumerate(others + [s for s in solvers if base_solver(s) in SCS_STYLE]):
         color, ls, lw = style_for(s, others.index(s) if s in others else 0)
         ax.plot(prof["tau"], prof[s], color=color, linestyle=ls, linewidth=lw,
                 label=solver_label(s), zorder=3 if base_solver(s) in SCS_STYLE else 2)
@@ -174,8 +203,12 @@ def with_missing_as_failures(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, missing], ignore_index=True)
 
 
-def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False) -> pd.DataFrame:
-    gm = shifted_geomean(with_missing_as_failures(df), metric="run_time_seconds")
+def failure_penalty(family: str | None) -> float:
+    return FAILURE_PENALTY_FACTOR * FAMILY_LIMIT.get(family or "", 300.0)
+
+
+def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False, family: str | None = None) -> pd.DataFrame:
+    gm = shifted_geomean(with_missing_as_failures(df), metric="run_time_seconds", max_value=failure_penalty(family))
     if gm.empty:
         return gm
     value_col = "run_time_seconds"  # shifted_geomean names its value column after the metric
@@ -201,8 +234,9 @@ def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False) -> pd.
         ax.text(v + pad, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=fs - 2.5, color="#666666", linespacing=0.6)
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
     ax.tick_params(axis="x", labelsize=fs - 1)
+    pen = failure_penalty(family)
     ax.set_xlabel("shifted geometric mean solve time (s), lower is better" if compact else
-                  "shifted geometric mean of solve time (s), lower is better; failures charged 1000 s", fontsize=fs - 1)
+                  f"shifted geometric mean of solve time (s), lower is better; failures charged {pen:.0f} s", fontsize=fs - 1)
     if title:
         ax.set_title(title, fontsize=10.5, loc="left", pad=10, wrap=True)
     ax.invert_yaxis()
@@ -214,10 +248,10 @@ def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False) -> pd.
     return gm
 
 
-def plot_geomean(df: pd.DataFrame, title: str, path: Path) -> pd.DataFrame:
+def plot_geomean(df: pd.DataFrame, title: str, path: Path, family: str | None = None) -> pd.DataFrame:
     n = df["solver_id"].nunique()
     fig, ax = plt.subplots(figsize=(8.0, 0.42 * n + 1.6))
-    gm = draw_geomean(ax, df, title)
+    gm = draw_geomean(ax, df, title, family=family)
     if not gm.empty:
         fig.tight_layout()
         fig.savefig(path, dpi=220)
@@ -237,9 +271,10 @@ def plot_grid(frames: dict, path: Path) -> None:
     axes = np.atleast_2d(axes)
     for (fam, sub), (ax_p, ax_g) in zip(rows, axes):
         df, title, overrides = frames[(fam, sub)]
-        LABEL_OVERRIDE.clear(); LABEL_OVERRIDE.update(overrides)
+        LABEL_OVERRIDE.clear()
+        LABEL_OVERRIDE.update(overrides)
         draw_profile(ax_p, df, title, compact=True)
-        draw_geomean(ax_g, df, "", compact=True)
+        draw_geomean(ax_g, df, "", compact=True, family=fam)
     fig.tight_layout(h_pad=2.0, w_pad=1.5)
     fig.savefig(path, dpi=200)
     plt.close(fig)
@@ -278,7 +313,8 @@ def main() -> None:
         limit = FAMILY_LIMIT.get(family)
         if limit:
             late = df["run_time_seconds"] > limit + LIMIT_GRACE
-            df = df.copy(); df.loc[late, "status"] = "time_limit"
+            df = df.copy()
+            df.loc[late, "status"] = "time_limit"
         use_run = dict(kv.split("=", 1) for kv in args.use_run)
         tags = sorted({solver_tol(s) for s in df["solver_id"].unique() if solver_tol(s)})
         if args.tol_tag:
@@ -313,18 +349,21 @@ def main() -> None:
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{sets_title(family, sub)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
-            gm = plot_geomean(sub, title, args.out_dir / f"{family}_{tag}_geomean.png")
+            gm = plot_geomean(sub, title, args.out_dir / f"{family}_{tag}_geomean.png", family=family)
             big = largest_quartile(sub)
             n_big = big.groupby(["dataset", "problem"]).ngroups
             title_big = f"{sets_title(family, big)}, largest quartile ({n_big} problems), tolerance {tag}"
             plot_profile(big, title_big, args.out_dir / f"{family}_{tag}_profile_largest.png")
-            gm_big = plot_geomean(big, title_big, args.out_dir / f"{family}_{tag}_geomean_largest.png")
+            gm_big = plot_geomean(big, title_big, args.out_dir / f"{family}_{tag}_geomean_largest.png", family=family)
             if tag == (args.tol_tag or "1e-4"):
                 frames[(family, "all")] = (sub, title, dict(LABEL_OVERRIDE))
                 frames[(family, "largest")] = (big, title_big, dict(LABEL_OVERRIDE))
             for label, table in (("all", gm), ("largest", gm_big)):
                 if table is not None and not table.empty:
-                    t = table.copy(); t.insert(0, "subset", label); t.insert(0, "tol", tag); t.insert(0, "family", family)
+                    t = table.copy()
+                    t.insert(0, "subset", label)
+                    t.insert(0, "tol", tag)
+                    t.insert(0, "family", family)
                     t["label"] = [solver_label(s) for s in t["solver_id"]]
                     summary.append(t)
             print(f"{family} {tag}: {n_all} problems, largest quartile {n_big}")

@@ -119,7 +119,8 @@ VOLUMES = {"/data": data_vol, "/results": results_vol}
 
 
 def _run(campaign: str, name: str, config_yaml: str) -> dict:
-    import os, time
+    import os
+    import time
 
     cfg = Path(f"/tmp/{name}.yaml")
     cfg.write_text(config_yaml)
@@ -184,7 +185,11 @@ def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str) -> dict:
 
 @app.function(image=cpu_image, cpu=2.0)
 def probe_cpu() -> str:
-    import platform, scs, numpy as np, scipy.sparse as sp
+    import platform
+
+    import numpy as np
+    import scipy.sparse as sp
+    import scs
     data = {"A": sp.csc_matrix([[1.0], [-1.0]]), "b": np.array([1.0, 0.0]), "c": np.array([-1.0])}
     info = scs.solve(data, {"l": 2}, verbose=False)["info"]
     return f"{platform.processor() or platform.machine()} scs {scs.__version__} default backend: {info['lin_sys_solver']}"
@@ -192,7 +197,11 @@ def probe_cpu() -> str:
 
 @app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0)
 def probe_gpu() -> str:
-    import scs, numpy as np, scipy.sparse as sp, subprocess
+    import subprocess
+
+    import numpy as np
+    import scipy.sparse as sp
+    import scs
     gpu = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True).stdout.strip()
     data = {"A": sp.csc_matrix([[1.0], [-1.0]]), "b": np.array([1.0, 0.0]), "c": np.array([-1.0])}
     info = scs.solve(data, {"l": 2}, verbose=False, linear_solver="cudss")["info"]
@@ -203,8 +212,12 @@ def probe_gpu() -> str:
 def probe_cuopt() -> str:
     """Check the cuOpt API on the installed version: parameter names, the
     termination enum, the QP objective convention and the dual sign."""
-    import numpy as np, scipy.sparse as sp, importlib.metadata as md
+    import importlib.metadata as md
+
+    import numpy as np
+    import scipy.sparse as sp
     from cuopt.linear_programming import data_model, solver, solver_settings
+
     from solver_benchmarks.analysis import kkt
     out = [f"cuopt version: {md.version('cuopt-cu12')}"]
     ss = solver_settings.SolverSettings()
@@ -212,8 +225,11 @@ def probe_cuopt() -> str:
     names = None
     for getter in ("get_parameter_names", "parameter_names", "get_all_parameter_names"):
         if hasattr(ss, getter):
-            try: names = getattr(ss, getter)(); break
-            except Exception as e: out.append(f"{getter} failed: {e}")
+            try:
+                names = getattr(ss, getter)()
+                break
+            except Exception as e:
+                out.append(f"{getter} failed: {e}")
     mod = solver_settings.solver_settings if hasattr(solver_settings, "solver_settings") else solver_settings
     consts = [a for a in dir(mod) if a.startswith("CUOPT_")]
     out.append(f"param names via getter: {names}")
@@ -222,33 +238,48 @@ def probe_cuopt() -> str:
             try:
                 val = getattr(ss, getter)
                 val = val() if callable(val) else val
-                out.append(f"{getter}: {val}"[:900]); break
-            except Exception as e: out.append(f"{getter} failed: {e}")
+                out.append(f"{getter}: {val}"[:900])
+                break
+            except Exception as e:
+                out.append(f"{getter} failed: {e}")
     out.append("CUOPT_* constants: " + ", ".join(consts)[:900])
     # min 1/2 x'Px + q'x  s.t. l <= A x <= u, with P = diag(2, 4): solution x = -P^{-1} q if interior
-    P = sp.csc_matrix(np.diag([2.0, 4.0])); q = np.array([-2.0, -4.0]); A = sp.csr_matrix(np.eye(2))
-    l = np.array([-10.0, -10.0]); u = np.array([10.0, 10.0])
+    P = sp.csc_matrix(np.diag([2.0, 4.0]))
+    q = np.array([-2.0, -4.0])
+    A = sp.csr_matrix(np.eye(2))
+    l = np.array([-10.0, -10.0])
+    u = np.array([10.0, 10.0])
     for scale, label in [(0.5, "Q = P/2"), (1.0, "Q = P")]:
         m = data_model.DataModel()
         m.set_csr_constraint_matrix(A.data, A.indices.astype(np.int32), A.indptr.astype(np.int32))
-        m.set_constraint_lower_bounds(l); m.set_constraint_upper_bounds(u)
+        m.set_constraint_lower_bounds(l)
+        m.set_constraint_upper_bounds(u)
         m.set_objective_coefficients(q)
-        m.set_variable_lower_bounds(np.full(2, -np.inf)); m.set_variable_upper_bounds(np.full(2, np.inf))
+        m.set_variable_lower_bounds(np.full(2, -np.inf))
+        m.set_variable_upper_bounds(np.full(2, np.inf))
         Q = sp.csr_matrix(P * scale)
         m.set_quadratic_objective_matrix(Q.data, Q.indices.astype(np.int32), Q.indptr.astype(np.int32))
-        s = solver_settings.SolverSettings(); s.set_optimality_tolerance(1e-8)
+        s = solver_settings.SolverSettings()
+        s.set_optimality_tolerance(1e-8)
         sol = solver.Solve(m, s)
-        x = np.asarray(sol.get_primal_solution()); y = np.asarray(sol.get_dual_solution())
+        x = np.asarray(sol.get_primal_solution())
+        y = np.asarray(sol.get_dual_solution())
         term = sol.get_termination_status()
         out.append(f"{label}: x={np.round(x,4).tolist()} (expect [1,1] for the harness objective) term={term!r} name={getattr(term,'name',None)} obj={sol.get_primal_objective()}")
     # dual sign on an LP with an active constraint: min x s.t. 1 <= x <= 10
     m = data_model.DataModel()
-    A = sp.csr_matrix(np.eye(1)); m.set_csr_constraint_matrix(A.data, A.indices.astype(np.int32), A.indptr.astype(np.int32))
-    m.set_constraint_lower_bounds(np.array([1.0])); m.set_constraint_upper_bounds(np.array([10.0]))
+    A = sp.csr_matrix(np.eye(1))
+    m.set_csr_constraint_matrix(A.data, A.indices.astype(np.int32), A.indptr.astype(np.int32))
+    m.set_constraint_lower_bounds(np.array([1.0]))
+    m.set_constraint_upper_bounds(np.array([10.0]))
     m.set_objective_coefficients(np.array([1.0]))
-    m.set_variable_lower_bounds(np.array([-np.inf])); m.set_variable_upper_bounds(np.array([np.inf]))
-    s = solver_settings.SolverSettings(); s.set_optimality_tolerance(1e-8)
-    sol = solver.Solve(m, s); x = np.asarray(sol.get_primal_solution()); y = np.asarray(sol.get_dual_solution())
+    m.set_variable_lower_bounds(np.array([-np.inf]))
+    m.set_variable_upper_bounds(np.array([np.inf]))
+    s = solver_settings.SolverSettings()
+    s.set_optimality_tolerance(1e-8)
+    sol = solver.Solve(m, s)
+    x = np.asarray(sol.get_primal_solution())
+    y = np.asarray(sol.get_dual_solution())
     r_plus = kkt.qp_residuals(sp.csc_matrix((1,1)), np.array([1.0]), sp.csc_matrix(A), np.array([1.0]), np.array([10.0]), x, y)
     r_minus = kkt.qp_residuals(sp.csc_matrix((1,1)), np.array([1.0]), sp.csc_matrix(A), np.array([1.0]), np.array([10.0]), x, -y)
     out.append(f"LP x={x.tolist()} y={y.tolist()} dual_res(+y)={r_plus['dual_res_rel']:.2e} dual_res(-y)={r_minus['dual_res_rel']:.2e}")
@@ -284,9 +315,13 @@ def main(
     from collections import deque
 
     if probe:
-        print(probe_cpu.remote()); print(probe_gpu.remote()); print(probe_cuopt.remote()); return
+        print(probe_cpu.remote())
+        print(probe_gpu.remote())
+        print(probe_cuopt.remote())
+        return
     if probe_cuopt_only:
-        print(probe_cuopt.remote()); return
+        print(probe_cuopt.remote())
+        return
     shards = json.loads(Path(spec).read_text())
     if only:
         shards = [s for s in shards if only in s["name"]]
@@ -319,6 +354,9 @@ def main(
                     print(f"cancel failed: {exc}")
             break
         launched = 0
+        if pending and not running and all(projected + RATES_PER_HOUR[sh["kind"]] > budget_usd for sh in pending):
+            print(f"BUDGET: ${budget_usd - projected:.2f} left cannot fund any pending shard for an hour; dropping {len(pending)} pending", flush=True)
+            break
         for _ in range(len(pending)):
             sh = pending[0]
             k = sh["kind"]
@@ -338,6 +376,11 @@ def main(
             except TimeoutError:
                 continue
             except Exception as exc:
+                # Transient Modal client/API errors (deadline exceeded, connection
+                # reset) are not shard failures: the container keeps running.
+                if "Deadline" in str(exc) or "Connection" in type(exc).__name__ or "ServiceError" in type(exc).__name__:
+                    print(f"  transient error polling {sh['name']}: {str(exc)[:80]}; will retry", flush=True)
+                    continue
                 r = {"name": sh["name"], "exit": -1, "rows": 0, "seconds": time.time() - t0, "error": str(exc)[:200]}
             del running[call]
             hours = (time.time() - t0) / 3600
