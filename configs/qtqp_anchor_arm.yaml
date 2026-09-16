@@ -27,8 +27,9 @@ solvers:
 - id: qtqp_cvxopt_anchor
   solver: qtqp
   settings:
-    atol: 1.0e-09
-    rtol: 1.0e-09
+    tol_feas: 1.0e-09
+    tol_gap_abs: 1.0e-09
+    tol_gap_rel: 1.0e-09
     max_iter: 200
     linear_solver: qdldl
     init_strategy: cvxopt

@@ -334,7 +334,7 @@ Current maintained adapters:
 
 | Solver | ID | Supported types | Notes |
 |---|---|---|---|
-| QTQP | `qtqp` | QP | Converts QP bounds to nonnegative cone form internally. |
+| QTQP | `qtqp` | QP | Converts QP bounds to nonnegative cone form internally. Needs qtqp >= 0.0.7; tolerances are `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (the harness also accepts `eps`/`eps_abs`/`eps_rel` and the pre-0.0.7 `atol`/`rtol`, translated to whatever the installed version takes). |
 | SCS | `scs` | QP, cone | Supports SCS box-cone form for QPs and native conic data. |
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
