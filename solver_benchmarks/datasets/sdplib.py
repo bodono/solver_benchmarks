@@ -39,54 +39,44 @@ class SDPLIBDataset(Dataset):
         return self.folder / "sdplib.tar"
 
     def list_problems(self) -> list[ProblemSpec]:
-        specs = []
+        """One spec per problem name, with explicit precedence.
+
+        An original SDPA-S file (``.dat-s`` then ``.dat-s.gz``) placed in the
+        data folder replaces both an extracted ``.jld2`` and the tar member of
+        the same name, which is how corrupt archive entries (maxG55, maxG60)
+        are overridden; otherwise ``.jld2`` beats the tar member.
+        """
+        specs: dict[str, ProblemSpec] = {}
+        rank: dict[str, int] = {}
+
+        def offer(name: str, spec: ProblemSpec, priority: int) -> None:
+            if name not in specs or priority < rank[name]:
+                specs[name] = spec
+                rank[name] = priority
+
         if self.folder.is_dir():
-            for path in sorted(self.folder.glob("*.jld2")):
-                specs.append(
-                    ProblemSpec(
-                        dataset_id=self.dataset_id,
-                        name=path.stem,
-                        kind=CONE,
-                        path=path,
-                        metadata={"source": str(path), "format": "jld2"},
-                    )
-                )
-        # Original SDPA-S files placed next to the archive replace the tar
-        # member of the same name (used for maxG55/maxG60, whose converted
-        # copies in the archive are corrupt).
-        for path in sorted(self.folder.iterdir()):
-            if path.name.endswith(".dat-s") or path.name.endswith(".dat-s.gz"):
-                stem = path.name[: -len(".dat-s.gz")] if path.name.endswith(".dat-s.gz") else path.name[: -len(".dat-s")]
-                specs.append(
-                    ProblemSpec(
-                        dataset_id=self.dataset_id,
-                        name=stem,
-                        kind=CONE,
-                        path=path,
-                        metadata={"source": str(path), "format": "sdpa-s"},
-                    )
-                )
-        existing = {spec.name for spec in specs}
+            for path in sorted(self.folder.iterdir()):
+                if path.name.endswith(".dat-s.gz"):
+                    stem, prio = path.name[: -len(".dat-s.gz")], 1
+                elif path.name.endswith(".dat-s"):
+                    stem, prio = path.name[: -len(".dat-s")], 0
+                elif path.suffix == ".jld2":
+                    stem, prio = path.stem, 2
+                else:
+                    continue
+                fmt = "sdpa-s" if prio < 2 else "jld2"
+                offer(stem, ProblemSpec(dataset_id=self.dataset_id, name=stem, kind=CONE, path=path,
+                                        metadata={"source": str(path), "format": fmt}), prio)
         # Tar members share ProblemSpec.path (the archive itself). Surface
         # the per-member size via metadata["size_bytes"] so the runner-level
         # size filter can compare against the member, not the whole archive.
-        for name, size_bytes in sorted(list_sdplib_tar(self.tar_path).items()):
-            if name in existing:
-                continue
-            specs.append(
-                ProblemSpec(
-                    dataset_id=self.dataset_id,
-                    name=name,
-                    kind=CONE,
-                    path=self.tar_path,
-                    metadata={
-                        "source": str(self.tar_path),
-                        "format": "tar:jld2",
-                        "size_bytes": size_bytes,
-                    },
-                )
-            )
-        return sorted(specs, key=lambda spec: spec.name)
+        if self.tar_path.exists():
+            for name, size_bytes in sorted(list_sdplib_tar(self.tar_path).items()):
+                offer(name, ProblemSpec(
+                    dataset_id=self.dataset_id, name=name, kind=CONE, path=self.tar_path,
+                    metadata={"source": str(self.tar_path), "format": "tar:jld2", "size_bytes": int(size_bytes)},
+                ), 3)
+        return [specs[k] for k in sorted(specs)]
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
