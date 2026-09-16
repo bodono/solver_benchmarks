@@ -32,6 +32,10 @@ FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kenni
 # The LP family's copy of the Mittelmann set only ever held qap15; the set is
 # its own family (lpbig), so drop it here to keep the title honest.
 FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
+# Instances staged from an older MIPLIB listing that are not in the 240-instance
+# MIPLIB 2017 benchmark set; dropped so the LP family is exactly that set.
+FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
+                        ("n9-3", "neos-3754224-navua", "neos-5075914-elvire", "rococoC11-011100", "toll-like")}}
 # Nominal time limit per family and the grace the harness allowed before
 # killing a worker; a solve that finishes later counts as a failure for every
 # solver, whatever status it reported.
@@ -58,6 +62,7 @@ def sets_title(family: str, df: pd.DataFrame) -> str:
     joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
     return f"{joined} {FAMILY_NOUN[family]}"
 SOLVER_LABELS = {
+    "qtqp_mkl": "QTQP (CPU, MKL Pardiso)", "qtqp_cudss": "QTQP (GPU, cuDSS)",
     "scs_cpu": "SCS (CPU, MKL Pardiso)",
     "scs_cudss": "SCS (GPU, cuDSS)",
     "cuopt": "cuOpt (GPU)",
@@ -245,6 +250,8 @@ def main() -> None:
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("runs", nargs="+", help="family=run_dir pairs")
     ap.add_argument("--tol-tag", default=None, help="only solver ids ending in this tag, e.g. 1e-4")
+    ap.add_argument("--exclude-solver", action="append", default=[], metavar="BASE",
+                    help="drop this solver (base id, e.g. qtqp_mkl) from every plot and table")
     ap.add_argument("--grid", type=Path, default=None,
                     help="also write a 3x2 landing-page grid (QP largest, LP largest, Mittelmann) to this path")
     ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
@@ -263,6 +270,11 @@ def main() -> None:
         drop = FAMILY_DROP_DATASETS.get(family)
         if drop:
             df = df[~df["dataset"].isin(drop)]
+        if args.exclude_solver:
+            df = df[~df["solver_id"].apply(base_solver).isin(set(args.exclude_solver))]
+        drop_p = FAMILY_DROP_PROBLEMS.get(family)
+        if drop_p:
+            df = df[~pd.Series(list(zip(df["dataset"], df["problem"])), index=df.index).isin(drop_p)]
         limit = FAMILY_LIMIT.get(family)
         if limit:
             late = df["run_time_seconds"] > limit + LIMIT_GRACE
