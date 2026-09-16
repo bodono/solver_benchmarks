@@ -262,6 +262,18 @@ def plot_geomean(df: pd.DataFrame, title: str, path: Path, family: str | None = 
 GRID_ROWS = (("qp", "largest"), ("lp", "largest"), ("lpbig", "all"))
 
 
+def plot_pair(df: pd.DataFrame, title: str, path: Path, family: str) -> None:
+    """One row of the landing grid on its own: profile left, geomean bars right."""
+    fig, (ax_p, ax_g) = plt.subplots(1, 2, figsize=(11.0, 3.6), gridspec_kw={"width_ratios": [1.0, 1.05]})
+    if not draw_profile(ax_p, df, title, compact=True):
+        plt.close(fig)
+        return
+    draw_geomean(ax_g, df, "", compact=True, family=family)
+    fig.tight_layout(w_pad=1.5)
+    fig.savefig(path, dpi=200)
+    plt.close(fig)
+
+
 def plot_grid(frames: dict, path: Path) -> None:
     """3 x 2 landing-page figure: one family per row, profile left, bars right."""
     rows = [(fam, sub) for fam, sub in GRID_ROWS if (fam, sub) in frames]
@@ -349,11 +361,13 @@ def main() -> None:
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{sets_title(family, sub)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
+            plot_pair(sub, title, args.out_dir / f"{family}_{tag}_pair.png", family)
             gm = plot_geomean(sub, title, args.out_dir / f"{family}_{tag}_geomean.png", family=family)
             big = largest_quartile(sub)
             n_big = big.groupby(["dataset", "problem"]).ngroups
             title_big = f"{sets_title(family, big)}, largest quartile ({n_big} problems), tolerance {tag}"
             plot_profile(big, title_big, args.out_dir / f"{family}_{tag}_profile_largest.png")
+            plot_pair(big, title_big, args.out_dir / f"{family}_{tag}_pair_largest.png", family)
             gm_big = plot_geomean(big, title_big, args.out_dir / f"{family}_{tag}_geomean_largest.png", family=family)
             if tag == (args.tol_tag or "1e-4"):
                 frames[(family, "all")] = (sub, title, dict(LABEL_OVERRIDE))
