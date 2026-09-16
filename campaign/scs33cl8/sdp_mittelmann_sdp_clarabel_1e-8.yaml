@@ -1,0 +1,21 @@
+run:
+  name: sdp_mittelmann_sdp_clarabel_1e-8
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: mittelmann_sdp
+    id: mittelmann_sdp
+    dataset_options:
+      subset: all
+    exclude:
+    - G40mc
+solvers:
+- id: clarabel_1e-8
+  solver: clarabel
+  settings:
+    tol_feas: 1.0e-08
+    tol_gap_abs: 1.0e-08
+    tol_gap_rel: 1.0e-08
+    time_limit: 900.0

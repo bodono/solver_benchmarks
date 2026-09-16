@@ -274,7 +274,16 @@ def main() -> None:
         for tag in tags:
             sub = df[df["solver_id"].str.endswith(f"_{tag}")]
             LABEL_OVERRIDE.clear()
-            for solver, run_tag in use_run.items():
+            for key, run_tag in use_run.items():
+                # "solver=tag" applies everywhere, "family:solver=tag" to one family only
+                if ":" in key:
+                    fam_key, solver = key.split(":", 1)
+                    if fam_key != family:
+                        continue
+                else:
+                    solver = key
+                    if any(k.startswith(f"{family}:{solver}") for k in use_run):
+                        continue  # a family-specific entry wins
                 # Use the requested run; if this family lacks it, fall back to the
                 # tightest run that exists (interior-point solvers overshoot anyway).
                 alt = df[df["solver_id"] == f"{solver}_{run_tag}"]

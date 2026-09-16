@@ -23,7 +23,7 @@ class SDPLIBDataset(Dataset):
         "bundled converted JLD2 archive; original SDPLIB is documented at "
         "https://vlsicad.eecs.umich.edu/BK/Slots/cache/www.nmt.edu/~borchers/sdplib.html"
     )
-    data_patterns = ("*.jld2", "sdplib.tar")
+    data_patterns = ("*.jld2", "*.dat-s", "*.dat-s.gz", "sdplib.tar")
     prepare_command = "python scripts/prepare_sdplib.py"
 
     @property
@@ -49,6 +49,21 @@ class SDPLIBDataset(Dataset):
                         kind=CONE,
                         path=path,
                         metadata={"source": str(path), "format": "jld2"},
+                    )
+                )
+        # Original SDPA-S files placed next to the archive replace the tar
+        # member of the same name (used for maxG55/maxG60, whose converted
+        # copies in the archive are corrupt).
+        for path in sorted(self.folder.iterdir()):
+            if path.name.endswith(".dat-s") or path.name.endswith(".dat-s.gz"):
+                stem = path.name[: -len(".dat-s.gz")] if path.name.endswith(".dat-s.gz") else path.name[: -len(".dat-s")]
+                specs.append(
+                    ProblemSpec(
+                        dataset_id=self.dataset_id,
+                        name=stem,
+                        kind=CONE,
+                        path=path,
+                        metadata={"source": str(path), "format": "sdpa-s"},
                     )
                 )
         existing = {spec.name for spec in specs}
@@ -77,6 +92,14 @@ class SDPLIBDataset(Dataset):
         spec = self.problem_by_name(name)
         assert spec.path is not None
         path = spec.path
+        if spec.metadata.get("format") == "sdpa-s":
+            from solver_benchmarks.transforms.sdpa import parse_sdpa_s_file, sdpa_to_cone_problem
+            primal = parse_sdpa_s_file(path)
+            return ProblemData(
+                self.dataset_id, name, CONE, sdpa_to_cone_problem(primal),
+                metadata={**dict(spec.metadata), "num_constraints_primal": int(primal.m),
+                          "num_blocks": len(primal.blocks), "block_orders": [blk.order for blk in primal.blocks]},
+            )
         if path.suffix == ".tar":
             path = extract_from_tar(path, name, self.folder / ".cache")
         problem = read_sdplib_jld2(path)

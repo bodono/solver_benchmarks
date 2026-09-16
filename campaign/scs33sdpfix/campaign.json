@@ -1,0 +1,72 @@
+[
+  {
+    "name": "sdp_sdplib_scs_cpu_1e-4_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "scs_cpu_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_scs_cpu_1e-4.yaml"
+  },
+  {
+    "name": "sdp_sdplib_scs_cudss_1e-4_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "scs_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_scs_cudss_1e-4.yaml"
+  },
+  {
+    "name": "sdp_sdplib_cvxopt_1e-4_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "cvxopt_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_cvxopt_1e-4.yaml"
+  },
+  {
+    "name": "sdp_sdplib_sdpa_1e-4_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "sdpa_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_sdpa_1e-4.yaml"
+  },
+  {
+    "name": "sdp_sdplib_scs_cpu_1e-6_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "scs_cpu_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_scs_cpu_1e-6.yaml"
+  },
+  {
+    "name": "sdp_sdplib_cvxopt_1e-6_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "cvxopt_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_cvxopt_1e-6.yaml"
+  },
+  {
+    "name": "sdp_sdplib_sdpa_1e-6_fix",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "sdpa_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33sdpfix/sdp_sdplib_sdpa_1e-6.yaml"
+  }
+]

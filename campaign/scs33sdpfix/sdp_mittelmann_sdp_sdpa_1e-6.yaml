@@ -1,0 +1,18 @@
+run:
+  name: sdp_mittelmann_sdp_sdpa_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: mittelmann_sdp
+    id: mittelmann_sdp
+    dataset_options:
+      subset: all
+solvers:
+- id: sdpa_1e-6
+  solver: sdpa
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    time_limit: 900.0

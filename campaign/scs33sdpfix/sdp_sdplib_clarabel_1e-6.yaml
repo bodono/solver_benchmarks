@@ -1,0 +1,37 @@
+run:
+  name: sdp_sdplib_clarabel_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: sdplib
+    id: sdplib
+    exclude:
+    - equalG11
+    - equalG51
+    - maxG11
+    - maxG32
+    - maxG51
+    - maxG55
+    - maxG60
+    - thetaG11
+    - thetaG51
+    - gpp500-1
+    - gpp500-2
+    - gpp500-3
+    - gpp500-4
+    - mcp500-1
+    - mcp500-2
+    - mcp500-3
+    - mcp500-4
+    - qpG11
+    - qpG51
+solvers:
+- id: clarabel_1e-6
+  solver: clarabel
+  settings:
+    tol_feas: 1.0e-06
+    tol_gap_abs: 1.0e-06
+    tol_gap_rel: 1.0e-06
+    time_limit: 900.0

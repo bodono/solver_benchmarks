@@ -1,0 +1,18 @@
+run:
+  name: sdp_sdplib_scs_cudss_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: sdplib
+    id: sdplib
+solvers:
+- id: scs_cudss_1e-6
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+    time_limit_secs: 900.0
+    linear_solver: cudss

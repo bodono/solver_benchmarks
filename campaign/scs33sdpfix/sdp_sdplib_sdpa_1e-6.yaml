@@ -1,0 +1,19 @@
+run:
+  name: sdp_sdplib_sdpa_1e-6_fix
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: sdplib
+    id: sdplib
+    include:
+    - maxG55
+    - maxG60
+solvers:
+- id: sdpa_1e-6
+  solver: sdpa
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    time_limit: 900.0

@@ -1,0 +1,212 @@
+[
+  {
+    "name": "lp_miplib_relax_scs_cpu_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cpu_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_scs_cpu_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cudss_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_scs_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_clarabel_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "clarabel_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_clarabel_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_osqp_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "osqp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_osqp_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_piqp_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "piqp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_piqp_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_highs_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "highs_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_highs_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_cuopt_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "cuopt_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33big6/lp_miplib_relax_cuopt_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_pdlp_1e-4_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "pdlp_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33big6/lp_miplib_relax_pdlp_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cpu_1e-5_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cpu_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_scs_cpu_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cudss_1e-5_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cudss_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_scs_cudss_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_osqp_1e-5_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "osqp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_osqp_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_cuopt_1e-5_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "cuopt_1e-5",
+    "tol": 1e-05,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33big6/lp_miplib_relax_cuopt_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_pdlp_1e-5_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "pdlp_1e-5",
+    "tol": 1e-05,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33big6/lp_miplib_relax_pdlp_1e-5.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cpu_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cpu_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_scs_cpu_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_scs_cudss_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "scs_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "gpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_scs_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_clarabel_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "clarabel_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_clarabel_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_osqp_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "osqp_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_osqp_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_piqp_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "piqp_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_piqp_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_highs_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "highs_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33big6/lp_miplib_relax_highs_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_cuopt_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "cuopt_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "cuopt",
+    "config": "campaign/scs33big6/lp_miplib_relax_cuopt_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_pdlp_1e-6_big6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "pdlp_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "pdlp",
+    "config": "campaign/scs33big6/lp_miplib_relax_pdlp_1e-6.yaml"
+  }
+]

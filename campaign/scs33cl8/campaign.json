@@ -1,0 +1,22 @@
+[
+  {
+    "name": "sdp_sdplib_clarabel_1e-8",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cl8/sdp_sdplib_clarabel_1e-8.yaml"
+  },
+  {
+    "name": "sdp_mittelmann_sdp_clarabel_1e-8",
+    "family": "sdp",
+    "dataset": "mittelmann_sdp",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cl8/sdp_mittelmann_sdp_clarabel_1e-8.yaml"
+  }
+]

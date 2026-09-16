@@ -1,0 +1,24 @@
+run:
+  name: lp_miplib_relax_osqp_1e-6_big6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    include:
+    - square47
+    - square41
+    - neos-3402454-bohle
+    - neos-2075418-temuka
+    - supportcase19
+    - neos-5114902-kasavu
+solvers:
+- id: osqp_1e-6
+  solver: osqp
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iter: 1000000
+    time_limit: 300.0
