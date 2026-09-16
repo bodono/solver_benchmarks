@@ -791,6 +791,7 @@ def slowest_solves(
         "artifact_dir",
         "error",
     ]
+    columns = list(dict.fromkeys(columns))
     if results.empty or metric not in results:
         return pd.DataFrame(columns=columns)
     frame = results.copy()

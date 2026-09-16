@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.analysis.load import load_results
+from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.profiles import (
     deduplicate_for_pivot,
     performance_profile,
@@ -61,6 +62,7 @@ def write_analysis_plots(
     metric: str = "run_time_seconds",
     output_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
+    max_value: float | None = None,
 ) -> list[Path]:
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir
@@ -71,9 +73,13 @@ def write_analysis_plots(
         return []
 
     expected = expected_results(run_dir, repo_root=repo_root)
+    geomean_options = {
+        "max_value": max_value,
+        "timeout_seconds": geomean_time_limits(run_dir, metric=metric, max_value=max_value),
+    }
     paths = [
         _write_performance_profile(results, output_dir, metric, expected=expected),
-        _write_shifted_geomean(results, output_dir, metric, expected=expected),
+        _write_shifted_geomean(results, output_dir, metric, expected=expected, geomean_options=geomean_options),
         _write_failure_rates(results, output_dir),
         _write_cactus(results, output_dir, metric),
         _write_pairwise_scatter(results, output_dir, metric),
@@ -112,8 +118,8 @@ def _write_performance_profile(results, output_dir: Path, metric: str, *, expect
     return path
 
 
-def _write_shifted_geomean(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None) -> Path | None:
-    geomean = shifted_geomean(results, metric=metric, expected=expected)
+def _write_shifted_geomean(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None, geomean_options: dict | None = None) -> Path | None:
+    geomean = shifted_geomean(results, metric=metric, expected=expected, **(geomean_options or {}))
     if geomean.empty:
         return None
 
