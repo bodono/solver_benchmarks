@@ -80,6 +80,21 @@ def test_parse_run_config_rejects_invalid_boolean_strings():
         )
 
 
+@pytest.mark.parametrize("limit", [0, 1, 2, 5])
+def test_worker_error_retry_limit_is_recorded(limit):
+    config = parse_run_config({"run": {"dataset": "synthetic_qp", "max_worker_error_retries": limit},
+                               "solvers": [{"id": "scs", "solver": "scs"}]})
+    assert config.max_worker_error_retries == limit
+    assert config.to_manifest()["max_worker_error_retries"] == limit
+
+
+@pytest.mark.parametrize("limit", [-1, True, 1.5, "many", None])
+def test_worker_error_retry_limit_rejects_invalid_values(limit):
+    with pytest.raises(ValueError, match="run.max_worker_error_retries"):
+        parse_run_config({"run": {"dataset": "synthetic_qp", "max_worker_error_retries": limit},
+                          "solvers": [{"id": "scs", "solver": "scs"}]})
+
+
 def test_parse_run_config_rejects_bool_parallelism():
     with pytest.raises(ValueError, match="run.parallelism"):
         parse_run_config(

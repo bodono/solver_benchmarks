@@ -63,13 +63,14 @@ def test_system_metadata_includes_all_solver_distribution_versions(monkeypatch):
     from importlib import metadata
 
     from solver_benchmarks.core import system_info as si
-    from solver_benchmarks.core.solver_packages import SOLVER_PACKAGES
+    from solver_benchmarks.core.environment import SOLVER_PACKAGES
     from solver_benchmarks.solvers.registry import SOLVERS
 
     # Keep the shared distribution mapping complete as adapters are added.
-    assert set(SOLVERS) == set(SOLVER_PACKAGES)
+    assert set(SOLVERS) <= set(SOLVER_PACKAGES)
     installed = {
         "numpy": "2.0.0",
+        "cuopt-cu12": "26.08",
         "scs": "3.3.1",
         "highspy": "1.15.1",
         "ortools": "9.15.0",

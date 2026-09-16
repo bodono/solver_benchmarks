@@ -59,6 +59,7 @@ class RunConfig:
     timeout_seconds: float | None = None
     fail_on_unsupported: bool = False
     auto_prepare_data: bool = False
+    max_worker_error_retries: int = 2
 
     @property
     def dataset(self) -> str:
@@ -140,6 +141,7 @@ class RunConfig:
             "exclude": self.exclude,
             "parallelism": self.parallelism,
             "resume": self.resume,
+            "max_worker_error_retries": self.max_worker_error_retries,
             "timeout_seconds": self.timeout_seconds,
             "fail_on_unsupported": self.fail_on_unsupported,
             "auto_prepare_data": self.auto_prepare_data,
@@ -207,6 +209,9 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
             run.get("parallelism", raw.get("parallelism", 1))
         ),
         resume=_validate_bool(run.get("resume", raw.get("resume", True)), "run.resume"),
+        max_worker_error_retries=_validate_worker_error_retries(
+            run.get("max_worker_error_retries", raw.get("max_worker_error_retries", 2))
+        ),
         timeout_seconds=_validate_timeout(
             run.get("timeout_seconds", raw.get("timeout_seconds")),
             context="run.timeout_seconds",
@@ -592,6 +597,12 @@ def _validate_identifier(value: str, *, context: str) -> None:
             "use only those characters so the id round-trips through "
             "filesystem paths and CSV column names."
         )
+
+
+def _validate_worker_error_retries(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("run.max_worker_error_retries must be an integer >= 0")
+    return value
 
 
 def _validate_parallelism(value: Any) -> int:

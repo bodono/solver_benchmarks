@@ -29,8 +29,6 @@ import sys
 from importlib import metadata
 from typing import Any
 
-from .solver_packages import SOLVER_PACKAGES
-
 logger = logging.getLogger(__name__)
 
 
@@ -278,6 +276,9 @@ def _library_versions() -> dict[str, Any]:
     each registered adapter's distributions, with None for uninstalled
     optional packages. Importing their native modules is unnecessary.
     """
+    # Deferred to avoid the environment -> CPU-detection import cycle.
+    from .environment import SOLVER_PACKAGES
+
     versions: dict[str, str | None] = {}
     solver_packages = sorted(
         {package.lower() for packages in SOLVER_PACKAGES.values() for package in packages}

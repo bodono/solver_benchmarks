@@ -368,6 +368,108 @@ def test_resume_retries_worker_errors_without_duplicate_rows_or_lost_artifacts(
     assert len(rows()) == 2
 
 
+@pytest.mark.parametrize("skip_reason", ["unavailable", "unsupported"])
+def test_resume_planning_skip_preserves_pending_worker_error(
+    monkeypatch, tmp_path: Path, repo_root: Path, skip_reason: str
+):
+    class RecoverableSolver(SolverAdapter):
+        supported_problem_kinds = {QP}
+        available = True
+
+        @classmethod
+        def is_available(cls):
+            return cls.available
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    calls = []
+    fail = True
+
+    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        calls.append(payload["problem"])
+        stdout_path.write_text("attempt diagnostic")
+        stderr_path.write_text("original failure")
+        if fail:
+            return SimpleNamespace(returncode=1, timed_out=False)
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id="recover", solver="recover",
+            status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.01,
+            artifact_dir=payload["artifacts_dir"],
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, timed_out=False)
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "recover", RecoverableSolver)
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", subprocess)
+    config = parse_run_config({"run": {"dataset": "synthetic_qp"},
+                               "solvers": [{"id": "recover", "solver": "recover"}]})
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    original = store.results_jsonl_path.read_bytes()
+    if skip_reason == "unavailable":
+        RecoverableSolver.available = False
+    else:
+        RecoverableSolver.supported_problem_kinds = set()
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert store.results_jsonl_path.read_bytes() == original
+    assert len(calls) == 2
+    assert not list(store.run_dir.glob("problems/**/retry-*"))
+
+    RecoverableSolver.available = True
+    RecoverableSolver.supported_problem_kinds = {QP}
+    fail = False
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    assert len(calls) == 4 and len(rows) == 2
+    assert {row["status"] for row in rows} == {"optimal"}
+    assert {row["metadata"]["worker_error_retries"] for row in rows} == {1}
+
+
+@pytest.mark.parametrize("retry_limit", [0, 1, 2])
+def test_resume_caps_deterministic_worker_errors_and_can_extend_budget(
+    monkeypatch, tmp_path: Path, repo_root: Path, retry_limit: int
+):
+    class BrokenSolver(SolverAdapter):
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    calls = []
+
+    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        calls.append(payload["problem"])
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id="broken", solver="broken",
+            status="worker_error", objective_value=None, iterations=None, run_time_seconds=None,
+            error="deterministic adapter exception", artifact_dir=payload["artifacts_dir"],
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, timed_out=False)
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "broken", BrokenSolver)
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", subprocess)
+    raw = {"run": {"dataset": "synthetic_qp", "max_worker_error_retries": retry_limit},
+           "solvers": [{"id": "broken", "solver": "broken"}]}
+    config = parse_run_config(raw)
+    for _ in range(retry_limit + 3):
+        store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert len(calls) == 2 * (retry_limit + 1)
+    rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    assert len(rows) == 2 and {row["status"] for row in rows} == {"worker_error"}
+    assert {row["metadata"].get("worker_error_retries", 0) for row in rows} == {retry_limit}
+
+    raw["run"]["max_worker_error_retries"] = retry_limit + 1
+    extended = parse_run_config(raw)
+    assert extended.config_hash == config.config_hash
+    run_benchmark(extended, run_dir=store.run_dir, repo_root=repo_root)
+    assert len(calls) == 2 * (retry_limit + 2)
+
+
 def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path, repo_root: Path):
     config_path = tmp_path / "named_smoke_run.yaml"
     output_dir = tmp_path / "runs"

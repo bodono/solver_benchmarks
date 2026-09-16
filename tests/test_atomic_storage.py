@@ -151,6 +151,32 @@ def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, mon
     assert len(rows) == 1 and json.loads(rows[0])["status"] == "optimal"
 
 
+def test_legacy_retry_artifact_path_counts_toward_resume_limit(tmp_path: Path):
+    store = _make_store(tmp_path)
+    failed = ProblemResult(
+        run_id=store.run_id, dataset="synthetic_qp", problem="p", problem_kind=QP,
+        solver_id="scs", solver="scs", status="worker_error", objective_value=None,
+        iterations=None, run_time_seconds=None,
+        artifact_dir=str(store.run_dir / "problems/synthetic_qp/p/scs/retry-2"),
+    )
+    store.write_result(failed)
+    assert store.completed_keys() == {("synthetic_qp", "p", "scs")}
+    assert not store.has_pending_retry("synthetic_qp", "p", "scs")
+
+
+def test_solver_named_retry_does_not_consume_legacy_retry_budget(tmp_path: Path):
+    store = _make_store(tmp_path)
+    artifacts = store.problem_solver_dir("synthetic_qp", "p", "retry-2")
+    failed = ProblemResult(
+        run_id=store.run_id, dataset="synthetic_qp", problem="p", problem_kind=QP,
+        solver_id="retry-2", solver="scs", status="worker_error", objective_value=None,
+        iterations=None, run_time_seconds=None, artifact_dir=str(artifacts),
+    )
+    store.write_result(failed)
+    assert store.completed_keys() == set()
+    assert store.has_pending_retry("synthetic_qp", "p", "retry-2")
+
+
 def test_write_result_does_not_materialize_parquet_until_write_parquet(tmp_path: Path):
     """Pin the central contract of the end-of-run model: ``write_result``
     appends to jsonl only and never touches results.parquet. The parquet

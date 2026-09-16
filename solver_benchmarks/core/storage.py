@@ -87,6 +87,9 @@ class ResultStore:
     _retry_rows: dict[tuple[str, str, str], set[str]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+    _retry_counts: dict[tuple[str, str, str], int] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> ResultStore:
@@ -222,11 +225,14 @@ class ResultStore:
         as complete. Legacy rows without an embedded signature are checked
         against ``previous_manifest`` when available.
 
-        Infrastructure failures (``worker_error``) are retried. Their rows
-        stay on disk until ``write_result`` atomically replaces them, and
+        Worker failures are retried up to ``max_worker_error_retries`` times
+        (default two). This also bounds repeated deterministic exceptions
+        reported as ``worker_error``. Rows remain until atomically replaced;
         ``problem_solver_dir`` preserves the previous attempt's artifacts.
         """
         self._retry_rows.clear()
+        self._retry_counts.clear()
+        max_retries = config.max_worker_error_retries if config is not None else 2
         if not self.results_jsonl_path.exists():
             return set()
         current_signatures = solve_signatures(config) if config is not None else None
@@ -272,14 +278,39 @@ class ResultStore:
                     ):
                         continue
                 if record.get("status") == status.WORKER_ERROR:
+                    metadata = record.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    retries = metadata.get("worker_error_retries")
+                    if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
+                        # Rows from the initial retry implementation have no
+                        # count, but their artifact path identifies the attempt.
+                        artifacts = Path(record.get("artifact_dir") or "")
+                        match = re.fullmatch(r"retry-(\d+)", artifacts.name)
+                        parent_suffix = ("problems", *(slugify(part) for part in key))
+                        is_retry_dir = artifacts.parent.parts[-4:] == parent_suffix
+                        retries = int(match.group(1)) if match and is_retry_dir else 0
+                    if retries >= max_retries:
+                        keys.add(key)
+                        logger.warning(
+                            "Worker-error retry limit reached for %s/%s/%s; "
+                            "increase run.max_worker_error_retries to retry again", *key
+                        )
+                        continue
                     self._retry_rows.setdefault(key, set()).add(line.strip())
+                    self._retry_counts[key] = max(retries, self._retry_counts.get(key, 0))
                 else:
                     keys.add(key)
         # If an older file already contains a successful compatible retry,
         # it is complete even when the superseded error is still present.
         for key in keys:
             self._retry_rows.pop(key, None)
+            self._retry_counts.pop(key, None)
         return keys
+
+    def has_pending_retry(self, dataset: str, problem: str, solver_id: str) -> bool:
+        """Whether resume selected a failed attempt that must stay retryable."""
+        return (dataset, problem, solver_id) in self._retry_rows
 
     def append_event(self, level: str, message: str, **fields: Any) -> None:
         record = {
@@ -295,13 +326,18 @@ class ResultStore:
             handle.write(line)
 
     def write_result(self, result: ProblemResult) -> None:
+        key = (result.dataset, result.problem, result.solver_id)
+        if key in self._retry_counts:
+            result.metadata = {
+                **result.metadata,
+                "worker_error_retries": self._retry_counts[key] + 1,
+            }
         record = result.to_record()
         artifact_dir = Path(result.artifact_dir) if result.artifact_dir else None
         if artifact_dir is not None:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
         line = json.dumps(record, sort_keys=True) + "\n"
-        key = (result.dataset, result.problem, result.solver_id)
         with self._write_lock:
             previous_rows = self._retry_rows.get(key)
             if previous_rows:
@@ -313,6 +349,7 @@ class ResultStore:
                     retained += "\n"
                 atomic_write_text(self.results_jsonl_path, retained + line)
                 self._retry_rows.pop(key)
+                self._retry_counts.pop(key, None)
             else:
                 with self.results_jsonl_path.open("a") as handle:
                     handle.write(line)
