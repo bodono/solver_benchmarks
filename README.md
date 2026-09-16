@@ -1326,6 +1326,16 @@ Install:
 pip install -e ".[pdlp]"
 ```
 
+The MPS reader uses HiGHS in the same worker as OR-Tools. The highspy 1.15.x
+wheels can clash with OR-Tools 9.15.6755's native HiGHS symbols when highspy
+loads first, causing an import error mentioning `HighsLogOptions` or
+`setLocalOptionValue`. This also affects macOS, not only Linux. Dependencies
+in the `pdlp` and `all` extras therefore exclude highspy 1.15.x; highspy 1.14.0
+has wheels for Python 3.10–3.14 and works with OR-Tools 9.15.6755. Reinstall the `pdlp` extra
+if an existing environment has the incompatible pair. CI imports the native
+libraries in both orders in fresh processes, then solves a real MPS file
+through the reader and PDLP adapter.
+
 Supported inputs:
 
 - LP datasets represented as QPs with `P.nnz == 0`, such as NETLIB and MIPLIB
@@ -1337,6 +1347,14 @@ Unsupported inputs:
 
 - QPs with nonzero `P`.
 - SDP, SOC, rotated SOC, and other non-LP cones.
+- Models whose serialized OR-Tools request reaches 2 GiB, the protobuf size
+  limit. A conservative bound from the retained sparse entries, variables, and
+  constraints skips obviously oversized models before constructing the protobuf,
+  with `protobuf_model_bytes_lower_bound` and `protobuf_limit_bytes` in `info`.
+  Remaining models get an exact, envelope-aware check before the request-model
+  copy; oversized requests report model/request sizes and the byte limit.
+  Both paths return `skipped_unsupported`. The exact `ByteSize()` check may
+  allocate a serialization buffer internally on the upb protobuf backend.
 
 Settings:
 

@@ -11,9 +11,8 @@ requires-python = ">=3.10"
 dependencies = [
     "click>=8.1",
     "h5py>=3.0",
-    # highspy 1.15.0 Linux wheels conflict with OR-Tools 9.15.6755 at
-    # PDLP import time (undefined HighsLogOptions symbol).
-    "highspy>=1.0,<1.16",
+    # The MPS reader needs HiGHS; the PDLP native-library cap belongs in its extras.
+    "highspy>=1.0",
     # Matplotlib 3.9 is the floor: analysis/plots.py uses the
     # `tick_labels=` keyword on ax.boxplot, which was added in 3.9
     # (replacing the deprecated `labels=` keyword).
@@ -26,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-highs = ["highspy>=1.0,<1.16"]
+highs = ["highspy>=1.0"]
 # SCS 3.3.0 manylinux x86_64 wheels abort when oneMKL cannot load
 # libmkl_def.so.3. Exclude that release until fixed wheels are published.
 scs = ["scs>=3.0,!=3.3.0"]
@@ -40,7 +39,10 @@ qtqp = [
 ]
 gurobi = ["gurobipy>=11.0"]
 mosek = ["Mosek>=10.0"]
-pdlp = ["ortools>=9.3.0"]
+# highspy 1.15.x clashes with OR-Tools 9.15's native HiGHS symbols on
+# Linux/macOS. 1.14 has wheels through Python 3.14. Restrict the pair
+# only when installing PDLP; keep the all extra aligned below.
+pdlp = ["ortools>=9.3.0", "highspy<1.15"]
 proxqp = ["proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'"]
 piqp = ["piqp>=0.6.0"]
 sdpa = ["sdpa-python>=0.2.2; python_version < '3.14'"]
@@ -61,6 +63,8 @@ all = [
     "qtqp>=0.0.3; python_version < '3.11'",
     "qtqp>=0.0.5; python_version >= '3.11'",
     "ortools>=9.3.0",
+    # Same native-library compatibility constraint as the `pdlp` extra.
+    "highspy<1.15",
     "piqp>=0.6.0",
     "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
     "sdpa-python>=0.2.2; python_version < '3.14'",

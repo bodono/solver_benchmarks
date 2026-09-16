@@ -190,6 +190,30 @@ jobs:
       - name: Run solver smoke benchmark
         run: python scripts/ci_solver_smoke.py "${{ matrix.solver }}"
 
+  pdlp-compatibility:
+    name: PDLP native compatibility - ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # Exercise native dependency compatibility on Python 3.11 and 3.14.
+        python-version: ["3.11", "3.14"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install PDLP and MPS reader dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,pdlp]"
+      - name: Verify native import orders and MPS to PDLP solves
+        run: python -m pytest tests/test_pdlp_compatibility.py
+
   commercial-adapters:
     name: Commercial adapter registration
     runs-on: ubuntu-latest
