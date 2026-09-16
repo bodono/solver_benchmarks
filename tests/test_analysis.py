@@ -173,9 +173,8 @@ def test_performance_profile_dedup_prefers_successful_retry_over_fast_failure():
     assert profile["b"].iloc[0] == pytest.approx(0.0)
 
 
-def test_performance_profile_drops_problems_where_every_solver_failed():
-    """When no solver succeeded on a problem the row is undefined under
-    Dolan-Moré; including it would inflate every curve at tau=1."""
+def test_performance_profile_keeps_problems_where_every_solver_failed():
+    """Shared failures stay in the denominator without generating ratio 1."""
     frame = pd.DataFrame(
         [
             {"problem": "ok", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
@@ -185,11 +184,10 @@ def test_performance_profile_drops_problems_where_every_solver_failed():
         ]
     )
     profile = performance_profile(frame, max_value=100.0, n_tau=3, tau_max=10000.0)
-    # Only the "ok" problem contributes; a wins, so rho_a(1) = 1.0
-    # and rho_b(1) = 0.0, rising to 1.0 at the b/a ratio of 2.
-    assert profile["a"].tolist() == pytest.approx([1.0, 1.0, 1.0])
+    # The solved fraction cannot exceed one of the two input problems.
+    assert profile["a"].tolist() == pytest.approx([0.5, 0.5, 0.5])
     assert profile["b"].tolist()[0] == pytest.approx(0.0)
-    assert profile["b"].tolist()[-1] == pytest.approx(1.0)
+    assert profile["b"].tolist()[-1] == pytest.approx(0.5)
 
 
 def test_performance_profile_default_tau_max_is_dynamic():

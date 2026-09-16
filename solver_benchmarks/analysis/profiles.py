@@ -9,7 +9,7 @@ from solver_benchmarks.core import status
 
 DEFAULT_FAILURE_PENALTY = 1.0e3
 
-# Per-metric defaults used by performance_profile / shifted_geomean
+# Per-metric defaults used by shifted_geomean
 # when the caller hasn't pinned ``max_value`` and ``shift``. The
 # original globals (1e3 / 10) made sense only for run_time_seconds;
 # applying them to ``iterations`` or KKT residuals gave nonsense
@@ -97,8 +97,10 @@ def performance_profile(
     """Compute the Dolan-More performance profile.
 
     For each problem ``p`` and solver ``s``, this computes
-    ``r[p, s] = metric[p, s] / min_s metric[p, s]`` after assigning
-    ``max_value`` to unsuccessful solves. The returned curve is
+    ``r[p, s] = metric[p, s] / min_successful metric[p, s]``. Failures,
+    absent solves, and nonfinite/negative metrics have infinite ratios
+    by default. An explicit finite ``max_value`` retains the legacy
+    penalty-time behavior. The returned curve is
     ``rho_s(tau) = fraction of problems with r[p, s] <= tau``.
 
     Multi-dataset frames are pivoted on ``(dataset, problem)`` so that two
@@ -106,17 +108,15 @@ def performance_profile(
     contribute as two separate problems instead of being collapsed by
     ``aggfunc="first"``.
 
-    Problems on which every solver failed are dropped before computing
-    the per-problem best, so an "all solvers failed" row does not
-    contribute a spurious ratio of 1.0 to every solver's curve at
-    ``tau=1``. The default ``tau_max`` is derived from
-    ``ratios.max()`` so the right tail of the curve is not silently
-    clipped.
+    Problems on which every solver failed remain in the denominator,
+    with infinite ratios for every solver. Zero metrics tie at ratio 1
+    when the best value is zero; positive values then have infinite ratio.
+    The default ``tau_max`` covers the largest finite ratio.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     if max_value is None:
-        max_value, _ = metric_defaults(metric)
+        max_value = float("inf")
     if results.empty:
         return pd.DataFrame()
     keys = ["dataset", "problem"] if "dataset" in results.columns else ["problem"]
@@ -127,24 +127,19 @@ def performance_profile(
     deduped = deduplicate_for_pivot(
         results, keys, metric, success_statuses=success_statuses
     )
-    pivot = deduped.pivot_table(index=index, columns="solver_id", values=metric, aggfunc="first")
-    status_pivot = deduped.pivot_table(
-        index=index, columns="solver_id", values="status", aggfunc="first"
+    deduped = deduped.assign(**{metric: pd.to_numeric(deduped[metric], errors="coerce")})
+    # Unlike pivot_table, pivot preserves rows and solver columns whose
+    # metrics are all missing (e.g. an entire worker-error shard).
+    values = deduped.pivot(index=index, columns="solver_id", values=metric)
+    statuses = deduped.pivot(index=index, columns="solver_id", values="status")
+    success_mask = statuses.isin(success_statuses) & np.isfinite(values) & values.ge(0)
+    best = values.where(success_mask).min(axis=1)
+    ratios = values.where(success_mask, max_value).divide(best, axis=0)
+    ratios.loc[best.isna()] = float("inf")
+    zero_best = best.eq(0)
+    ratios.loc[zero_best] = np.where(
+        success_mask.loc[zero_best] & values.loc[zero_best].eq(0), 1.0, float("inf")
     )
-    values = pivot.copy()
-    success_mask = pd.DataFrame(False, index=values.index, columns=values.columns)
-    for solver_id in values.columns:
-        succeeded = status_pivot[solver_id].isin(success_statuses)
-        success_mask[solver_id] = succeeded
-        values.loc[~succeeded, solver_id] = max_value
-    # Drop problems where no solver succeeded — Dolan-Moré is undefined
-    # there, and including them would inflate every curve at tau=1.
-    any_success = success_mask.any(axis=1)
-    if not any_success.any():
-        return pd.DataFrame()
-    values = values.loc[any_success]
-    best = values.min(axis=1)
-    ratios = values.divide(best, axis=0)
     if tau_max is None:
         # Pick the smallest power of 10 that covers the largest finite
         # ratio; fall back to 1e4 if every ratio is degenerate.

@@ -1057,7 +1057,9 @@ bench profile results/<run_id> --metric iterations
 
 The Dolan-More profile uses `r[p, s] = metric[p, s] / min_s metric[p, s]` and
 plots the fraction of problems with `r[p, s] <= tau`. Failed or inaccurate solves
-are assigned the failure penalty before ratios are computed.
+have infinite ratios by default and never enter the solved fraction. Problems
+where every solver fails remain in the denominator. The per-problem best is
+computed only from successful, finite metrics.
 
 Generate shifted geometric means:
 
@@ -1122,7 +1124,8 @@ Status handling:
 - By default, only `optimal` counts as successful for performance profiles and
   shifted geometric means. `optimal_inaccurate` and other inaccurate statuses
   are penalized because the solver did not hit the requested target.
-- Failed, skipped, timeout, and solver-error statuses receive a large penalty.
+- Failed, skipped, timeout, and solver-error statuses have infinite performance
+  ratios; shifted geometric means use a finite failure penalty instead.
 - You can pass custom `success_statuses` and `max_value` in Python.
 
 ## Adding a New Dataset
