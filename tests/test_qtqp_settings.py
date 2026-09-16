@@ -38,10 +38,12 @@ def test_new_names_map_back_on_old_api():
 
 
 def test_adapter_solves_with_translated_settings():
-    qtqp = pytest.importorskip("qtqp")
-    from pathlib import Path
+    import inspect
     import tempfile
-    from solver_benchmarks.core.problem import ProblemData, QP
+    from pathlib import Path
+
+    qtqp = pytest.importorskip("qtqp")
+    from solver_benchmarks.core.problem import QP, ProblemData
     from solver_benchmarks.solvers.qtqp_adapter import QTQPSolverAdapter
 
     n = 3
@@ -51,4 +53,7 @@ def test_adapter_solves_with_translated_settings():
     result = adapter.solve(problem, Path(tempfile.mkdtemp()))
     assert result.status == "optimal"
     assert np.allclose(result.objective_value, 3 * (0.5 ** 2 / 2 - 0.5), atol=1e-5)
-    assert result.info.get("settings_translated")
+    # atol/rtol are rewritten only when the installed qtqp exposes the
+    # 0.0.7 tol_* API; on the legacy API they are passed through untouched.
+    new_api = "tol_feas" in inspect.signature(qtqp.QTQP.solve).parameters
+    assert bool(result.info.get("settings_translated")) == new_api

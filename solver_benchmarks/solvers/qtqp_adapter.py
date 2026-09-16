@@ -169,8 +169,11 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
     translated: dict = {}
     if "tol_feas" not in solve_params and "atol" not in solve_params:
         # unknown signature (e.g. **kwargs): pass names through unchanged
-        if eps_abs is not None: settings.setdefault("tol_feas", float(eps_abs)); settings.setdefault("tol_gap_abs", float(eps_abs))
-        if eps_rel is not None: settings.setdefault("tol_gap_rel", float(eps_rel))
+        if eps_abs is not None:
+            settings.setdefault("tol_feas", float(eps_abs))
+            settings.setdefault("tol_gap_abs", float(eps_abs))
+        if eps_rel is not None:
+            settings.setdefault("tol_gap_rel", float(eps_rel))
         return translated
     new_api = "tol_feas" in solve_params
     if new_api:
@@ -190,9 +193,11 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
         for key in _NEW_TOL_KEYS:
             settings.pop(key, None)
         if eps_abs is not None:
-            settings.setdefault("atol", float(eps_abs)); translated["atol"] = float(eps_abs)
+            settings.setdefault("atol", float(eps_abs))
+            translated["atol"] = float(eps_abs)
         if eps_rel is not None:
-            settings.setdefault("rtol", float(eps_rel)); translated["rtol"] = float(eps_rel)
+            settings.setdefault("rtol", float(eps_rel))
+            translated["rtol"] = float(eps_rel)
     return translated
 
 
