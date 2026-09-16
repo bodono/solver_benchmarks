@@ -55,6 +55,14 @@ class QTQPSolverAdapter(SolverAdapter):
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
         settings = _normalize_settings(settings, qtqp)
+        sig = inspect.signature(qtqp.QTQP.solve)
+        accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        solve_params = set(sig.parameters)
+        translated = _translate_tolerances(settings, solve_params)
+        if not accepts_any:
+            unknown = sorted(k for k in settings if k not in solve_params)
+            if unknown:
+                raise ValueError(f"qtqp.solve() does not accept settings {unknown}; installed qtqp exposes {sorted(solve_params)}")
         a, b, z = qp_to_nonnegative_cone(qp)
         p = sp.csc_matrix(qp["P"])
         c = np.asarray(qp["q"], dtype=float)
@@ -96,6 +104,8 @@ class QTQPSolverAdapter(SolverAdapter):
         result_info = {"raw_status": raw_status, **info}
         mark_time_limit_ignored(result_info, time_limit)
         mark_threads_ignored(result_info, threads)
+        if translated:
+            result_info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
             objective_value=objective,
@@ -136,6 +146,65 @@ def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
     if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
         return kkt.cone_dual_infeasibility_cert(p, c, a, cone_dict, x)
     return None
+
+
+# qtqp 0.0.7 replaced ``atol``/``rtol`` with Clarabel-style termination
+# settings. Accept both spellings plus the harness-wide ``eps``/``eps_abs``/
+# ``eps_rel`` aliases and translate to whatever the installed build takes.
+_LEGACY_TOL_KEYS = ("atol", "rtol")
+_NEW_TOL_KEYS = ("tol_feas", "tol_gap_abs", "tol_gap_rel")
+
+
+def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
+    """Map tolerance aliases onto the installed ``solve()`` signature.
+
+    Returns a dict describing what was translated (empty if nothing was).
+    """
+    eps_abs = settings.pop("eps_abs", None)
+    eps_rel = settings.pop("eps_rel", None)
+    eps = settings.pop("eps", None)
+    if eps is not None:
+        eps_abs = eps if eps_abs is None else eps_abs
+        eps_rel = eps if eps_rel is None else eps_rel
+    translated: dict = {}
+
+    def put(key: str, value: float) -> None:
+        # An alias supplies a setting only when the native name is absent, and
+        # only then is it recorded: the metadata must report what the solver
+        # actually received, so an explicit native value is never overwritten
+        # or misreported.
+        if key not in settings:
+            settings[key] = float(value)
+            translated[key] = float(value)
+
+    if "tol_feas" not in solve_params and "atol" not in solve_params:
+        # unknown signature (e.g. **kwargs): pass names through unchanged
+        if eps_abs is not None:
+            put("tol_feas", eps_abs)
+            put("tol_gap_abs", eps_abs)
+        if eps_rel is not None:
+            put("tol_gap_rel", eps_rel)
+        return translated
+    new_api = "tol_feas" in solve_params
+    if new_api:
+        # legacy atol/rtol -> feasibility and gap tolerances
+        atol = settings.pop("atol", None)
+        rtol = settings.pop("rtol", None)
+        abs_tol = eps_abs if eps_abs is not None else atol
+        rel_tol = eps_rel if eps_rel is not None else rtol
+        if abs_tol is not None:
+            put("tol_feas", abs_tol)
+            put("tol_gap_abs", abs_tol)
+        if rel_tol is not None:
+            put("tol_gap_rel", rel_tol)
+    else:
+        for key in _NEW_TOL_KEYS:
+            settings.pop(key, None)
+        if eps_abs is not None:
+            put("atol", eps_abs)
+        if eps_rel is not None:
+            put("rtol", eps_rel)
+    return translated
 
 
 def _normalize_settings(settings: dict, qtqp_module):

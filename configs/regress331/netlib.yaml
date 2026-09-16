@@ -1,0 +1,33 @@
+# 3.3.1 regression check against the 3.3.0 release-notes protocol:
+# 300s cap, parallelism 8, SCS at eps 1e-5 (the PDLP-matched arm) and
+# 1e-6, PDLP at its defaults with 1 thread. Run once per SCS build.
+run:
+  output_dir: results/regress331_netlib
+  parallelism: 8
+  resume: true
+  timeout_seconds: 300
+  datasets:
+  - id: netlib
+    name: netlib
+    dataset_options:
+      subset: feasible
+
+solvers:
+- id: scs_e5
+  solver: scs
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    max_iters: 1000000
+- id: scs_e6
+  solver: scs
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    max_iters: 1000000
+- id: pdlp
+  solver: pdlp
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    threads: 1

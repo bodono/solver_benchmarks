@@ -1,0 +1,30 @@
+# 3.3.1 regression check against the 3.3.0 release-notes protocol:
+# 300s cap, parallelism 8, SCS at eps 1e-5 (the PDLP-matched arm) and
+# 1e-6, on the release's explicit 169-problem MIPLIB LP-relaxation list
+# (the <20MB subset). Run once per SCS build.
+run:
+  output_dir: results/regress331_miplib
+  parallelism: 8
+  resume: true
+  timeout_seconds: 300
+  datasets:
+  - id: miplib_lp_relaxation
+    name: miplib_lp_relaxation
+    include: [30n20b8, 50v-10, CMS750_4, air05, app1-1, app1-2, assign1-5-8, atlanta-ip, b1c1s1, beasleyC3, binkar10_1, blp-ar98, blp-ic98, bnatt400, bnatt500, bppc4-08, brazil3, cbs-cta, chromaticindex512-7,
+      cmflsp50-24-8-8, cod105, comp07-2idx, comp21-2idx, cost266-UUE, cryptanalysiskb128n5obj14, cryptanalysiskb128n5obj16, csched007, csched008, cvs16r128-89, dano3_3, dano3_5, decomp2, drayage-100-23,
+      drayage-25-23, dws008-01, eil33-2, enlight_hard, ex9, exp-1-500-5-5, fast0507, fastxgemm-n2r6s0t2, fhnw-binpack4-4, fhnw-binpack4-48, fiball, gen-ip002, gen-ip054, germanrr, glass-sc, glass4, gmu-35-40,
+      gmu-35-50, graph20-20-1rand, graphdraw-domain, h80x6320d, hypothyroid-k1, ic97_potential, icir97_tension, irp, istanbul-no-cutoff, lectsched-5-obj, leo1, leo2, lotsize, markshare2, markshare_4_0,
+      mas74, mas76, mc11, mcsched, mik-250-20-75-4, milo-v12-6-r2-40-1, momentum1, mushroom-best, mzzv11, mzzv42z, n5-3, n9-3, neos-1122047, neos-1171448, neos-1171737, neos-1354092, neos-1445765, neos-1456979,
+      neos-1582420, neos-2657525-crna, neos-2746589-doon, neos-2978193-inde, neos-3004026-krka, neos-3024952-loue, neos-3046615-murg, neos-3083819-nubu, neos-3216931-puriri, neos-3381206-awhea, neos-3627168-kasai,
+      neos-3656078-kumeu, neos-3754480-nidda, neos-3988577-wolgan, neos-4300652-rahue, neos-4338804-snowy, neos-4387871-tavua, neos-4722843-widden, neos-4738912-atrato, neos-4763324-toguru, neos-4954672-berkel,
+      neos-5075914-elvire, neos-5107597-kakapo, neos-5188808-nattai, neos-5195221-niemur, neos-662469, neos-787933, neos-827175, neos-860300, neos-873061, neos-911970, neos-933966, neos-950242, neos-957323,
+      neos-960392, neos17, neos5, neos8, neos859080, net12, nexp-150-20-8-5, ns1116954, ns1208400, ns1830653, ns1952667, nu25-pr12, p200x1188c, peg-solitaire-a3, pg, pg5_34, piperout-08, pk1, qap10, radiationm18-12-05,
+      ran14x18-disj-8, reblock115, rmatr100-p10, rmatr200-p5, rocI-4-11, rococoB10-011000, rococoC11-011100, roll3000, satellites2-40, satellites2-60-fs, sct2, seymour, seymour1, sing326, sing44, sp150x300d,
+      sp97ar, supportcase18, supportcase26, supportcase40, swath1, swath3, tbfp-network, timtab1, toll-like, tr12-30, traininstance2, traininstance6, trento1, uct-subprob, unitcal_7, wachplan]
+solvers:
+- id: scs_e5
+  solver: scs
+  settings: {eps_abs: 1.0e-05, eps_rel: 1.0e-05, max_iters: 1000000}
+- id: scs_e6
+  solver: scs
+  settings: {eps_abs: 1.0e-06, eps_rel: 1.0e-06, max_iters: 1000000}
