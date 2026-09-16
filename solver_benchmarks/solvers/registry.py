@@ -5,13 +5,13 @@ from __future__ import annotations
 from .base import SolverAdapter
 from .clarabel_adapter import ClarabelSolverAdapter
 from .cplex_adapter import CPLEXSolverAdapter
+from .cuopt_adapter import CuOptSolverAdapter
 from .cvxopt_adapter import CVXOPTSolverAdapter
 from .ecos_adapter import ECOSSolverAdapter
 from .gurobi_adapter import GurobiSolverAdapter
 from .highs_adapter import HighsSolverAdapter
 from .mosek_adapter import MosekSolverAdapter
 from .osqp_adapter import OSQPSolverAdapter
-from .cuopt_adapter import CuOptSolverAdapter
 from .pdlp_adapter import PDLPSolverAdapter
 from .piqp_adapter import PIQPSolverAdapter
 from .proxqp_adapter import ProxQPSolverAdapter

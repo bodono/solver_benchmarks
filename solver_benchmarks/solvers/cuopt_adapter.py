@@ -82,6 +82,9 @@ _STATUS_MAP = {
     "IterationLimit": status.MAX_ITER_REACHED,
     "ITERATIONLIMIT": status.MAX_ITER_REACHED,
     "ITERATION_LIMIT": status.MAX_ITER_REACHED,
+    "UnboundedOrInfeasible": status.PRIMAL_OR_DUAL_INFEASIBLE,
+    "UNBOUNDEDORINFEASIBLE": status.PRIMAL_OR_DUAL_INFEASIBLE,
+    "UNBOUNDED_OR_INFEASIBLE": status.PRIMAL_OR_DUAL_INFEASIBLE,
     "FeasibleFound": status.OPTIMAL_INACCURATE,
     "FEASIBLEFOUND": status.OPTIMAL_INACCURATE,
 }
@@ -116,7 +119,7 @@ class CuOptSolverAdapter(SolverAdapter):
         settings = settings_with_defaults(self.settings)
         verbose = bool(settings.pop("verbose", False))
         time_limit = pop_time_limit(settings)
-        pop_threads(settings)
+        threads = pop_threads(settings)
         eps = settings.pop("eps", None)
         eps_abs = settings.pop("eps_abs", None)
         eps_rel = settings.pop("eps_rel", None)
@@ -147,11 +150,19 @@ class CuOptSolverAdapter(SolverAdapter):
             )
 
         opts = solver_settings.SolverSettings()
-        tol = eps if eps is not None else (eps_abs if eps_abs is not None else eps_rel)
-        if tol is not None:
-            opts.set_optimality_tolerance(float(tol))
+        # ``eps`` sets all six of cuOpt's tolerances; ``eps_abs`` / ``eps_rel``
+        # set the absolute and relative primal, dual and gap tolerances
+        # independently (an explicit alias wins over ``eps``).
+        if eps is not None:
+            opts.set_optimality_tolerance(float(eps))
+        for alias, prefix in ((eps_abs, "absolute"), (eps_rel, "relative")):
+            if alias is not None:
+                for kind in ("primal", "dual", "gap"):
+                    opts.set_parameter(f"{prefix}_{kind}_tolerance", float(alias))
         if time_limit is not None:
             opts.set_parameter("time_limit", float(time_limit))
+        if threads is not None:
+            opts.set_parameter("num_cpu_threads", int(threads))
         for key, value in settings.items():
             opts.set_parameter(key, value)
         if verbose:
