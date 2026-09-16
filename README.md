@@ -900,9 +900,9 @@ Run and analysis commands:
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
-| `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default `10.0`, `--max-value VALUE` default `1000.0`, `--success-only` default false | Write shifted geometric means into the run directory. By default failures are penalized with `--max-value`; use `--success-only` for solved-problem-only geomeans. |
-| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
-| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
+| `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
+| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
+| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1071,14 +1071,30 @@ bench geomean results/<run_id> --success-only
 
 The default `bench geomean` output is a penalized shifted geometric mean for
 benchmark comparison, not a raw average runtime. Non-`optimal` statuses,
-including `optimal_inaccurate`, are assigned `--max-value` before the geometric
+including `optimal_inaccurate`, are assigned the failure penalty before the geometric
 mean is computed. Use `bench summary` for raw totals/means/medians, or
 `bench geomean --success-only` for a geomean over successful solves only. The
-default failure penalty starts at `1000` seconds and can be changed with
-`--max-value`. For every metric, the effective penalty is at least the largest
-valid successful value in that comparison; a failure cannot improve on a
-success. The output `max_value` column records this effective penalty. Explicit
-larger penalties (for example, three times a campaign's time limit) are retained.
+default failure penalty for time metrics is three times the manifest's
+`timeout_seconds`. A 300-second limit gives a 900-second penalty, a 900-second
+limit gives 2700 seconds, and an 1800-second limit gives 5400 seconds. The penalty
+does not depend on which solvers are compared or how slowly successful solves
+finished. `--max-value` on `geomean`, `plot`, and `report` supplies an explicit
+penalty in the selected metric's units, preserved exactly as given.
+
+Merged runs use each dataset's limit from the embedded source manifests. A
+per-dataset table reports its fixed penalty in `max_value`. If a pooled table
+combines different limits, `max_value` is empty and `max_value_by_dataset` records
+the dataset-to-penalty mapping. Missing, unlimited, conflicting, or lost time
+limits require an explicit `--max-value`; the commands raise an error instead
+of inferring a penalty from observed results. Archived derived runs therefore
+need their source limits preserved in the manifest, or an explicit override.
+
+Iteration and KKT metrics retain fixed defaults in their own units: iterations
+use penalty `1e6` and shift `100`, while the supported relative KKT residuals use
+penalty `1` and shift `0`. Time metrics use shift `10`. `--success-only` requires
+no failure penalty or time limit. These rules select the cost of failures;
+campaign-specific status filtering and timeout grace rules remain separate.
+
 Missing solves are charged too: run-directory commands use the manifest's
 configured solver and problem sets, intersecting includes with the dataset
 listing when available. `--repo-root` on `geomean`, `profile`, `plot`, and `report`
@@ -1133,8 +1149,12 @@ from solver_benchmarks.analysis.profiles import performance_profile, shifted_geo
 df = load_results("results/<run_id>")
 summary = solver_summary("results/<run_id>")
 profile = performance_profile(df, metric="run_time_seconds")
-geomean = shifted_geomean(df, metric="run_time_seconds")
+geomean = shifted_geomean(df, metric="run_time_seconds", timeout_seconds=300)
 ```
+
+Python callers can pass `timeout_seconds={"qp": 300, "sdp": 900}` for mixed
+dataset limits, or `max_value=5400` for an explicit common penalty. A time-metric
+penalized geomean requires one of these; `penalize_failures=False` does not.
 
 Status handling:
 
