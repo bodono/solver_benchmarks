@@ -11,6 +11,7 @@ are fetched with ``modal volume get scs-bench-results NAME results/NAME``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -96,21 +97,32 @@ pdlp_image = (
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
-# QTQP (google-deepmind/qtqp, local checkout) on its MKL Pardiso backend and on
-# its cuDSS backend (pip cuDSS + nvmath + cupy; no SCS build in that image).
-QTQP_REPO = Path.home() / "git" / "qtqp-main"  # clean worktree of origin/main (0.0.7)
+# QTQP on its MKL Pardiso backend and on its cuDSS backend (pip cuDSS + nvmath
+# + cupy; no SCS build in that image). The released package is installed from
+# PyPI; set QTQP_REPO=/path/to/checkout to build both images from a local
+# checkout instead (the SCS 3.3 campaign used a worktree of origin/main). Modal
+# resolves every registered image before the entrypoint runs, so nothing here
+# may depend on a local path that is not guaranteed to exist.
+QTQP_PIN = "qtqp>=0.0.7"
 QTQP_IGNORE = ["build", "figures", ".git", "**/__pycache__", "*.tex"]
-qtqp_cpu_image = (
-    cpu_image
-    .add_local_dir(str(QTQP_REPO), "/root/qtqp", ignore=QTQP_IGNORE, copy=True)
-    .run_commands("pip install /root/qtqp", "python -c 'import qtqp; print(qtqp.LinearSolver.PARDISO)'")
-)
+
+
+def _with_qtqp(image: modal.Image) -> modal.Image:
+    local = os.environ.get("QTQP_REPO")
+    if local:
+        return image.add_local_dir(local, "/root/qtqp", ignore=QTQP_IGNORE, copy=True).run_commands(
+            "pip install /root/qtqp"
+        )
+    return image.pip_install(QTQP_PIN)
+
+
+qtqp_cpu_image = _with_qtqp(cpu_image).run_commands("python -c 'import qtqp; print(qtqp.LinearSolver.PARDISO)'")
 qtqp_gpu_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "nvidia-cudss-cu12", "nvmath-python[cu12]", "cupy-cuda12x")
-    .add_local_dir(str(QTQP_REPO), "/root/qtqp", ignore=QTQP_IGNORE, copy=True)
-    .run_commands("pip install /root/qtqp")
+    _with_qtqp(
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
+        .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "nvidia-cudss-cu12", "nvmath-python[cu12]", "cupy-cuda12x")
+    )
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
