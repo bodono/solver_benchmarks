@@ -119,8 +119,8 @@ def merge_runs(
     cfg["datasets"] = _union_dataset_entries(m.get("config") or {} for m in manifests)
     # The per-entry selections above already fold in each shard's run-level
     # include / exclude, which must not survive as a global filter.
-    for key in ("include", "exclude", "dataset", "dataset_options"):
-        cfg.pop(key, None)
+    for filter_key in ("include", "exclude", "dataset", "dataset_options"):
+        cfg.pop(filter_key, None)
     solvers: dict[str, dict] = {}
     for m in manifests:
         for entry in (m.get("config") or {}).get("solvers") or []:
