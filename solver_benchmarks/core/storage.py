@@ -11,7 +11,7 @@ import shutil
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def make_run_id(config: RunConfig) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S_UTC")
     run_name = config.name or _datasets_slug(config)
     return f"{slugify(run_name)}_{stamp}"
 
@@ -139,7 +139,7 @@ class ResultStore:
     def write_manifest(self, config: RunConfig) -> None:
         manifest = {
             "run_id": self.run_id,
-            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "created_at_utc": datetime.now(UTC).isoformat(),
             "config": config.to_manifest(),
             "system": system_metadata(),
         }
@@ -249,7 +249,7 @@ class ResultStore:
 
     def append_event(self, level: str, message: str, **fields: Any) -> None:
         record = {
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "timestamp_utc": datetime.now(UTC).isoformat(),
             "level": level,
             "message": message,
             **fields,
