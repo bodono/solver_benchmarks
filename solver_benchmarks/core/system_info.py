@@ -7,7 +7,8 @@ server, or a frequency-throttled VM? The captured fields are also
 surfaced in the markdown report so anyone reading the analysis can
 size up the timing data before quoting it.
 
-Only stdlib + numpy / scipy versions are captured by default. If the
+Installed numerical-library and solver-package versions are captured using
+distribution metadata, without importing optional solver binaries. If the
 optional ``psutil`` package is installed, richer fields (physical
 core count, CPU frequency, total RAM, swap) are added; otherwise we
 gracefully fall back to ``os.cpu_count()`` and platform-specific
@@ -40,8 +41,11 @@ def system_metadata(
 
     Captures CPU model / count / frequency, total RAM, OS / kernel
     version, Python implementation + version, and NumPy / SciPy /
-    pandas versions (since solver runtimes are often dominated by the
-    BLAS shipped with numpy). All fields are best-effort: if a
+    pandas / pyarrow and registered solver package versions (since solver
+    runtimes are often dominated by the BLAS shipped with numpy). This is
+    a snapshot of the parent environment; individual result rows retain
+    the versions from the environment that actually performed the solve.
+    All fields are best-effort: if a
     library is missing or a probe raises, the field is set to None
     rather than failing the capture.
 
@@ -268,10 +272,18 @@ def _meminfo_fallback() -> dict[str, Any]:
 def _library_versions() -> dict[str, Any]:
     """Versions of libraries that materially affect benchmark
     timings. NumPy / SciPy ship the BLAS / LAPACK that linear solvers
-    delegate to; pandas / pyarrow are the reporting backbone.
+    delegate to; pandas / pyarrow are the reporting backbone. Include
+    each registered adapter's distributions, with None for uninstalled
+    optional packages. Importing their native modules is unnecessary.
     """
+    # Deferred to avoid the environment -> CPU-detection import cycle.
+    from .environment import SOLVER_PACKAGES
+
     versions: dict[str, str | None] = {}
-    for package in ("numpy", "scipy", "pandas", "pyarrow"):
+    solver_packages = sorted(
+        {package.lower() for packages in SOLVER_PACKAGES.values() for package in packages}
+    )
+    for package in ("numpy", "scipy", "pandas", "pyarrow", *solver_packages):
         versions[package] = _package_version(package)
     return versions
 

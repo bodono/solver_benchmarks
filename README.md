@@ -415,6 +415,7 @@ Important fields:
 | `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. |
 | `run.parallelism` | Number of concurrent subprocess solves. |
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples are not rerun. |
+| `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
 | `run.timeout_seconds` | Default subprocess timeout per solve. |
 | `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths. |
@@ -652,8 +653,17 @@ bench run configs/netlib_feasible_example.yaml --run-dir results/<run_id>
 ```
 
 If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
-`results.jsonl` are skipped. New solver variants or newly included problems are
-appended.
+`results.jsonl` are skipped. Rows with `worker_error` are retried automatically
+when their solve settings match the current config, up to
+`run.max_worker_error_retries` times (default 2). This bounds both crashed workers
+and deterministic exceptions reported as `worker_error`. The latest error stays
+visible when the limit is reached; increase the limit after fixing the cause.
+Resuming on a host without the solver leaves pending errors and retry budgets
+unchanged. A retry atomically replaces
+the compatible error rows, so reports count one result for that solve. Previous
+logs and solver artifacts remain intact; new artifacts go into a `retry-N`
+subdirectory containing a `previous_results.jsonl` snapshot of the replaced
+errors. New solver variants or newly included problems are appended.
 
 Append more work to an existing run by editing the config and reusing the same
 run directory:
@@ -1005,7 +1015,12 @@ Solver-specific traces:
 System info: each run's `manifest.json` carries a `system` block captured once
 at run start, recording the CPU model / logical and physical core count / max
 frequency, total and available memory, OS / kernel version, Python version,
-and the installed numpy / scipy / pandas / pyarrow versions. The block is
+and the installed numpy / scipy / pandas / pyarrow and registered solver-package
+versions under `system.library_versions` (uninstalled optional packages are
+recorded as `null`). This describes the parent environment at run start;
+`metadata.runtime.solver_package_versions` on each result remains the source
+for versions actually used by workers, including isolated `bench env` runs.
+The block is
 preserved across manifest rewrites so a re-run on the same run directory
 cannot silently overwrite the original provenance. Install the optional
 `system_info` extra (`pip install -e ".[system_info]"`) for the richer fields

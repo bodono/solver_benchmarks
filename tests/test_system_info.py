@@ -59,6 +59,42 @@ def test_system_metadata_library_versions_includes_numpy_scipy():
     assert "scipy" in libs and libs["scipy"] is not None
 
 
+def test_system_metadata_includes_all_solver_distribution_versions(monkeypatch):
+    from importlib import metadata
+
+    from solver_benchmarks.core import system_info as si
+    from solver_benchmarks.core.environment import SOLVER_PACKAGES
+    from solver_benchmarks.solvers.registry import SOLVERS
+
+    # Keep the shared distribution mapping complete as adapters are added.
+    assert set(SOLVERS) <= set(SOLVER_PACKAGES)
+    installed = {
+        "numpy": "2.0.0",
+        "cuopt-cu12": "26.08",
+        "scs": "3.3.1",
+        "highspy": "1.15.1",
+        "ortools": "9.15.0",
+        "proxsuite": "0.7.3",
+        "sdpa-python": "0.2.3",
+    }
+
+    def version(package):
+        if package not in installed:
+            raise metadata.PackageNotFoundError(package)
+        return installed[package]
+
+    monkeypatch.setattr(si.metadata, "version", version)
+    versions = si.system_metadata()["library_versions"]
+    for package, expected in installed.items():
+        assert versions[package] == expected
+    assert set(versions) == {
+        "numpy", "scipy", "pandas", "pyarrow",
+        *(package.lower() for packages in SOLVER_PACKAGES.values() for package in packages),
+    }
+    assert versions["cplex"] is None
+    assert versions["mosek"] is None
+
+
 def test_system_metadata_omits_hostname_by_default():
     from solver_benchmarks.core.system_info import system_metadata
 
@@ -286,6 +322,26 @@ def test_write_manifest_preserves_existing_system_block(tmp_path: Path):
 
     rewritten = json.loads(store.manifest_path.read_text())
     assert rewritten["system"].get("_test_marker") == "preserved"
+
+
+def test_manifest_solver_snapshot_does_not_replace_per_solve_versions(tmp_path: Path, monkeypatch):
+    from solver_benchmarks.core import environment, system_info
+    from solver_benchmarks.core.storage import ResultStore
+
+    monkeypatch.setattr(system_info, "_package_version", lambda package: "parent-version")
+    config = _minimal_run_config(tmp_path)
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = json.loads(store.manifest_path.read_text())
+    assert manifest["system"]["library_versions"]["scs"] == "parent-version"
+
+    # A worker/child environment captures its own versions, and a resumed
+    # run does not replace the original manifest snapshot with today's host.
+    monkeypatch.setattr(environment, "_package_version", lambda package: "worker-version")
+    monkeypatch.setattr(system_info, "_package_version", lambda package: "resumed-version")
+    assert environment.runtime_metadata("scs")["solver_package_versions"] == {"scs": "worker-version"}
+    store.write_manifest(config)
+    rewritten = json.loads(store.manifest_path.read_text())
+    assert rewritten["system"]["library_versions"]["scs"] == "parent-version"
 
 
 def test_runtime_metadata_includes_cpu_model():

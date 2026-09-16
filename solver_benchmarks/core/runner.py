@@ -862,6 +862,11 @@ def _write_skip(
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
 ) -> None:
+    # An unavailable solver (or unsupported kind on this host) is not a new
+    # solve attempt. Preserve the failed row and its retry budget so another
+    # host can still recover it; do not create retry artifacts for a skip.
+    if store.has_pending_retry(dataset_config.id, problem.name, solver_config.id):
+        return
     artifacts_dir = store.problem_solver_dir(
         dataset_config.id, problem.name, solver_config.id
     )
