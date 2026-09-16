@@ -169,6 +169,11 @@ class MittelmannDataset(MPSLPDataset):
         names = list(problem_names or [])
         if all_problems:
             names = _mittelmann_remote_problem_names()
+            if not names:
+                raise RuntimeError(
+                    "The Mittelmann problem index contained no .bz2 instances; "
+                    "refusing to replace an all-problems request with the default subset."
+                )
         if not names:
             names = ["qap15"]
         self.folder.mkdir(parents=True, exist_ok=True)
