@@ -157,7 +157,7 @@ def main() -> None:
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("--families", default="qp,lp,sdp")
     ap.add_argument("--tols", default="1e-4,1e-6")
-    ap.add_argument("--only-solver", default=None, help="substring filter on solver id")
+    ap.add_argument("--only-solver", default=None, help="comma-separated substring filters on solver id")
     ap.add_argument("--only-dataset", default=None, help="substring filter on dataset id")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -169,7 +169,7 @@ def main() -> None:
                 continue
             for tol in (float(x) for x in args.tols.split(",")):
                 for variant in solver_variants(family, tol, timeout):
-                    if args.only_solver and args.only_solver not in variant["id"]:
+                    if args.only_solver and not any(x in variant["id"] for x in args.only_solver.split(",")):
                         continue
                     cfg = shard_config(family, dataset, variant, timeout)
                     name = cfg["run"]["name"]
