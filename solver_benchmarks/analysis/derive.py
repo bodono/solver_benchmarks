@@ -10,13 +10,19 @@ their original ``artifact_dir``.
 from __future__ import annotations
 
 import json
+import math
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from solver_benchmarks.core import status
 
 KKT_FIELDS = ("primal_res_rel", "dual_res_rel", "duality_gap_rel")
+# Cone-form records also carry the distance of s and y to their cones; a point
+# that satisfies Ax + s = b with s outside K is not feasible, so these are part
+# of the check whenever the record has them (QP-form records have none).
+CONE_FIELDS = ("primal_cone_res", "dual_cone_res")
 # Statuses that carry a returned point which may still pass the check.
 PROMOTABLE = {status.OPTIMAL_INACCURATE, status.MAX_ITER_REACHED, status.TIME_LIMIT}
 _COPIED_FILES = ("run_config.yaml", "run_config.json", "events.jsonl")
@@ -47,6 +53,20 @@ def _read_manifest(run_dir: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def _check_no_overlap(out_dir: Path, sources: Iterable[Path]) -> None:
+    """Refuse an output directory that is, contains, or lies inside a source.
+
+    Without this, ``--overwrite`` would delete the very run it is about to
+    read (``bench kkt-verify RUN --output-dir RUN --overwrite``) and report
+    success on empty results.
+    """
+    out = out_dir.resolve()
+    for src in sources:
+        s = Path(src).resolve()
+        if out == s or out in s.parents or s in out.parents:
+            raise ValueError(f"output directory {out_dir} overlaps source run {src}")
+
+
 def _prepare_out_dir(out_dir: Path, overwrite: bool) -> None:
     if out_dir.exists():
         if not overwrite:
@@ -69,6 +89,7 @@ def merge_runs(
     if not sources:
         raise ValueError("merge_runs needs at least one run directory")
     out = Path(out_dir)
+    _check_no_overlap(out, sources)
     _prepare_out_dir(out, overwrite)
     records: list[dict[str, Any]] = []
     seen: dict[tuple[Any, Any, Any], int] = {}
@@ -82,10 +103,22 @@ def merge_runs(
         per_source.append({"run_dir": str(src), "rows": len(rows)})
     duplicates = sum(1 for count in seen.values() if count > 1)
     _write_jsonl(out / "results.jsonl", records)
-    manifest = _read_manifest(sources[0])
+    manifests = [_read_manifest(src) for src in sources]
+    manifest = json.loads(json.dumps(manifests[0])) if manifests else {}
+    # Union the configured datasets and solvers across shards (by id) so
+    # completion / missing-results checks see every selection, and keep the
+    # full source manifests for provenance (settings, environments).
+    cfg = manifest.setdefault("config", {})
+    for key in ("datasets", "solvers"):
+        merged: dict[str, dict] = {}
+        for m in manifests:
+            for entry in (m.get("config") or {}).get(key) or []:
+                merged.setdefault(str(entry.get("id")), entry)
+        cfg[key] = list(merged.values())
     manifest["derived"] = {
         "kind": "merge",
         "sources": per_source,
+        "source_manifests": manifests,
         "duplicate_keys": duplicates,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -98,17 +131,29 @@ def merge_runs(
 def worst_relative_residual(
     record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
 ) -> float | None:
-    """Largest of the listed relative KKT residuals, or None if none is present."""
+    """Largest of the listed KKT residuals, or None if any is missing or not finite.
+
+    A missing or non-finite component means the point could not be checked,
+    and an unchecked point must never count as verified: the caller treats
+    None as a failed check. Cone-form records must also have finite cone
+    residuals (``CONE_FIELDS``).
+    """
     kkt = record.get("kkt") or {}
+    wanted = list(fields)
+    if kkt.get("form") == "cone" or any(f in kkt for f in CONE_FIELDS):
+        wanted += [f for f in CONE_FIELDS if f not in wanted]
     values = []
-    for field in fields:
+    for field in wanted:
         value = kkt.get(field)
         if value is None:
-            continue
+            return None
         try:
-            values.append(float(value))
+            value = float(value)
         except (TypeError, ValueError):
-            continue
+            return None
+        if not math.isfinite(value):
+            return None
+        values.append(value)
     return max(values) if values else None
 
 
@@ -144,6 +189,7 @@ def kkt_verify(
     """
     src = Path(run_dir)
     out = Path(out_dir)
+    _check_no_overlap(out, [src])
     _prepare_out_dir(out, overwrite)
     records = _read_jsonl(src / "results.jsonl")
     demoted: dict[str, int] = {}

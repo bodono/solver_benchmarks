@@ -87,3 +87,60 @@ def test_kkt_verify_promote_accepts_accurate_inaccurate_rows(tmp_path):
     kkt_verify(src, tmp_path / "out2", tol=1e-6)
     out2 = {json.loads(l)["problem"]: json.loads(l) for l in (tmp_path / "out2" / "results.jsonl").read_text().splitlines()}
     assert out2["p1"]["status"] == "optimal_inaccurate"
+
+
+def _write_run_at(path, rows, config=None):
+    import json
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (path / "manifest.json").write_text(json.dumps({"config": config or {}}))
+
+
+def test_output_overlapping_a_source_is_refused(tmp_path):
+    import pytest
+
+    from solver_benchmarks.analysis.derive import kkt_verify, merge_runs
+    run = tmp_path / "run"
+    _write_run_at(run, [{"dataset": "d", "problem": "p", "solver_id": "s", "status": "optimal",
+                      "kkt": {"primal_res_rel": 0.0, "dual_res_rel": 0.0, "duality_gap_rel": 0.0}}])
+    with pytest.raises(ValueError):
+        kkt_verify(run, run, tol=1e-3, overwrite=True)
+    with pytest.raises(ValueError):
+        merge_runs([run], run / "nested", overwrite=True)
+    assert (run / "results.jsonl").exists()  # nothing was deleted
+
+
+def test_missing_or_nonfinite_residual_never_verifies():
+    from solver_benchmarks.analysis.derive import worst_relative_residual
+    ok = {"kkt": {"primal_res_rel": 1e-9, "dual_res_rel": 1e-9, "duality_gap_rel": 1e-9}}
+    assert worst_relative_residual(ok) == 1e-9
+    assert worst_relative_residual({"kkt": {"primal_res_rel": 0.0, "dual_res_rel": None, "duality_gap_rel": 0.0}}) is None
+    assert worst_relative_residual({"kkt": {"primal_res_rel": float("nan"), "dual_res_rel": 0.0, "duality_gap_rel": 0.0}}) is None
+    assert worst_relative_residual({"kkt": {"primal_res_rel": 0.0, "dual_res_rel": 0.0}}) is None
+
+
+def test_cone_infeasible_point_is_not_verified():
+    from solver_benchmarks.analysis.derive import worst_relative_residual
+    # Ax + s = b holds but s is outside the cone: the cone residual must count.
+    rec = {"kkt": {"form": "cone", "primal_res_rel": 0.0, "dual_res_rel": 0.0, "duality_gap_rel": 0.0,
+                   "primal_cone_res": 1.0, "dual_cone_res": 0.0}}
+    assert worst_relative_residual(rec) == 1.0
+    assert worst_relative_residual({"kkt": {"form": "cone", "primal_res_rel": 0.0, "dual_res_rel": 0.0, "duality_gap_rel": 0.0}}) is None
+
+
+def test_merge_unions_selections_and_keeps_manifests(tmp_path):
+    import json
+
+    from solver_benchmarks.analysis.derive import merge_runs
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    _write_run_at(a, [{"dataset": "A", "problem": "p1", "solver_id": "s1", "status": "optimal"}],
+               config={"datasets": [{"id": "A"}], "solvers": [{"id": "s1", "settings": {"eps": 1e-4}}]})
+    _write_run_at(b, [{"dataset": "B", "problem": "p2", "solver_id": "s2", "status": "optimal"}],
+               config={"datasets": [{"id": "B"}], "solvers": [{"id": "s2", "settings": {"eps": 1e-6}}]})
+    out = tmp_path / "merged"
+    merge_runs([a, b], out, overwrite=True)
+    m = json.loads((out / "manifest.json").read_text())
+    assert sorted(d["id"] for d in m["config"]["datasets"]) == ["A", "B"]
+    assert sorted(s["id"] for s in m["config"]["solvers"]) == ["s1", "s2"]
+    assert len(m["derived"]["source_manifests"]) == 2
