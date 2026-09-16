@@ -488,26 +488,39 @@ def expected_results(
 ) -> pd.DataFrame | None:
     """Expected comparison identities, including entirely unrecorded solves.
 
-    Explicit includes are usable without local problem files. Unrestricted
-    selections use the dataset listing, like completion/missing reports.
+    Selections use the dataset listing when local data is available; explicit
+    includes are a fallback when the dataset directory is absent. Merged runs
+    retain each source's filters and solver associations here. Comparison
+    functions subsequently pad the combined problem/solver population, unlike
+    completion reports, which count only planned jobs.
     Without a manifest, callers fall back to the observed problem/solver sets.
     """
     manifest_path = Path(run_dir) / "manifest.json"
     if not manifest_path.exists():
         return None
-    config = json.loads(manifest_path.read_text()).get("config", {})
-    problems = _expected_by_dataset_cached(
-        str(manifest_path.resolve()),
-        str(repo_root) if repo_root is not None else None,
-        manifest_path.stat().st_mtime_ns,
-    )
+    manifest = json.loads(manifest_path.read_text())
+    config = manifest.get("config", {})
+    selections = (manifest.get("derived") or {}).get("selections")
+    if selections:
+        groups = [
+            (_expected_by_dataset({"datasets": group.get("datasets") or []}, repo_root=repo_root),
+             group.get("solvers") or [])
+            for group in selections
+        ]
+    else:
+        groups = [(_expected_by_dataset_cached(
+            str(manifest_path.resolve()),
+            str(repo_root) if repo_root is not None else None,
+            manifest_path.stat().st_mtime_ns,
+        ), [solver["id"] for solver in config.get("solvers", [])])]
     rows = [
-        {"dataset": dataset, "problem": problem, "solver_id": solver["id"]}
+        {"dataset": dataset, "problem": problem, "solver_id": solver_id}
+        for problems, solver_ids in groups
         for dataset, names in problems.items()
         for problem in sorted(names)
-        for solver in config.get("solvers", [])
+        for solver_id in solver_ids
     ]
-    return pd.DataFrame(rows, columns=["dataset", "problem", "solver_id"])
+    return pd.DataFrame(rows, columns=["dataset", "problem", "solver_id"]).drop_duplicates()
 
 
 def completion_summary(
@@ -1157,14 +1170,16 @@ def _expected_by_dataset(
     for entry in manifest_dataset_entries(config):
         include = set(entry.get("include") or [])
         exclude = set(entry.get("exclude") or [])
-        if include and entry.get("dataset_options", {}).get("max_size_mb") is None:
-            expected[entry["id"]] = include - exclude
-            continue
         dataset_cls = get_dataset(entry["name"])
         dataset = dataset_cls(
             repo_root=repo_root,
             **entry.get("dataset_options", {}),
         )
+        data_dir = getattr(dataset, "data_dir", None)
+        if (include and entry.get("dataset_options", {}).get("max_size_mb") is None
+                and data_dir is not None and not data_dir.exists()):
+            expected[entry["id"]] = include - exclude
+            continue
         specs = dataset.list_problems()
         problems = [problem.name for problem in specs]
         if include:
@@ -1205,4 +1220,3 @@ def _expected_by_dataset_cached(
     """
     config = json.loads(Path(manifest_path_str).read_text())["config"]
     return _expected_by_dataset(config, repo_root=repo_root_str)
-

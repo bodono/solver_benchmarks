@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
-from solver_benchmarks.analysis.tables import expected_results
+from solver_benchmarks.analysis.tables import completion_summary, expected_results, missing_results
 from solver_benchmarks.cli import main
 
 
@@ -53,7 +53,7 @@ def _incomplete_run(tmp_path):
     run.mkdir()
     config = {
         "datasets": [
-            {"name": "synthetic_qp", "id": "first", "include": ["one_variable_eq", "never_recorded", "excluded"], "exclude": ["excluded"]},
+            {"name": "synthetic_qp", "id": "first", "include": ["one_variable_eq", "one_variable_lp", "excluded"], "exclude": ["excluded"]},
             {"name": "synthetic_qp", "id": "second", "include": ["one_variable_eq"]},
         ],
         "solvers": [{"id": s, "solver": "scs", "settings": {}} for s in ["a", "b"]],
@@ -124,3 +124,80 @@ def test_valid_successful_retry_beats_invalid_success_metric(invalid):
     assert gm.loc["a", "run_time_seconds"] == pytest.approx(2)
     assert gm.loc["a", "success_count"] == 1
     assert (performance_profile(observed, n_tau=3)["a"] == 1).all()
+
+
+@pytest.mark.parametrize("metric", ["run_time_seconds", "iterations", "kkt.primal_res_rel"])
+@pytest.mark.parametrize("penalty", [None, 1.0])
+def test_geomean_failure_penalty_is_at_least_every_success(metric, penalty):
+    # Exceed every built-in default, exercising the same invariant in all units.
+    frame = pd.DataFrame([
+        {"problem": p, "solver_id": "all", "status": "optimal", metric: 2e6}
+        for p in ("p", "q")
+    ] + [
+        {"problem": "p", "solver_id": "some", "status": "optimal", metric: 1.5e6},
+        {"problem": "q", "solver_id": "some", "status": "time_limit", metric: 1},
+    ])
+    # Missing "none" is charged on both problems even without recorded attempts.
+    expected = pd.DataFrame([{"problem": p, "solver_id": "none"} for p in ("p", "q")])
+    gm = shifted_geomean(frame, metric=metric, max_value=penalty, expected=expected).set_index("solver_id")
+    assert (gm["max_value"] == 2e6).all()
+    assert gm.loc["none", metric] == pytest.approx(2e6)
+    assert gm.loc["all", metric] <= gm.loc["none", metric]
+    assert gm.loc["some", metric] < gm.loc["none", metric]
+    assert gm.loc["none", "failure_count"] == 2
+    explicit = shifted_geomean(frame, metric=metric, max_value=3e6, expected=expected).set_index("solver_id")
+    assert (explicit["max_value"] == 3e6).all()
+    assert explicit.loc["none", metric] == pytest.approx(3e6)
+
+
+def test_expected_includes_are_intersected_with_available_listing(tmp_path):
+    run = _incomplete_run(tmp_path)
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["datasets"][0]["include"].append("typo")
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    assert "typo" not in set(expected_results(run)["problem"])
+    assert "typo" not in set(missing_results(run)["problem"])
+    assert completion_summary(run)["expected"].sum() == 6
+
+
+def test_missing_dataset_includes_fall_back_but_empty_staged_listing_does_not(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    config = {"datasets": [{"id": "lp", "name": "netlib", "include": ["planned", "excluded"],
+                            "exclude": ["excluded"]}], "solvers": [{"id": "s"}]}
+    (run / "manifest.json").write_text(json.dumps({"config": config}))
+    expected = expected_results(run, repo_root=tmp_path)
+    assert expected.to_dict("records") == [{"dataset": "lp", "problem": "planned", "solver_id": "s"}]
+    # Different manifest path avoids the existing manifest-keyed listing cache.
+    staged = tmp_path / "staged_run"
+    staged.mkdir()
+    (staged / "manifest.json").write_text(json.dumps({"config": config}))
+    (tmp_path / "problem_classes" / "netlib_data" / "feasible").mkdir(parents=True)
+    assert expected_results(staged, repo_root=tmp_path).empty
+
+
+def test_merged_expected_groups_keep_filters_and_solver_associations(tmp_path):
+    run = tmp_path / "merged"
+    run.mkdir()
+    # The display config's union is deliberately broader than the true source
+    # selections, as can happen for mixed include/exclude filters in a merge.
+    dataset = {"id": "qp", "name": "synthetic_qp"}
+    group_a = {"datasets": [{**dataset, "exclude": ["one_variable_lp"]}], "solvers": ["a"]}
+    group_b = {"datasets": [{**dataset, "include": ["one_variable_eq"]}], "solvers": ["b"]}
+    manifest = {"config": {"datasets": [dataset], "solvers": [{"id": s} for s in ("a", "b")]},
+                "derived": {"selections": [group_a, group_b, group_a]}}
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    expected = expected_results(run)
+    assert expected.to_dict("records") == [
+        {"dataset": "qp", "problem": "one_variable_eq", "solver_id": "a"},
+        {"dataset": "qp", "problem": "one_variable_eq", "solver_id": "b"},
+    ]
+    group_b["datasets"] = [{**dataset, "include": ["one_variable_lp"]}]
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    expected = expected_results(run)
+    assert len(expected) == 2
+    assert expected.iloc[1].to_dict() == {"dataset": "qp", "problem": "one_variable_lp", "solver_id": "b"}
+    # Comparisons intentionally use the common problem population, while
+    # planned-job completion counts preserve the associations above.
+    gm = shifted_geomean(pd.DataFrame(), expected=expected)
+    assert gm["failure_count"].tolist() == [2, 2]

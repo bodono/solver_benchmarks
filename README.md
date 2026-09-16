@@ -1074,13 +1074,21 @@ benchmark comparison, not a raw average runtime. Non-`optimal` statuses,
 including `optimal_inaccurate`, are assigned `--max-value` before the geometric
 mean is computed. Use `bench summary` for raw totals/means/medians, or
 `bench geomean --success-only` for a geomean over successful solves only. The
-default failure penalty is `1000` seconds and can be changed with `--max-value`.
+default failure penalty starts at `1000` seconds and can be changed with
+`--max-value`. For every metric, the effective penalty is at least the largest
+valid successful value in that comparison; a failure cannot improve on a
+success. The output `max_value` column records this effective penalty. Explicit
+larger penalties (for example, three times a campaign's time limit) are retained.
 Missing solves are charged too: run-directory commands use the manifest's
-configured solver and problem sets (explicit includes, otherwise the dataset
-listing). `--repo-root` on `geomean`, `profile`, `plot`, and `report` selects the
-repository containing the dataset files. Explicit includes do not require those
-files to remain staged; unrestricted selections do. No-manifest analyses use the
-union of observed problems crossed with observed solvers. Python callers can
+configured solver and problem sets, intersecting includes with the dataset
+listing when available. `--repo-root` on `geomean`, `profile`, `plot`, and `report`
+selects the repository containing the dataset files. If a dataset directory is
+absent, explicit includes without a size filter supply the expected names;
+unrestricted selections still require local data. Merged-run selections retain
+each source's filters and solver associations when determining planned jobs.
+Comparisons then use the combined observed/expected problem population for all
+retained solvers, whereas completion reports count only planned jobs.
+No-manifest analyses use the union of observed problems crossed with observed solvers. Python callers can
 pass `expected=` as a DataFrame of `dataset`, `problem`, and `solver_id` identities
 to include completely absent solvers or problems. Duplicate attempts contribute
 once per identity, using the best successful result, as in performance profiles.
@@ -1135,7 +1143,14 @@ Status handling:
   are penalized because the solver did not hit the requested target.
 - Failed, skipped, timeout, and solver-error statuses have infinite performance
   ratios; shifted geometric means use a finite failure penalty instead.
-- You can pass custom `success_statuses` and `max_value` in Python.
+- An explicit finite profile `max_value` opts into finite failure ratios,
+  with the penalty raised to at least the largest successful value on each
+  problem. Problems with no successes still have infinite ratios throughout.
+- Profiles floor time metrics at 0.01 seconds and iterations at 1 before taking
+  ratios, so a zero best value does not hide positive successful values. Other
+  metrics retain exact ratios. Python callers can set `min_value` in metric
+  units, including 0 to disable the floor, and customize `success_statuses`
+  and `max_value`.
 
 ## Adding a New Dataset
 

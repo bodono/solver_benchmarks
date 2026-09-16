@@ -26,6 +26,16 @@ _METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
     "kkt.comp_slack": (1.0, 0.0),
 }
 
+# Finite profile ratios need a positive resolution for metrics that can
+# legitimately report zero. Other metrics keep exact ratios unless the
+# caller supplies a floor in that metric's units.
+_PROFILE_FLOORS = {
+    "run_time_seconds": 0.01,
+    "setup_time_seconds": 0.01,
+    "solve_time_seconds": 0.01,
+    "iterations": 1.0,
+}
+
 
 def metric_defaults(metric: str) -> tuple[float, float]:
     """Return ``(failure_penalty, shift)`` defaults for ``metric``.
@@ -95,14 +105,16 @@ def performance_profile(
     n_tau: int = 1000,
     tau_max: float | None = None,
     expected: pd.DataFrame | None = None,
+    min_value: float | None = None,
 ) -> pd.DataFrame:
     """Compute the Dolan-More performance profile.
 
     For each problem ``p`` and solver ``s``, this computes
     ``r[p, s] = metric[p, s] / min_successful metric[p, s]``. Failures,
     absent solves, and nonfinite/negative metrics have infinite ratios
-    by default. An explicit finite ``max_value`` retains the legacy
-    penalty-time behavior. The returned curve is
+    by default. An explicit finite ``max_value`` requests a penalty in
+    metric units, raised to at least the largest successful value for each
+    problem so a failure cannot outrank a success. The returned curve is
     ``rho_s(tau) = fraction of problems with r[p, s] <= tau``.
 
     Multi-dataset frames are pivoted on ``(dataset, problem)`` so that two
@@ -111,14 +123,23 @@ def performance_profile(
     ``aggfunc="first"``.
 
     Problems on which every solver failed remain in the denominator,
-    with infinite ratios for every solver. Zero metrics tie at ratio 1
-    when the best value is zero; positive values then have infinite ratio.
+    with infinite ratios for every solver. Successful metrics are floored at
+    ``min_value`` before taking ratios: by default 0.01 for time in seconds,
+    1 for iterations, and 0 for other metrics. With a zero floor, zero metrics
+    tie at ratio 1 when the best is zero; positive values then have infinite
+    ratio. Supply a positive floor in the metric's units to avoid that case.
     The default ``tau_max`` covers the largest finite ratio.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     if max_value is None:
         max_value = float("inf")
+    if np.isnan(max_value) or max_value < 0:
+        raise ValueError("max_value must be nonnegative and not NaN")
+    if min_value is None:
+        min_value = _PROFILE_FLOORS.get(metric, 0.0)
+    if not np.isfinite(min_value) or min_value < 0:
+        raise ValueError("min_value must be finite and nonnegative")
     results = complete_results(results, expected=expected)
     if results.empty:
         return pd.DataFrame()
@@ -138,8 +159,10 @@ def performance_profile(
     values = deduped.pivot(index=index, columns="solver_id", values=metric)
     statuses = deduped.pivot(index=index, columns="solver_id", values="status")
     success_mask = statuses.isin(success_statuses) & np.isfinite(values) & values.ge(0)
+    values = values.clip(lower=min_value)
     best = values.where(success_mask).min(axis=1)
-    ratios = values.where(success_mask, max_value).divide(best, axis=0)
+    penalty = values.where(success_mask).max(axis=1).clip(lower=max_value)
+    ratios = values.where(success_mask, penalty, axis=0).divide(best, axis=0)
     ratios.loc[best.isna()] = float("inf")
     zero_best = best.eq(0)
     ratios.loc[zero_best] = np.where(
@@ -230,6 +253,10 @@ def shifted_geomean(
     problem/solver identities to include completely absent problems or solvers;
     otherwise the observed sets are crossed. Success-only means still omit
     failures, while their counts describe the same comparison universe.
+    The penalty (default or explicit ``max_value``) is raised to the largest
+    successful metric in this comparison, so each failure costs at least as
+    much as every admitted success. The returned ``max_value`` records that effective
+    penalty. Larger explicit penalties are retained.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
@@ -246,6 +273,15 @@ def shifted_geomean(
     columns = ["solver_id", metric, "mode", "shift", "max_value", "success_count", "failure_count"]
     if results.empty:
         return pd.DataFrame(columns=columns)
+    numeric = pd.to_numeric(
+        results.get(metric, pd.Series(np.nan, index=results.index)), errors="coerce"
+    )
+    valid_success = results["status"].isin(success_statuses) & np.isfinite(numeric) & numeric.ge(0)
+    if penalize_failures:
+        if np.isnan(max_value) or max_value < 0:
+            raise ValueError("max_value must be nonnegative and not NaN")
+        if valid_success.any():
+            max_value = max(max_value, float(numeric[valid_success].max()))
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
         values = pd.to_numeric(
