@@ -32,6 +32,11 @@ FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kenni
 # The LP family's copy of the Mittelmann set only ever held qap15; the set is
 # its own family (lpbig), so drop it here to keep the title honest.
 FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
+# Nominal time limit per family and the grace the harness allowed before
+# killing a worker; a solve that finishes later counts as a failure for every
+# solver, whatever status it reported.
+FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0}
+LIMIT_GRACE = 60.0
 DATASET_NAMES = {"maros_meszaros": "Maros-Meszaros", "qplib": "QPLIB", "mpc": "MPC", "netlib": "Netlib",
                  "kennington": "Kennington", "miplib_relax": "MIPLIB-relaxation", "sdplib": "SDPLIB",
                  "mittelmann_sdp": "Mittelmann", "mittelmann0": "Mittelmann", "mittelmann1": "Mittelmann",
@@ -258,6 +263,10 @@ def main() -> None:
         drop = FAMILY_DROP_DATASETS.get(family)
         if drop:
             df = df[~df["dataset"].isin(drop)]
+        limit = FAMILY_LIMIT.get(family)
+        if limit:
+            late = df["run_time_seconds"] > limit + LIMIT_GRACE
+            df = df.copy(); df.loc[late, "status"] = "time_limit"
         use_run = dict(kv.split("=", 1) for kv in args.use_run)
         tags = sorted({solver_tol(s) for s in df["solver_id"].unique() if solver_tol(s)})
         if args.tol_tag:
