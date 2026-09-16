@@ -203,3 +203,14 @@ def _disable_dataset_network(monkeypatch, dataset_id: str, replacement) -> None:
         monkeypatch.setattr(tsplib_sdp.urllib.request, "urlopen", replacement)
     else:
         raise AssertionError(f"Unhandled dataset {dataset_id!r}")
+
+
+def test_mittelmann_emps_download_loads_real_problem(tmp_path: Path):
+    dataset = get_dataset("mittelmann")(data_root=tmp_path)
+    dataset.prepare_data(["Linf_520c"])
+
+    problem = dataset.load_problem("Linf_520c")
+
+    # This member is EMPS under bzip2, not standard MPS under bzip2.
+    assert problem.data["n"] == 69004
+    assert problem.data["A"].nnz == 635195

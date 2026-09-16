@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import bz2
+import io
+import os
 import re
+import shutil
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 import scipy.sparse as sp
 
 import problem_classes.qpsreader as qpsreader
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
+from solver_benchmarks.transforms.emps import decode_emps, is_emps_header
 
 from .base import Dataset, atomic_write_bytes, validate_gzip_payload
 
@@ -169,6 +175,11 @@ class MittelmannDataset(MPSLPDataset):
         names = list(problem_names or [])
         if all_problems:
             names = _mittelmann_remote_problem_names()
+            if not names:
+                raise RuntimeError(
+                    "The Mittelmann problem index contained no .bz2 instances; "
+                    "refusing to replace an all-problems request with the default subset."
+                )
         if not names:
             names = ["qap15"]
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -303,6 +314,9 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
     stem = _strip_mittelmann_suffix(Path(name).name)
     target = folder / f"{stem}.mps"
     if target.exists():
+        with target.open("rb") as source:
+            if _is_emps_stream(source):
+                _stage_mittelmann_mps(source, target)
         return
     folder.mkdir(parents=True, exist_ok=True)
     candidates = [f"{stem}.mps.bz2", f"{stem}.bz2"]
@@ -312,11 +326,81 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
         try:
             with urllib.request.urlopen(url, timeout=60) as response:
                 compressed = response.read()
-            atomic_write_bytes(target, bz2.decompress(compressed))
-            return
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             last_error = exc
-    raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}")
+            continue
+        break
+    else:
+        raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}") from last_error
+
+    # A successful fetch selects the source. Corruption and local staging
+    # failures must not trigger another download or lose their original cause.
+    try:
+        payload = bz2.decompress(compressed)
+    except (OSError, EOFError, ValueError) as exc:
+        raise RuntimeError(
+            f"Mittelmann problem {name!r} from {url} is not valid bzip2 data: {exc}"
+        ) from exc
+    with io.BytesIO(payload) as source:
+        _stage_mittelmann_mps(source, target)
+
+
+def _is_emps_stream(source: BinaryIO) -> bool:
+    header: list[str] = []
+    while len(header) < 3:
+        line = source.readline(4096)
+        if not line:
+            break
+        if line.strip() and not line.startswith(b"*"):
+            header.append(line.decode("ascii", errors="replace"))
+    source.seek(0)
+    return is_emps_header(header)
+
+
+def _validate_mittelmann_mps(path: Path) -> None:
+    import highspy
+
+    reader = highspy.Highs()
+    reader.setOptionValue("output_flag", False)
+    if reader.readModel(str(path)) == highspy.HighsStatus.kError or reader.getNumCol() == 0:
+        raise RuntimeError(f"Mittelmann data is not a readable MPS model: {path}")
+
+
+def _stage_mittelmann_mps(source: BinaryIO, target: Path) -> None:
+    """Decode, validate and atomically publish one standard MPS file.
+
+    Old versions saved decompressed EMPS under an .mps suffix; this also
+    repairs those cached files without a download. A failed conversion or
+    validation leaves the old cache intact and removes its temporary output.
+    The input stream is closed before publishing, including on Windows where
+    an open source file prevents replacing a cached EMPS file in place.
+    """
+    try:
+        # The child needs an .mps suffix for HiGHS, but must not appear in the
+        # dataset's top-level glob while conversion is incomplete (or if the
+        # preparing process is killed before cleanup).
+        with tempfile.TemporaryDirectory(prefix=".prepare-", dir=target.parent) as staging:
+            temporary = Path(staging) / "model.mps"
+            with temporary.open("wb") as output:
+                if _is_emps_stream(source):
+                    # Keep the streams open until both text wrappers detach.
+                    text_source = io.TextIOWrapper(source, encoding="ascii")
+                    text_output = io.TextIOWrapper(output, encoding="ascii", newline="\n")
+                    try:
+                        decode_emps(text_source, text_output)
+                        text_output.flush()
+                    finally:
+                        text_source.detach()
+                        text_output.detach()
+                else:
+                    shutil.copyfileobj(source, output)
+                output.flush()
+                os.fsync(output.fileno())
+            source.close()
+            _validate_mittelmann_mps(temporary)
+            os.replace(temporary, target)
+    except ValueError as exc:
+        raise RuntimeError(f"Could not decode Mittelmann EMPS file {target.name}: {exc}") from exc
 
 
 _KENNINGTON_PROBLEMS = [

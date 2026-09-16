@@ -193,6 +193,14 @@ file from that bundled checkout copy and only falls back to the official
 Challenge host when the requested file is not bundled. `dimacs --all` follows
 the official Challenge index and therefore depends on that external host.
 
+Mittelmann preparation accepts both bzip2-compressed MPS and NETLIB EMPS
+files. EMPS files are decoded in Python, with checksum validation, and the
+resulting MPS is checked with HiGHS before it is cached. Running preparation
+again also repairs EMPS files saved with an `.mps` suffix by older versions.
+Already cached standard MPS files are reused without a full validation parse.
+An empty remote index is an error for `mittelmann --all`; the default
+preparation command intentionally downloads only `qap15`.
+
 SDPLIB is different from the download-backed datasets above: the maintained
 adapter reads converted `.jld2` files, or extracts them from
 `problem_classes/sdplib_data/sdplib.tar` when that archive is present. It does
