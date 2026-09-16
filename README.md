@@ -1322,6 +1322,9 @@ Unsupported inputs:
 
 - QPs with nonzero `P`.
 - SDP, SOC, rotated SOC, and other non-LP cones.
+- Models whose serialized OR-Tools request reaches 2 GiB, the protobuf size
+  limit. These return `skipped_unsupported` with the model size, request size,
+  and byte limit in `info`, before copying the model into a solve request.
 
 Settings:
 

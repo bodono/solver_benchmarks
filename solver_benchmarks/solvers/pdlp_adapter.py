@@ -35,6 +35,8 @@ from .base import (
 )
 
 INF_BOUND = 1.0e20
+# Protobuf messages must be smaller than 2 GiB, including the request envelope.
+MAX_PROTOBUF_BYTES = (1 << 31) - 1
 
 
 class PDLPSolverAdapter(SolverAdapter):
@@ -219,7 +221,6 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     threads = pop_threads(settings)
 
     request = linear_solver_pb2.MPModelRequest(
-        model=model,
         enable_internal_solver_output=verbose,
         solver_type=linear_solver_pb2.MPModelRequest.PDLP_LINEAR_PROGRAMMING,
     )
@@ -233,6 +234,23 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         raise ValueError(f"Unsupported PDLP settings: {sorted(settings)}")
 
     request.solver_specific_parameters = text_format.MessageToString(parameters)
+
+    # Check before CopyFrom: constructing MPModelRequest(model=model) duplicates
+    # the entire model even when it cannot cross the protobuf API boundary.
+    model_bytes = model.ByteSize()
+    model_field = request.DESCRIPTOR.fields_by_name["model"].number
+    request_bytes = request.ByteSize() + _protobuf_field_size(model_field, model_bytes)
+    if request_bytes > MAX_PROTOBUF_BYTES:
+        return SolverResult(
+            status=status.SKIPPED_UNSUPPORTED,
+            info={
+                "reason": "PDLP model request exceeds the protobuf serialized size limit (2 GiB)",
+                "protobuf_model_bytes": model_bytes,
+                "protobuf_request_bytes": request_bytes,
+                "protobuf_limit_bytes": MAX_PROTOBUF_BYTES,
+            },
+        )
+    request.model.CopyFrom(model)
 
     start = time.perf_counter()
     response = _solve_request(model_builder_helper, linear_solver_pb2, request)
@@ -401,6 +419,12 @@ def _set_time_limit(request, value: float) -> bool:
         request.solver_time_limit_seconds = value
         return True
     return False
+
+
+def _protobuf_field_size(field_number: int, payload_bytes: int) -> int:
+    """Size of a length-delimited protobuf field without serializing its payload."""
+    tag = (field_number << 3) | 2
+    return (tag.bit_length() + 6) // 7 + max(1, (payload_bytes.bit_length() + 6) // 7) + payload_bytes
 
 
 def _solve_request(model_builder_helper, linear_solver_pb2, request):
