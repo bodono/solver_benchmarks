@@ -109,12 +109,12 @@ def merge_runs(
     # completion / missing-results checks see every selection, and keep the
     # full source manifests for provenance (settings, environments).
     cfg = manifest.setdefault("config", {})
-    for key in ("datasets", "solvers"):
+    for section in ("datasets", "solvers"):
         merged: dict[str, dict] = {}
         for m in manifests:
-            for entry in (m.get("config") or {}).get(key) or []:
+            for entry in (m.get("config") or {}).get(section) or []:
                 merged.setdefault(str(entry.get("id")), entry)
-        cfg[key] = list(merged.values())
+        cfg[section] = list(merged.values())
     manifest["derived"] = {
         "kind": "merge",
         "sources": per_source,
