@@ -330,6 +330,61 @@ def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None) -> None:
         click.echo(str(path))
 
 
+@main.command("merge")
+@click.argument("out_dir", type=click.Path(path_type=Path))
+@click.argument("run_dirs", nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--overwrite", is_flag=True, help="Replace OUT_DIR if it exists.")
+def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> None:
+    """Concatenate sharded run directories into one for analysis."""
+    from solver_benchmarks.analysis.derive import merge_runs
+
+    summary = merge_runs(list(run_dirs), out_dir, overwrite=overwrite)
+    click.echo(
+        f"{out_dir}: {summary['rows']} rows from {summary['sources']} runs"
+        + (f", {summary['duplicate_keys']} duplicated keys" if summary["duplicate_keys"] else "")
+    )
+
+
+@main.command("kkt-verify")
+@click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
+@click.option("--tol", required=True, type=float, help="Largest allowed relative KKT residual.")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--allow-missing",
+    is_flag=True,
+    help="Keep claimed-optimal rows that carry no KKT residuals (default: demote them).",
+)
+@click.option(
+    "--promote",
+    is_flag=True,
+    help="Also mark inaccurate, iteration-limited or time-limited solves optimal when their returned point passes the check.",
+)
+@click.option("--overwrite", is_flag=True, help="Replace the output directory if it exists.")
+def kkt_verify_cmd(
+    run_dir: Path, tol: float, output_dir: Path | None, allow_missing: bool, promote: bool, overwrite: bool
+) -> None:
+    """Write a copy of RUN_DIR in which claimed-optimal solves whose
+    independently computed relative KKT residuals exceed --tol are marked
+    optimal_inaccurate, so every solver is held to the same accuracy."""
+    from solver_benchmarks.analysis.derive import kkt_verify
+
+    out = output_dir or run_dir.parent / f"{run_dir.name}_kkt{tol:.0e}"
+    summary = kkt_verify(
+        run_dir, out, tol=tol, missing_is_failure=not allow_missing, promote=promote, overwrite=overwrite
+    )
+    solvers = sorted(
+        set(summary["kept"]) | set(summary["demoted"]) | set(summary["promoted"]) | set(summary["missing_residuals"])
+    )
+    for solver_id in solvers:
+        click.echo(
+            f"{solver_id}\tkept={summary['kept'].get(solver_id, 0)}"
+            f"\tdemoted={summary['demoted'].get(solver_id, 0)}"
+            f"\tpromoted={summary['promoted'].get(solver_id, 0)}"
+            f"\tno_residuals={summary['missing_residuals'].get(solver_id, 0)}"
+        )
+    click.echo(str(out))
+
+
 @main.command("report")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
