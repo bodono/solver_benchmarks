@@ -17,6 +17,7 @@ from typing import Any
 
 import pandas as pd
 
+from . import status
 from .config import RunConfig, manifest_solve_signatures, solve_signatures
 from .result import ProblemResult, to_jsonable
 from .system_info import system_metadata
@@ -81,6 +82,11 @@ class ResultStore:
     # Per-store lock for the write paths. Using `field` with a default
     # factory keeps `cls(root, run_id)` calls compatible.
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    # Exact failed rows selected by resume planning. Retain them until a
+    # replacement result is durable, and never replace incompatible attempts.
+    _retry_rows: dict[tuple[str, str, str], set[str]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> ResultStore:
@@ -180,6 +186,22 @@ class ResultStore:
             / slugify(solver_id)
         )
         path.mkdir(parents=True, exist_ok=True)
+        previous_rows = self._retry_rows.get((dataset, problem, solver_id))
+        if previous_rows:
+            # Keep prior stdout/stderr and raw solver output intact. A failed
+            # or interrupted retry must not overwrite the previous attempt.
+            attempt = 1
+            while True:
+                retry_dir = path / f"retry-{attempt}"
+                try:
+                    retry_dir.mkdir()
+                    break
+                except FileExistsError:
+                    attempt += 1
+            atomic_write_text(
+                retry_dir / "previous_results.jsonl", "\n".join(sorted(previous_rows)) + "\n"
+            )
+            return retry_dir
         return path
 
     def completed_keys(
@@ -199,7 +221,12 @@ class ResultStore:
         compatible with the current dataset/solver definition are treated
         as complete. Legacy rows without an embedded signature are checked
         against ``previous_manifest`` when available.
+
+        Infrastructure failures (``worker_error``) are retried. Their rows
+        stay on disk until ``write_result`` atomically replaces them, and
+        ``problem_solver_dir`` preserves the previous attempt's artifacts.
         """
+        self._retry_rows.clear()
         if not self.results_jsonl_path.exists():
             return set()
         current_signatures = solve_signatures(config) if config is not None else None
@@ -244,7 +271,14 @@ class ResultStore:
                         previous_signature=previous_signature,
                     ):
                         continue
-                keys.add(key)
+                if record.get("status") == status.WORKER_ERROR:
+                    self._retry_rows.setdefault(key, set()).add(line.strip())
+                else:
+                    keys.add(key)
+        # If an older file already contains a successful compatible retry,
+        # it is complete even when the superseded error is still present.
+        for key in keys:
+            self._retry_rows.pop(key, None)
         return keys
 
     def append_event(self, level: str, message: str, **fields: Any) -> None:
@@ -267,8 +301,21 @@ class ResultStore:
             artifact_dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
         line = json.dumps(record, sort_keys=True) + "\n"
-        with self._write_lock, self.results_jsonl_path.open("a") as handle:
-            handle.write(line)
+        key = (result.dataset, result.problem, result.solver_id)
+        with self._write_lock:
+            previous_rows = self._retry_rows.get(key)
+            if previous_rows:
+                with self.results_jsonl_path.open() as handle:
+                    retained = "".join(
+                        existing for existing in handle if existing.strip() not in previous_rows
+                    )
+                if retained and not retained.endswith("\n"):
+                    retained += "\n"
+                atomic_write_text(self.results_jsonl_path, retained + line)
+                self._retry_rows.pop(key)
+            else:
+                with self.results_jsonl_path.open("a") as handle:
+                    handle.write(line)
 
     def write_parquet(self) -> None:
         """Materialize results.parquet from results.jsonl.

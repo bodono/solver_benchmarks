@@ -279,6 +279,95 @@ def test_resume_recomputes_legacy_rows_when_solver_settings_change(
     assert rows[1]["metadata"]["resume_signature"]
 
 
+@pytest.mark.parametrize("parallelism", [1, 2])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_resume_retries_worker_errors_without_duplicate_rows_or_lost_artifacts(
+    monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int, legacy: bool
+):
+    class RetrySolver(SolverAdapter):
+        solver_name = "retry_solver"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    calls: dict[str, int] = {}
+
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        name = payload["problem"]
+        calls[name] = calls.get(name, 0) + 1
+        stdout_path.write_text(f"{name} attempt {calls[name]}\n")
+        stderr_path.write_text("original diagnostic\n")
+        if name == "one_variable_eq" and calls[name] < 3:
+            return SimpleNamespace(returncode=1, timed_out=False)
+        record = ProblemResult(
+            run_id=payload["run_id"],
+            dataset=payload["dataset"],
+            problem=name,
+            problem_kind=payload["problem_kind"],
+            solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="optimal",
+            objective_value=0.0,
+            iterations=1,
+            run_time_seconds=0.01,
+            artifact_dir=payload["artifacts_dir"],
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, timed_out=False)
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "retry_solver", RetrySolver)
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess)
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "parallelism": parallelism},
+            "solvers": [{"id": "retry", "solver": "retry_solver"}],
+        }
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+
+    def rows():
+        return [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+
+    original_rows = rows()
+    error = next(row for row in original_rows if row["status"] == "worker_error")
+    original_artifacts = {
+        path: path.read_bytes() for path in Path(error["artifact_dir"]).iterdir() if path.is_file()
+    }
+    if legacy:
+        for row in original_rows:
+            row["metadata"].pop("resume_signature", None)
+        store.results_jsonl_path.write_text("".join(json.dumps(row) + "\n" for row in original_rows))
+
+    # The second attempt also fails; it replaces the old error and remains retryable.
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    retried_rows = rows()
+    assert len(retried_rows) == 2
+    retry_error = next(row for row in retried_rows if row["status"] == "worker_error")
+    retry_artifacts = Path(retry_error["artifact_dir"])
+    assert retry_artifacts != Path(error["artifact_dir"])
+    assert json.loads((retry_artifacts / "previous_results.jsonl").read_text())["status"] == "worker_error"
+    failed_retry_files = {
+        path: path.read_bytes() for path in retry_artifacts.iterdir() if path.is_file()
+    }
+
+    # The third attempt succeeds. Reports see one final result per problem.
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert calls == {"one_variable_eq": 3, "one_variable_lp": 1}
+    assert len(rows()) == 2
+    assert {row["status"] for row in rows()} == {"optimal"}
+    results = load_results(store.run_dir)
+    assert len(results) == 2 and (results["status"] == "optimal").all()
+    for path, content in {**original_artifacts, **failed_retry_files}.items():
+        assert path.read_bytes() == content
+
+    # Once successful, both problems are skipped by future resumes.
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert calls == {"one_variable_eq": 3, "one_variable_lp": 1}
+    assert len(rows()) == 2
+
+
 def test_run_cli_uses_config_stem_name_and_copies_source_config(tmp_path: Path, repo_root: Path):
     config_path = tmp_path / "named_smoke_run.yaml"
     output_dir = tmp_path / "runs"

@@ -652,8 +652,12 @@ bench run configs/netlib_feasible_example.yaml --run-dir results/<run_id>
 ```
 
 If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
-`results.jsonl` are skipped. New solver variants or newly included problems are
-appended.
+`results.jsonl` are skipped. Rows with `worker_error` are retried automatically
+when their solve settings match the current config. A retry atomically replaces
+the compatible error rows, so reports count one result for that solve. Previous
+logs and solver artifacts remain intact; new artifacts go into a `retry-N`
+subdirectory containing a `previous_results.jsonl` snapshot of the replaced
+errors. New solver variants or newly included problems are appended.
 
 Append more work to an existing run by editing the config and reusing the same
 run directory:

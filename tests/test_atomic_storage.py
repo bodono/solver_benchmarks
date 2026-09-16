@@ -9,11 +9,12 @@ all-string-NaN scrub being numeric-only.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from solver_benchmarks.core.config import parse_run_config
+from solver_benchmarks.core.config import parse_run_config, solve_signature
 from solver_benchmarks.core.problem import QP
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.storage import ResultStore, atomic_write_text
@@ -80,6 +81,74 @@ def test_completed_keys_skips_torn_jsonl_lines(tmp_path: Path):
 
     keys = store.completed_keys()
     assert keys == {("synthetic_qp", "p1", "scs")}
+
+
+def test_retry_replaces_only_signature_compatible_worker_errors(tmp_path: Path):
+    store = _make_store(tmp_path)
+    config = parse_run_config(
+        {"run": {"dataset": "synthetic_qp"}, "solvers": [{"id": "scs", "solver": "scs"}]}
+    )
+    signature = solve_signature(config, config.datasets[0], config.solvers[0])
+    failed = ProblemResult(
+        run_id=store.run_id,
+        dataset="synthetic_qp",
+        problem="p",
+        problem_kind=QP,
+        solver_id="scs",
+        solver="scs",
+        status="worker_error",
+        objective_value=None,
+        iterations=None,
+        run_time_seconds=None,
+        metadata={"resume_signature": signature},
+    )
+    incompatible = replace(failed, metadata={"resume_signature": "previous-settings"})
+    other_dataset = replace(failed, dataset="other_dataset")
+    time_limited = replace(failed, problem="limited", status="time_limit")
+    for result in (failed, incompatible, other_dataset, time_limited):
+        store.write_result(result)
+
+    assert store.completed_keys(config=config) == {("synthetic_qp", "limited", "scs")}
+    store.write_result(replace(failed, status="optimal", run_time_seconds=0.1))
+
+    rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    assert len(rows) == 4
+    assert rows[:3] == [incompatible.to_record(), other_dataset.to_record(), time_limited.to_record()]
+    assert rows[3]["status"] == "optimal"
+    assert rows[3]["metadata"]["resume_signature"] == signature
+
+
+def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, monkeypatch):
+    store = _make_store(tmp_path)
+    failed = ProblemResult(
+        run_id=store.run_id,
+        dataset="synthetic_qp",
+        problem="p",
+        problem_kind=QP,
+        solver_id="scs",
+        solver="scs",
+        status="worker_error",
+        objective_value=None,
+        iterations=None,
+        run_time_seconds=None,
+    )
+    store.write_result(failed)
+    assert store.completed_keys() == set()
+    original = store.results_jsonl_path.read_text()
+
+    def fail_replace(*_args):
+        raise OSError("simulated disk failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr("solver_benchmarks.core.storage.os.replace", fail_replace)
+        with pytest.raises(OSError, match="simulated disk failure"):
+            store.write_result(replace(failed, status="optimal"))
+    assert store.results_jsonl_path.read_text() == original
+
+    # The pending replacement is still available after the interrupted write.
+    store.write_result(replace(failed, status="optimal"))
+    rows = store.results_jsonl_path.read_text().splitlines()
+    assert len(rows) == 1 and json.loads(rows[0])["status"] == "optimal"
 
 
 def test_write_result_does_not_materialize_parquet_until_write_parquet(tmp_path: Path):
