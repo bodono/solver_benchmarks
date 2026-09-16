@@ -317,8 +317,6 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
         with target.open("rb") as source:
             if _is_emps_stream(source):
                 _stage_mittelmann_mps(source, target)
-            else:
-                _validate_mittelmann_mps(target)
         return
     folder.mkdir(parents=True, exist_ok=True)
     candidates = [f"{stem}.mps.bz2", f"{stem}.bz2"]
@@ -328,12 +326,23 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
         try:
             with urllib.request.urlopen(url, timeout=60) as response:
                 compressed = response.read()
-            with io.BytesIO(bz2.decompress(compressed)) as source:
-                _stage_mittelmann_mps(source, target)
-            return
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             last_error = exc
-    raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}")
+            continue
+        break
+    else:
+        raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}") from last_error
+
+    # A successful fetch selects the source. Corruption and local staging
+    # failures must not trigger another download or lose their original cause.
+    try:
+        payload = bz2.decompress(compressed)
+    except (OSError, EOFError, ValueError) as exc:
+        raise RuntimeError(
+            f"Mittelmann problem {name!r} from {url} is not valid bzip2 data: {exc}"
+        ) from exc
+    with io.BytesIO(payload) as source:
+        _stage_mittelmann_mps(source, target)
 
 
 def _is_emps_stream(source: BinaryIO) -> bool:

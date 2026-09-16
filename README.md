@@ -197,6 +197,7 @@ Mittelmann preparation accepts both bzip2-compressed MPS and NETLIB EMPS
 files. EMPS files are decoded in Python, with checksum validation, and the
 resulting MPS is checked with HiGHS before it is cached. Running preparation
 again also repairs EMPS files saved with an `.mps` suffix by older versions.
+Already cached standard MPS files are reused without a full validation parse.
 An empty remote index is an error for `mittelmann --all`; the default
 preparation command intentionally downloads only `qap15`.
 

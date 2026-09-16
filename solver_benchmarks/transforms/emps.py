@@ -72,14 +72,6 @@ class _Values:
         self.line = ""
         self.position = 0
 
-    def record(self) -> None:
-        if self.position != len(self.line):
-            raise ValueError("Unexpected trailing EMPS data")
-        self.line = self.records.next()
-        self.position = 0
-        if not self.line:
-            raise ValueError("Empty EMPS data record")
-
     def digit(self) -> int:
         # Encoded values may start on the next record, but do not span records.
         if self.position == len(self.line):
@@ -93,7 +85,10 @@ class _Values:
 
     def start(self) -> None:
         if self.position == len(self.line):
-            self.record()
+            self.line = self.records.next()
+            self.position = 0
+            if not self.line:
+                raise ValueError("Empty EMPS data record")
 
     def index(self) -> int:
         self.start()
