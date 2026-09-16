@@ -483,6 +483,33 @@ def _completed_by_pair(
     return completed, duplicates
 
 
+def expected_results(
+    run_dir: str | Path, *, repo_root: str | Path | None = None
+) -> pd.DataFrame | None:
+    """Expected comparison identities, including entirely unrecorded solves.
+
+    Explicit includes are usable without local problem files. Unrestricted
+    selections use the dataset listing, like completion/missing reports.
+    Without a manifest, callers fall back to the observed problem/solver sets.
+    """
+    manifest_path = Path(run_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return None
+    config = json.loads(manifest_path.read_text()).get("config", {})
+    problems = _expected_by_dataset_cached(
+        str(manifest_path.resolve()),
+        str(repo_root) if repo_root is not None else None,
+        manifest_path.stat().st_mtime_ns,
+    )
+    rows = [
+        {"dataset": dataset, "problem": problem, "solver_id": solver["id"]}
+        for dataset, names in problems.items()
+        for problem in sorted(names)
+        for solver in config.get("solvers", [])
+    ]
+    return pd.DataFrame(rows, columns=["dataset", "problem", "solver_id"])
+
+
 def completion_summary(
     run_dir: str | Path,
     results: pd.DataFrame | None = None,
@@ -1128,6 +1155,11 @@ def _expected_by_dataset(
     """
     expected: dict[str, set[str]] = {}
     for entry in manifest_dataset_entries(config):
+        include = set(entry.get("include") or [])
+        exclude = set(entry.get("exclude") or [])
+        if include and entry.get("dataset_options", {}).get("max_size_mb") is None:
+            expected[entry["id"]] = include - exclude
+            continue
         dataset_cls = get_dataset(entry["name"])
         dataset = dataset_cls(
             repo_root=repo_root,
@@ -1135,8 +1167,6 @@ def _expected_by_dataset(
         )
         specs = dataset.list_problems()
         problems = [problem.name for problem in specs]
-        include = set(entry.get("include") or [])
-        exclude = set(entry.get("exclude") or [])
         if include:
             problems = [name for name in problems if name in include]
         if exclude:
@@ -1175,5 +1205,4 @@ def _expected_by_dataset_cached(
     """
     config = json.loads(Path(manifest_path_str).read_text())["config"]
     return _expected_by_dataset(config, repo_root=repo_root_str)
-
 

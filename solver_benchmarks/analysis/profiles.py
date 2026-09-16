@@ -72,7 +72,8 @@ def deduplicate_for_pivot(
         # True (failure). When the status column is missing we treat
         # every row as successful so behavior matches the old code path.
         if "status" in sortable.columns:
-            sortable["__failure_for_dedup"] = ~sortable["status"].isin(success_statuses)
+            valid = np.isfinite(sortable["__metric_for_dedup"]) & sortable["__metric_for_dedup"].ge(0)
+            sortable["__failure_for_dedup"] = ~(sortable["status"].isin(success_statuses) & valid)
             sort_columns = ["__failure_for_dedup", "__metric_for_dedup"]
         else:
             sort_columns = ["__metric_for_dedup"]
@@ -93,6 +94,7 @@ def performance_profile(
     max_value: float | None = None,
     n_tau: int = 1000,
     tau_max: float | None = None,
+    expected: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Compute the Dolan-More performance profile.
 
@@ -117,6 +119,7 @@ def performance_profile(
         success_statuses = set(status.SOLUTION_PRESENT)
     if max_value is None:
         max_value = float("inf")
+    results = complete_results(results, expected=expected)
     if results.empty:
         return pd.DataFrame()
     keys = ["dataset", "problem"] if "dataset" in results.columns else ["problem"]
@@ -127,7 +130,9 @@ def performance_profile(
     deduped = deduplicate_for_pivot(
         results, keys, metric, success_statuses=success_statuses
     )
-    deduped = deduped.assign(**{metric: pd.to_numeric(deduped[metric], errors="coerce")})
+    deduped = deduped.assign(**{metric: pd.to_numeric(
+        deduped.get(metric, pd.Series(np.nan, index=deduped.index)), errors="coerce"
+    )})
     # Unlike pivot_table, pivot preserves rows and solver columns whose
     # metrics are all missing (e.g. an entire worker-error shard).
     values = deduped.pivot(index=index, columns="solver_id", values=metric)
@@ -164,6 +169,51 @@ def performance_profile(
     return pd.DataFrame(profile)
 
 
+def complete_results(
+    results: pd.DataFrame, *, expected: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Represent unattempted solves as failures without changing recorded rows.
+
+    ``expected`` contains ``problem``, ``solver_id``, and optionally ``dataset``
+    columns. Its identities extend the observed sets to include entirely absent
+    problems or solvers. The combined problem and solver sets are crossed so
+    every retained solver is compared on the same population.
+    """
+    if expected is not None and expected.empty:
+        expected = None
+    if expected is None:
+        if results.empty or "problem" not in results:
+            return results.copy()
+        keys = ["dataset", "problem"] if "dataset" in results else ["problem"]
+        expected = results[keys].drop_duplicates().merge(
+            results[["solver_id"]].drop_duplicates(), how="cross"
+        )
+    else:
+        expected = expected.copy()
+        if "dataset" in expected and not results.empty and "dataset" not in results:
+            if expected["dataset"].nunique() > 1:
+                raise ValueError("Dataset identities are required for a multi-dataset comparison")
+            expected = expected.drop(columns="dataset")
+        keys = ["dataset", "problem"] if "dataset" in expected else ["problem"]
+        if "dataset" in results and "dataset" not in expected and not expected.empty:
+            raise ValueError("Expected solves must include dataset identities")
+    identities = [*keys, "solver_id"]
+    universe = pd.concat([results.reindex(columns=identities), expected[identities]], ignore_index=True)
+    expected = universe[keys].drop_duplicates().merge(
+        universe[["solver_id"]].drop_duplicates(), how="cross"
+    )
+    if expected.empty:
+        return results.copy()
+    if results.empty:
+        return expected.assign(status="not_attempted")
+    missing = expected.merge(
+        results[identities].drop_duplicates(), how="left", indicator=True
+    ).query("_merge == 'left_only'").drop(columns="_merge")
+    if missing.empty:
+        return results.copy()
+    return pd.concat([results, missing.assign(status="not_attempted")], ignore_index=True)
+
+
 def shifted_geomean(
     results: pd.DataFrame,
     *,
@@ -172,7 +222,15 @@ def shifted_geomean(
     success_statuses: set[str] | None = None,
     max_value: float | None = None,
     penalize_failures: bool = True,
+    expected: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Compute per-solver means over the expected comparison universe.
+
+    Missing solves receive the failure penalty. Supply ``expected`` with
+    problem/solver identities to include completely absent problems or solvers;
+    otherwise the observed sets are crossed. Success-only means still omit
+    failures, while their counts describe the same comparison universe.
+    """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     if max_value is None or shift is None:
@@ -181,10 +239,19 @@ def shifted_geomean(
             max_value = default_max
         if shift is None:
             shift = default_shift
+    results = complete_results(results, expected=expected)
+    if "problem" in results:
+        keys = ["dataset", "problem"] if "dataset" in results else ["problem"]
+        results = deduplicate_for_pivot(results, keys, metric, success_statuses=success_statuses)
+    columns = ["solver_id", metric, "mode", "shift", "max_value", "success_count", "failure_count"]
+    if results.empty:
+        return pd.DataFrame(columns=columns)
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
-        values = pd.to_numeric(group[metric], errors="coerce").to_numpy(copy=True)
-        successful = group["status"].isin(success_statuses).to_numpy()
+        values = pd.to_numeric(
+            group.get(metric, pd.Series(np.nan, index=group.index)), errors="coerce"
+        ).to_numpy(dtype=float, copy=True)
+        successful = group["status"].isin(success_statuses).to_numpy() & np.isfinite(values) & (values >= 0)
         success_count = int(successful.sum())
         failure_count = int(len(group) - success_count)
         if penalize_failures:
@@ -207,7 +274,7 @@ def shifted_geomean(
                 "failure_count": failure_count,
             }
         )
-    return pd.DataFrame(rows).sort_values("solver_id")
+    return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
 
 
 def _shifted_geomean(values: np.ndarray, shift: float) -> float:

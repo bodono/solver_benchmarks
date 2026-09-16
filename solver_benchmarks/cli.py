@@ -18,6 +18,7 @@ from solver_benchmarks.analysis.profiles import (
 )
 from solver_benchmarks.analysis.tables import (
     completion_summary,
+    expected_results,
     failure_rates,
     missing_results,
     solver_metrics,
@@ -278,9 +279,10 @@ def missing_cmd(run_dir: Path, repo_root: Path | None) -> None:
 @main.command("profile")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
-def profile_cmd(run_dir: Path, metric: str) -> None:
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None) -> None:
     df = load_results(run_dir)
-    profile = performance_profile(df, metric=metric)
+    profile = performance_profile(df, metric=metric, expected=expected_results(run_dir, repo_root=repo_root))
     out = run_dir / f"performance_profile_{metric}.csv"
     profile.to_csv(out, index=False)
     click.echo(str(out))
@@ -296,12 +298,14 @@ def profile_cmd(run_dir: Path, metric: str) -> None:
     is_flag=True,
     help="Use only successful solves instead of penalizing failures.",
 )
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 def geomean_cmd(
     run_dir: Path,
     metric: str,
     shift: float,
     max_value: float,
     success_only: bool,
+    repo_root: Path | None,
 ) -> None:
     df = load_results(run_dir)
     result = shifted_geomean(
@@ -310,6 +314,7 @@ def geomean_cmd(
         shift=shift,
         max_value=max_value,
         penalize_failures=not success_only,
+        expected=expected_results(run_dir, repo_root=repo_root),
     )
     suffix = "_success_only" if success_only else ""
     out = run_dir / f"shifted_geomean_{metric}{suffix}.csv"
@@ -321,8 +326,9 @@ def geomean_cmd(
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
-def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None) -> None:
-    paths = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir)
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None, repo_root: Path | None) -> None:
+    paths = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir, repo_root=repo_root)
     if not paths:
         click.echo("No results found.")
         return

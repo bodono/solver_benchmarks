@@ -1075,6 +1075,15 @@ including `optimal_inaccurate`, are assigned `--max-value` before the geometric
 mean is computed. Use `bench summary` for raw totals/means/medians, or
 `bench geomean --success-only` for a geomean over successful solves only. The
 default failure penalty is `1000` seconds and can be changed with `--max-value`.
+Missing solves are charged too: run-directory commands use the manifest's
+configured solver and problem sets (explicit includes, otherwise the dataset
+listing). `--repo-root` on `geomean`, `profile`, `plot`, and `report` selects the
+repository containing the dataset files. Explicit includes do not require those
+files to remain staged; unrestricted selections do. No-manifest analyses use the
+union of observed problems crossed with observed solvers. Python callers can
+pass `expected=` as a DataFrame of `dataset`, `problem`, and `solver_id` identities
+to include completely absent solvers or problems. Duplicate attempts contribute
+once per identity, using the best successful result, as in performance profiles.
 
 Generate PNG plots:
 
