@@ -35,7 +35,10 @@ FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
 # Instances staged from an older MIPLIB listing that are not in the 240-instance
 # MIPLIB 2017 benchmark set; dropped so the LP family is exactly that set.
 FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
-                        ("n9-3", "neos-3754224-navua", "neos-5075914-elvire", "rococoC11-011100", "toll-like")}}
+                        ("n9-3", "neos-3754224-navua", "neos-5075914-elvire", "rococoC11-011100", "toll-like")},
+                        # SDPLIB's four infeasible instances: every solver reports them
+                        # infeasible, and the plots measure time to a verified optimum.
+                        "sdp": {("sdplib", n) for n in ("infd1", "infd2", "infp1", "infp2")}}
 # Nominal time limit per family and the grace the harness allowed before
 # killing a worker; a solve that finishes later counts as a failure for every
 # solver, whatever status it reported.
