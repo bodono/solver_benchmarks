@@ -5,6 +5,7 @@ from __future__ import annotations
 from .base import SolverAdapter
 from .clarabel_adapter import ClarabelSolverAdapter
 from .cplex_adapter import CPLEXSolverAdapter
+from .cuopt_adapter import CuOptSolverAdapter
 from .cvxopt_adapter import CVXOPTSolverAdapter
 from .ecos_adapter import ECOSSolverAdapter
 from .gurobi_adapter import GurobiSolverAdapter
@@ -28,6 +29,7 @@ SOLVERS: dict[str, type[SolverAdapter]] = {
     "mosek": MosekSolverAdapter,
     "osqp": OSQPSolverAdapter,
     "pdlp": PDLPSolverAdapter,
+    "cuopt": CuOptSolverAdapter,
     "piqp": PIQPSolverAdapter,
     "proxqp": ProxQPSolverAdapter,
     "qtqp": QTQPSolverAdapter,

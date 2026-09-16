@@ -12,6 +12,7 @@ from .system_info import _detect_cpu_model
 SOLVER_PACKAGES = {
     "clarabel": ("clarabel",),
     "cplex": ("cplex",),
+    "cuopt": ("cuopt-cu12", "cuopt"),
     "cvxopt": ("cvxopt",),
     "ecos": ("ecos",),
     "gurobi": ("gurobipy",),
