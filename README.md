@@ -1311,6 +1311,16 @@ Install:
 pip install -e ".[pdlp]"
 ```
 
+The MPS reader uses HiGHS in the same worker as OR-Tools. The highspy 1.15.x
+wheels can clash with OR-Tools 9.15.6755's native HiGHS symbols when highspy
+loads first, causing an import error mentioning `HighsLogOptions` or
+`setLocalOptionValue`. This also affects macOS, not only Linux. Dependencies
+in the `pdlp` and `all` extras therefore exclude highspy 1.15.x; highspy 1.14.0
+has wheels for Python 3.10–3.14 and works with OR-Tools 9.15.6755. Reinstall the `pdlp` extra
+if an existing environment has the incompatible pair. CI imports the native
+libraries in both orders in fresh processes, then solves a real MPS file
+through the reader and PDLP adapter.
+
 Supported inputs:
 
 - LP datasets represented as QPs with `P.nnz == 0`, such as NETLIB and MIPLIB
