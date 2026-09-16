@@ -53,3 +53,16 @@ def test_adapter_solves_with_translated_settings():
     assert result.status == "optimal"
     assert np.allclose(result.objective_value, 3 * (0.5 ** 2 / 2 - 0.5), atol=1e-5)
     assert result.info.get("settings_translated") == {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
+
+
+def test_translation_metadata_reports_only_inserted_settings():
+    # explicit native values win over the aliases and the metadata must say so
+    s = {"tol_feas": 1e-9, "tol_gap_abs": 2e-9, "tol_gap_rel": 3e-9, "atol": 1e-3, "rtol": 2e-3}
+    assert _translate_tolerances(s, NEW) == {}
+    assert s == {"tol_feas": 1e-9, "tol_gap_abs": 2e-9, "tol_gap_rel": 3e-9}
+    s = {"tol_feas": 1e-9, "eps_abs": 1e-3, "eps_rel": 2e-3}
+    assert _translate_tolerances(s, NEW) == {"tol_gap_abs": 1e-3, "tol_gap_rel": 2e-3}
+    assert s == {"tol_feas": 1e-9, "tol_gap_abs": 1e-3, "tol_gap_rel": 2e-3}
+    s = {"atol": 1e-7, "eps_abs": 1e-3}
+    assert _translate_tolerances(s, OLD) == {}
+    assert s == {"atol": 1e-7}

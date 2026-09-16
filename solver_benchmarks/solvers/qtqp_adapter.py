@@ -167,13 +167,23 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
         eps_abs = eps if eps_abs is None else eps_abs
         eps_rel = eps if eps_rel is None else eps_rel
     translated: dict = {}
+
+    def put(key: str, value: float) -> None:
+        # An alias supplies a setting only when the native name is absent, and
+        # only then is it recorded: the metadata must report what the solver
+        # actually received, so an explicit native value is never overwritten
+        # or misreported.
+        if key not in settings:
+            settings[key] = float(value)
+            translated[key] = float(value)
+
     if "tol_feas" not in solve_params and "atol" not in solve_params:
         # unknown signature (e.g. **kwargs): pass names through unchanged
         if eps_abs is not None:
-            settings.setdefault("tol_feas", float(eps_abs))
-            settings.setdefault("tol_gap_abs", float(eps_abs))
+            put("tol_feas", eps_abs)
+            put("tol_gap_abs", eps_abs)
         if eps_rel is not None:
-            settings.setdefault("tol_gap_rel", float(eps_rel))
+            put("tol_gap_rel", eps_rel)
         return translated
     new_api = "tol_feas" in solve_params
     if new_api:
@@ -183,21 +193,17 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
         abs_tol = eps_abs if eps_abs is not None else atol
         rel_tol = eps_rel if eps_rel is not None else rtol
         if abs_tol is not None:
-            settings.setdefault("tol_feas", float(abs_tol))
-            settings.setdefault("tol_gap_abs", float(abs_tol))
-            translated["tol_feas"] = translated["tol_gap_abs"] = float(abs_tol)
+            put("tol_feas", abs_tol)
+            put("tol_gap_abs", abs_tol)
         if rel_tol is not None:
-            settings.setdefault("tol_gap_rel", float(rel_tol))
-            translated["tol_gap_rel"] = float(rel_tol)
+            put("tol_gap_rel", rel_tol)
     else:
         for key in _NEW_TOL_KEYS:
             settings.pop(key, None)
         if eps_abs is not None:
-            settings.setdefault("atol", float(eps_abs))
-            translated["atol"] = float(eps_abs)
+            put("atol", eps_abs)
         if eps_rel is not None:
-            settings.setdefault("rtol", float(eps_rel))
-            translated["rtol"] = float(eps_rel)
+            put("rtol", eps_rel)
     return translated
 
 
