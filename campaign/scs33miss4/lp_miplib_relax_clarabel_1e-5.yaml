@@ -1,0 +1,19 @@
+run:
+  name: lp_miplib_relax_clarabel_1e-5
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    dataset_options:
+      max_size_mb: 20
+solvers:
+- id: clarabel_1e-5
+  solver: clarabel
+  settings:
+    tol_feas: 1.0e-05
+    tol_gap_abs: 1.0e-05
+    tol_gap_rel: 1.0e-05
+    time_limit: 300.0

@@ -1,0 +1,22 @@
+run:
+  name: lp_miplib_relax_piqp_1e-4_miss4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    include:
+    - mad
+    - neos-2987310-joes
+    - piperout-27
+    - rococoC10-001000
+solvers:
+- id: piqp_1e-4
+  solver: piqp
+  settings:
+    eps_abs: 0.0001
+    eps_rel: 0.0001
+    max_iter: 1000000
+    time_limit: 300.0

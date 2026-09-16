@@ -96,6 +96,25 @@ pdlp_image = (
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
+# QTQP (google-deepmind/qtqp, local checkout) on its MKL Pardiso backend and on
+# its cuDSS backend (pip cuDSS + nvmath + cupy; no SCS build in that image).
+QTQP_REPO = Path.home() / "git" / "qtqp"
+QTQP_IGNORE = ["build", "figures", ".git", "**/__pycache__", "*.tex"]
+qtqp_cpu_image = (
+    cpu_image
+    .add_local_dir(str(QTQP_REPO), "/root/qtqp", ignore=QTQP_IGNORE, copy=True)
+    .run_commands("pip install /root/qtqp", "python -c 'import qtqp; print(qtqp.LinearSolver.PARDISO)'")
+)
+qtqp_gpu_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
+    .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "nvidia-cudss-cu12", "nvmath-python[cu12]", "cupy-cuda12x")
+    .add_local_dir(str(QTQP_REPO), "/root/qtqp", ignore=QTQP_IGNORE, copy=True)
+    .run_commands("pip install /root/qtqp")
+    .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
+    .run_commands("pip install --no-deps -e /root/repo")
+)
+
 VOLUMES = {"/data": data_vol, "/results": results_vol}
 
 
@@ -150,6 +169,16 @@ def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
 
 @app.function(image=pdlp_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
 def run_shard_pdlp(campaign: str, name: str, config_yaml: str) -> dict:
+    return _run(campaign, name, config_yaml)
+
+
+@app.function(image=qtqp_cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
+def run_shard_qtqp_cpu(campaign: str, name: str, config_yaml: str) -> dict:
+    return _run(campaign, name, config_yaml)
+
+
+@app.function(image=qtqp_gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=2)
+def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
@@ -233,8 +262,9 @@ def probe_cuopt() -> str:
 #   CPU shard: 4 cores x $0.135 + 16 GiB x $0.024  ~ $0.92/h
 #   GPU shard: A100-80GB $2.50 + 8 cores x $0.135 + 64 GiB x $0.024 ~ $5.12/h
 #   big CPU shard (also the PDLP shard): 4 cores x $0.135 + 64 GiB x $0.024 ~ $2.08/h
-RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, "gpu": 5.12 * 1.2, "cuopt": 5.12 * 1.2}
-MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 8, "pdlp": 8, "gpu": 2, "cuopt": 1}
+RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, "gpu": 5.12 * 1.2, "cuopt": 5.12 * 1.2,
+                  "qtqp_cpu": 2.08 * 1.2, "qtqp_gpu": 5.12 * 1.2}
+MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 8, "pdlp": 8, "gpu": 2, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2}
 
 
 @app.local_entrypoint()
@@ -270,7 +300,8 @@ def main(
         s["kind"] = s.get("runner") or ("gpu" if s["gpu"] else "cpu")
         if s["kind"] == "cpu" and (cpu_kind != "cpu" or s["name"] in big_set):
             s["kind"] = "cpu_big" if s["name"] in big_set else cpu_kind
-    runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "pdlp": run_shard_pdlp, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt}
+    runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "pdlp": run_shard_pdlp, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt,
+               "qtqp_cpu": run_shard_qtqp_cpu, "qtqp_gpu": run_shard_qtqp_gpu}
     pending = deque(shards)
     running: dict = {}  # call -> (shard, start)
     spent = 0.0

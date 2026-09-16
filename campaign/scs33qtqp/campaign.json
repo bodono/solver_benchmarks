@@ -1,0 +1,322 @@
+[
+  {
+    "name": "qp_maros_meszaros_qtqp_mkl_1e-4",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/qp_maros_meszaros_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_qtqp_cudss_1e-4",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/qp_maros_meszaros_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_qtqp_mkl_1e-6",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/qp_maros_meszaros_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "qp_maros_meszaros_qtqp_cudss_1e-6",
+    "family": "qp",
+    "dataset": "maros_meszaros",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/qp_maros_meszaros_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "qp_qplib_qtqp_mkl_1e-4",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/qp_qplib_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "qp_qplib_qtqp_cudss_1e-4",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/qp_qplib_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "qp_qplib_qtqp_mkl_1e-6",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/qp_qplib_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "qp_qplib_qtqp_cudss_1e-6",
+    "family": "qp",
+    "dataset": "qplib",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/qp_qplib_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lp_netlib_qtqp_mkl_1e-4",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lp_netlib_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "lp_netlib_qtqp_cudss_1e-4",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lp_netlib_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lp_netlib_qtqp_mkl_1e-6",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lp_netlib_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "lp_netlib_qtqp_cudss_1e-6",
+    "family": "lp",
+    "dataset": "netlib",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lp_netlib_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lp_kennington_qtqp_mkl_1e-4",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lp_kennington_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "lp_kennington_qtqp_cudss_1e-4",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lp_kennington_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lp_kennington_qtqp_mkl_1e-6",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lp_kennington_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "lp_kennington_qtqp_cudss_1e-6",
+    "family": "lp",
+    "dataset": "kennington",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lp_kennington_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_qtqp_mkl_1e-4",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lp_miplib_relax_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_qtqp_cudss_1e-4",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lp_miplib_relax_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_qtqp_mkl_1e-6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lp_miplib_relax_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "lp_miplib_relax_qtqp_cudss_1e-6",
+    "family": "lp",
+    "dataset": "miplib_relax",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lp_miplib_relax_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_qtqp_mkl_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann0_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_qtqp_cudss_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann0_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_qtqp_mkl_1e-6",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann0_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann0_qtqp_cudss_1e-6",
+    "family": "lpbig",
+    "dataset": "mittelmann0",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann0_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_qtqp_mkl_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann1_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_qtqp_cudss_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann1_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_qtqp_mkl_1e-6",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann1_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann1_qtqp_cudss_1e-6",
+    "family": "lpbig",
+    "dataset": "mittelmann1",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann1_qtqp_cudss_1e-6.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_qtqp_mkl_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "qtqp_mkl_1e-4",
+    "tol": 0.0001,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann2_qtqp_mkl_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_qtqp_cudss_1e-4",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "qtqp_cudss_1e-4",
+    "tol": 0.0001,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann2_qtqp_cudss_1e-4.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_qtqp_mkl_1e-6",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "qtqp_mkl_1e-6",
+    "tol": 1e-06,
+    "gpu": false,
+    "runner": "qtqp_cpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann2_qtqp_mkl_1e-6.yaml"
+  },
+  {
+    "name": "lpbig_mittelmann2_qtqp_cudss_1e-6",
+    "family": "lpbig",
+    "dataset": "mittelmann2",
+    "solver_id": "qtqp_cudss_1e-6",
+    "tol": 1e-06,
+    "gpu": true,
+    "runner": "qtqp_gpu",
+    "config": "campaign/scs33qtqp/lpbig_mittelmann2_qtqp_cudss_1e-6.yaml"
+  }
+]

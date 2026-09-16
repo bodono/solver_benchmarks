@@ -1,0 +1,25 @@
+run:
+  name: lp_miplib_relax_qtqp_cudss_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    exclude:
+    - n9-3
+    - neos-3754224-navua
+    - neos-5075914-elvire
+    - rococoC11-011100
+    - toll-like
+    - mad_BAK
+solvers:
+- id: qtqp_cudss_1e-6
+  solver: qtqp
+  settings:
+    atol: 1.0e-06
+    rtol: 1.0e-06
+    max_iter: 200
+    verbose: false
+    linear_solver: cudss

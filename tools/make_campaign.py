@@ -104,6 +104,17 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"cuopt_{tag}", "solver": "cuopt",
              "settings": {"eps": t, "time_limit": timeout}, "gpu": True, "runner": "cuopt"}
         )
+    if family in ("qp", "lp", "lpbig"):
+        # QTQP (pure-Python interior point): MKL Pardiso and cuDSS backends. Kept for
+        # the record, not shown on the SCS site. No time-limit knob: the harness
+        # worker timeout is the only stop.
+        qtqp_common = {"atol": t, "rtol": t, "max_iter": 200, "verbose": False}
+        variants += [
+            {"id": f"qtqp_mkl_{tag}", "solver": "qtqp", "settings": {**qtqp_common, "linear_solver": "pardiso"},
+             "gpu": False, "runner": "qtqp_cpu"},
+            {"id": f"qtqp_cudss_{tag}", "solver": "qtqp", "settings": {**qtqp_common, "linear_solver": "cudss"},
+             "gpu": True, "runner": "qtqp_gpu"},
+        ]
     if family in ("lp", "lpbig"):
         variants.append(
             {"id": f"pdlp_{tag}", "solver": "pdlp",

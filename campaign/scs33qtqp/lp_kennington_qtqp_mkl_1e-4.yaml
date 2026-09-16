@@ -1,0 +1,18 @@
+run:
+  name: lp_kennington_qtqp_mkl_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: kennington
+    id: kennington
+solvers:
+- id: qtqp_mkl_1e-4
+  solver: qtqp
+  settings:
+    atol: 0.0001
+    rtol: 0.0001
+    max_iter: 200
+    verbose: false
+    linear_solver: pardiso

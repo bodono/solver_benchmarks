@@ -1,0 +1,20 @@
+run:
+  name: lp_miplib_relax_cuopt_1e-4_miss4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: miplib
+    id: miplib_relax
+    include:
+    - mad
+    - neos-2987310-joes
+    - piperout-27
+    - rococoC10-001000
+solvers:
+- id: cuopt_1e-4
+  solver: cuopt
+  settings:
+    eps: 0.0001
+    time_limit: 300.0
