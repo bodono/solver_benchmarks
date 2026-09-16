@@ -1333,8 +1333,13 @@ Unsupported inputs:
 - QPs with nonzero `P`.
 - SDP, SOC, rotated SOC, and other non-LP cones.
 - Models whose serialized OR-Tools request reaches 2 GiB, the protobuf size
-  limit. These return `skipped_unsupported` with the model size, request size,
-  and byte limit in `info`, before copying the model into a solve request.
+  limit. A conservative bound from the retained sparse entries, variables, and
+  constraints skips obviously oversized models before constructing the protobuf,
+  with `protobuf_model_bytes_lower_bound` and `protobuf_limit_bytes` in `info`.
+  Remaining models get an exact, envelope-aware check before the request-model
+  copy; oversized requests report model/request sizes and the byte limit.
+  Both paths return `skipped_unsupported`. The exact `ByteSize()` check may
+  allocate a serialization buffer internally on the upb protobuf backend.
 
 Settings:
 

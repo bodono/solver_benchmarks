@@ -70,7 +70,26 @@ class PDLPSolverAdapter(SolverAdapter):
                 status=status.SKIPPED_UNSUPPORTED,
                 info={"reason": "PDLP supports LPs only; this problem has nonzero P"},
             )
-        model = _build_lp_model_from_qp(qp)
+        # Count exactly the entries the builder will retain: COO duplicates may
+        # merge on conversion, and fully unbounded QP rows are omitted entirely.
+        a = qp["A"]
+        retained_rows = ~(
+            (np.asarray(qp["l"], dtype=float) <= -INF_BOUND)
+            & (np.asarray(qp["u"], dtype=float) >= INF_BOUND)
+        )
+        if (
+            sp.issparse(a) and a.format in {"csr", "csc"}
+            and a.has_canonical_format and np.all(retained_rows)
+        ):
+            # Reject common large inputs without even allocating a CSR copy.
+            nnz = a.nnz
+        else:
+            a = sp.csr_matrix(a)
+            nnz = int(np.sum(np.diff(a.indptr)[retained_rows]))
+        oversized = _preflight_model_size(len(qp["q"]), int(np.count_nonzero(retained_rows)), nnz)
+        if oversized is not None:
+            return oversized
+        model = _build_lp_model_from_qp(dict(qp, A=a))
 
         def compute_kkt(mapped_status, x, y):
             return _qp_kkt(mapped_status, qp, x, y)
@@ -89,12 +108,39 @@ class PDLPSolverAdapter(SolverAdapter):
                     "unsupported_cones": sorted(unsupported),
                 },
             )
-        model = _build_lp_model_from_linear_cone(cone_problem)
+        a = cone_problem["A"]
+        if not (sp.issparse(a) and a.format in {"csr", "csc"} and a.has_canonical_format):
+            a = sp.csr_matrix(a)
+        if sum(int(cone.get(key, 0)) for key in ("z", "f", "l")) != a.shape[0]:
+            raise ValueError("Linear cone dimensions do not match A rows")
+        oversized = _preflight_model_size(len(cone_problem["q"]), a.shape[0], a.nnz)
+        if oversized is not None:
+            return oversized
+        model = _build_lp_model_from_linear_cone(dict(cone_problem, A=a))
 
         def compute_kkt(mapped_status, x, y):
             return _cone_kkt(mapped_status, cone_problem, x, y)
 
         return _solve_model(model, self.settings, artifacts_dir, compute_kkt)
+
+
+def _preflight_model_size(n: int, m: int, nnz: int) -> SolverResult | None:
+    # The proto2 builders explicitly set three doubles per variable and two
+    # per constraint, including zeros (8 bytes + a one-byte tag each). Packed
+    # coefficient/index pairs cost at least 8 + 1 bytes per retained entry.
+    # Names, repeated-field tags, lengths, and the request envelope only add
+    # bytes, so exceeding this lower bound is sufficient to reject the model.
+    model_bytes_lower_bound = 27 * int(n) + 18 * int(m) + 9 * int(nnz)
+    if model_bytes_lower_bound > MAX_PROTOBUF_BYTES:
+        return SolverResult(
+            status=status.SKIPPED_UNSUPPORTED,
+            info={
+                "reason": "PDLP model request exceeds the protobuf serialized size limit (2 GiB)",
+                "protobuf_model_bytes_lower_bound": model_bytes_lower_bound,
+                "protobuf_limit_bytes": MAX_PROTOBUF_BYTES,
+            },
+        )
+    return None
 
 
 def _import_ortools() -> None:
@@ -237,6 +283,8 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
 
     # Check before CopyFrom: constructing MPModelRequest(model=model) duplicates
     # the entire model even when it cannot cross the protobuf API boundary.
+    # ByteSize itself can allocate a serialization buffer on the upb backend;
+    # the sparse-data preflight rejects obvious oversize models before building.
     model_bytes = model.ByteSize()
     model_field = request.DESCRIPTOR.fields_by_name["model"].number
     request_bytes = request.ByteSize() + _protobuf_field_size(model_field, model_bytes)
