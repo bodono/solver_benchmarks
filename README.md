@@ -1144,8 +1144,10 @@ Status handling:
 - Failed, skipped, timeout, and solver-error statuses have infinite performance
   ratios; shifted geometric means use a finite failure penalty instead.
 - An explicit finite profile `max_value` opts into finite failure ratios,
-  with the penalty raised to at least the largest successful value on each
-  problem. Problems with no successes still have infinite ratios throughout.
+  and must be strictly greater than every retained successful value after the
+  metric floor is applied. Otherwise the function raises `ValueError`; choose
+  a larger penalty in the metric's units or omit it to keep failures at infinity.
+  Problems with no successes still have infinite ratios throughout.
 - Profiles floor time metrics at 0.01 seconds and iterations at 1 before taking
   ratios, so a zero best value does not hide positive successful values. Other
   metrics retain exact ratios. Python callers can set `min_value` in metric

@@ -113,8 +113,9 @@ def performance_profile(
     ``r[p, s] = metric[p, s] / min_successful metric[p, s]``. Failures,
     absent solves, and nonfinite/negative metrics have infinite ratios
     by default. An explicit finite ``max_value`` requests a penalty in
-    metric units, raised to at least the largest successful value for each
-    problem so a failure cannot outrank a success. The returned curve is
+    metric units and must be strictly larger than every retained successful
+    value after applying ``min_value``; otherwise ValueError is raised. This
+    keeps failures from tying a success, including at ratio 1. The returned curve is
     ``rho_s(tau) = fraction of problems with r[p, s] <= tau``.
 
     Multi-dataset frames are pivoted on ``(dataset, problem)`` so that two
@@ -160,9 +161,15 @@ def performance_profile(
     statuses = deduped.pivot(index=index, columns="solver_id", values="status")
     success_mask = statuses.isin(success_statuses) & np.isfinite(values) & values.ge(0)
     values = values.clip(lower=min_value)
-    best = values.where(success_mask).min(axis=1)
-    penalty = values.where(success_mask).max(axis=1).clip(lower=max_value)
-    ratios = values.where(success_mask, penalty, axis=0).divide(best, axis=0)
+    successful_values = values.where(success_mask)
+    if np.isfinite(max_value) and successful_values.ge(max_value).any().any():
+        raise ValueError(
+            "Finite max_value must be strictly greater than every successful metric "
+            "after applying min_value; choose a larger penalty or omit max_value "
+            "for infinite failure ratios"
+        )
+    best = successful_values.min(axis=1)
+    ratios = values.where(success_mask, max_value).divide(best, axis=0)
     ratios.loc[best.isna()] = float("inf")
     zero_best = best.eq(0)
     ratios.loc[zero_best] = np.where(
