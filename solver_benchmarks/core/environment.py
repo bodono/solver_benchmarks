@@ -7,24 +7,8 @@ import platform
 import sys
 from importlib import metadata
 
+from .solver_packages import SOLVER_PACKAGES
 from .system_info import _detect_cpu_model
-
-SOLVER_PACKAGES = {
-    "clarabel": ("clarabel",),
-    "cplex": ("cplex",),
-    "cvxopt": ("cvxopt",),
-    "ecos": ("ecos",),
-    "gurobi": ("gurobipy",),
-    "highs": ("highspy",),
-    "mosek": ("Mosek", "mosek"),
-    "osqp": ("osqp",),
-    "pdlp": ("ortools",),
-    "piqp": ("piqp",),
-    "proxqp": ("proxsuite",),
-    "qtqp": ("qtqp",),
-    "scs": ("scs",),
-    "sdpa": ("sdpa-python",),
-}
 
 
 def runtime_metadata(solver_name: str) -> dict:

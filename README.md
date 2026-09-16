@@ -1009,7 +1009,12 @@ Solver-specific traces:
 System info: each run's `manifest.json` carries a `system` block captured once
 at run start, recording the CPU model / logical and physical core count / max
 frequency, total and available memory, OS / kernel version, Python version,
-and the installed numpy / scipy / pandas / pyarrow versions. The block is
+and the installed numpy / scipy / pandas / pyarrow and registered solver-package
+versions under `system.library_versions` (uninstalled optional packages are
+recorded as `null`). This describes the parent environment at run start;
+`metadata.runtime.solver_package_versions` on each result remains the source
+for versions actually used by workers, including isolated `bench env` runs.
+The block is
 preserved across manifest rewrites so a re-run on the same run directory
 cannot silently overwrite the original provenance. Install the optional
 `system_info` extra (`pip install -e ".[system_info]"`) for the richer fields
