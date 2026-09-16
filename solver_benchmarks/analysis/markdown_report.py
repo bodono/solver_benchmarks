@@ -11,12 +11,14 @@ import pandas as pd
 
 from solver_benchmarks import __version__ as BENCHMARK_VERSION
 from solver_benchmarks.analysis.load import load_results, solver_summary
+from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.plots import write_analysis_plots
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 from solver_benchmarks.analysis.tables import (
     claimed_optimal_kkt_thresholds,
     completion_summary,
     difficulty_scaling,
+    expected_results,
     failure_rates,
     failures_with_successful_alternatives,
     kkt_certificate_summary,
@@ -45,6 +47,7 @@ def write_run_report(
     metric: str = "run_time_seconds",
     output_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
+    max_value: float | None = None,
 ) -> list[Path]:
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir / "report"
@@ -54,13 +57,18 @@ def write_run_report(
     if results.empty:
         return []
 
+    expected = expected_results(run_dir, repo_root=repo_root)
+    geomean_options = {
+        "max_value": max_value,
+        "timeout_seconds": geomean_time_limits(run_dir, metric=metric, max_value=max_value),
+    }
     outputs: list[Path] = []
     tables = {
-        **_solver_summary_tables(results, metric=metric),
+        **_solver_summary_tables(results, metric=metric, expected=expected, geomean_options=geomean_options),
         "status_counts.csv": solver_summary(run_dir),
         "completion.csv": completion_summary(run_dir, results, repo_root=repo_root),
         "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root),
-        f"performance_profile_{metric}.csv": performance_profile(results, metric=metric),
+        f"performance_profile_{metric}.csv": performance_profile(results, metric=metric, expected=expected),
         f"pairwise_speedups_{metric}.csv": pairwise_speedups(results, metric=metric),
         f"performance_ratios_{metric}.csv": performance_ratio_matrix(
             results,
@@ -79,6 +87,7 @@ def write_run_report(
         f"difficulty_scaling_{metric}.csv": difficulty_scaling(results, metric=metric),
         "setup_solve_breakdown.csv": setup_solve_breakdown(results),
     }
+    tables["failure_penalties.csv"] = _failure_penalty_table(tables, metric)
     tables = {
         name: _sort_report_table(name, table, metric=metric)
         for name, table in tables.items()
@@ -100,6 +109,8 @@ def write_run_report(
         metric=metric,
         results=results,
         tables=tables,
+        expected=expected,
+        geomean_options=geomean_options,
     ).items():
         path = _write_table(output_dir / name, table)
         if path is not None:
@@ -110,7 +121,7 @@ def write_run_report(
         path = _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", table)
         if path is not None:
             outputs.append(path)
-    plot_outputs = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir)
+    plot_outputs = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir, repo_root=repo_root, max_value=max_value)
     outputs.extend(plot_outputs)
     markdown = _render_markdown_report(
         run_dir=run_dir,
@@ -120,6 +131,8 @@ def write_run_report(
         tables=tables,
         plot_outputs=plot_outputs,
         artifact_outputs=outputs,
+        expected=expected,
+        geomean_options=geomean_options,
     )
     # Write the rendered markdown once as both index.md (default
     # GitHub directory landing page) and README.md (rendered on web
@@ -160,6 +173,8 @@ def _derived_report_tables(
     metric: str,
     results: pd.DataFrame,
     tables: dict[str, pd.DataFrame],
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
     derived = {
         "run_scope.csv": _run_scope_table(
@@ -192,6 +207,8 @@ def _derived_report_tables(
                 dataset_entries,
                 config=config,
                 metric=metric,
+                expected=expected,
+                geomean_options=geomean_options,
             )
         )
     return derived
@@ -206,6 +223,8 @@ def _render_markdown_report(
     tables: dict[str, pd.DataFrame],
     plot_outputs: list[Path],
     artifact_outputs: list[Path],
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> str:
     """Compose the per-section render helpers.
 
@@ -245,6 +264,8 @@ def _render_markdown_report(
                 dataset_entries,
                 config=config,
                 metric=metric,
+                expected=expected,
+                geomean_options=geomean_options,
             )
         )
     lines.extend(_render_provenance_block(run_dir, manifest, results, config=config))
@@ -325,6 +346,20 @@ def _render_scope_block(
             max_rows=50,
             max_cols=20,
             source_link="headline_solver_metrics.csv",
+        )
+    )
+    lines.extend(
+        _section_table(
+            "Failure Penalties",
+            tables.get("failure_penalties.csv", pd.DataFrame()),
+            intro=(
+                "Failed and missing solves receive the fixed costs below. Time metrics use "
+                "three times each manifest time limit unless an explicit penalty overrides it. "
+                "Other metrics use their own fixed defaults. For pooled datasets with different "
+                "limits, the geomean CSV leaves scalar `max_value` empty and records the costs "
+                "in `max_value_by_dataset`. Solver selection does not change these costs."
+            ),
+            source_link="failure_penalties.csv",
         )
     )
     return lines
@@ -662,6 +697,8 @@ def _per_dataset_breakdown(
     *,
     config: dict,
     metric: str,
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> list[str]:
     """Emit headline solver metrics per dataset so a multi-dataset run
     can be read both as an aggregate and as dataset-level slices.
@@ -676,11 +713,12 @@ def _per_dataset_breakdown(
     for entry in dataset_entries:
         label = _dataset_display_label(entry)
         subset = results[results["dataset"] == entry["id"]]
-        if subset.empty:
+        subset_expected = expected[expected["dataset"] == entry["id"]] if expected is not None else None
+        if subset.empty and (subset_expected is None or subset_expected.empty):
             lines.extend([f"### {label}", "", "No rows for this dataset.", ""])
             continue
         artifact_prefix = _per_dataset_artifact_prefix(entry)
-        subset_tables = _subset_solver_summary_tables(subset, metric=metric)
+        subset_tables = _subset_solver_summary_tables(subset, metric=metric, expected=subset_expected, geomean_options=geomean_options)
         headline_table = _headline_solver_metrics(
             results=subset,
             tables=subset_tables,
@@ -720,14 +758,18 @@ def _per_dataset_report_tables(
     *,
     config: dict,
     metric: str,
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
     tables: dict[str, pd.DataFrame] = {}
     for entry in dataset_entries:
         subset = results[results["dataset"] == entry["id"]]
-        if subset.empty:
+        subset_expected = expected[expected["dataset"] == entry["id"]] if expected is not None else None
+        if subset.empty and (subset_expected is None or subset_expected.empty):
             continue
         artifact_prefix = _per_dataset_artifact_prefix(entry)
-        subset_tables = _subset_solver_summary_tables(subset, metric=metric)
+        subset_tables = _subset_solver_summary_tables(subset, metric=metric, expected=subset_expected, geomean_options=geomean_options)
+        tables[f"{artifact_prefix}/failure_penalties.csv"] = _failure_penalty_table(subset_tables, metric)
         tables[f"{artifact_prefix}/headline_solver_metrics.csv"] = _headline_solver_metrics(
             results=subset,
             tables=subset_tables,
@@ -751,10 +793,12 @@ def _subset_solver_summary_tables(
     results: pd.DataFrame,
     *,
     metric: str,
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
     return {
         name: _sort_report_table(name, table, metric=metric)
-        for name, table in _solver_summary_tables(results, metric=metric).items()
+        for name, table in _solver_summary_tables(results, metric=metric, expected=expected, geomean_options=geomean_options).items()
     }
 
 
@@ -762,14 +806,17 @@ def _solver_summary_tables(
     results: pd.DataFrame,
     *,
     metric: str,
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
     tables = {
         "solver_metrics.csv": solver_metrics(results),
         "failure_rates.csv": failure_rates(results),
-        f"shifted_geomean_{metric}.csv": shifted_geomean(results, metric=metric),
+        f"shifted_geomean_{metric}.csv": shifted_geomean(results, metric=metric, expected=expected, **(geomean_options or {})),
         f"shifted_geomean_{metric}_success_only.csv": shifted_geomean(
             results,
             metric=metric,
+            expected=expected,
             penalize_failures=False,
         ),
     }
@@ -777,13 +824,31 @@ def _solver_summary_tables(
         tables["shifted_geomean_iterations.csv"] = shifted_geomean(
             results,
             metric="iterations",
+            expected=expected,
         )
         tables["shifted_geomean_iterations_success_only.csv"] = shifted_geomean(
             results,
             metric="iterations",
+            expected=expected,
             penalize_failures=False,
         )
     return tables
+
+
+def _failure_penalty_table(tables: dict[str, pd.DataFrame], metric: str) -> pd.DataFrame:
+    geomean = tables.get(f"shifted_geomean_{metric}.csv", pd.DataFrame())
+    rows = []
+    if not geomean.empty:
+        first = geomean.iloc[0]
+        by_dataset = first.get("max_value_by_dataset")
+        if isinstance(by_dataset, str) and by_dataset:
+            rows = [
+                {"metric": metric, "dataset": dataset, "max_value": value}
+                for dataset, value in json.loads(by_dataset).items()
+            ]
+        else:
+            rows = [{"metric": metric, "dataset": "all", "max_value": first["max_value"]}]
+    return pd.DataFrame(rows, columns=["metric", "dataset", "max_value"])
 
 
 def _section_table(
@@ -1158,10 +1223,17 @@ def _headline_solver_metrics(
     metric: str,
 ) -> pd.DataFrame:
     metrics = tables.get("solver_metrics.csv", pd.DataFrame())
-    if metrics.empty:
+    geomean = tables.get(f"shifted_geomean_{metric}.csv", pd.DataFrame())
+    if metrics.empty and geomean.empty:
         return pd.DataFrame()
 
     table = metrics.copy()
+    if not geomean.empty:
+        solver_ids = pd.Index(geomean["solver_id"]).union(pd.Index(table["solver_id"]))
+        table = table.set_index("solver_id").reindex(solver_ids).rename_axis("solver_id").reset_index()
+        for count in ("completed", "success_count", "failure_count"):
+            if count in table:
+                table[count] = table[count].fillna(0).astype(int)
     solver_names = _solver_name_by_id(config)
     if solver_names and "solver_id" in table:
         solver_labels = table["solver_id"].map(solver_names).fillna("")

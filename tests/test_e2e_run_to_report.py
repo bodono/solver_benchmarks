@@ -30,6 +30,7 @@ def test_run_then_report_produces_artifacts(tmp_path: Path, repo_root: Path):
                 "output_dir": str(tmp_path / "runs"),
                 "include": ["one_variable_eq", "one_variable_lp"],
                 "parallelism": 1,
+                "timeout_seconds": 300,
             },
             "solvers": [
                 {

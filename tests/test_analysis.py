@@ -14,7 +14,6 @@ from solver_benchmarks.analysis.markdown_report import (
     write_run_report,
 )
 from solver_benchmarks.analysis.profiles import (
-    DEFAULT_FAILURE_PENALTY,
     performance_profile,
     shifted_geomean,
 )
@@ -173,9 +172,8 @@ def test_performance_profile_dedup_prefers_successful_retry_over_fast_failure():
     assert profile["b"].iloc[0] == pytest.approx(0.0)
 
 
-def test_performance_profile_drops_problems_where_every_solver_failed():
-    """When no solver succeeded on a problem the row is undefined under
-    Dolan-Moré; including it would inflate every curve at tau=1."""
+def test_performance_profile_keeps_problems_where_every_solver_failed():
+    """Shared failures stay in the denominator without generating ratio 1."""
     frame = pd.DataFrame(
         [
             {"problem": "ok", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
@@ -185,11 +183,10 @@ def test_performance_profile_drops_problems_where_every_solver_failed():
         ]
     )
     profile = performance_profile(frame, max_value=100.0, n_tau=3, tau_max=10000.0)
-    # Only the "ok" problem contributes; a wins, so rho_a(1) = 1.0
-    # and rho_b(1) = 0.0, rising to 1.0 at the b/a ratio of 2.
-    assert profile["a"].tolist() == pytest.approx([1.0, 1.0, 1.0])
+    # The solved fraction cannot exceed one of the two input problems.
+    assert profile["a"].tolist() == pytest.approx([0.5, 0.5, 0.5])
     assert profile["b"].tolist()[0] == pytest.approx(0.0)
-    assert profile["b"].tolist()[-1] == pytest.approx(1.0)
+    assert profile["b"].tolist()[-1] == pytest.approx(0.5)
 
 
 def test_performance_profile_default_tau_max_is_dynamic():
@@ -280,13 +277,12 @@ def test_shifted_geomean_runtime_results_unchanged_by_floor_change():
     assert values["solver_b"] == pytest.approx(expected_b)
 
 
-def test_default_failure_penalty_is_one_thousand_seconds():
-    geomean = shifted_geomean(_analysis_frame(), shift=0.0)
+def test_default_time_failure_penalty_is_three_times_the_time_limit():
+    geomean = shifted_geomean(_analysis_frame(), shift=0.0, timeout_seconds=300)
     values = dict(zip(geomean["solver_id"], geomean["run_time_seconds"]))
 
-    assert DEFAULT_FAILURE_PENALTY == 1000.0
-    assert values["solver_a"] == pytest.approx((1.0 * 1000.0) ** 0.5)
-    assert set(geomean["max_value"]) == {1000.0}
+    assert values["solver_a"] == pytest.approx((1.0 * 900.0) ** 0.5)
+    assert set(geomean["max_value"]) == {900.0}
 
 
 def test_report_truncated_table_note_links_full_csv():
@@ -334,6 +330,7 @@ def test_report_truncated_derived_tables_link_full_csv(tmp_path: Path, repo_root
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "include": ["one_variable_eq"],
             "solvers": solvers,
@@ -445,7 +442,7 @@ def test_headline_solver_metrics_omits_empty_solver_column():
     tables = {
         "solver_metrics.csv": solver_metrics(frame),
         "failure_rates.csv": failure_rates(frame),
-        "shifted_geomean_run_time_seconds.csv": shifted_geomean(frame),
+        "shifted_geomean_run_time_seconds.csv": shifted_geomean(frame, timeout_seconds=300),
         "shifted_geomean_run_time_seconds_success_only.csv": shifted_geomean(
             frame,
             penalize_failures=False,
@@ -830,6 +827,7 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "dataset_options": {},
             "include": ["one_variable_eq", "one_variable_lp"],
@@ -877,7 +875,7 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     geomean_frame = pd.read_csv(run_dir / "shifted_geomean_run_time_seconds.csv")
     assert "mode" in geomean_frame.columns
     assert "failure_count" in geomean_frame.columns
-    assert set(geomean_frame["max_value"]) == {1000.0}
+    assert set(geomean_frame["max_value"]) == {900.0}
 
     geomean_success_result = runner.invoke(
         main,
@@ -1104,6 +1102,7 @@ def test_report_includes_new_analysis_sections(tmp_path: Path, repo_root: Path):
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "include": ["one_variable_eq", "one_variable_lp"],
             "solvers": [
@@ -1162,6 +1161,7 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path, repo_root: Pa
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "include": ["one_variable_eq", "one_variable_lp"],
             "solvers": [
@@ -1254,6 +1254,7 @@ def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "datasets": [
                 {
                     "name": "ds_a",
@@ -1321,6 +1322,7 @@ def test_completion_summary_honors_dataset_size_filter(monkeypatch, tmp_path: Pa
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "sized",
             "dataset_options": {"max_size_mb": 1.0},
             "include": [],
@@ -1357,6 +1359,7 @@ def test_expected_by_dataset_memoized_across_completion_and_missing(
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "include": ["one_variable_eq", "one_variable_lp"],
             "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
@@ -1408,6 +1411,7 @@ def test_expected_by_dataset_cache_invalidates_on_manifest_rewrite(
     base_manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "include": ["one_variable_eq"],
             "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
@@ -1456,6 +1460,7 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path, repo
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "datasets": [
                 {
                     "name": "ds_a",
@@ -1520,6 +1525,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "datasets": [
                 {
                     "id": "netlib_feasible",
@@ -1882,6 +1888,7 @@ def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path, r
     manifest = {
         "run_id": "run",
         "config": {
+            "timeout_seconds": 300,
             "dataset": "synthetic_qp",
             "include": ["one_variable_eq", "one_variable_lp"],
             "solvers": [

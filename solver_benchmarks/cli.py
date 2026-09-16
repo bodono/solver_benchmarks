@@ -10,14 +10,15 @@ import click
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.markdown_report import write_run_report
+from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.plots import write_analysis_plots
 from solver_benchmarks.analysis.profiles import (
-    DEFAULT_FAILURE_PENALTY,
     performance_profile,
     shifted_geomean,
 )
 from solver_benchmarks.analysis.tables import (
     completion_summary,
+    expected_results,
     failure_rates,
     missing_results,
     solver_metrics,
@@ -278,9 +279,10 @@ def missing_cmd(run_dir: Path, repo_root: Path | None) -> None:
 @main.command("profile")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
-def profile_cmd(run_dir: Path, metric: str) -> None:
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None) -> None:
     df = load_results(run_dir)
-    profile = performance_profile(df, metric=metric)
+    profile = performance_profile(df, metric=metric, expected=expected_results(run_dir, repo_root=repo_root))
     out = run_dir / f"performance_profile_{metric}.csv"
     profile.to_csv(out, index=False)
     click.echo(str(out))
@@ -289,28 +291,37 @@ def profile_cmd(run_dir: Path, metric: str) -> None:
 @main.command("geomean")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
-@click.option("--shift", default=10.0, show_default=True)
-@click.option("--max-value", default=DEFAULT_FAILURE_PENALTY, show_default=True)
+@click.option("--shift", type=float, default=None, help="Shift in metric units; defaults depend on the metric.")
+@click.option("--max-value", type=float, default=None, help="Exact failure penalty; time metrics default to 3 times the manifest time limit.")
 @click.option(
     "--success-only",
     is_flag=True,
     help="Use only successful solves instead of penalizing failures.",
 )
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 def geomean_cmd(
     run_dir: Path,
     metric: str,
-    shift: float,
-    max_value: float,
+    shift: float | None,
+    max_value: float | None,
     success_only: bool,
+    repo_root: Path | None,
 ) -> None:
     df = load_results(run_dir)
-    result = shifted_geomean(
-        df,
-        metric=metric,
-        shift=shift,
-        max_value=max_value,
-        penalize_failures=not success_only,
-    )
+    try:
+        result = shifted_geomean(
+            df,
+            metric=metric,
+            shift=shift,
+            max_value=max_value,
+            timeout_seconds=geomean_time_limits(
+                run_dir, metric=metric, max_value=max_value, penalize_failures=not success_only,
+            ),
+            penalize_failures=not success_only,
+            expected=expected_results(run_dir, repo_root=repo_root),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     suffix = "_success_only" if success_only else ""
     out = run_dir / f"shifted_geomean_{metric}{suffix}.csv"
     result.to_csv(out, index=False)
@@ -321,8 +332,13 @@ def geomean_cmd(
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
-def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None) -> None:
-    paths = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir)
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@click.option("--max-value", type=float, default=None, help="Exact failure penalty for the selected metric.")
+def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None, repo_root: Path | None, max_value: float | None) -> None:
+    try:
+        paths = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir, repo_root=repo_root, max_value=max_value)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not paths:
         click.echo("No results found.")
         return
@@ -390,18 +406,24 @@ def kkt_verify_cmd(
 @click.option("--metric", default="run_time_seconds")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@click.option("--max-value", type=float, default=None, help="Exact failure penalty for the selected metric.")
 def report_cmd(
     run_dir: Path,
     metric: str,
     output_dir: Path | None,
     repo_root: Path | None,
+    max_value: float | None,
 ) -> None:
-    paths = write_run_report(
-        run_dir,
-        metric=metric,
-        output_dir=output_dir,
-        repo_root=repo_root,
-    )
+    try:
+        paths = write_run_report(
+            run_dir,
+            metric=metric,
+            output_dir=output_dir,
+            repo_root=repo_root,
+            max_value=max_value,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not paths:
         click.echo("No results found.")
         return
