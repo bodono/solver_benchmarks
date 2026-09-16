@@ -183,14 +183,13 @@ def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False) -> pd.
     for tick, scs in zip(ax.get_yticklabels(), is_scs):
         if scs:
             tick.set_fontweight("bold")
-    ax.set_xscale("log")
-    lo, hi = float(gm[value_col].min()), float(gm[value_col].max())
-    ax.set_xlim(lo / 1.8, hi * 2.6)
+    hi = float(gm[value_col].max())
+    ax.set_xlim(0, hi * 1.28)
+    pad = hi * 0.012
     for yi, (v, solved) in enumerate(zip(gm[value_col], gm["success_count"])):
-        ax.text(v * 1.08, yi, f"{v:.1f} s" if v < 20 else f"{v:.0f} s", va="center", ha="left", fontsize=fs - 1, color="#222222")
-        ax.text(v * 1.08, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=fs - 2.5, color="#666666", linespacing=0.6)
+        ax.text(v + pad, yi, f"{v:.1f} s" if v < 20 else f"{v:.0f} s", va="center", ha="left", fontsize=fs - 1, color="#222222")
+        ax.text(v + pad, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=fs - 2.5, color="#666666", linespacing=0.6)
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
-    ax.xaxis.set_minor_formatter(NullFormatter())
     ax.tick_params(axis="x", labelsize=fs - 1)
     ax.set_xlabel("shifted geometric mean solve time (s), lower is better" if compact else
                   "shifted geometric mean of solve time (s), lower is better; failures charged 1000 s", fontsize=fs - 1)
