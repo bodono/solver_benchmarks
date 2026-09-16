@@ -197,7 +197,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # Also compatible with the Python 3.11 floor introduced by PR #95.
+        # Exercise native dependency compatibility on Python 3.11 and 3.14.
         python-version: ["3.11", "3.14"]
     steps:
       - name: Check out repository
