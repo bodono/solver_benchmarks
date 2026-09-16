@@ -316,8 +316,10 @@ def kkt_verify(
         demoted[solver_id] = demoted.get(solver_id, 0) + 1
     _write_jsonl(out / "results.jsonl", records)
     manifest = _read_manifest(src)
-    # a verified merge keeps the merge's per-source selections (see merge_runs)
-    selections = (manifest.get("derived") or {}).get("selections")
+    # The input run's own provenance (merge sources and their manifests, the
+    # per-source selections, earlier verifications) is kept in full: a
+    # verified merge must still know each source's settings and time limits.
+    prior = manifest.get("derived") or {}
     summary: dict[str, Any] = {
         "kind": "kkt_verify",
         "source": str(src),
@@ -330,8 +332,11 @@ def kkt_verify(
         "promoted": promoted,
         "missing_residuals": missing,
     }
-    if selections:
-        summary["selections"] = selections
+    if prior:
+        summary["source_derived"] = prior
+        for key in ("selections", "source_manifests"):
+            if key in prior:
+                summary[key] = prior[key]
     manifest["derived"] = summary
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for name in _COPIED_FILES:

@@ -271,3 +271,27 @@ def test_merged_completion_applies_each_shards_excludes_before_union(tmp_path):
     merge_runs([a, b], out, overwrite=True)
     (row,) = completion_summary(out, load_results(out)).to_dict("records")
     assert row["expected"] == len(names) - 1 and row["missing"] == 0 and row["complete"]
+
+
+def test_verify_keeps_merge_provenance_including_source_manifests(tmp_path):
+    from solver_benchmarks.analysis.derive import merge_runs
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    _synthetic_run(a, [("one_variable_eq", "s1")], datasets=[{"name": "synthetic_qp", "include": ["one_variable_eq"]}],
+                   solvers=["s1"], timeout_seconds=300)
+    _synthetic_run(b, [("one_variable_lp", "s1")], datasets=[{"name": "synthetic_qp", "include": ["one_variable_lp"]}],
+                   solvers=["s1"], timeout_seconds=900)
+    merged = tmp_path / "merged"
+    merge_runs([a, b], merged, overwrite=True)
+    kkt_verify(merged, tmp_path / "v1", tol=1e-6, missing_is_failure=False)
+    kkt_verify(tmp_path / "v1", tmp_path / "v2", tol=1e-6, missing_is_failure=False)
+    for out in (tmp_path / "v1", tmp_path / "v2"):
+        derived = json.loads((out / "manifest.json").read_text())["derived"]
+        assert derived["kind"] == "kkt_verify"
+        limits = sorted(m["config"]["timeout_seconds"] for m in derived["source_manifests"])
+        assert limits == [300, 900]
+        assert len(derived["selections"]) == 2
+        assert derived["source_derived"]["kind"] in {"merge", "kkt_verify"}
+    # the complete merge provenance is still reachable after two verifications
+    v2 = json.loads((tmp_path / "v2" / "manifest.json").read_text())["derived"]
+    assert v2["source_derived"]["source_derived"]["kind"] == "merge"
