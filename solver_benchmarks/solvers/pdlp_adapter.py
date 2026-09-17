@@ -316,7 +316,7 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
     if max_iter is not None:
         parameters.termination_criteria.iteration_limit = int(max_iter)
     if parameters_text:
-        text_format.Parse(str(parameters_text), parameters)
+        text_format.Merge(str(parameters_text), parameters)
     return parameters
 
 
