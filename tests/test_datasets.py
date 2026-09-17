@@ -597,6 +597,31 @@ def test_sdplib_dataset_publishes_tar_member_sizes(tmp_path: Path):
     assert [spec.name for spec in filtered] == ["tar_small"]
 
 
+def test_sdplib_feasibility_subsets(tmp_path: Path):
+    """The four infeasible SDPLIB instances form their own subset, like the
+    NETLIB infeasible LPs: the default lists only feasible problems."""
+    import pytest
+
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "sdplib_data"
+    folder.mkdir(parents=True)
+    with tarfile.open(folder / "sdplib.tar", "w") as archive:
+        for name in ("arch0.jld2", "infd1.jld2", "infp2.jld2", "theta1.jld2"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+
+    def names(**options):
+        return [spec.name for spec in get_dataset("sdplib")(repo_root=tmp_path, data_root=data_root, **options).list_problems()]
+
+    assert names() == ["arch0", "theta1"]
+    assert names(subset="feasible") == ["arch0", "theta1"]
+    assert names(subset="infeasible") == ["infd1", "infp2"]
+    assert names(subset="all") == ["arch0", "infd1", "infp2", "theta1"]
+    with pytest.raises(ValueError, match="Unknown SDPLIB subset"):
+        names(subset="bogus")
+
+
 def test_generic_size_filter_applies_to_dataset_visibility_and_cli(tmp_path: Path):
     data_root = tmp_path / "problem_classes"
     folder = data_root / "sdplib_data"

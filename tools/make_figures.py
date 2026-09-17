@@ -26,20 +26,26 @@ from matplotlib.ticker import FuncFormatter
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import shifted_geomean
+from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
-                 "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set"}
+                 "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set", "infeas": "Netlib infeasible LPs"}
 # The LP family's copy of the Mittelmann set only ever held qap15; the set is
 # its own family (lpbig), so drop it here to keep the title honest.
 FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
 # Instances staged from an older MIPLIB listing that are not in the 240-instance
 # MIPLIB 2017 benchmark set; dropped so the LP family is exactly that set.
 FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
-                        ("n9-3", "neos-3754224-navua", "neos-5075914-elvire", "rococoC11-011100", "toll-like")}}
+                        ("n9-3", "neos-3754224-navua", "neos-5075914-elvire", "rococoC11-011100", "toll-like")},
+                        # SDPLIB's infeasible instances, recorded under the plain "sdplib"
+                        # id by runs made before the dataset had subsets (they are the
+                        # "infeasible" subset now); the plots measure time to a verified
+                        # optimum, and every solver reports these infeasible.
+                        "sdp": {("sdplib", n) for n in SDPLIB_INFEASIBLE}}
 # Nominal time limit per family and the grace the harness allowed before
 # killing a worker; a solve that finishes later counts as a failure for every
 # solver, whatever status it reported.
-FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0}
+FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0, "infeas": 300.0}
 LIMIT_GRACE = 60.0
 # Failures are charged this multiple of the family's time limit in the shifted
 # geometric mean, so a failure always costs more than any admitted success.

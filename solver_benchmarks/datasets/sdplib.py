@@ -14,6 +14,11 @@ from solver_benchmarks.transforms.sdplib import (
 from .base import Dataset
 
 SDPLIB_DEFAULT_SUBSET = ("arch0", "control1", "theta1")
+# The four SDPLIB instances that are infeasible by construction. They test
+# infeasibility detection, not solve time, so they form their own subset, as
+# the NETLIB infeasible LPs do.
+SDPLIB_INFEASIBLE = ("infd1", "infd2", "infp1", "infp2")
+SDPLIB_SUBSETS = ("feasible", "infeasible", "all")
 
 
 class SDPLIBDataset(Dataset):
@@ -25,6 +30,19 @@ class SDPLIBDataset(Dataset):
     )
     data_patterns = ("*.jld2", "*.dat-s", "*.dat-s.gz", "sdplib.tar")
     prepare_command = "python scripts/prepare_sdplib.py"
+
+    @property
+    def subset(self) -> str:
+        """``feasible`` (default), ``infeasible`` or ``all``, from ``dataset_options.subset``."""
+        subset = str(self.options.get("subset", "feasible"))
+        if subset not in SDPLIB_SUBSETS:
+            raise ValueError(f"Unknown SDPLIB subset {subset!r}; expected one of {', '.join(SDPLIB_SUBSETS)}")
+        return subset
+
+    def _in_subset(self, name: str) -> bool:
+        if self.subset == "all":
+            return True
+        return (name in SDPLIB_INFEASIBLE) == (self.subset == "infeasible")
 
     @property
     def folder(self) -> Path:
@@ -39,7 +57,7 @@ class SDPLIBDataset(Dataset):
         return self.folder / "sdplib.tar"
 
     def list_problems(self) -> list[ProblemSpec]:
-        """One spec per problem name, with explicit precedence.
+        """One spec per problem name in the selected subset, with explicit precedence.
 
         An original SDPA-S file (``.dat-s`` then ``.dat-s.gz``) placed in the
         data folder replaces both an extracted ``.jld2`` and the tar member of
@@ -76,7 +94,7 @@ class SDPLIBDataset(Dataset):
                     dataset_id=self.dataset_id, name=name, kind=CONE, path=self.tar_path,
                     metadata={"source": str(self.tar_path), "format": "tar:jld2", "size_bytes": int(size_bytes)},
                 ), 3)
-        return [specs[k] for k in sorted(specs)]
+        return [specs[k] for k in sorted(specs) if self._in_subset(k)]
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
