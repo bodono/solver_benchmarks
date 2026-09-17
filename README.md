@@ -110,7 +110,7 @@ Current maintained adapters:
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
 | Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
 | Mittelmann SDP | `mittelmann_sdp` | Cone/SDP | Mittelmann's SDP test set in SDPA-S sparse format (G-graph maxcut relaxations + Lovász theta numbers); downloads from `plato.asu.edu`. |
-| SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files; requires `h5py`. |
+| SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files (or original `.dat-s` files placed beside the archive); requires `h5py`. `dataset_options.subset: feasible` (default), `infeasible` (the four instances `infd1`, `infd2`, `infp1`, `infp2`) or `all`. |
 | TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
 | DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
 | CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. |
@@ -281,6 +281,7 @@ Useful dataset options:
 |---|---|---|
 | All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
+| `sdplib` | `subset=feasible`, `subset=infeasible` or `subset=all` | Select the SDPLIB feasibility subset (default `feasible`). |
 | `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
 | `liu_pataki` | `classification=infeas` or `classification=weak` | Select infeasible or weakly infeasible SDP families. |
 | `liu_pataki` | `conditioning=clean` or `conditioning=messy` | Select clean or numerically messier Liu-Pataki instances. |

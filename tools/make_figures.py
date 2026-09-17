@@ -26,6 +26,7 @@ from matplotlib.ticker import FuncFormatter
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import shifted_geomean
+from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
                  "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set"}
@@ -36,9 +37,11 @@ FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
 # MIPLIB 2017 benchmark set; dropped so the LP family is exactly that set.
 FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
                         ("n9-3", "neos-3754224-navua", "neos-5075914-elvire", "rococoC11-011100", "toll-like")},
-                        # SDPLIB's four infeasible instances: every solver reports them
-                        # infeasible, and the plots measure time to a verified optimum.
-                        "sdp": {("sdplib", n) for n in ("infd1", "infd2", "infp1", "infp2")}}
+                        # SDPLIB's infeasible instances, recorded under the plain "sdplib"
+                        # id by runs made before the dataset had subsets (they are the
+                        # "infeasible" subset now); the plots measure time to a verified
+                        # optimum, and every solver reports these infeasible.
+                        "sdp": {("sdplib", n) for n in SDPLIB_INFEASIBLE}}
 # Nominal time limit per family and the grace the harness allowed before
 # killing a worker; a solve that finishes later counts as a failure for every
 # solver, whatever status it reported.
