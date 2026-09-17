@@ -29,7 +29,7 @@ from solver_benchmarks.analysis.profiles import shifted_geomean
 from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
-                 "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set"}
+                 "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set", "infeas": "Netlib infeasible LPs"}
 # The LP family's copy of the Mittelmann set only ever held qap15; the set is
 # its own family (lpbig), so drop it here to keep the title honest.
 FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
@@ -45,7 +45,7 @@ FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
 # Nominal time limit per family and the grace the harness allowed before
 # killing a worker; a solve that finishes later counts as a failure for every
 # solver, whatever status it reported.
-FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0}
+FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0, "infeas": 300.0}
 LIMIT_GRACE = 60.0
 # Failures are charged this multiple of the family's time limit in the shifted
 # geometric mean, so a failure always costs more than any admitted success.
