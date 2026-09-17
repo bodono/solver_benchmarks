@@ -272,3 +272,17 @@ def test_pdlp_preflight_does_not_count_entries_omitted_by_builder(monkeypatch, t
     monkeypatch.setattr(mod, "_import_ortools", lambda: None)
     monkeypatch.setattr(mod, "_solve_model", lambda *_args: SolverResult(status=status.OPTIMAL))
     assert mod.PDLPSolverAdapter({}).solve(problem, tmp_path).status == status.OPTIMAL
+
+
+def test_parameters_text_extends_criteria_built_from_settings():
+    """parameters_text must merge into the parameters the settings built, so
+    it can add certificate tolerances next to eps_abs / eps_rel."""
+    from solver_benchmarks.solvers.pdlp_adapter import _pdlp_parameters_from_settings
+
+    params = _pdlp_parameters_from_settings({
+        "eps_abs": 1e-8, "eps_rel": 1e-8,
+        "parameters_text": "termination_criteria { eps_primal_infeasible: 1e-4 eps_dual_infeasible: 1e-4 }",
+    })
+    crit = params.termination_criteria
+    assert crit.simple_optimality_criteria.eps_optimal_absolute == 1e-8
+    assert crit.eps_primal_infeasible == 1e-4 and crit.eps_dual_infeasible == 1e-4
