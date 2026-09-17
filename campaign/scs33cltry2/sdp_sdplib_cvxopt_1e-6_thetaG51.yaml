@@ -1,0 +1,18 @@
+run:
+  name: sdp_sdplib_cvxopt_1e-6_thetaG51
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: sdplib
+    id: sdplib
+    include:
+    - thetaG51
+solvers:
+- id: cvxopt_1e-6
+  solver: cvxopt
+  settings:
+    abstol: 1.0e-06
+    reltol: 1.0e-06
+    feastol: 1.0e-06

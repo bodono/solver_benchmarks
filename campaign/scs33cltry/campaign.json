@@ -1,0 +1,192 @@
+[
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_equalG11",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_equalG11.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_equalG51",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_equalG51.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_maxG11",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_maxG11.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_maxG32",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_maxG32.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_maxG51",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_maxG51.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_maxG55",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_maxG55.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_maxG60",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_maxG60.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_thetaG11",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_thetaG11.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_thetaG51",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_thetaG51.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_gpp500-1",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_gpp500-1.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_gpp500-2",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_gpp500-2.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_gpp500-3",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_gpp500-3.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_gpp500-4",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_gpp500-4.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_mcp500-1",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_mcp500-1.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_mcp500-2",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_mcp500-2.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_mcp500-3",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_mcp500-3.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_mcp500-4",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_mcp500-4.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_qpG11",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_qpG11.yaml"
+  },
+  {
+    "name": "sdp_sdplib_clarabel_1e-8_try_qpG51",
+    "family": "sdp",
+    "dataset": "sdplib",
+    "solver_id": "clarabel_1e-8",
+    "tol": 1e-08,
+    "gpu": false,
+    "runner": "cpu",
+    "config": "campaign/scs33cltry/sdp_sdplib_clarabel_1e-8_try_qpG51.yaml"
+  }
+]

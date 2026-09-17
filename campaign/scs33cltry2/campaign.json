@@ -1,0 +1,92 @@
+[
+ {
+  "name": "sdp_sdplib_scs_cpu_1e-4_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "scs_cpu_1e-4",
+  "tol": 0.0001,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_scs_cpu_1e-4_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_scs_cudss_1e-4_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "scs_cudss_1e-4",
+  "tol": 0.0001,
+  "gpu": true,
+  "runner": "gpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_scs_cudss_1e-4_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_cvxopt_1e-4_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "cvxopt_1e-4",
+  "tol": 0.0001,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_cvxopt_1e-4_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_sdpa_1e-4_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "sdpa_1e-4",
+  "tol": 0.0001,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_sdpa_1e-4_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_scs_cpu_1e-6_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "scs_cpu_1e-6",
+  "tol": 1e-06,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_scs_cpu_1e-6_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_cvxopt_1e-6_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "cvxopt_1e-6",
+  "tol": 1e-06,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_cvxopt_1e-6_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_sdpa_1e-6_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "sdpa_1e-6",
+  "tol": 1e-06,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_sdpa_1e-6_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_sdplib_clarabel_1e-8_try_thetaG51",
+  "family": "sdp",
+  "dataset": "sdplib",
+  "solver_id": "clarabel_1e-8",
+  "tol": 1e-08,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_sdplib_clarabel_1e-8_try_thetaG51.yaml"
+ },
+ {
+  "name": "sdp_mittelmann_sdp_clarabel_1e-8_try_G40mc",
+  "family": "sdp",
+  "dataset": "mittelmann_sdp",
+  "solver_id": "clarabel_1e-8",
+  "tol": 1e-08,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33cltry2/sdp_mittelmann_sdp_clarabel_1e-8_try_G40mc.yaml"
+ }
+]
