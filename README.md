@@ -1198,6 +1198,18 @@ Status handling:
   units, including 0 to disable the floor, and customize `success_statuses`
   and `max_value`.
 
+## Published Results
+
+Results of the campaigns run with this harness are published in
+[bodono/solver_benchmarks_results](https://github.com/bodono/solver_benchmarks_results): one directory
+per campaign with the merged `results.jsonl` and `manifest.json` per family (readable directly by
+`bench kkt-verify` and `bench report`), the campaign configs, figures, tables, and a manifest of solver
+versions and hardware. The complete archive of each campaign is attached to its GitHub release there.
+
+| Campaign | Content |
+|---|---|
+| [`scs33_2026-09`](https://github.com/bodono/solver_benchmarks_results/tree/main/scs33_2026-09) | SCS 3.3.1 against Clarabel, PIQP, OSQP, ProxQP, HiGHS, PDLP, cuOpt, CVXOPT, SDPA and QTQP on QP, LP, the Mittelmann LP set, SDP and infeasible problems (the [SCS benchmarks page](https://www.cvxgrp.org/scs/benchmarks/)) |
+
 ## Adding a New Dataset
 
 Dataset adapters live under `solver_benchmarks/datasets/`.
