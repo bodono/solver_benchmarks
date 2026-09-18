@@ -128,11 +128,13 @@ qtqp_gpu_image = (
 )
 
 # qpo3 (private Rust/PyO3 interior-point solver): built inside the image with maturin from a
-# local checkout named by QPO3_REPO (default ~/git/qpo3, submodules initialised). The image
-# and its runner exist only when that checkout is present, so nothing else depends on it.
+# local checkout named by QPO3_REPO (default ~/git/qpo3, submodules initialised). Without that
+# checkout the runner falls back to the plain CPU image (the adapter then reports the solver
+# unavailable), so nothing else depends on the path; the function itself is always defined,
+# because Modal resolves functions by name inside the container, where the checkout is absent.
 QPO3_REPO = Path(os.environ.get("QPO3_REPO", str(Path.home() / "git" / "qpo3")))
 QPO3_IGNORE = ["target", ".venv", ".git", "**/__pycache__", "benchmarks", "**/*.so"]
-qpo3_image = None
+qpo3_image = cpu_image
 if QPO3_REPO.is_dir():
     qpo3_image = (
         cpu_image
@@ -211,10 +213,9 @@ def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-if qpo3_image is not None:
-    @app.function(image=qpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-    def run_shard_qpo3_cpu(campaign: str, name: str, config_yaml: str) -> dict:
-        return _run(campaign, name, config_yaml)
+@app.function(image=qpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
+def run_shard_qpo3_cpu(campaign: str, name: str, config_yaml: str) -> dict:
+    return _run(campaign, name, config_yaml)
 
 
 @app.function(image=cpu_image, cpu=2.0)
@@ -370,9 +371,7 @@ def main(
         if s["kind"] == "cpu" and (cpu_kind != "cpu" or s["name"] in big_set):
             s["kind"] = "cpu_big" if s["name"] in big_set else cpu_kind
     runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "pdlp": run_shard_pdlp, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt,
-               "qtqp_cpu": run_shard_qtqp_cpu, "qtqp_gpu": run_shard_qtqp_gpu}
-    if qpo3_image is not None:
-        runners["qpo3_cpu"] = run_shard_qpo3_cpu
+               "qtqp_cpu": run_shard_qtqp_cpu, "qtqp_gpu": run_shard_qtqp_gpu, "qpo3_cpu": run_shard_qpo3_cpu}
     pending = deque(shards)
     running: dict = {}  # call -> (shard, start)
     spent = 0.0
