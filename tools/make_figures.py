@@ -76,7 +76,7 @@ SOLVER_LABELS = {
     "scs_cudss": "SCS (GPU, cuDSS)",
     "cuopt": "cuOpt (GPU)",
     "osqp": "OSQP", "clarabel": "Clarabel", "piqp": "PIQP", "proxqp": "ProxQP",
-    "highs": "HiGHS", "pdlp": "PDLP (OR-Tools)", "cvxopt": "CVXOPT", "sdpa": "SDPA",, "qpo3": "qpo3"}
+    "highs": "HiGHS", "pdlp": "PDLP (OR-Tools)", "cvxopt": "CVXOPT", "sdpa": "SDPA", "qpo3": "qpo3"}
 LABEL_OVERRIDE: dict[str, str] = {}
 
 
