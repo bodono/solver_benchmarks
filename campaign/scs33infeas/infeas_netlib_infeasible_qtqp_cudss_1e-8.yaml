@@ -1,0 +1,21 @@
+run:
+  name: infeas_netlib_infeasible_qtqp_cudss_1e-8
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: netlib
+    id: netlib_infeasible
+    dataset_options:
+      subset: infeasible
+solvers:
+- id: qtqp_cudss_1e-8
+  solver: qtqp
+  settings:
+    tol_feas: 1.0e-08
+    tol_gap_abs: 1.0e-08
+    tol_gap_rel: 1.0e-08
+    max_iter: 200
+    verbose: false
+    linear_solver: cudss

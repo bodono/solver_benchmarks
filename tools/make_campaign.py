@@ -116,6 +116,15 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"qtqp_cudss_{tag}", "solver": "qtqp", "settings": {**qtqp_common, "linear_solver": "cudss"},
              "gpu": True, "runner": "qtqp_gpu"},
         ]
+    if family in ("qp", "lp", "lpbig"):
+        # qpo3 (private Rust interior-point solver): Clarabel-style settings; built from a
+        # local checkout in its own Modal image (see bench_modal QPO3_REPO).
+        variants.append(
+            {"id": f"qpo3_{tag}", "solver": "qpo3",
+             "settings": {"tol_feas": t, "tol_gap_abs": t, "tol_gap_rel": t, "max_iters": 200,
+                          "time_limit": timeout, "verbose": False},
+             "gpu": False, "runner": "qpo3_cpu"}
+        )
     if family in ("lp", "lpbig"):
         variants.append(
             {"id": f"pdlp_{tag}", "solver": "pdlp",

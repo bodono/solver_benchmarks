@@ -1,0 +1,32 @@
+run:
+  name: lpbig_mittelmann2_qpo3_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 1860.0
+  datasets:
+  - name: mittelmann
+    id: mittelmann2
+    include:
+    - L1_sixm1000obs
+    - L1_sixm250obs
+    - L2CTA3D
+    - Linf_520c
+    - brazil3
+    - rmine15
+    - s250r10
+    - s82
+    - savsched1
+    - set-cover-model
+    - square41
+    - woodlands09
+solvers:
+- id: qpo3_1e-4
+  solver: qpo3
+  settings:
+    tol_feas: 0.0001
+    tol_gap_abs: 0.0001
+    tol_gap_rel: 0.0001
+    max_iters: 200
+    time_limit: 1800.0
+    verbose: false

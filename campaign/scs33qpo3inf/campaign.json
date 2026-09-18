@@ -1,0 +1,22 @@
+[
+ {
+  "name": "infeas_netlib_infeasible_qpo3_1e-8_inf4",
+  "family": "infeas",
+  "dataset": "netlib_infeasible",
+  "solver_id": "qpo3_1e-8",
+  "tol": 1e-08,
+  "gpu": false,
+  "runner": "qpo3_cpu",
+  "config": "campaign/scs33qpo3inf/infeas_netlib_infeasible_qpo3_1e-8_inf4.yaml"
+ },
+ {
+  "name": "infeas_netlib_infeasible_qpo3_1e-6",
+  "family": "infeas",
+  "dataset": "netlib_infeasible",
+  "solver_id": "qpo3_1e-6",
+  "tol": 1e-06,
+  "gpu": false,
+  "runner": "qpo3_cpu",
+  "config": "campaign/scs33qpo3inf/infeas_netlib_infeasible_qpo3_1e-6.yaml"
+ }
+]

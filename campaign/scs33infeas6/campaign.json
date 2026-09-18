@@ -1,0 +1,12 @@
+[
+ {
+  "name": "infeas_netlib_infeasible_osqp_1e-8_inf4",
+  "family": "infeas",
+  "dataset": "netlib_infeasible",
+  "solver_id": "osqp_1e-8",
+  "tol": 1e-08,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33infeas6/infeas_netlib_infeasible_osqp_1e-8_inf4.yaml"
+ }
+]

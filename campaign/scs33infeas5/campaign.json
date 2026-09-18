@@ -1,0 +1,32 @@
+[
+ {
+  "name": "infeas_netlib_infeasible_scs_cpu_1e-8_inf4",
+  "family": "infeas",
+  "dataset": "netlib_infeasible",
+  "solver_id": "scs_cpu_1e-8",
+  "tol": 1e-08,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33infeas5/infeas_netlib_infeasible_scs_cpu_1e-8_inf4.yaml"
+ },
+ {
+  "name": "infeas_netlib_infeasible_scs_cudss_1e-8_inf4",
+  "family": "infeas",
+  "dataset": "netlib_infeasible",
+  "solver_id": "scs_cudss_1e-8",
+  "tol": 1e-08,
+  "gpu": true,
+  "runner": "gpu",
+  "config": "campaign/scs33infeas5/infeas_netlib_infeasible_scs_cudss_1e-8_inf4.yaml"
+ },
+ {
+  "name": "infeas_netlib_infeasible_clarabel_1e-8_inf4",
+  "family": "infeas",
+  "dataset": "netlib_infeasible",
+  "solver_id": "clarabel_1e-8",
+  "tol": 1e-08,
+  "gpu": false,
+  "runner": "cpu",
+  "config": "campaign/scs33infeas5/infeas_netlib_infeasible_clarabel_1e-8_inf4.yaml"
+ }
+]

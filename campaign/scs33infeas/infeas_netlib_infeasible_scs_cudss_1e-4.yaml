@@ -1,0 +1,20 @@
+run:
+  name: infeas_netlib_infeasible_scs_cudss_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: netlib
+    id: netlib_infeasible
+    dataset_options:
+      subset: infeasible
+solvers:
+- id: scs_cudss_1e-4
+  solver: scs
+  settings:
+    eps_abs: 0.0001
+    eps_rel: 0.0001
+    max_iters: 1000000
+    time_limit_secs: 300.0
+    linear_solver: cudss

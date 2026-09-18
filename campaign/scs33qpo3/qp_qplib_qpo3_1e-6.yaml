@@ -1,0 +1,21 @@
+run:
+  name: qp_qplib_qpo3_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: qplib
+    id: qplib
+    dataset_options:
+      subset: all
+solvers:
+- id: qpo3_1e-6
+  solver: qpo3
+  settings:
+    tol_feas: 1.0e-06
+    tol_gap_abs: 1.0e-06
+    tol_gap_rel: 1.0e-06
+    max_iters: 200
+    time_limit: 300.0
+    verbose: false

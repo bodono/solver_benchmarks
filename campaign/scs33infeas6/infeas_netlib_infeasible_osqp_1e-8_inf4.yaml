@@ -1,0 +1,21 @@
+run:
+  name: infeas_netlib_infeasible_osqp_1e-8_inf4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: netlib
+    id: netlib_infeasible
+    dataset_options:
+      subset: infeasible
+solvers:
+- id: osqp_1e-8
+  solver: osqp
+  settings:
+    eps_abs: 1.0e-08
+    eps_rel: 1.0e-08
+    max_iter: 1000000
+    time_limit: 300.0
+    eps_prim_inf: 0.0001
+    eps_dual_inf: 0.0001

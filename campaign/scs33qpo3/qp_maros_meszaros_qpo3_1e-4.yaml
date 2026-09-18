@@ -1,0 +1,19 @@
+run:
+  name: qp_maros_meszaros_qpo3_1e-4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: maros_meszaros
+    id: maros_meszaros
+solvers:
+- id: qpo3_1e-4
+  solver: qpo3
+  settings:
+    tol_feas: 0.0001
+    tol_gap_abs: 0.0001
+    tol_gap_rel: 0.0001
+    max_iters: 200
+    time_limit: 300.0
+    verbose: false

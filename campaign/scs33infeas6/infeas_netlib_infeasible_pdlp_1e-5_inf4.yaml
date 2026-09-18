@@ -1,0 +1,20 @@
+run:
+  name: infeas_netlib_infeasible_pdlp_1e-5_inf4
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 360.0
+  datasets:
+  - name: netlib
+    id: netlib_infeasible
+    dataset_options:
+      subset: infeasible
+solvers:
+- id: pdlp_1e-5
+  solver: pdlp
+  settings:
+    eps_abs: 1.0e-05
+    eps_rel: 1.0e-05
+    solver_time_limit_sec: 300.0
+    parameters_text: 'termination_criteria { eps_primal_infeasible: 1e-4 eps_dual_infeasible:
+      1e-4 }'

@@ -1,0 +1,21 @@
+run:
+  name: infeas_sdplib_infeasible_sdpa_1e-6
+  output_dir: results
+  parallelism: 1
+  resume: true
+  timeout_seconds: 960.0
+  datasets:
+  - name: sdplib
+    id: sdplib_infeasible
+    include:
+    - infd1
+    - infd2
+    - infp1
+    - infp2
+solvers:
+- id: sdpa_1e-6
+  solver: sdpa
+  settings:
+    eps_abs: 1.0e-06
+    eps_rel: 1.0e-06
+    time_limit: 900.0
