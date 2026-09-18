@@ -20,6 +20,9 @@ run:
     - set-cover-model
     - square41
     - woodlands09
+    exclude:
+    - L1_sixm1000obs
+    - L1_sixm250obs
 solvers:
 - id: qpo3_1e-6
   solver: qpo3
