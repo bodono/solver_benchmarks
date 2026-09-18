@@ -127,6 +127,22 @@ qtqp_gpu_image = (
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
+# qpo3 (private Rust/PyO3 interior-point solver): built inside the image with maturin from a
+# local checkout named by QPO3_REPO (default ~/git/qpo3, submodules initialised). The image
+# and its runner exist only when that checkout is present, so nothing else depends on it.
+QPO3_REPO = Path(os.environ.get("QPO3_REPO", str(Path.home() / "git" / "qpo3")))
+QPO3_IGNORE = ["target", ".venv", ".git", "**/__pycache__", "benchmarks", "**/*.so"]
+qpo3_image = None
+if QPO3_REPO.is_dir():
+    qpo3_image = (
+        cpu_image
+        .apt_install("curl")
+        .run_commands("curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal", "pip install maturin")
+        .add_local_dir(str(QPO3_REPO), "/root/qpo3", ignore=QPO3_IGNORE, copy=True)
+        .run_commands("PATH=/root/.cargo/bin:$PATH pip install /root/qpo3",
+                      "python -c 'import qpo3; print(qpo3.Settings())'")
+    )
+
 VOLUMES = {"/data": data_vol, "/results": results_vol}
 
 
@@ -193,6 +209,12 @@ def run_shard_qtqp_cpu(campaign: str, name: str, config_yaml: str) -> dict:
 @app.function(image=qtqp_gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=2)
 def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
+
+
+if qpo3_image is not None:
+    @app.function(image=qpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
+    def run_shard_qpo3_cpu(campaign: str, name: str, config_yaml: str) -> dict:
+        return _run(campaign, name, config_yaml)
 
 
 @app.function(image=cpu_image, cpu=2.0)
@@ -306,8 +328,8 @@ def probe_cuopt() -> str:
 #   GPU shard: A100-80GB $2.50 + 8 cores x $0.135 + 64 GiB x $0.024 ~ $5.12/h
 #   big CPU shard (also the PDLP shard): 4 cores x $0.135 + 64 GiB x $0.024 ~ $2.08/h
 RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, "gpu": 5.12 * 1.2, "cuopt": 5.12 * 1.2,
-                  "qtqp_cpu": 2.08 * 1.2, "qtqp_gpu": 5.12 * 1.2}
-MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 8, "pdlp": 8, "gpu": 2, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2}
+                  "qtqp_cpu": 2.08 * 1.2, "qtqp_gpu": 5.12 * 1.2, "qpo3_cpu": 2.08 * 1.2}
+MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 8, "pdlp": 8, "gpu": 2, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "qpo3_cpu": 8}
 
 
 @app.local_entrypoint()
@@ -349,6 +371,8 @@ def main(
             s["kind"] = "cpu_big" if s["name"] in big_set else cpu_kind
     runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "pdlp": run_shard_pdlp, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt,
                "qtqp_cpu": run_shard_qtqp_cpu, "qtqp_gpu": run_shard_qtqp_gpu}
+    if qpo3_image is not None:
+        runners["qpo3_cpu"] = run_shard_qpo3_cpu
     pending = deque(shards)
     running: dict = {}  # call -> (shard, start)
     spent = 0.0

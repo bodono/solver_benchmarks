@@ -22,6 +22,7 @@ SOLVER_PACKAGES = {
     "pdlp": ("ortools",),
     "piqp": ("piqp",),
     "proxqp": ("proxsuite",),
+    "qpo3": ("qpo3",),
     "qtqp": ("qtqp",),
     "scs": ("scs",),
     "sdpa": ("sdpa-python",),
