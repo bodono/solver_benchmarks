@@ -88,13 +88,14 @@ def solver_label(solver_id: str) -> str:
 
 SCS_STYLE = {"scs_cpu": ("#1f77b4", "-", 2.8), "scs_cudss": ("#d62728", "-", 2.8)}
 OTHER_COLORS = ["#7f7f7f", "#2ca02c", "#9467bd", "#8c564b", "#e377c2", "#bcbd22", "#17becf", "#ff7f0e"]
-# --neutral: no solver is highlighted; every solver keeps one colour across every plot,
-# used for both its profile line and its bar.
+# One fixed colour per solver, the same in every plot (lines in both modes; bars in
+# --neutral mode, where no solver is highlighted).
 NEUTRAL = False
-NEUTRAL_COLORS = {"scs_cpu": "#1f77b4", "scs_cudss": "#d62728", "clarabel": "#7f7f7f", "piqp": "#e377c2",
-                  "osqp": "#8c564b", "proxqp": "#bcbd22", "highs": "#9467bd", "pdlp": "#17becf",
-                  "cuopt": "#2ca02c", "cvxopt": "#ff7f0e", "sdpa": "#a55194", "qtqp_mkl": "#393b79",
-                  "qtqp_cudss": "#e6550d"}
+SOLVER_COLORS = {"scs_cpu": "#1f77b4", "scs_cudss": "#d62728", "clarabel": "#7f7f7f", "piqp": "#e377c2",
+                 "osqp": "#8c564b", "proxqp": "#bcbd22", "highs": "#9467bd", "pdlp": "#17becf",
+                 "cuopt": "#2ca02c", "cvxopt": "#8c6d31", "sdpa": "#a55194", "qtqp_mkl": "#393b79",
+                 "qtqp_cudss": "#ff7f0e"}
+NEUTRAL_COLORS = SOLVER_COLORS
 
 
 def base_solver(solver_id: str) -> str:
@@ -125,11 +126,12 @@ def largest_quartile(df: pd.DataFrame) -> pd.DataFrame:
 
 def style_for(solver_id: str, i: int):
     base = base_solver(solver_id)
+    color = SOLVER_COLORS.get(base, OTHER_COLORS[i % len(OTHER_COLORS)])
     if NEUTRAL:
-        return NEUTRAL_COLORS.get(base, OTHER_COLORS[i % len(OTHER_COLORS)]), "-", 2.0
+        return color, "-", 2.0
     if base in SCS_STYLE:
         return SCS_STYLE[base]
-    return OTHER_COLORS[i % len(OTHER_COLORS)], "--", 1.6
+    return color, "--", 1.6
 
 
 TIME_FLOOR = 0.01
