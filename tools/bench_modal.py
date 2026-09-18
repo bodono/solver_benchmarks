@@ -11,6 +11,7 @@ are fetched with ``modal volume get scs-bench-results NAME results/NAME``.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
