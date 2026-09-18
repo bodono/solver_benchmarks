@@ -88,6 +88,14 @@ def solver_label(solver_id: str) -> str:
 
 SCS_STYLE = {"scs_cpu": ("#1f77b4", "-", 2.8), "scs_cudss": ("#d62728", "-", 2.8)}
 OTHER_COLORS = ["#7f7f7f", "#2ca02c", "#9467bd", "#8c564b", "#e377c2", "#bcbd22", "#17becf", "#ff7f0e"]
+# One fixed colour per solver, the same in every plot (lines in both modes; bars in
+# --neutral mode, where no solver is highlighted).
+NEUTRAL = False
+SOLVER_COLORS = {"scs_cpu": "#1f77b4", "scs_cudss": "#d62728", "clarabel": "#7f7f7f", "piqp": "#e377c2",
+                 "osqp": "#8c564b", "proxqp": "#bcbd22", "highs": "#9467bd", "pdlp": "#17becf",
+                 "cuopt": "#2ca02c", "cvxopt": "#8c6d31", "sdpa": "#a55194", "qtqp_mkl": "#393b79",
+                 "qtqp_cudss": "#ff7f0e"}
+NEUTRAL_COLORS = SOLVER_COLORS
 
 
 def base_solver(solver_id: str) -> str:
@@ -118,9 +126,12 @@ def largest_quartile(df: pd.DataFrame) -> pd.DataFrame:
 
 def style_for(solver_id: str, i: int):
     base = base_solver(solver_id)
+    color = SOLVER_COLORS.get(base, OTHER_COLORS[i % len(OTHER_COLORS)])
+    if NEUTRAL:
+        return color, "-", 2.0
     if base in SCS_STYLE:
         return SCS_STYLE[base]
-    return OTHER_COLORS[i % len(OTHER_COLORS)], "--", 1.6
+    return color, "--", 1.6
 
 
 TIME_FLOOR = 0.01
@@ -222,9 +233,13 @@ def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False, family
     n_problems = df.groupby(["dataset", "problem"]).ngroups
     fs = 9.5 if compact else 10
     labels = [solver_label(s) for s in gm["solver_id"]]
-    is_scs = [base_solver(s) in SCS_STYLE for s in gm["solver_id"]]
-    colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs)]
-    edges = [SCS_STYLE[base_solver(s)][0] if scs else "#9a9a9a" for s, scs in zip(gm["solver_id"], is_scs)]
+    is_scs = [base_solver(s) in SCS_STYLE and not NEUTRAL for s in gm["solver_id"]]
+    if NEUTRAL:
+        colors = [NEUTRAL_COLORS.get(base_solver(s), "#c4c4c4") for s in gm["solver_id"]]
+        edges = colors
+    else:
+        colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs)]
+        edges = [SCS_STYLE[base_solver(s)][0] if scs else "#9a9a9a" for s, scs in zip(gm["solver_id"], is_scs)]
     y = np.arange(len(gm))
     ax.barh(y, gm[value_col], height=0.68, color=colors, edgecolor=edges, linewidth=0.8, zorder=3)
     ax.set_yticks(y)
@@ -303,6 +318,7 @@ def main() -> None:
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("runs", nargs="+", help="family=run_dir pairs")
     ap.add_argument("--tol-tag", default=None, help="only solver ids ending in this tag, e.g. 1e-4")
+    ap.add_argument("--neutral", action="store_true", help="no highlighted solver; one colour per solver for lines and bars")
     ap.add_argument("--exclude-solver", action="append", default=[], metavar="BASE",
                     help="drop this solver (base id, e.g. qtqp_mkl) from every plot and table")
     ap.add_argument("--grid", type=Path, default=None,
@@ -311,6 +327,8 @@ def main() -> None:
                     help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend says so "
                          "when TAG differs from the plot's tolerance")
     args = ap.parse_args()
+    global NEUTRAL
+    NEUTRAL = bool(args.neutral)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     frames: dict = {}
