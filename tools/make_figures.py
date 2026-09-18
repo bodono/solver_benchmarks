@@ -76,8 +76,7 @@ SOLVER_LABELS = {
     "scs_cudss": "SCS (GPU, cuDSS)",
     "cuopt": "cuOpt (GPU)",
     "osqp": "OSQP", "clarabel": "Clarabel", "piqp": "PIQP", "proxqp": "ProxQP",
-    "highs": "HiGHS", "pdlp": "PDLP (OR-Tools)", "cvxopt": "CVXOPT", "sdpa": "SDPA",
-}
+    "highs": "HiGHS", "pdlp": "PDLP (OR-Tools)", "cvxopt": "CVXOPT", "sdpa": "SDPA",, "qpo3": "qpo3"}
 LABEL_OVERRIDE: dict[str, str] = {}
 
 
@@ -94,7 +93,7 @@ NEUTRAL = False
 SOLVER_COLORS = {"scs_cpu": "#1f77b4", "scs_cudss": "#d62728", "clarabel": "#7f7f7f", "piqp": "#e377c2",
                  "osqp": "#8c564b", "proxqp": "#bcbd22", "highs": "#9467bd", "pdlp": "#17becf",
                  "cuopt": "#2ca02c", "cvxopt": "#8c6d31", "sdpa": "#a55194", "qtqp_mkl": "#393b79",
-                 "qtqp_cudss": "#ff7f0e"}
+                 "qtqp_cudss": "#ff7f0e", "qpo3": "#637939"}
 NEUTRAL_COLORS = SOLVER_COLORS
 
 
