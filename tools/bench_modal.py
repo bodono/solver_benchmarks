@@ -144,7 +144,12 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
     run_dir.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
+    # Modal's cpu= request is a reservation (containers see and may burst to more cores), so every
+    # threading runtime is pinned to the reserved core count: OpenMP (MKL, OpenBLAS), Rayon (Faer
+    # in qpo3) and the BLAS variants.
+    threads = os.environ.get("OMP_NUM_THREADS", "4")
+    env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=threads, RAYON_NUM_THREADS=threads,
+               MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads)
     t0 = time.time()
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
         proc = subprocess.Popen(
