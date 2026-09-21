@@ -41,7 +41,7 @@ mosek = ["Mosek>=10.0"]
 # highspy 1.15.x clashes with OR-Tools 9.15's native HiGHS symbols on
 # Linux/macOS. 1.14 has wheels through Python 3.14. Restrict the pair
 # only when installing PDLP; keep the all extra aligned below.
-pdlp = ["ortools>=9.3.0", "highspy<1.15"]
+pdlp = ["ortools>=9.3.0", "highspy<1.16"]
 proxqp = ["proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'"]
 piqp = ["piqp>=0.6.0"]
 sdpa = ["sdpa-python>=0.2.2; python_version < '3.14'"]
@@ -62,7 +62,7 @@ all = [
     "qtqp>=0.0.7",
     "ortools>=9.3.0",
     # Same native-library compatibility constraint as the `pdlp` extra.
-    "highspy<1.15",
+    "highspy<1.16",
     "piqp>=0.6.0",
     "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
     "sdpa-python>=0.2.2; python_version < '3.14'",
