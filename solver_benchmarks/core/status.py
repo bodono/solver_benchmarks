@@ -14,6 +14,14 @@ WORKER_ERROR = "worker_error"
 SKIPPED_UNSUPPORTED = "skipped_unsupported"
 
 SOLUTION_PRESENT = {OPTIMAL}
+# These statuses may carry a feasible point; KKT checks determine its accuracy.
+ANY_FEASIBLE = {
+    OPTIMAL,
+    OPTIMAL_INACCURATE,
+    MAX_ITER_REACHED,
+    TIME_LIMIT,
+    SOLVER_ERROR,
+}
 ANY_INFEASIBLE = {
     PRIMAL_INFEASIBLE,
     PRIMAL_INFEASIBLE_INACCURATE,

@@ -155,7 +155,7 @@ def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
     s_slack = getattr(solution, "s", None)
     if x is None:
         return None
-    if mapped_status not in status.ANY_INFEASIBLE:
+    if mapped_status in status.ANY_FEASIBLE:
         if y is None or s_slack is None:
             return None
         return kkt.cone_residuals(p, c, a, b, cone_dict, x, y, s_slack)

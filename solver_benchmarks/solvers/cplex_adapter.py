@@ -80,7 +80,7 @@ class CPLEXSolverAdapter(SolverAdapter):
             mapped = _map_cplex_status(raw_status, model)
             objective_value = None
             kkt_dict = None
-            if mapped not in status.ANY_INFEASIBLE:
+            if mapped in status.ANY_FEASIBLE:
                 # A returned iterate may exist even with an error or limit status.
                 try:
                     x = np.asarray(model.solution.get_values(), dtype=float)

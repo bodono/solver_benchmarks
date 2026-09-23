@@ -88,7 +88,7 @@ class MosekSolverAdapter(SolverAdapter):
             mapped = _map_mosek_status(raw_status, termination_code, mosek)
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
-            if task.solutiondef(soltype) and mapped not in status.ANY_INFEASIBLE:
+            if task.solutiondef(soltype) and mapped in status.ANY_FEASIBLE:
                 objective = task.getprimalobj(soltype)
                 x = np.asarray(task.getxx(soltype), dtype=float)
                 y = -np.asarray(task.gety(soltype), dtype=float)
