@@ -52,7 +52,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         try:
             model.objective.set_sense(model.objective.sense.minimize)
             _configure_cplex(model, self.settings)
-            infinity = model.infinity
+            infinity = cplex.infinity
             model.variables.add(
                 obj=q.tolist(),
                 lb=[-infinity] * n,
