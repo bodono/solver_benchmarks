@@ -84,18 +84,11 @@ class MosekSolverAdapter(SolverAdapter):
             elapsed = time.perf_counter() - start
 
             soltype = _resolve_mosek_soltype(task, mosek)
-            raw_status = task.getsolsta(soltype)
+            raw_status = task.getsolsta(soltype) if task.solutiondef(soltype) else mosek.solsta.unknown
             mapped = _map_mosek_status(raw_status, termination_code, mosek)
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
-            # Include OPTIMAL_INACCURATE in the objective gate to match
-            # the CPLEX / Gurobi / SCS treatment landed in this PR;
-            # MOSEK exposes a usable primal objective for prim_feas /
-            # prim_and_dual_feas (which map to OPTIMAL_INACCURATE).
-            objective_present = mapped in status.SOLUTION_PRESENT or (
-                mapped == status.OPTIMAL_INACCURATE
-            )
-            if objective_present:
+            if task.solutiondef(soltype) and mapped not in status.ANY_INFEASIBLE:
                 objective = task.getprimalobj(soltype)
                 x = np.asarray(task.getxx(soltype), dtype=float)
                 y = -np.asarray(task.gety(soltype), dtype=float)
@@ -197,18 +190,21 @@ def _resolve_mosek_soltype(task, mosek):
     MOSEK exposes separate slots for interior-point (itr), basic (bas),
     and integer (itg) solutions. Hard-coding `itr` made the adapter
     return ``unknown`` on simplex/MIP solves. Try in priority order and
-    fall back to itr.
+    fall back to a defined iterate, or itr if none exists.
     """
     soltype = mosek.soltype
     candidates = (soltype.itg, soltype.bas, soltype.itr)
+    fallback = soltype.itr
     for candidate in candidates:
         try:
+            if task.solutiondef(candidate):
+                fallback = candidate
             sta = task.getsolsta(candidate)
         except Exception:
             continue
         if sta != mosek.solsta.unknown:
             return candidate
-    return soltype.itr
+    return fallback
 
 
 def _handle_mosek_str_param(task, param: str, value) -> None:

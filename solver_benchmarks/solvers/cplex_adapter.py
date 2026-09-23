@@ -78,19 +78,21 @@ class CPLEXSolverAdapter(SolverAdapter):
             elapsed = time.perf_counter() - start
             raw_status = model.solution.get_status()
             mapped = _map_cplex_status(raw_status, model)
-            objective_present = mapped in status.SOLUTION_PRESENT or (
-                mapped == status.OPTIMAL_INACCURATE
-            )
-            if objective_present:
-                objective_value = model.solution.get_objective_value()
-                x = np.asarray(model.solution.get_values(), dtype=float)
-                y = np.zeros(a.shape[0])
-                # CPLEX uses the opposite dual sign; ranged rows are split.
-                np.add.at(y, constraint_rows, -np.asarray(model.solution.get_dual_values()))
-                kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
-            else:
-                objective_value = None
-                kkt_dict = None
+            objective_value = None
+            kkt_dict = None
+            if mapped not in status.ANY_INFEASIBLE:
+                # A returned iterate may exist even with an error or limit status.
+                try:
+                    x = np.asarray(model.solution.get_values(), dtype=float)
+                    objective_value = model.solution.get_objective_value()
+                    duals = np.asarray(model.solution.get_dual_values(), dtype=float)
+                except cplex.exceptions.CplexSolverError:
+                    pass  # No complete primal/dual point is available.
+                else:
+                    y = np.zeros(a.shape[0])
+                    # CPLEX uses the opposite dual sign; ranged rows are split.
+                    np.add.at(y, constraint_rows, -duals)
+                    kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
