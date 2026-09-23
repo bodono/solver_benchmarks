@@ -311,3 +311,31 @@ def test_sdpa_phase_mapping(phase: str, errors: float, expected: str):
     }
     sdpa_info = {"iteration": 0}
     assert _map_sdpa_status(sdpap_info, sdpa_info, {"maxIteration": 100}, 1.0e-5) == expected
+
+
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek"])
+@pytest.mark.parametrize("quadratic", [False, True])
+def test_commercial_adapter_kkt_original_rows(solver_name, quadratic, tmp_path):
+    # Includes a skipped free row, equality, lower/upper bounds, and two
+    # ranged rows active on opposite sides. Off-diagonal P tests symmetry.
+    p = np.eye(5)
+    p[0, 1] = p[1, 0] = 0.25
+    qp = {
+        "P": sp.csc_matrix(p if quadratic else np.zeros((5, 5))),
+        "q": np.array([1.0, 2.0, -3.0, 2.0, -3.0]),
+        "A": sp.csc_matrix(np.vstack([np.ones(5), np.eye(5)])),
+        "l": np.array([-np.inf, 1.0, 0.0, -np.inf, 0.0, 0.0]),
+        "u": np.array([np.inf, 1.0, np.inf, 1.0, 1.0, 1.0]),
+    }
+    result = _solve(solver_name, qp, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.kkt is not None
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert result.kkt[field] < 1e-6
+
+
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek"])
+def test_commercial_adapter_infeasible_has_no_kkt(solver_name, tmp_path):
+    result = _solve(solver_name, _infeasible_lp(), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.kkt is None

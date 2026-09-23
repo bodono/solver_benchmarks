@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
@@ -94,9 +95,18 @@ class MosekSolverAdapter(SolverAdapter):
             objective_present = mapped in status.SOLUTION_PRESENT or (
                 mapped == status.OPTIMAL_INACCURATE
             )
-            objective = task.getprimalobj(soltype) if objective_present else None
+            if objective_present:
+                objective = task.getprimalobj(soltype)
+                x = np.asarray(task.getxx(soltype), dtype=float)
+                y = -np.asarray(task.gety(soltype), dtype=float)
+                # Verify with the full original Hessian, not MOSEK's lower triangle.
+                kkt_dict = kkt.qp_residuals(qp["P"], q, a_mat, lower, upper, x, y)
+            else:
+                objective = None
+                kkt_dict = None
             return SolverResult(
                 status=mapped,
+                kkt=kkt_dict,
                 objective_value=None if objective is None else float(objective),
                 iterations=int(iterations) if iterations is not None else None,
                 run_time_seconds=elapsed,
