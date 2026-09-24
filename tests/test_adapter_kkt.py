@@ -311,3 +311,125 @@ def test_sdpa_phase_mapping(phase: str, errors: float, expected: str):
     }
     sdpa_info = {"iteration": 0}
     assert _map_sdpa_status(sdpap_info, sdpa_info, {"maxIteration": 100}, 1.0e-5) == expected
+
+
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek"])
+@pytest.mark.parametrize("quadratic", [False, True])
+def test_commercial_adapter_kkt_original_rows(solver_name, quadratic, tmp_path):
+    # Includes a skipped free row, equality, lower/upper bounds, and two
+    # ranged rows active on opposite sides. Off-diagonal P tests symmetry.
+    p = np.eye(5)
+    p[0, 1] = p[1, 0] = 0.25
+    qp = {
+        "P": sp.csc_matrix(p if quadratic else np.zeros((5, 5))),
+        "q": np.array([1.0, 2.0, -3.0, 2.0, -3.0]),
+        "A": sp.csc_matrix(np.vstack([np.ones(5), np.eye(5)])),
+        "l": np.array([-np.inf, 1.0, 0.0, -np.inf, 0.0, 0.0]),
+        "u": np.array([np.inf, 1.0, np.inf, 1.0, 1.0, 1.0]),
+    }
+    result = _solve(solver_name, qp, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.kkt is not None
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert result.kkt[field] < 1e-6
+
+
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek"])
+def test_commercial_adapter_infeasible_has_no_kkt(solver_name, tmp_path):
+    result = _solve(solver_name, _infeasible_lp(), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.kkt is None
+
+
+@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "highs", "mosek", "piqp", "qpo3"])
+def test_solver_error_retains_kkt(solver_name, tmp_path, monkeypatch):
+    import importlib
+
+    module = importlib.import_module(f"solver_benchmarks.solvers.{solver_name}_adapter")
+    # Numerical errors are not reproducible: keep a real point and report an error.
+    reported = status.SOLVER_ERROR
+    if solver_name == "qpo3":
+        monkeypatch.setattr(module, "_STATUS", dict.fromkeys(module._STATUS, reported))
+    else:
+        monkeypatch.setattr(module, f"_map_{solver_name}_status", lambda *args: reported)
+    result = _solve(solver_name, _small_qp(), tmp_path)
+    assert result.status == reported
+    assert result.kkt is not None
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert result.kkt[field] < 1e-6
+
+
+@pytest.fixture(scope="module")
+def limit_qp():
+    # Dense positive-definite QP, large enough to exercise early termination.
+    # Stay within CPLEX Community Edition's variable/constraint limits.
+    n = 400
+    rng = np.random.default_rng(0)
+    b = rng.normal(size=(n, n))
+    return {
+        "P": sp.csc_matrix(b.T @ b / n + np.eye(n)),
+        "q": -np.linspace(1.0, 3.0, n),
+        "A": sp.eye(n, format="csc"),
+        "l": np.zeros(n),
+        "u": np.ones(n),
+    }
+
+
+@pytest.mark.parametrize("solver_name, settings", [
+    ("clarabel", {"presolve_enable": False, "time_limit": 0.001}),
+    ("qpo3", {"presolve": False, "time_limit": 0.001}),
+    ("cplex", {"qpmethod": 4, "preprocessing.presolve": 0, "threads": 1, "time_limit": 0.1}),
+    ("mosek", {"MSK_IPAR_PRESOLVE_USE": 0, "time_limit": 0.001}),
+    ("highs", {"presolve": "off", "time_limit": 0.001}),
+])
+def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monkeypatch):
+    monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
+    result = _solve(solver_name, limit_qp, tmp_path)
+    assert result.status == status.TIME_LIMIT
+    assert result.kkt is not None
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert np.isfinite(result.kkt[field])
+
+
+@pytest.mark.parametrize("solver_name, settings", [
+    ("clarabel", {"max_iter": 1, "presolve_enable": False}),
+    ("qpo3", {"max_iter": 1, "presolve": False}),
+    ("piqp", {"max_iter": 1}),
+    ("cplex", {"barrier.limits.iteration": 1, "qpmethod": 4, "preprocessing.presolve": 0}),
+    ("mosek", {"MSK_IPAR_INTPNT_MAX_ITERATIONS": 1, "MSK_IPAR_PRESOLVE_USE": 0}),
+    ("highs", {"qp_iteration_limit": 1, "presolve": "off"}),
+])
+def test_iteration_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monkeypatch):
+    monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
+    result = _solve(solver_name, limit_qp, tmp_path)
+    assert result.status == status.MAX_ITER_REACHED
+    assert result.kkt is not None
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert np.isfinite(result.kkt[field])
+
+
+@pytest.mark.parametrize("itr_x, bas_x, expected", [
+    ([-1.0, -1.0], [0.0, 0.0], "itr"),
+    ([0.0, 0.0], [-1.0, -1.0], "bas"),
+    ([-1.0, -1.0], [-1.0, -1.0], "itr"),
+    ([np.nan, np.nan], [-1.0, -1.0], "bas"),
+    (None, [-1.0, -1.0], "bas"),
+    ([-1.0, -1.0], None, "itr"),
+])
+def test_mosek_selects_point_by_kkt(itr_x, bas_x, expected):
+    from types import SimpleNamespace
+
+    mosek = pytest.importorskip("mosek")
+    from solver_benchmarks.solvers.mosek_adapter import _select_mosek_solution
+
+    points = {mosek.soltype.itr: itr_x, mosek.soltype.bas: bas_x}
+    task = SimpleNamespace(
+        solutiondef=lambda slot: points.get(slot) is not None,
+        getsolsta=lambda slot: mosek.solsta.optimal,
+        getxx=lambda slot: points[slot],
+        gety=lambda slot: [0.0, 0.0],
+    )
+    selected, residuals = _select_mosek_solution(task, mosek, _small_qp())
+    assert selected == getattr(mosek.soltype, expected)
+    assert residuals["primal_obj"] == pytest.approx(-1.0)
+    assert residuals["dual_res_rel"] == 0.0

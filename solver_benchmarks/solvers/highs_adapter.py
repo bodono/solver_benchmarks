@@ -92,7 +92,7 @@ class HighsSolverAdapter(SolverAdapter):
         solution = solver.getSolution()
         y = -np.asarray(solution.row_dual, dtype=float) if solution.dual_valid else None
         kkt_dict = None
-        if mapped == status.OPTIMAL and solution.value_valid and y is not None:
+        if solution.value_valid and y is not None:
             kkt_dict = kkt.qp_residuals(
                 p,
                 q,

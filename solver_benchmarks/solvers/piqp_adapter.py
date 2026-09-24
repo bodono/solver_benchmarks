@@ -91,7 +91,7 @@ class PIQPSolverAdapter(SolverAdapter):
             ineq_dual,
         )
         kkt_dict = None
-        if mapped == status.OPTIMAL and y is not None:
+        if mapped in status.ANY_FEASIBLE and result.x is not None and y is not None:
             kkt_dict = kkt.qp_residuals(
                 qp["P"],
                 qp["q"],

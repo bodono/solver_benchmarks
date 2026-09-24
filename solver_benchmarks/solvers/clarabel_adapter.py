@@ -158,7 +158,7 @@ def _compute_kkt(mapped_status, solution, problem, p, q, a, b, cone_dict):
         y_for_kkt = np.asarray(y, dtype=float) if y is not None else None
         s_for_kkt = np.asarray(s_slack, dtype=float) if s_slack is not None else None
 
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+    if mapped_status in status.ANY_FEASIBLE:
         if y_for_kkt is None or s_for_kkt is None:
             return None
         return kkt.cone_residuals(

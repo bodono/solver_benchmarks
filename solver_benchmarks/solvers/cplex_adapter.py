@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
@@ -59,7 +60,7 @@ class CPLEXSolverAdapter(SolverAdapter):
                 ub=[infinity] * n,
                 names=[f"x_{idx}" for idx in range(n)],
             )
-            _add_cplex_constraints(model, cplex, a, l, u, infinity)
+            constraint_rows = _add_cplex_constraints(model, cplex, a, l, u, infinity)
             if p.nnz:
                 model.objective.set_quadratic_coefficients(
                     [(int(i), int(j), float(v)) for i, j, v in zip(p.row, p.col, p.data)]
@@ -77,14 +78,24 @@ class CPLEXSolverAdapter(SolverAdapter):
             elapsed = time.perf_counter() - start
             raw_status = model.solution.get_status()
             mapped = _map_cplex_status(raw_status, model)
-            objective_present = mapped in status.SOLUTION_PRESENT or (
-                mapped == status.OPTIMAL_INACCURATE
-            )
-            objective_value = (
-                model.solution.get_objective_value() if objective_present else None
-            )
+            objective_value = None
+            kkt_dict = None
+            if mapped in status.ANY_FEASIBLE:
+                # A returned iterate may exist even with an error or limit status.
+                try:
+                    x = np.asarray(model.solution.get_values(), dtype=float)
+                    objective_value = model.solution.get_objective_value()
+                    duals = np.asarray(model.solution.get_dual_values(), dtype=float)
+                except cplex.exceptions.CplexSolverError:
+                    pass  # No complete primal/dual point is available.
+                else:
+                    y = np.zeros(a.shape[0])
+                    # CPLEX uses the opposite dual sign; ranged rows are split.
+                    np.add.at(y, constraint_rows, -duals)
+                    kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
             return SolverResult(
                 status=mapped,
+                kkt=kkt_dict,
                 objective_value=objective_value,
                 iterations=_cplex_iterations(model),
                 run_time_seconds=elapsed,
@@ -101,7 +112,8 @@ class CPLEXSolverAdapter(SolverAdapter):
                 pass
 
 
-def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> None:
+def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> list[int]:
+    constraint_rows = []
     lin_expr = []
     senses = []
     rhs = []
@@ -117,23 +129,27 @@ def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> None:
         if l_val <= -1.0e20 and u_val >= 1.0e20:
             continue
         if abs(l_val - u_val) <= 1.0e-10:
+            constraint_rows.append(row)
             lin_expr.append(expr)
             senses.append("E")
             rhs.append(u_val)
             names.append(f"c_{row}_eq")
             continue
         if l_val > -1.0e20:
+            constraint_rows.append(row)
             lin_expr.append(expr)
             senses.append("G")
             rhs.append(l_val)
             names.append(f"c_{row}_lb")
         if u_val < 1.0e20:
+            constraint_rows.append(row)
             lin_expr.append(expr)
             senses.append("L")
             rhs.append(u_val)
             names.append(f"c_{row}_ub")
     if lin_expr:
         model.linear_constraints.add(lin_expr=lin_expr, senses=senses, rhs=rhs, names=names)
+    return constraint_rows
 
 
 def _configure_cplex(model, settings: dict) -> None:
