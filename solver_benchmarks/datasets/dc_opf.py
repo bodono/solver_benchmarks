@@ -18,6 +18,7 @@ the standard MATPOWER 2.0 layout produced by the MATPOWER project.
 
 from __future__ import annotations
 
+import json
 import re
 import urllib.request
 from pathlib import Path
@@ -32,6 +33,10 @@ from .base import Dataset, atomic_write_bytes
 # MATPOWER cases hosted in the canonical GitHub repo.
 MATPOWER_BASE_URL = (
     "https://raw.githubusercontent.com/MATPOWER/matpower/master/data"
+)
+# lists available case files for --all
+MATPOWER_API_URL = (
+    "https://api.github.com/repos/MATPOWER/matpower/contents/data?ref=master"
 )
 
 DCOPF_DEFAULT_SUBSET: dict[str, str] = {
@@ -120,14 +125,26 @@ class DCOPFDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
-        if problem_names:
+        if all_problems:
+            names = matpower_remote_problem_names()
+        elif problem_names:
             names = list(problem_names)
         else:
             names = list(DCOPF_DEFAULT_SUBSET)
-        del all_problems
         self.folder.mkdir(parents=True, exist_ok=True)
         for name in names:
             download_matpower_case(name, self.folder)
+
+
+def matpower_remote_problem_names() -> list[str]:
+    """List upstream MATPOWER case names."""
+    with urllib.request.urlopen(MATPOWER_API_URL, timeout=30) as response:
+        items = json.loads(response.read().decode("utf-8"))
+    return [
+        Path(item["name"]).stem
+        for item in items
+        if item["name"].startswith("case") and item["name"].endswith(".m")
+    ]
 
 
 def download_matpower_case(name: str, folder: Path) -> Path:
