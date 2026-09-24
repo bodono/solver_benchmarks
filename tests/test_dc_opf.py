@@ -1,19 +1,13 @@
-"""Tests for the dc_opf dataset, MATPOWER parser, and DC OPF LP.
-
-Synthesizes tiny MATPOWER ``.m`` files (a 3-bus economic-dispatch
-toy and a 2-bus minimal example) so the tests run without network
-access. Covers the parser, the LP construction (power balance,
-reference bus, generator bounds, line flow limits, linear cost),
-the dataset's list_problems / load_problem flow, the subset filter,
-and end-to-end solving.
-"""
+"""Existing DC OPF construction and dataset checks using numeric MATPOWER cases."""
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.io import savemat
 
 # ---------------------------------------------------------------------------
 # MATPOWER fixtures.
@@ -27,69 +21,54 @@ import pytest
 # everything from generator 1 (60 MW) and the rest from generator 2.
 # Actually with 100 MW load and balanced topology the optimum
 # depends on line limits — fixture is sized so optimum is interior.
-THREE_BUS = """\
-function mpc = case3
-mpc.version = '2';
-mpc.baseMVA = 100;
-
-%% bus data
-%   bus_id  type  Pd     Qd  Gs  Bs  area  Vm  Va  baseKV  zone  Vmax  Vmin
-mpc.bus = [
-    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    2  2   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    3  1   100.0 0   0   0   1   1   0   135   1   1.05   0.95;
-];
-
-%% generator data
-%   bus  Pg    Qg  Qmax  Qmin  Vg  mBase  status  Pmax  Pmin  ...
-mpc.gen = [
-    1  0   0   100   -100   1   100   1   200   0;
-    2  0   0   100   -100   1   100   1   200   0;
-];
-
-%% branch data
-%   fbus  tbus  r     x     b   rateA  rateB  rateC  ratio  angle  status  angmin  angmax
-mpc.branch = [
-    1  2   0.0   0.1   0   200   200   200   0   0   1   -360   360;
-    2  3   0.0   0.1   0   200   200   200   0   0   1   -360   360;
-    1  3   0.0   0.1   0   200   200   200   0   0   1   -360   360;
-];
-
-%% generator cost data
-%   model  startup  shutdown  n  c1  c0
-mpc.gencost = [
-    2  0   0   2  10   0;
-    2  0   0   2  30   0;
-];
-"""
+THREE_BUS = {
+    "baseMVA": 100.0,
+    "bus": np.array(
+        [
+            [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            [2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            [3.0, 1.0, 100.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+        ]
+    ),
+    "gen": np.array(
+        [
+            [1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 200.0, 0.0],
+            [2.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 200.0, 0.0],
+        ]
+    ),
+    "branch": np.array(
+        [
+            [1.0, 2.0, 0.0, 0.1, 0.0, 200.0, 200.0, 200.0, 0.0, 0.0, 1.0, -360.0, 360.0],
+            [2.0, 3.0, 0.0, 0.1, 0.0, 200.0, 200.0, 200.0, 0.0, 0.0, 1.0, -360.0, 360.0],
+            [1.0, 3.0, 0.0, 0.1, 0.0, 200.0, 200.0, 200.0, 0.0, 0.0, 1.0, -360.0, 360.0],
+        ]
+    ),
+    "gencost": np.array([[2.0, 0.0, 0.0, 2.0, 10.0, 0.0], [2.0, 0.0, 0.0, 2.0, 30.0, 0.0]]),
+}
 
 
 # A degenerate 2-bus case with one constraint to test edge cases:
 # 1 generator, 1 load, 1 line. All flow goes through the line.
-TWO_BUS = """\
-function mpc = case2tiny
-mpc.version = '2';
-mpc.baseMVA = 100;
-mpc.bus = [
-    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
-];
-mpc.gen = [
-    1  0   0   100   -100   1   100   1   100   0;
-];
-mpc.branch = [
-    1  2   0.0   0.1   0   100   100   100   0   0   1   -360   360;
-];
-mpc.gencost = [
-    2  0   0   2  20   5;
-];
-"""
+TWO_BUS = {
+    "baseMVA": 100.0,
+    "bus": np.array(
+        [
+            [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            [2.0, 1.0, 50.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+        ]
+    ),
+    "gen": np.array([[1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 100.0, 0.0]]),
+    "branch": np.array(
+        [[1.0, 2.0, 0.0, 0.1, 0.0, 100.0, 100.0, 100.0, 0.0, 0.0, 1.0, -360.0, 360.0]]
+    ),
+    "gencost": np.array([[2.0, 0.0, 0.0, 2.0, 20.0, 5.0]]),
+}
 
 
-def _write_m(folder: Path, name: str, body: str) -> Path:
+def _write_mat(folder: Path, name: str, case: dict) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{name}.m"
-    path.write_text(body)
+    path = folder / f"{name}.mat"
+    savemat(path, {"mpc": case})
     return path
 
 
@@ -121,112 +100,14 @@ def test_dc_opf_is_registered():
 
 
 # ---------------------------------------------------------------------------
-# MATPOWER parser.
-# ---------------------------------------------------------------------------
-
-
-def test_parse_matpower_extracts_scalar_basemva():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    case = parse_matpower_case(THREE_BUS)
-    assert case["baseMVA"] == 100.0
-
-
-def test_parse_matpower_extracts_bus_matrix_with_correct_shape():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    case = parse_matpower_case(THREE_BUS)
-    bus = case["bus"]
-    assert bus.shape == (3, 13)
-    # First column: bus IDs.
-    assert bus[:, 0].astype(int).tolist() == [1, 2, 3]
-    # Bus 1 is the reference (type = 3).
-    assert bus[0, 1] == 3.0
-
-
-def test_parse_matpower_extracts_gen_branch_gencost():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    case = parse_matpower_case(THREE_BUS)
-    assert case["gen"].shape == (2, 10)
-    assert case["branch"].shape == (3, 13)
-    assert case["gencost"].shape == (2, 6)
-
-
-def test_parse_matpower_strips_inline_percent_comments(tmp_path: Path):
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    body = """\
-function mpc = inline
-mpc.baseMVA = 100;
-mpc.bus = [
-    1 3 0 0 0 0 1 1 0 135 1 1.05 0.95;  % reference bus
-    2 1 50 0 0 0 1 1 0 135 1 1.05 0.95;
-];
-mpc.gen = [
-    1 0 0 100 -100 1 100 1 100 0;
-];
-mpc.branch = [
-    1 2 0 0.1 0 100 100 100 0 0 1 -360 360;
-];
-mpc.gencost = [
-    2 0 0 2 20 0;
-];
-"""
-    case = parse_matpower_case(body)
-    assert case["bus"].shape == (2, 13)
-
-
-def test_parse_matpower_rejects_missing_basemva():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    body = "function mpc = bad\nmpc.bus = [1 3 0 0 0 0 1 1 0 135 1 1.05 0.95;];\n"
-    with pytest.raises(ValueError, match="baseMVA"):
-        parse_matpower_case(body)
-
-
-def test_parse_matpower_rejects_missing_matrix():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    body = "function mpc = bad\nmpc.baseMVA = 100;\n"
-    with pytest.raises(ValueError, match="mpc.bus"):
-        parse_matpower_case(body)
-
-
-def test_parse_matpower_rejects_inconsistent_row_widths():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
-
-    body = """\
-function mpc = bad
-mpc.baseMVA = 100;
-mpc.bus = [
-    1 3 0 0 0 0 1 1 0 135 1 1.05 0.95;
-    2 1 50 0 0;
-];
-mpc.gen = [
-    1 0 0 100 -100 1 100 1 100 0;
-];
-mpc.branch = [
-    1 2 0 0.1 0 100 100 100 0 0 1 -360 360;
-];
-mpc.gencost = [
-    2 0 0 2 20 0;
-];
-"""
-    with pytest.raises(ValueError, match="inconsistent width"):
-        parse_matpower_case(body)
-
-
-# ---------------------------------------------------------------------------
 # DC OPF LP construction.
 # ---------------------------------------------------------------------------
 
 
 def test_dc_opf_lp_shape_and_variable_layout():
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    case = parse_matpower_case(THREE_BUS)
+    case = deepcopy(THREE_BUS)
     problem, metadata = dc_opf_lp(case)
     n_gen = 2
     n_bus = 3
@@ -247,10 +128,9 @@ def test_dc_opf_lp_shape_and_variable_layout():
 def test_dc_opf_lp_includes_reference_bus_constraint():
     """θ_ref must be fixed to 0; the LP must include an equality row
     that picks out the reference-bus angle."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    case = parse_matpower_case(THREE_BUS)
+    case = deepcopy(THREE_BUS)
     problem, metadata = dc_opf_lp(case)
     # The reference-bus row is the row right after the n_bus power-
     # balance equality rows. Power-balance has n_bus = 3 rows, so
@@ -266,10 +146,9 @@ def test_dc_opf_lp_includes_reference_bus_constraint():
 
 def test_dc_opf_lp_generator_bounds_use_per_unit():
     """Generator bounds in the LP are per-unit (MW / baseMVA)."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    case = parse_matpower_case(THREE_BUS)
+    case = deepcopy(THREE_BUS)
     problem, _ = dc_opf_lp(case)
     # Bounds rows are at the bottom (last n_gen rows). Generator 1
     # has Pmax = 200 MW = 2.0 p.u., Pmin = 0.
@@ -286,27 +165,22 @@ def test_dc_opf_lp_uses_tap_in_susceptance():
     1 / (x * tau)``. Verify the bus susceptance matrix entry for a
     branch with x=0.1, tau=2.0 ends up at b = 1/(0.1*2) = 5, not
     1/0.1 = 10."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    body = """\
-function mpc = case_tap
-mpc.baseMVA = 100;
-mpc.bus = [
-    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    2  1   100.0 0   0   0   1   1   0   135   1   1.05   0.95;
-];
-mpc.gen = [
-    1  0   0   100   -100   1   100   1   200   0;
-];
-mpc.branch = [
-    1  2   0.0   0.1   0   200   200   200   2.0   0   1   -360   360;
-];
-mpc.gencost = [
-    2  0   0   2  10   0;
-];
-"""
-    case = parse_matpower_case(body)
+    case = {
+        "baseMVA": 100.0,
+        "bus": np.array(
+            [
+                [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+                [2.0, 1.0, 100.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            ]
+        ),
+        "gen": np.array([[1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 200.0, 0.0]]),
+        "branch": np.array(
+            [[1.0, 2.0, 0.0, 0.1, 0.0, 200.0, 200.0, 200.0, 2.0, 0.0, 1.0, -360.0, 360.0]]
+        ),
+        "gencost": np.array([[2.0, 0.0, 0.0, 2.0, 10.0, 0.0]]),
+    }
     problem, metadata = dc_opf_lp(case)
     assert metadata["has_transformer_taps"] is True
     # The first 2 rows of A are the power-balance equality constraints.
@@ -325,27 +199,22 @@ def test_dc_opf_lp_phase_shift_adjusts_power_balance_and_flow_bounds():
     affected branch flow and modifies the power balance via the
     phase-shift injection. Verify both the metadata flag and the
     flow-bound shift."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    body = """\
-function mpc = case_shift
-mpc.baseMVA = 100;
-mpc.bus = [
-    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
-];
-mpc.gen = [
-    1  0   0   100   -100   1   100   1   100   0;
-];
-mpc.branch = [
-    1  2   0.0   0.1   0   100   100   100   0   30   1   -360   360;
-];
-mpc.gencost = [
-    2  0   0   2  20   0;
-];
-"""
-    case = parse_matpower_case(body)
+    case = {
+        "baseMVA": 100.0,
+        "bus": np.array(
+            [
+                [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+                [2.0, 1.0, 50.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            ]
+        ),
+        "gen": np.array([[1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 100.0, 0.0]]),
+        "branch": np.array(
+            [[1.0, 2.0, 0.0, 0.1, 0.0, 100.0, 100.0, 100.0, 0.0, 30.0, 1.0, -360.0, 360.0]]
+        ),
+        "gencost": np.array([[2.0, 0.0, 0.0, 2.0, 20.0, 0.0]]),
+    }
     problem, metadata = dc_opf_lp(case)
     assert metadata["has_phase_shifts"] is True
     # b_l = 1/0.1 = 10. shift = 30 deg = pi/6 rad.
@@ -359,79 +228,69 @@ mpc.gencost = [
     assert problem["u"][flow_row_idx] == pytest.approx(1.0 + expected_offset)
 
 
-def test_dc_opf_lp_records_dropped_quadratic_cost_rows():
-    """A generator with a quadratic cost (``model=2, n=3``) loses
-    its quadratic term in the linear OPF; the metadata must record
-    this so reports don't present the LP objective as the original
-    MATPOWER OPF cost."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
+def test_dc_opf_lp_preserves_quadratic_cost_rows():
+    """Quadratic costs retain their MW scaling in the per-unit QP."""
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    body = """\
-function mpc = case_quad
-mpc.baseMVA = 100;
-mpc.bus = [
-    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
-];
-mpc.gen = [
-    1  0   0   100   -100   1   100   1   100   0;
-];
-mpc.branch = [
-    1  2   0.0   0.1   0   100   100   100   0   0   1   -360   360;
-];
-mpc.gencost = [
-    2  0   0   3  0.01   20   5;
-];
-"""
-    case = parse_matpower_case(body)
-    _, metadata = dc_opf_lp(case)
+    case = {
+        "baseMVA": 100.0,
+        "bus": np.array(
+            [
+                [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+                [2.0, 1.0, 50.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            ]
+        ),
+        "gen": np.array([[1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 100.0, 0.0]]),
+        "branch": np.array(
+            [[1.0, 2.0, 0.0, 0.1, 0.0, 100.0, 100.0, 100.0, 0.0, 0.0, 1.0, -360.0, 360.0]]
+        ),
+        "gencost": np.array([[2.0, 0.0, 0.0, 3.0, 0.01, 20.0, 5.0]]),
+    }
+    problem, metadata = dc_opf_lp(case)
+    x = np.array([0.5, 0.0, 0.0])
+    objective = 0.5 * x @ problem["P"] @ x + problem["q"] @ x + problem["r"]
+    assert objective == pytest.approx(0.01 * 50**2 + 20 * 50 + 5)
     dropped = metadata["dropped_cost_rows"]
-    assert dropped["quadratic"] == [0]
-    assert dropped["piecewise_linear"] == []
+    assert dropped["higher_order"] == []
     assert dropped["unknown_model"] == []
 
 
-def test_dc_opf_lp_records_dropped_pwl_cost_rows():
-    """``model=1`` (piecewise-linear) cost rows are recorded as
-    ``dropped`` since the LP transform doesn't add the epigraph
-    variables needed to represent them."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
+def test_dc_opf_lp_preserves_pwl_cost_rows():
+    """Piecewise-linear costs add an epigraph with correct MW scaling."""
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    body = """\
-function mpc = case_pwl
-mpc.baseMVA = 100;
-mpc.bus = [
-    1  3   0.0   0   0   0   1   1   0   135   1   1.05   0.95;
-    2  1   50.0  0   0   0   1   1   0   135   1   1.05   0.95;
-];
-mpc.gen = [
-    1  0   0   100   -100   1   100   1   100   0;
-];
-mpc.branch = [
-    1  2   0.0   0.1   0   100   100   100   0   0   1   -360   360;
-];
-mpc.gencost = [
-    1  0   0   2  0   0   100   1000;
-];
-"""
-    case = parse_matpower_case(body)
-    _, metadata = dc_opf_lp(case)
-    assert metadata["dropped_cost_rows"]["piecewise_linear"] == [0]
+    case = {
+        "baseMVA": 100.0,
+        "bus": np.array(
+            [
+                [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+                [2.0, 1.0, 50.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95],
+            ]
+        ),
+        "gen": np.array([[1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 100.0, 0.0]]),
+        "branch": np.array(
+            [[1.0, 2.0, 0.0, 0.1, 0.0, 100.0, 100.0, 100.0, 0.0, 0.0, 1.0, -360.0, 360.0]]
+        ),
+        "gencost": np.array([[1.0, 0.0, 0.0, 3.0, 0.0, 5.0, 50.0, 505.0, 100.0, 1505.0]]),
+    }
+    problem, metadata = dc_opf_lp(case)
+    assert metadata["num_piecewise_linear_costs"] == 1
+    assert problem["n"] == 4
+    for pg, cost in [(0.25, 255.0), (0.5, 505.0), (0.75, 1005.0)]:
+        x = np.array([pg, 0.0, 0.0, cost])
+        slack = problem["u"][-2:] - problem["A"][-2:] @ x
+        assert np.all(slack >= -1e-10)
+        assert min(slack) == pytest.approx(0)
+        assert problem["q"] @ x == cost
 
 
 def test_dc_opf_lp_skips_unlimited_lines():
     """A branch with rateA = 0 (MATPOWER convention for unlimited)
     must not produce a flow-limit row."""
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    body = THREE_BUS.replace(
-        "    1  2   0.0   0.1   0   200",
-        "    1  2   0.0   0.1   0   0  ",
-    )
-    case = parse_matpower_case(body)
+    case = deepcopy(THREE_BUS)
+    case["branch"][0, 5] = 0
     _, metadata = dc_opf_lp(case)
     # 3 lines total, 1 unlimited → 2 flow-limit rows.
     assert metadata["num_lines_with_flow_limit"] == 2
@@ -444,11 +303,10 @@ def test_dc_opf_lp_solves_to_known_optimum_with_clarabel(tmp_path: Path):
     pytest.importorskip("clarabel")
     from solver_benchmarks.core import status
     from solver_benchmarks.core.problem import QP, ProblemData
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.solvers.clarabel_adapter import ClarabelSolverAdapter
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    case = parse_matpower_case(THREE_BUS)
+    case = deepcopy(THREE_BUS)
     problem, _ = dc_opf_lp(case)
     pd = ProblemData("test", "case3", QP, problem)
     adapter = ClarabelSolverAdapter({"verbose": False})
@@ -470,11 +328,10 @@ def test_dc_opf_lp_two_bus_minimal_case_solves(tmp_path: Path):
     pytest.importorskip("clarabel")
     from solver_benchmarks.core import status
     from solver_benchmarks.core.problem import QP, ProblemData
-    from solver_benchmarks.datasets.dc_opf import parse_matpower_case
     from solver_benchmarks.solvers.clarabel_adapter import ClarabelSolverAdapter
     from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-    case = parse_matpower_case(TWO_BUS)
+    case = deepcopy(TWO_BUS)
     problem, metadata = dc_opf_lp(case)
     assert metadata["num_buses"] == 2
     assert metadata["num_generators"] == 1
@@ -519,8 +376,8 @@ def test_dc_opf_lp_rejects_case_with_no_generators():
 @pytest.fixture
 def dc_opf_data_folder(tmp_path: Path) -> Path:
     folder = tmp_path / "dc_opf_data"
-    _write_m(folder, "case3", THREE_BUS)
-    _write_m(folder, "case2tiny", TWO_BUS)
+    _write_mat(folder, "case3", THREE_BUS)
+    _write_mat(folder, "case2tiny", TWO_BUS)
     return folder
 
 
