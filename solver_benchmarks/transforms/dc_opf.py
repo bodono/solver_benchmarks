@@ -29,10 +29,17 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
         shape=(n_bus, n_gen),
     )
 
-    # Preserve the MATPOWER phase-shift injection convention.
+    # Flow is Bf @ theta - shift; shunt conductance adds real-power demand.
     balance = sp.hstack([generators, -incidence.T @ flow], format="csc")
-    demand = bus[:, 2] / base_mva + incidence.T @ shift
-    reference = sp.csc_matrix(([1.0], ([0], [n_gen + ref])), shape=(1, n_primary))
+    demand = (bus[:, 2] + bus[:, 4]) / base_mva - incidence.T @ shift
+    refs = np.flatnonzero(bus[:, 1] == 3)
+    if not len(refs):
+        refs = np.array([ref])
+    reference = sp.csc_matrix(
+        (np.ones(len(refs)), (np.arange(len(refs)), n_gen + refs)),
+        shape=(len(refs), n_primary),
+    )
+    reference_angles = np.deg2rad(bus[refs, 8] - bus[ref, 8])
 
     limited = branch[:, 5] > 0  # A zero rating means unlimited flow.
     limits = branch[limited, 5] / base_mva
@@ -41,9 +48,19 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     gen_min = np.where(gen[:, 7].astype(int) > 0, gen[:, 9] / base_mva, 0.0)
     gen_max = np.where(gen[:, 7].astype(int) > 0, gen[:, 8] / base_mva, 0.0)
 
-    a = sp.vstack([balance, reference, line_bounds, gen_bounds], format="csc")
-    l = np.concatenate([demand, [0.0], shift[limited] - limits, gen_min])
-    u = np.concatenate([demand, [0.0], shift[limited] + limits, gen_max])
+    angle_min, angle_max = branch[:, 11], branch[:, 12]
+    angle_limited = (
+        ((angle_min != 0) & (angle_min > -360))
+        | ((angle_max != 0) & (angle_max < 360))
+        | ((angle_min != 0) & (angle_max == 0))
+        | ((angle_min == 0) & (angle_max != 0))
+    )
+    angle_bounds = sp.hstack([sp.csc_matrix((sum(angle_limited), n_gen)), incidence[angle_limited]])
+    angle_lower = np.deg2rad(np.where(angle_min < -360, -np.inf, angle_min))[angle_limited]
+    angle_upper = np.deg2rad(np.where(angle_max > 360, np.inf, angle_max))[angle_limited]
+    a = sp.vstack([balance, reference, line_bounds, angle_bounds, gen_bounds], format="csc")
+    l = np.concatenate([demand, reference_angles, shift[limited] - limits, angle_lower, gen_min])
+    u = np.concatenate([demand, reference_angles, shift[limited] + limits, angle_upper, gen_max])
 
     pwl_a, pwl_b = _piecewise_linear_costs(gencost, n_primary, base_mva)
     n_vars = pwl_a.shape[1]
