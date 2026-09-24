@@ -406,3 +406,30 @@ def test_iteration_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, 
     assert result.kkt is not None
     for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
         assert np.isfinite(result.kkt[field])
+
+
+@pytest.mark.parametrize("itr_x, bas_x, expected", [
+    ([-1.0, -1.0], [0.0, 0.0], "itr"),
+    ([0.0, 0.0], [-1.0, -1.0], "bas"),
+    ([-1.0, -1.0], [-1.0, -1.0], "itr"),
+    ([np.nan, np.nan], [-1.0, -1.0], "bas"),
+    (None, [-1.0, -1.0], "bas"),
+    ([-1.0, -1.0], None, "itr"),
+])
+def test_mosek_selects_point_by_kkt(itr_x, bas_x, expected):
+    from types import SimpleNamespace
+
+    mosek = pytest.importorskip("mosek")
+    from solver_benchmarks.solvers.mosek_adapter import _select_mosek_solution
+
+    points = {mosek.soltype.itr: itr_x, mosek.soltype.bas: bas_x}
+    task = SimpleNamespace(
+        solutiondef=lambda slot: points.get(slot) is not None,
+        getsolsta=lambda slot: mosek.solsta.optimal,
+        getxx=lambda slot: points[slot],
+        gety=lambda slot: [0.0, 0.0],
+    )
+    selected, residuals = _select_mosek_solution(task, mosek, _small_qp())
+    assert selected == getattr(mosek.soltype, expected)
+    assert residuals["primal_obj"] == pytest.approx(-1.0)
+    assert residuals["dual_res_rel"] == 0.0

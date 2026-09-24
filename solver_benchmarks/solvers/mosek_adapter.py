@@ -9,6 +9,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
+from solver_benchmarks.analysis.derive import worst_relative_residual
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
@@ -83,20 +84,12 @@ class MosekSolverAdapter(SolverAdapter):
                 )
             elapsed = time.perf_counter() - start
 
-            soltype = _resolve_mosek_soltype(task, mosek)
+            soltype, kkt_dict = _select_mosek_solution(task, mosek, qp)
             raw_status = task.getsolsta(soltype) if task.solutiondef(soltype) else mosek.solsta.unknown
             mapped = _map_mosek_status(raw_status, termination_code, mosek)
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
-            if task.solutiondef(soltype) and mapped in status.ANY_FEASIBLE:
-                objective = task.getprimalobj(soltype)
-                x = np.asarray(task.getxx(soltype), dtype=float)
-                y = -np.asarray(task.gety(soltype), dtype=float)
-                # Verify with the full original Hessian, not MOSEK's lower triangle.
-                kkt_dict = kkt.qp_residuals(qp["P"], q, a_mat, lower, upper, x, y)
-            else:
-                objective = None
-                kkt_dict = None
+            objective = task.getprimalobj(soltype) if kkt_dict is not None else None
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
@@ -184,27 +177,30 @@ def _map_mosek_status(raw_status, termination_code, mosek) -> str:
     return status.SOLVER_ERROR
 
 
-def _resolve_mosek_soltype(task, mosek):
-    """Pick the MOSEK solution slot most likely to be populated.
-
-    MOSEK exposes separate slots for interior-point (itr), basic (bas),
-    and integer (itg) solutions. Hard-coding `itr` made the adapter
-    return ``unknown`` on simplex/MIP solves. Try in priority order and
-    fall back to a defined iterate, or itr if none exists.
-    """
-    soltype = mosek.soltype
-    candidates = (soltype.itg, soltype.bas, soltype.itr)
-    fallback = soltype.itr
-    for candidate in candidates:
-        try:
-            if task.solutiondef(candidate):
-                fallback = candidate
-            sta = task.getsolsta(candidate)
-        except Exception:
+def _select_mosek_solution(task, mosek, qp):
+    """Select the point with the smallest worst relative KKT residual."""
+    candidates = []
+    # min() keeps the first candidate on ties, so prefer the interior point.
+    for soltype in (mosek.soltype.itr, mosek.soltype.bas):
+        if not task.solutiondef(soltype):
             continue
-        if sta != mosek.solsta.unknown:
-            return candidate
-    return fallback
+        mapped = _map_mosek_status(task.getsolsta(soltype), None, mosek)
+        if mapped in status.ANY_INFEASIBLE:
+            return soltype, None
+        if mapped not in status.ANY_FEASIBLE:
+            continue
+        x = np.asarray(task.getxx(soltype), dtype=float)
+        y = -np.asarray(task.gety(soltype), dtype=float)
+        # Use the full original Hessian, not MOSEK's lower triangle.
+        residuals = kkt.qp_residuals(
+            qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y,
+        )
+        worst = worst_relative_residual({"kkt": residuals})
+        candidates.append((float("inf") if worst is None else worst, soltype, residuals))
+    if not candidates:
+        return mosek.soltype.itr, None
+    _, soltype, residuals = min(candidates, key=lambda candidate: candidate[0])
+    return soltype, residuals
 
 
 def _handle_mosek_str_param(task, param: str, value) -> None:
