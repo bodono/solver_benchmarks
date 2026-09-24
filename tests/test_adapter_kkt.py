@@ -341,7 +341,7 @@ def test_commercial_adapter_infeasible_has_no_kkt(solver_name, tmp_path):
     assert result.kkt is None
 
 
-@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "highs", "mosek", "qpo3"])
+@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "highs", "mosek", "piqp", "qpo3"])
 def test_solver_error_retains_kkt(solver_name, tmp_path, monkeypatch):
     import importlib
 
@@ -394,6 +394,7 @@ def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monke
 @pytest.mark.parametrize("solver_name, settings", [
     ("clarabel", {"max_iter": 1, "presolve_enable": False}),
     ("qpo3", {"max_iter": 1, "presolve": False}),
+    ("piqp", {"max_iter": 1}),
     ("cplex", {"barrier.limits.iteration": 1, "qpmethod": 4, "preprocessing.presolve": 0}),
     ("mosek", {"MSK_IPAR_INTPNT_MAX_ITERATIONS": 1, "MSK_IPAR_PRESOLVE_USE": 0}),
     ("highs", {"qp_iteration_limit": 1, "presolve": "off"}),
