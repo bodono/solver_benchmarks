@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
@@ -62,6 +63,8 @@ class GurobiSolverAdapter(SolverAdapter):
                 ]
                 model.update()
 
+                constraints = []
+                constraint_rows = []
                 for row in range(m):
                     start, end = a_mat.indptr[row], a_mat.indptr[row + 1]
                     expr = grb.LinExpr(
@@ -73,13 +76,15 @@ class GurobiSolverAdapter(SolverAdapter):
                     if l_val <= -grb.GRB.INFINITY and u_val >= grb.GRB.INFINITY:
                         continue
                     if abs(l_val - u_val) <= 1.0e-10:
-                        model.addConstr(expr == u_val)
+                        constraint = model.addConstr(expr == u_val)
                     elif l_val <= -grb.GRB.INFINITY:
-                        model.addConstr(expr <= u_val)
+                        constraint = model.addConstr(expr <= u_val)
                     elif u_val >= grb.GRB.INFINITY:
-                        model.addConstr(expr >= l_val)
+                        constraint = model.addConstr(expr >= l_val)
                     else:
-                        model.addRange(expr, l_val, u_val)
+                        constraint = model.addRange(expr, l_val, u_val)
+                    constraints.append(constraint)
+                    constraint_rows.append(row)
 
                 objective = grb.QuadExpr()
                 for row, col, value in zip(p_mat.row, p_mat.col, p_mat.data):
@@ -101,16 +106,16 @@ class GurobiSolverAdapter(SolverAdapter):
                 elapsed = time.perf_counter() - start
 
                 mapped = _map_gurobi_status(model.Status, grb)
-                # Gurobi exposes ObjVal for any status that has a feasible
-                # solution; include OPTIMAL_INACCURATE / SUBOPTIMAL for
-                # consistency with PIQP/ProxQP/SCS.
-                objective_present = mapped in status.SOLUTION_PRESENT or (
-                    mapped == status.OPTIMAL_INACCURATE
-                )
+                kkt_dict = None
+                if mapped in status.ANY_FEASIBLE:
+                    kkt_dict = _solution_kkt(
+                        model, grb, qp, variables, constraints, constraint_rows
+                    )
                 return SolverResult(
                     status=mapped,
+                    kkt=kkt_dict,
                     objective_value=(
-                        float(model.ObjVal) if objective_present else None
+                        kkt_dict["primal_obj"] if kkt_dict is not None else None
                     ),
                     iterations=_maybe_int(
                         getattr(model, "BarIterCount", None)
@@ -132,6 +137,22 @@ class GurobiSolverAdapter(SolverAdapter):
                 model.dispose()
         finally:
             env.dispose()
+
+
+def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
+    # Read original variables only: addRange introduces extra slack variables.
+    # An early barrier stop can expose BarX/BarPi without a final X/Pi pair.
+    for primal_attr, dual_attr in (("X", "Pi"), ("BarX", "BarPi")):
+        try:
+            x = np.asarray(model.getAttr(primal_attr, variables), dtype=float)
+            duals = np.asarray(model.getAttr(dual_attr, constraints), dtype=float)
+        except grb.GurobiError:
+            continue
+        y = np.zeros(qp["A"].shape[0])
+        # Gurobi's row multipliers have the opposite sign to our convention.
+        y[constraint_rows] = -duals
+        return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
+    return None
 
 
 def _finite_bounds(values, inf_value: float, *, lower: bool) -> np.ndarray:

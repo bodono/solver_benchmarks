@@ -313,7 +313,7 @@ def test_sdpa_phase_mapping(phase: str, errors: float, expected: str):
     assert _map_sdpa_status(sdpap_info, sdpa_info, {"maxIteration": 100}, 1.0e-5) == expected
 
 
-@pytest.mark.parametrize("solver_name", ["cplex", "mosek"])
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek", "gurobi"])
 @pytest.mark.parametrize("quadratic", [False, True])
 def test_commercial_adapter_kkt_original_rows(solver_name, quadratic, tmp_path):
     # Includes a skipped free row, equality, lower/upper bounds, and two
@@ -334,14 +334,14 @@ def test_commercial_adapter_kkt_original_rows(solver_name, quadratic, tmp_path):
         assert result.kkt[field] < 1e-6
 
 
-@pytest.mark.parametrize("solver_name", ["cplex", "mosek"])
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek", "gurobi"])
 def test_commercial_adapter_infeasible_has_no_kkt(solver_name, tmp_path):
     result = _solve(solver_name, _infeasible_lp(), tmp_path)
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.kkt is None
 
 
-@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "highs", "mosek", "piqp", "qpo3"])
+@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "gurobi", "highs", "mosek", "piqp", "qpo3"])
 def test_solver_error_retains_kkt(solver_name, tmp_path, monkeypatch):
     import importlib
 
@@ -381,6 +381,7 @@ def limit_qp():
     ("cplex", {"qpmethod": 4, "preprocessing.presolve": 0, "threads": 1, "time_limit": 0.1}),
     ("mosek", {"MSK_IPAR_PRESOLVE_USE": 0, "time_limit": 0.001}),
     ("highs", {"presolve": "off", "time_limit": 0.001}),
+    ("gurobi", {"Method": 2, "Presolve": 0, "threads": 1, "time_limit": 0.1}),
 ])
 def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monkeypatch):
     monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
@@ -398,6 +399,7 @@ def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monke
     ("cplex", {"barrier.limits.iteration": 1, "qpmethod": 4, "preprocessing.presolve": 0}),
     ("mosek", {"MSK_IPAR_INTPNT_MAX_ITERATIONS": 1, "MSK_IPAR_PRESOLVE_USE": 0}),
     ("highs", {"qp_iteration_limit": 1, "presolve": "off"}),
+    ("gurobi", {"Method": 2, "Presolve": 0, "BarIterLimit": 1}),
 ])
 def test_iteration_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monkeypatch):
     monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
