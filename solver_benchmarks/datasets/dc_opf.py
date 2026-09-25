@@ -13,14 +13,11 @@ from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
 from .base import Dataset, atomic_write_bytes
 
-MATPOWER_REVISION = "42356e050a5b0d4f6693a807bbdd22318d8be041"
+MATPOWER_REVISION = "d295273485e88127d8b582927cfa0c54e5ce7279"
 MATPOWER_BASE_URL = (
     f"https://raw.githubusercontent.com/matteosantama/matpower_data/{MATPOWER_REVISION}/data"
 )
-MATPOWER_API_URL = (
-    "https://api.github.com/repos/matteosantama/matpower_data/contents/data"
-    f"?ref={MATPOWER_REVISION}"
-)
+MATPOWER_FEASIBILITY_URL = f"https://raw.githubusercontent.com/matteosantama/matpower_data/{MATPOWER_REVISION}/feasibility.json"
 DCOPF_DEFAULT_SUBSET = ("case5", "case6ww", "case9", "case14", "case30", "case39")
 
 
@@ -28,9 +25,9 @@ class DCOPFDataset(Dataset):
     """Build DC OPF QPs from MATPOWER case files.
 
     Options:
-        subset: comma-separated string or list of MATPOWER case
-            names. ``None`` (default) and ``"all"`` mean *no name
-            filter* (show every case found locally).
+        subset: ``"feasible"``, ``"infeasible"``, or MATPOWER case names
+            (a list or comma-separated string). ``None`` (default) and
+            ``"all"`` show every case found locally.
     """
 
     dataset_id = "dc_opf"
@@ -45,7 +42,14 @@ class DCOPFDataset(Dataset):
         return self.problem_classes_dir / "dc_opf_data" / MATPOWER_REVISION
 
     def list_problems(self) -> list[ProblemSpec]:
-        subset = _normalize_subset(self.options.get("subset"))
+        selection = self.options.get("subset")
+        subset = _normalize_subset(selection)
+        if isinstance(selection, str) and selection in ("feasible", "infeasible"):
+            labels_path = self.data_dir / "feasibility.json"
+            if not labels_path.exists():
+                return []
+            labels = json.loads(labels_path.read_text())
+            subset = {name for name, label in labels.items() if label == selection}
         return [
             ProblemSpec(
                 dataset_id=self.dataset_id,
@@ -81,19 +85,21 @@ class DCOPFDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
-        names = (
-            matpower_remote_problem_names()
-            if all_problems
-            else (problem_names or DCOPF_DEFAULT_SUBSET)
-        )
+        with urllib.request.urlopen(MATPOWER_FEASIBILITY_URL, timeout=30) as response:
+            labels_bytes = response.read()
+        atomic_write_bytes(self.data_dir / "feasibility.json", labels_bytes)
+        labels = json.loads(labels_bytes)
+        selection = self.options.get("subset")
+        names = list(labels) if all_problems else (problem_names or DCOPF_DEFAULT_SUBSET)
+        if (
+            not all_problems
+            and not problem_names
+            and isinstance(selection, str)
+            and selection in ("feasible", "infeasible")
+        ):
+            names = [name for name, label in labels.items() if label == selection]
         for name in names:
             download_matpower_case(name, self.data_dir)
-
-
-def matpower_remote_problem_names() -> list[str]:
-    """List upstream MATPOWER case names."""
-    with urllib.request.urlopen(MATPOWER_API_URL, timeout=30) as response:
-        return [Path(item["name"]).stem for item in json.load(response)]
 
 
 def download_matpower_case(name: str, folder: Path) -> Path:
