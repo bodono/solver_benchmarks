@@ -124,7 +124,10 @@ def _polynomial_costs(gencost: np.ndarray, n_vars: int, base_mva: float):
     """Scale MW costs for 0.5 * x.T @ P @ x + q.T @ x + r in per-unit."""
     diagonal, q = np.zeros(n_vars), np.zeros(n_vars)
     r = 0.0
-    dropped = {"higher_order": [], "unknown_model": []}
+    dropped: dict[str, list[int | tuple[int, float]]] = {
+        "higher_order": [],
+        "unknown_model": [],
+    }
     for g, row in enumerate(gencost):
         model = row[0]
         if model == 1:
@@ -150,8 +153,9 @@ def _piecewise_linear_costs(
     base_mva: float,
 ) -> tuple[sp.csc_matrix, np.ndarray]:
     """Encode each segment as slope * Pg - cost <= -intercept."""
-    generators = np.flatnonzero(gencost[:, 0] == 1) if gencost.size else []
-    rows, cols, values, bounds = [], [], [], []
+    generators: np.ndarray | list[int] = np.flatnonzero(gencost[:, 0] == 1) if gencost.size else []
+    rows, cols, values = [], [], []
+    bounds: list[float] = []
     for i, g in enumerate(generators):
         count = int(gencost[g, 3])
         x, y = gencost[g, 4 : 4 + 2 * count].reshape(-1, 2).T
