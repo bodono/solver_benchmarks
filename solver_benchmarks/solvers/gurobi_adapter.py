@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -49,9 +50,7 @@ class GurobiSolverAdapter(SolverAdapter):
         lower = _finite_bounds(qp["l"], -grb.GRB.INFINITY, lower=True)
         upper = _finite_bounds(qp["u"], grb.GRB.INFINITY, lower=False)
 
-        # Hold the env so we can dispose() it after solve, releasing the
-        # Gurobi license token deterministically across long batch runs.
-        env = grb.Env()
+        env = _create_environment(grb)
         try:
             model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
             try:
@@ -137,6 +136,20 @@ class GurobiSolverAdapter(SolverAdapter):
                 model.dispose()
         finally:
             env.dispose()
+
+
+def _create_environment(grb):
+    token_file = os.environ.get("GUROBI_WLS_TOKEN_FILE")
+    if token_file is None:
+        return grb.Env()
+    # Credentials and tokens must not enter settings or benchmark artifacts.
+    return grb.Env(params={
+        "OutputFlag": 0,
+        "WLSAccessID": "",
+        "WLSSecret": "",
+        "LicenseID": 0,
+        "WLSToken": Path(token_file).read_text().strip(),
+    })
 
 
 def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
