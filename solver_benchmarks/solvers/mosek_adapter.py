@@ -187,8 +187,6 @@ def _select_mosek_solution(task, mosek, qp):
         mapped = _map_mosek_status(task.getsolsta(soltype), None, mosek)
         if mapped in status.ANY_INFEASIBLE:
             return soltype, None
-        if mapped not in status.ANY_FEASIBLE:
-            continue
         x = np.asarray(task.getxx(soltype), dtype=float)
         y = -np.asarray(task.gety(soltype), dtype=float)
         # Use the full original Hessian, not MOSEK's lower triangle.
