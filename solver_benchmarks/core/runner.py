@@ -420,6 +420,7 @@ def _run_one(
         "environment_id": environment_id,
         "environment_metadata": environment_metadata or {},
         "resume_signature": resume_signature,
+        "memory_limit_mb": config.worker_memory_limit_mb,
     }
     payload_path = artifacts_dir / "payload.json"
     atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
