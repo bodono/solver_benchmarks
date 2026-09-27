@@ -21,11 +21,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--payload", required=True)
     args = parser.parse_args(argv)
     payload = json.loads(Path(args.payload).read_text())
+    if payload.get("memory_limit_mb"):
+        _limit_memory(payload["memory_limit_mb"])
     result = run_payload(payload)
     output = Path(payload["artifacts_dir"]) / "worker_result.json"
     # Atomic write so the parent never observes a half-serialized record.
     atomic_write_text(output, json.dumps(result.to_record(), indent=2))
     return 0
+
+
+def _limit_memory(limit_mb: int) -> None:
+    """Cap this process's data segment."""
+    import resource
+
+    limit_bytes = int(limit_mb) * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_DATA, (limit_bytes, limit_bytes))
 
 
 def run_payload(payload: dict) -> ProblemResult:

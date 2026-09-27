@@ -60,6 +60,7 @@ class RunConfig:
     fail_on_unsupported: bool = False
     auto_prepare_data: bool = False
     max_worker_error_retries: int = 2
+    worker_memory_limit_mb: int | None = None
 
     @property
     def dataset(self) -> str:
@@ -142,6 +143,7 @@ class RunConfig:
             "parallelism": self.parallelism,
             "resume": self.resume,
             "max_worker_error_retries": self.max_worker_error_retries,
+            "worker_memory_limit_mb": self.worker_memory_limit_mb,
             "timeout_seconds": self.timeout_seconds,
             "fail_on_unsupported": self.fail_on_unsupported,
             "auto_prepare_data": self.auto_prepare_data,
@@ -211,6 +213,9 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
         resume=_validate_bool(run.get("resume", raw.get("resume", True)), "run.resume"),
         max_worker_error_retries=_validate_worker_error_retries(
             run.get("max_worker_error_retries", raw.get("max_worker_error_retries", 2))
+        ),
+        worker_memory_limit_mb=_validate_worker_memory_limit(
+            run.get("worker_memory_limit_mb", raw.get("worker_memory_limit_mb"))
         ),
         timeout_seconds=_validate_timeout(
             run.get("timeout_seconds", raw.get("timeout_seconds")),
@@ -624,6 +629,16 @@ def _validate_parallelism(value: Any) -> int:
     if coerced < 1:
         raise ValueError(f"run.parallelism must be >= 1, got {coerced!r}")
     return coerced
+
+
+def _validate_worker_memory_limit(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"run.worker_memory_limit_mb must be an integer >= 1 or null, got {value!r}"
+        )
+    return value
 
 
 def _validate_bool(value: Any, context: str) -> bool:
