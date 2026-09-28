@@ -6,6 +6,26 @@ import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
+from solver_benchmarks.analysis.derive import worst_relative_residual
+
+
+def test_qp_residuals_reject_multiplier_on_absent_upper_bound():
+    # min -x subject to x >= 0 is unbounded. At x=0, y=1 satisfies
+    # stationarity but incorrectly assigns a multiplier to the absent upper bound.
+    res = kkt.qp_residuals(
+        sp.csc_matrix((1, 1)),
+        np.array([-1.0]),
+        sp.eye(1, format="csc"),
+        np.array([0.0]),
+        np.array([np.inf]),
+        np.array([0.0]),
+        np.array([1.0]),
+    )
+    assert res["primal_res_rel"] == 0.0
+    assert res["dual_res_rel"] == 0.0
+    assert res["duality_gap_rel"] == 0.0
+    # (x, y) = (0, 1) is not a KKT point, so worst_relative_residual({"kkt": res}) should not be zero
+    assert worst_relative_residual({"kkt": res}) == 0.5
 
 
 def test_qp_residuals_at_optimum():
