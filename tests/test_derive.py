@@ -128,6 +128,28 @@ def test_cone_infeasible_point_is_not_verified():
     assert worst_relative_residual({"kkt": {"form": "cone", "primal_res_rel": 0.0, "dual_res_rel": 0.0, "duality_gap_rel": 0.0}}) is None
 
 
+def test_qp_dual_bound_residual_counts_when_recorded():
+    from solver_benchmarks.analysis.derive import worst_relative_residual
+    base = {"form": "qp", "primal_res_rel": 0.0, "dual_res_rel": 0.0, "duality_gap_rel": 0.0}
+    assert worst_relative_residual({"kkt": {**base, "dual_bound_res_rel": 0.5}}) == 0.5
+    assert worst_relative_residual({"kkt": {**base, "dual_bound_res_rel": float("nan")}}) is None
+    # Records written before the residual existed are checked on the rest.
+    assert worst_relative_residual({"kkt": base}) == 0.0
+
+
+def test_kkt_verify_keeps_qp_records_without_dual_bound_residual(tmp_path):
+    good = {"form": "qp", "primal_res_rel": 1e-9, "dual_res_rel": 1e-9, "duality_gap_rel": 1e-9}
+    src = _write_run(tmp_path, "src", [
+        _row("old", "a", kkt=good),
+        _row("new", "a", kkt={**good, "dual_bound_res_rel": 0.5}),
+    ])
+    kkt_verify(src, tmp_path / "out", tol=1e-6)
+    out_rows = [json.loads(l) for l in (tmp_path / "out" / "results.jsonl").read_text().splitlines()]
+    by_problem = {r["problem"]: r for r in out_rows}
+    assert by_problem["old"]["status"] == "optimal"
+    assert by_problem["new"]["status"] == "optimal_inaccurate"
+
+
 def test_merge_unions_selections_and_keeps_manifests(tmp_path):
     import json
 

@@ -20,7 +20,10 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
 
 KKT_FIELDS = ("primal_res_rel", "dual_res_rel", "duality_gap_rel")
-# QP-form records must check multiplier signs on one-sided and free rows.
+# QP-form records also carry the multipliers on absent bounds (one-sided and
+# free rows), which must be zero; the duality gap cannot see them. Records
+# written before this residual existed do not have it and are checked on the
+# other fields alone, so re-verifying an archived run does not demote them.
 QP_FIELDS = ("dual_bound_res_rel",)
 # Cone-form records also carry the distance of s and y to their cones; a point
 # that satisfies Ax + s = b with s outside K is not feasible, so these are part
@@ -192,15 +195,16 @@ def residual_summary(
 
     ``worst`` is the largest finite residual among the wanted fields (None if
     there is none) and ``complete`` says whether every wanted field was
-    present and finite. Cone-form records also need the cone distances
-    (``CONE_FIELDS``, falling back to the absolute distances of older
-    records). The two are reported separately so that a residual known to
-    fail is never hidden by another one being missing.
+    present and finite. QP-form records also need the multipliers on absent
+    bounds to vanish (``QP_FIELDS``, when the record has them), and cone-form
+    records the cone distances (``CONE_FIELDS``, falling back to the absolute
+    distances of older records). The two are reported separately so that a
+    residual known to fail is never hidden by another one being missing.
     """
     kkt = record.get("kkt") or {}
     wanted = list(fields)
     if kkt.get("form") == "qp":
-        wanted += [f for f in QP_FIELDS if f not in wanted]
+        wanted += [f for f in QP_FIELDS if f not in wanted and f in kkt]
     if kkt.get("form") == "cone" or any(f in kkt or _CONE_FALLBACK[f] in kkt for f in CONE_FIELDS):
         wanted += [f for f in CONE_FIELDS if f not in wanted]
     worst: float | None = None
