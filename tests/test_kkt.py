@@ -6,6 +6,61 @@ import numpy as np
 import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
+from solver_benchmarks.analysis.derive import worst_relative_residual
+
+
+def test_qp_residuals_reject_multiplier_on_absent_upper_bound():
+    # min -x subject to x >= 0 is unbounded. At x=0, y=1 satisfies
+    # stationarity but incorrectly assigns a multiplier to the absent upper bound.
+    res = kkt.qp_residuals(
+        sp.csc_matrix((1, 1)),
+        np.array([-1.0]),
+        sp.eye(1, format="csc"),
+        np.array([0.0]),
+        np.array([np.inf]),
+        np.array([0.0]),
+        np.array([1.0]),
+    )
+    assert res["primal_res_rel"] == 0.0
+    assert res["dual_res_rel"] == 0.0
+    assert res["duality_gap_rel"] == 0.0
+    # (x, y) = (0, 1) is not a KKT point: the multiplier 1 on the absent upper
+    # bound, scaled by 1 + |y|, fails the check.
+    assert res["dual_bound_res_rel"] == 0.5
+    assert worst_relative_residual({"kkt": res}) == 0.5
+
+
+def test_qp_residuals_reject_multiplier_on_absent_lower_bound():
+    # min x subject to x <= 0 is unbounded. At x=0, y=-1 satisfies
+    # stationarity but assigns a multiplier to the absent lower bound.
+    res = kkt.qp_residuals(
+        sp.csc_matrix((1, 1)),
+        np.array([1.0]),
+        sp.eye(1, format="csc"),
+        np.array([-np.inf]),
+        np.array([0.0]),
+        np.array([0.0]),
+        np.array([-1.0]),
+    )
+    assert res["dual_res_rel"] == 0.0
+    assert res["duality_gap_rel"] == 0.0
+    assert res["dual_bound_res_rel"] == 0.5
+
+
+def test_qp_residuals_reject_multiplier_on_free_row():
+    # Row 2 is free (no bounds); any multiplier on it is infeasible, whatever its sign.
+    for y2 in (2.0, -2.0):
+        res = kkt.qp_residuals(
+            sp.csc_matrix((1, 1)),
+            np.array([-y2]),
+            sp.csc_matrix(np.array([[1.0], [1.0]])),
+            np.array([0.0, -np.inf]),
+            np.array([1.0, np.inf]),
+            np.array([0.5]),
+            np.array([0.0, y2]),
+        )
+        assert res["dual_res_rel"] == 0.0
+        assert res["dual_bound_res"] == 2.0
 
 
 def test_qp_residuals_at_optimum():
@@ -24,6 +79,7 @@ def test_qp_residuals_at_optimum():
     assert res["dual_res"] < 1e-12
     assert res["comp_slack"] < 1e-12
     assert abs(res["duality_gap"]) < 1e-12
+    assert res["dual_bound_res"] == 0.0
 
 
 def test_qp_residuals_with_active_bound():

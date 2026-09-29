@@ -64,6 +64,9 @@ def qp_residuals(
     finite_u = _finite_bounds(u)
     y_pos = np.maximum(y, 0.0)
     y_neg = np.maximum(-y, 0.0)
+    # Multipliers on absent bounds must be zero.
+    dual_bound_violation = np.where(finite_u, 0.0, y_pos) + np.where(finite_l, 0.0, y_neg)
+    r_dual_bound = _inf_norm(dual_bound_violation)
     comp_upper = y_pos * np.where(finite_u, u - Ax, 0.0)
     comp_lower = y_neg * np.where(finite_l, Ax - l, 0.0)
     comp = np.concatenate([comp_upper, comp_lower])
@@ -93,6 +96,8 @@ def qp_residuals(
         "dual_res": r_dual,
         "dual_res_l2": r_dual_l2,
         "dual_res_rel": r_dual / norm_dual,
+        "dual_bound_res": r_dual_bound,
+        "dual_bound_res_rel": r_dual_bound / (1.0 + _inf_norm(y)),
         "comp_slack": r_comp,
         "primal_obj": primal_obj,
         "dual_obj": dual_obj,
