@@ -85,10 +85,7 @@ class DCOPFDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
-        with urllib.request.urlopen(MATPOWER_FEASIBILITY_URL, timeout=30) as response:
-            labels_bytes = response.read()
-        atomic_write_bytes(self.data_dir / "feasibility.json", labels_bytes)
-        labels = json.loads(labels_bytes)
+        labels = json.loads(download_feasibility_labels(self.data_dir).read_bytes())
         selection = self.options.get("subset")
         names = list(labels) if all_problems else (problem_names or DCOPF_DEFAULT_SUBSET)
         if (
@@ -100,6 +97,15 @@ class DCOPFDataset(Dataset):
             names = [name for name, label in labels.items() if label == selection]
         for name in names:
             download_matpower_case(name, self.data_dir)
+
+
+def download_feasibility_labels(folder: Path) -> Path:
+    """Download the pinned snapshot's feasibility labels unless cached."""
+    target = folder / "feasibility.json"
+    if not target.exists():
+        with urllib.request.urlopen(MATPOWER_FEASIBILITY_URL, timeout=30) as response:
+            atomic_write_bytes(target, response.read())
+    return target
 
 
 def download_matpower_case(name: str, folder: Path) -> Path:
