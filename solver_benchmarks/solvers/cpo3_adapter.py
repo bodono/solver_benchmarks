@@ -1,6 +1,6 @@
-"""qpo3 adapter.
+"""cpo3 adapter.
 
-qpo3 is a Rust interior-point (Mehrotra predictor-corrector) solver with Python
+cpo3 is a Rust interior-point (Mehrotra predictor-corrector) solver with Python
 bindings for problems of the form ``min 1/2 x'Px + c'x`` s.t. ``Ax + s = b``,
 ``s`` in a product of zero and nonnegative cones, i.e. LPs and convex QPs. The
 harness's QP form (``l <= Ax <= u``) is converted to that cone form the same way
@@ -41,42 +41,61 @@ _STATUS = {
     "time_limit": status.TIME_LIMIT,
 }
 _INFO_FIELDS = (
-    "iters", "solve_time", "pobj", "dobj", "pres", "dres", "comp", "presolve_rows_removed",
-    "presolve_columns_removed", "presolve_time", "kkt_solves", "refinement_passes", "refinement_failures",
-    "shift_escalations", "strict_fallbacks", "inertia_failures", "corrector_tries", "corrector_accepts",
-    "linear_solver", "data_equilibration", "kkt_equilibration",
+    "iters",
+    "solve_time",
+    "pobj",
+    "dobj",
+    "pres",
+    "dres",
+    "comp",
+    "presolve_rows_removed",
+    "presolve_columns_removed",
+    "presolve_time",
+    "kkt_solves",
+    "refinement_passes",
+    "refinement_failures",
+    "shift_escalations",
+    "strict_fallbacks",
+    "inertia_failures",
+    "corrector_tries",
+    "corrector_accepts",
+    "linear_solver",
+    "data_equilibration",
+    "kkt_equilibration",
 )
 
 
-class Qpo3SolverAdapter(SolverAdapter):
-    solver_name = "qpo3"
+class Cpo3SolverAdapter(SolverAdapter):
+    solver_name = "cpo3"
     supported_problem_kinds = {QP}
 
     @classmethod
     def is_available(cls) -> bool:
         try:
-            import qpo3  # noqa: F401
+            import cpo3  # noqa: F401
         except ModuleNotFoundError:
             return False
         return True
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
-            import qpo3
+            import cpo3
         except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install qpo3 (pip install <path to the qpo3 checkout>) to use this adapter") from exc
+            raise SolverUnavailable(
+                "Install cpo3 (pip install <path to the cpo3 checkout>) to use this adapter"
+            ) from exc
 
         qp = problem.qp
         settings = settings_with_defaults(self.settings)
         time_limit = pop_time_limit(settings)
-        threads = pop_threads(settings)  # qpo3 has no thread setting
+        threads = pop_threads(settings)  # cpo3 has no thread setting
         translated = translate_settings(settings)
         if time_limit is not None:
             settings.setdefault("time_limit", float(time_limit))
-        unknown = sorted(k for k in settings if k not in qpo3.Settings.__dataclass_fields__)
+        unknown = sorted(k for k in settings if k not in cpo3.Settings.__dataclass_fields__)
         if unknown:
-            raise ValueError(f"qpo3.Settings does not accept {unknown}")
-        qpo3_settings = qpo3.Settings(**settings)
+            raise ValueError(f"cpo3.Settings does not accept {unknown}")
+        cpo3_settings = cpo3.Settings(**settings)
 
         a, b, z = qp_to_nonnegative_cone(qp)
         a = sp.csc_matrix(a)
@@ -84,18 +103,26 @@ class Qpo3SolverAdapter(SolverAdapter):
         c = np.asarray(qp["q"], dtype=float)
         cones = []
         if z:
-            cones.append(qpo3.ZeroCone(int(z)))
+            cones.append(cpo3.ZeroCone(int(z)))
         if a.shape[0] - z:
-            cones.append(qpo3.NonnegativeCone(int(a.shape[0] - z)))
-        qpo3_problem = qpo3.Problem(P=p if p.nnz else None, c=c, A=a, b=np.asarray(b, dtype=float), cones=cones)
+            cones.append(cpo3.NonnegativeCone(int(a.shape[0] - z)))
+        cpo3_problem = cpo3.Problem(
+            P=p if p.nnz else None, c=c, A=a, b=np.asarray(b, dtype=float), cones=cones
+        )
 
         start = time.perf_counter()
         try:
-            solution = qpo3.solve(qpo3_problem, settings=qpo3_settings)
+            solution = cpo3.solve(cpo3_problem, settings=cpo3_settings)
         except RuntimeError as exc:  # numerical failures raise rather than returning a status
             elapsed = time.perf_counter() - start
-            return SolverResult(status=status.SOLVER_ERROR, objective_value=None, iterations=None,
-                                run_time_seconds=elapsed, info={"raw_status": "error", "error": str(exc)}, kkt=None)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                objective_value=None,
+                iterations=None,
+                run_time_seconds=elapsed,
+                info={"raw_status": "error", "error": str(exc)},
+                kkt=None,
+            )
         elapsed = time.perf_counter() - start
 
         raw_status = getattr(solution.status, "value", str(solution.status))
@@ -116,7 +143,9 @@ class Qpo3SolverAdapter(SolverAdapter):
             cone_dict["l"] = int(a.shape[0] - z)
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(getattr(info, "pobj", None)) if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE} else None,
+            objective_value=_maybe_float(getattr(info, "pobj", None))
+            if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
+            else None,
             iterations=_maybe_int(getattr(info, "iters", None)),
             run_time_seconds=elapsed,
             info=result_info,
@@ -125,7 +154,7 @@ class Qpo3SolverAdapter(SolverAdapter):
 
 
 def translate_settings(settings: dict) -> dict:
-    """Map the harness aliases ``eps``, ``eps_abs``, ``eps_rel`` onto qpo3's names.
+    """Map the harness aliases ``eps``, ``eps_abs``, ``eps_rel`` onto cpo3's names.
 
     ``eps_abs`` (or ``eps``) supplies ``tol_feas`` and ``tol_gap_abs``, ``eps_rel``
     (or ``eps``) supplies ``tol_gap_rel``; an explicit native value always wins,
