@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from solver_benchmarks.cli import main
 from solver_benchmarks.core import status
 from solver_benchmarks.datasets import get_dataset
+from solver_benchmarks.datasets.dc_opf import MATPOWER_REVISION
 from solver_benchmarks.solvers import get_solver
 
 pytestmark = pytest.mark.network
@@ -23,7 +24,12 @@ TERMINAL_SOLVE_STATUSES = {
     ("dataset_id", "prepare_name", "expected_problem_name", "expected_file"),
     [
         ("cblib", "nb", "nb", "cblib_data/nb.cbf.gz"),
-        ("dc_opf", "case5", "case5", "dc_opf_data/case5.m"),
+        (
+            "dc_opf",
+            "case5",
+            "case5",
+            f"dc_opf_data/{MATPOWER_REVISION}/case5.mat",
+        ),
         ("libsvm_qp", "heart", "svm_dual_heart", "libsvm_data/heart.libsvm"),
         (
             "miplib",
