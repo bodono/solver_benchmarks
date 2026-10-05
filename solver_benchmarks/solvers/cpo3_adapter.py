@@ -51,6 +51,7 @@ _INFO_FIELDS = (
     "presolve_rows_removed",
     "presolve_columns_removed",
     "presolve_time",
+    "factorizations",
     "kkt_solves",
     "refinement_passes",
     "refinement_failures",
