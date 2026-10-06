@@ -147,6 +147,12 @@ def data_prepare_cmd(
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--run-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--data-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override data_root for every dataset in the config.",
+)
 @click.option("--prepare-data", is_flag=True, help="Prepare missing dataset data first.")
 @click.option("--environment-id", default=None, help="Optional environment label to record.")
 @click.option("--environment-metadata", default=None, help="JSON metadata for the environment.")
@@ -164,12 +170,25 @@ def run_cmd(
     config_path: Path,
     run_dir: Path | None,
     repo_root: Path | None,
+    data_root: Path | None,
     prepare_data: bool,
     environment_id: str | None,
     environment_metadata: str | None,
     stream_solver_output: bool,
 ) -> None:
     config = load_run_config(config_path)
+    if data_root is not None:
+        data_root = data_root.resolve()
+        config = replace(
+            config,
+            datasets=[
+                replace(
+                    dataset,
+                    dataset_options={**dataset.dataset_options, "data_root": str(data_root)},
+                )
+                for dataset in config.datasets
+            ],
+        )
     if prepare_data:
         config = replace(config, auto_prepare_data=True)
     env_metadata = _parse_json_option(environment_metadata)
@@ -186,6 +205,7 @@ def run_cmd(
                 config_path,
                 run_dir=run_dir,
                 repo_root=repo_root,
+                data_root=data_root,
             ),
             source_config_path=config_path,
         )

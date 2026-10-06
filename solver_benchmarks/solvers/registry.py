@@ -5,6 +5,7 @@ from __future__ import annotations
 from .base import SolverAdapter
 from .clarabel_adapter import ClarabelSolverAdapter
 from .cplex_adapter import CPLEXSolverAdapter
+from .cpo3_adapter import Cpo3SolverAdapter
 from .cuopt_adapter import CuOptSolverAdapter
 from .cvxopt_adapter import CVXOPTSolverAdapter
 from .ecos_adapter import ECOSSolverAdapter
@@ -15,7 +16,6 @@ from .osqp_adapter import OSQPSolverAdapter
 from .pdlp_adapter import PDLPSolverAdapter
 from .piqp_adapter import PIQPSolverAdapter
 from .proxqp_adapter import ProxQPSolverAdapter
-from .qpo3_adapter import Qpo3SolverAdapter
 from .qtqp_adapter import QTQPSolverAdapter
 from .scs_adapter import SCSSolverAdapter
 from .sdpa_adapter import SDPASolverAdapter
@@ -23,6 +23,7 @@ from .sdpa_adapter import SDPASolverAdapter
 SOLVERS: dict[str, type[SolverAdapter]] = {
     "clarabel": ClarabelSolverAdapter,
     "cplex": CPLEXSolverAdapter,
+    "cpo3": Cpo3SolverAdapter,
     "cvxopt": CVXOPTSolverAdapter,
     "ecos": ECOSSolverAdapter,
     "gurobi": GurobiSolverAdapter,
@@ -33,7 +34,6 @@ SOLVERS: dict[str, type[SolverAdapter]] = {
     "cuopt": CuOptSolverAdapter,
     "piqp": PIQPSolverAdapter,
     "proxqp": ProxQPSolverAdapter,
-    "qpo3": Qpo3SolverAdapter,
     "qtqp": QTQPSolverAdapter,
     "sdpa": SDPASolverAdapter,
     "scs": SCSSolverAdapter,
