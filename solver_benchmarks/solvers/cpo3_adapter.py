@@ -58,8 +58,6 @@ _INFO_FIELDS = (
     "shift_escalations",
     "strict_fallbacks",
     "inertia_failures",
-    "corrector_tries",
-    "corrector_accepts",
     "linear_solver",
     "data_equilibration",
     "kkt_equilibration",
