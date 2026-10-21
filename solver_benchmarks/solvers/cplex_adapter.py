@@ -40,6 +40,11 @@ class CPLEXSolverAdapter(SolverAdapter):
         except ModuleNotFoundError as exc:
             raise SolverUnavailable("Install with the cplex extra to use CPLEX") from exc
 
+        settings = dict(self.settings)
+        use_ranged_rows = settings.pop("use_ranged_rows", False)
+        if not isinstance(use_ranged_rows, bool):
+            raise ValueError("use_ranged_rows must be a boolean")
+
         qp = problem.qp
         q = np.asarray(qp["q"], dtype=float)
         p = sp.coo_matrix(qp["P"])
@@ -52,7 +57,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         # are released deterministically, even when an exception fires.
         try:
             model.objective.set_sense(model.objective.sense.minimize)
-            _configure_cplex(model, self.settings)
+            _configure_cplex(model, settings)
             infinity = cplex.infinity
             model.variables.add(
                 obj=q.tolist(),
@@ -60,7 +65,9 @@ class CPLEXSolverAdapter(SolverAdapter):
                 ub=[infinity] * n,
                 names=[f"x_{idx}" for idx in range(n)],
             )
-            constraint_rows = _add_cplex_constraints(model, cplex, a, l, u, infinity)
+            constraint_rows = _add_cplex_constraints(
+                model, cplex, a, l, u, infinity, use_ranged_rows=use_ranged_rows
+            )
             if p.nnz:
                 model.objective.set_quadratic_coefficients(
                     [(int(i), int(j), float(v)) for i, j, v in zip(p.row, p.col, p.data)]
@@ -73,7 +80,7 @@ class CPLEXSolverAdapter(SolverAdapter):
                 return SolverResult(
                     status=status.SOLVER_ERROR,
                     run_time_seconds=time.perf_counter() - start,
-                    info={"error": str(exc)},
+                    info={"error": str(exc), "use_ranged_rows": use_ranged_rows},
                 )
             elapsed = time.perf_counter() - start
             raw_status = model.solution.get_status()
@@ -90,7 +97,7 @@ class CPLEXSolverAdapter(SolverAdapter):
                     pass  # No complete primal/dual point is available.
                 else:
                     y = np.zeros(a.shape[0])
-                    # CPLEX uses the opposite dual sign; ranged rows are split.
+                    # CPLEX uses the opposite dual sign; sum any split rows.
                     np.add.at(y, constraint_rows, -duals)
                     kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
             return SolverResult(
@@ -103,6 +110,7 @@ class CPLEXSolverAdapter(SolverAdapter):
                     "raw_status": raw_status,
                     "status_string": model.solution.get_status_string(raw_status),
                     "problem_type": model.problem_type[model.get_problem_type()],
+                    "use_ranged_rows": use_ranged_rows,
                 },
             )
         finally:
@@ -112,12 +120,15 @@ class CPLEXSolverAdapter(SolverAdapter):
                 pass
 
 
-def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> list[int]:
+def _add_cplex_constraints(
+    model, cplex, a, l, u, infinity: float, *, use_ranged_rows: bool = False
+) -> list[int]:
     constraint_rows = []
     lin_expr = []
     senses = []
     rhs = []
     names = []
+    range_values = []
     for row in range(a.shape[0]):
         start, end = a.indptr[row], a.indptr[row + 1]
         expr = cplex.SparsePair(
@@ -134,6 +145,17 @@ def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> list[int]:
             senses.append("E")
             rhs.append(u_val)
             names.append(f"c_{row}_eq")
+            range_values.append(0.0)
+            continue
+        # A negative CPLEX range reverses the interval rather than making it
+        # infeasible, so keep contradictory bounds as separate inequalities.
+        if use_ranged_rows and -1.0e20 < l_val < u_val < 1.0e20:
+            constraint_rows.append(row)
+            lin_expr.append(expr)
+            senses.append("R")
+            rhs.append(l_val)
+            names.append(f"c_{row}_range")
+            range_values.append(u_val - l_val)
             continue
         if l_val > -1.0e20:
             constraint_rows.append(row)
@@ -141,14 +163,19 @@ def _add_cplex_constraints(model, cplex, a, l, u, infinity: float) -> list[int]:
             senses.append("G")
             rhs.append(l_val)
             names.append(f"c_{row}_lb")
+            range_values.append(0.0)
         if u_val < 1.0e20:
             constraint_rows.append(row)
             lin_expr.append(expr)
             senses.append("L")
             rhs.append(u_val)
             names.append(f"c_{row}_ub")
+            range_values.append(0.0)
     if lin_expr:
-        model.linear_constraints.add(lin_expr=lin_expr, senses=senses, rhs=rhs, names=names)
+        options = {"range_values": range_values} if use_ranged_rows else {}
+        model.linear_constraints.add(
+            lin_expr=lin_expr, senses=senses, rhs=rhs, names=names, **options
+        )
     return constraint_rows
 
 
