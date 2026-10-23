@@ -330,6 +330,19 @@ def test_mpc_qpbenchmark_npz_loader_converts_qp_schema(tmp_path: Path):
     assert problem.qp["u"].tolist() == pytest.approx([3.0, 4.0, 5.0, 6.0])
 
 
+@pytest.mark.parametrize("name,row", [
+    ("LIPMWALK4", 0), ("LIPMWALK10", 0), ("LIPMWALK12", 1),
+    ("LIPMWALK18", 1), ("LIPMWALK20", 0), ("LIPMWALK28", 1),
+])
+def test_mpc_loader_clips_known_roundoff_bounds(name, row, repo_root):
+    dataset = get_dataset("mpc_qpbenchmark")(repo_root=repo_root)
+    if not (dataset.folder / f"{name}.npz").exists():
+        pytest.skip("MPC benchmark data not downloaded")
+    problem = dataset.load_problem(name)
+    assert problem.qp["A"].getrow(row).nnz == 0
+    assert problem.qp["u"][row] >= 0.0
+
+
 def test_maros_meszaros_loader_normalizes_sentinel_bounds(tmp_path: Path):
     # The archived .mat files store +-1e20 infinity sentinels, in a few
     # files with ULPs of representation error; the loader must hand back

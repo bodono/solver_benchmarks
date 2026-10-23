@@ -341,14 +341,14 @@ def test_commercial_adapter_infeasible_has_no_kkt(solver_name, tmp_path):
     assert result.kkt is None
 
 
-@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "gurobi", "highs", "mosek", "piqp", "qpo3"])
+@pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "gurobi", "highs", "mosek", "piqp", "cpo3"])
 def test_solver_error_retains_kkt(solver_name, tmp_path, monkeypatch):
     import importlib
 
     module = importlib.import_module(f"solver_benchmarks.solvers.{solver_name}_adapter")
     # Numerical errors are not reproducible: keep a real point and report an error.
     reported = status.SOLVER_ERROR
-    if solver_name == "qpo3":
+    if solver_name == "cpo3":
         monkeypatch.setattr(module, "_STATUS", dict.fromkeys(module._STATUS, reported))
     else:
         monkeypatch.setattr(module, f"_map_{solver_name}_status", lambda *args: reported)
@@ -377,7 +377,7 @@ def limit_qp():
 
 @pytest.mark.parametrize("solver_name, settings", [
     ("clarabel", {"presolve_enable": False, "time_limit": 0.001}),
-    ("qpo3", {"presolve": False, "time_limit": 0.001}),
+    ("cpo3", {"presolve": False, "time_limit": 0.001}),
     ("cplex", {"qpmethod": 4, "preprocessing.presolve": 0, "threads": 1, "time_limit": 0.1}),
     ("mosek", {"MSK_IPAR_PRESOLVE_USE": 0, "time_limit": 0.001}),
     ("highs", {"presolve": "off", "time_limit": 0.001}),
@@ -394,7 +394,7 @@ def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monke
 
 @pytest.mark.parametrize("solver_name, settings", [
     ("clarabel", {"max_iter": 1, "presolve_enable": False}),
-    ("qpo3", {"max_iter": 1, "presolve": False}),
+    ("cpo3", {"max_iter": 1, "presolve": False}),
     ("piqp", {"max_iter": 1}),
     ("cplex", {"barrier.limits.iteration": 1, "qpmethod": 4, "preprocessing.presolve": 0}),
     ("mosek", {"MSK_IPAR_INTPNT_MAX_ITERATIONS": 1, "MSK_IPAR_PRESOLVE_USE": 0}),
@@ -435,3 +435,28 @@ def test_mosek_selects_point_by_kkt(itr_x, bas_x, expected):
     assert selected == getattr(mosek.soltype, expected)
     assert residuals["primal_obj"] == pytest.approx(-1.0)
     assert residuals["dual_res_rel"] == 0.0
+
+
+@pytest.mark.parametrize("free_bound", [np.inf, 1e20])
+def test_highs_omits_free_rows_and_verifies_original_problem(free_bound, tmp_path, monkeypatch):
+    highspy = pytest.importorskip("highspy")
+    solver = highspy.Highs()
+    monkeypatch.setattr(highspy, "Highs", lambda: solver)
+    monkeypatch.setitem(SOLVER_SETTINGS, "highs", {
+        "verbose": False,
+        "solver": "hipo",
+        "optimality_tolerance": 1e-9,
+    })
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.array([1.0, -2.0]),
+        "A": sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [2.0, -1.0], [0.0, 1.0]]),
+        "l": np.array([-free_bound, 0.0, -free_bound, -np.inf]),
+        "u": np.array([free_bound, np.inf, free_bound, 1.0]),
+    }
+    result = _solve("highs", qp, tmp_path)
+    assert solver.getNumRow() == 2
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(-1.5, abs=1e-6)
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert result.kkt[field] < 1e-6

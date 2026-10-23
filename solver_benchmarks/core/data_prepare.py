@@ -54,12 +54,15 @@ def run_with_prepare_command(
     *,
     run_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
 ) -> str:
     parts = ["bench", "run", str(config_path), "--prepare-data"]
     if run_dir is not None:
         parts.extend(["--run-dir", str(run_dir)])
     if repo_root is not None:
         parts.extend(["--repo-root", str(repo_root)])
+    if data_root is not None:
+        parts.extend(["--data-root", str(data_root)])
     return shell_join(parts)
 
 

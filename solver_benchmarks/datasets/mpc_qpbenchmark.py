@@ -22,6 +22,7 @@ MPC_QPBENCHMARK_RAW_URL = (
     "https://raw.githubusercontent.com/qpsolvers/mpc_qpbenchmark/main/data"
 )
 MPC_QPBENCHMARK_DEFAULT_SUBSET = ("LIPMWALK0", "WHLIPBAL0", "QUADCMPC1")
+MPC_ZERO_ROW_BOUND_TOL = 1.0e-16  # Absolute data-cleanup threshold
 
 
 class MPCQPBenchmarkDataset(Dataset):
@@ -68,6 +69,14 @@ class MPCQPBenchmarkDataset(Dataset):
         spec = self.problem_by_name(name)
         assert spec.path is not None
         qp, metadata = read_mpc_qpbenchmark_npz(spec.path)
+        # Some LIPMWALK files contain 0 <= -O(1e-17) from input roundoff.
+        clipped = np.flatnonzero(
+            (qp["A"].getnnz(axis=1) == 0)
+            & (qp["l"] <= -INF_BOUND)
+            & (qp["u"] < 0.0)
+            & (qp["u"] >= -MPC_ZERO_ROW_BOUND_TOL)
+        )
+        qp["u"][clipped] = 0.0
         return ProblemData(
             self.dataset_id,
             name,

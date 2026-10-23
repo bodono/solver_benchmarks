@@ -64,14 +64,19 @@ class HighsSolverAdapter(SolverAdapter):
             np.array([], dtype=np.int32),
             np.array([], dtype=float),
         )
+        row_lower = _highs_bounds(l, -inf)
+        row_upper = _highs_bounds(u, inf)
+        # Free rows can trigger heap corruption in HiPO 1.15.1.
+        keep = ~(np.isneginf(row_lower) & np.isposinf(row_upper))
+        a_highs = a[keep]
         solver.addRows(
-            m,
-            _highs_bounds(l, -inf),
-            _highs_bounds(u, inf),
-            int(a.nnz),
-            a.indptr.astype(np.int32),
-            a.indices.astype(np.int32),
-            a.data.astype(float),
+            a_highs.shape[0],
+            row_lower[keep],
+            row_upper[keep],
+            int(a_highs.nnz),
+            a_highs.indptr.astype(np.int32),
+            a_highs.indices.astype(np.int32),
+            a_highs.data.astype(float),
         )
         if p.nnz:
             lower = sp.tril(p, format="csc")
@@ -90,7 +95,10 @@ class HighsSolverAdapter(SolverAdapter):
         mapped = _map_highs_status(model_status, highspy)
         info = solver.getInfo()
         solution = solver.getSolution()
-        y = -np.asarray(solution.row_dual, dtype=float) if solution.dual_valid else None
+        y = None
+        if solution.dual_valid:
+            y = np.zeros(m)
+            y[keep] = -np.asarray(solution.row_dual, dtype=float)
         kkt_dict = None
         if solution.value_valid and y is not None:
             kkt_dict = kkt.qp_residuals(

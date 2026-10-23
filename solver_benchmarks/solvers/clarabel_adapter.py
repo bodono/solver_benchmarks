@@ -113,6 +113,11 @@ class ClarabelSolverAdapter(SolverAdapter):
             "r_dual": getattr(solution, "r_dual", None),
             "solve_time": getattr(solution, "solve_time", None),
         }
+        linear_info = solver.get_info().linsolver
+        for field in ("factorizations", "kkt_solves", "refinement_passes"):
+            value = getattr(linear_info, field, None)
+            if value is not None:
+                info[field] = value
         if threads_ignored:
             mark_threads_ignored(info, threads)
         return SolverResult(
