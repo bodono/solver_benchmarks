@@ -27,7 +27,6 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 from .base import (
     SolverAdapter,
     SolverUnavailable,
-    mark_threads_ignored,
     pop_threads,
     pop_time_limit,
     settings_with_defaults,
@@ -54,6 +53,8 @@ _INFO_FIELDS = (
     "factorizations",
     "kkt_solves",
     "refinement_passes",
+    "primary_solves",
+    "refinement_solves",
     "refinement_failures",
     "shift_escalations",
     "strict_fallbacks",
@@ -87,7 +88,9 @@ class Cpo3SolverAdapter(SolverAdapter):
         qp = problem.qp
         settings = settings_with_defaults(self.settings)
         time_limit = pop_time_limit(settings)
-        threads = pop_threads(settings)  # cpo3 has no thread setting
+        threads = pop_threads(settings)
+        if threads is not None:
+            settings["threads"] = threads
         translated = translate_settings(settings)
         if time_limit is not None:
             settings.setdefault("time_limit", float(time_limit))
@@ -132,7 +135,15 @@ class Cpo3SolverAdapter(SolverAdapter):
             value = getattr(info, field, None)
             if value is not None:
                 result_info[field] = to_jsonable(getattr(value, "value", value))
-        mark_threads_ignored(result_info, threads)
+        # Newer cpo3 versions renamed the linear-solve counters. Keep the native
+        # fields and supply the legacy names used by existing benchmark reports.
+        # Preserve explicit legacy values, including zero, when both are present.
+        for legacy, current in (
+            ("kkt_solves", "primary_solves"),
+            ("refinement_passes", "refinement_solves"),
+        ):
+            if legacy not in result_info and current in result_info:
+                result_info[legacy] = result_info[current]
         if translated:
             result_info["settings_translated"] = translated
         cone_dict: dict = {}
