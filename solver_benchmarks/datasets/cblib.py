@@ -184,11 +184,14 @@ def read_cbf_cone_problem(path: Path) -> tuple[dict, dict]:
             nonnegative_blocks.append((-matrix, -rhs))
         elif domain.name == "Q":
             soc_blocks.append((matrix, rhs, domain.dim))
-        elif domain.name == "EXP":
-            # CBF's EXP cone is always 3-dim per cone.
-            expcone_blocks.append((matrix, rhs))
-        elif domain.name == "EXP*":
-            dual_expcone_blocks.append((matrix, rhs))
+        elif domain.name in {"EXP", "EXP*"}:
+            # CBF's EXP cone is always 3-dim per cone and orders it as
+            # x1 >= x2 exp(x3 / x2) (EXP* as x1 >= -x3 exp(-1) exp(x2 / x3)),
+            # while the SCS/Clarabel convention is (x, y, z) with
+            # y exp(x / y) <= z (dual: -u exp(v / u) <= e w). Both map by
+            # reversing the three rows.
+            matrix, rhs = matrix[::-1], rhs[::-1]
+            (expcone_blocks if domain.name == "EXP" else dual_expcone_blocks).append((matrix, rhs))
         else:
             raise UnsupportedCBFError(f"Unsupported CBF cone {domain.name!r}")
 

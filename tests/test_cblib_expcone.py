@@ -411,3 +411,87 @@ def test_expcone_problem_loads_with_well_formed_cone_schema(
     assert a_rows == expected_rows, (a_rows, cone)
     assert isinstance(problem_data.cone["b"], np.ndarray)
     assert problem_data.cone["b"].shape[0] == a_rows
+
+
+# ---------------------------------------------------------------------------
+# Cone orientation. CBF orders EXP as x1 >= x2 exp(x3 / x2) and EXP* as
+# x1 >= -x3 exp(-1) exp(x2 / x3); SCS and Clarabel use (x, y, z) with
+# y exp(x / y) <= z and -u exp(v / u) <= e w. A point inside the CBF cone
+# must give a slack s = b - A x inside the SCS cone.
+# ---------------------------------------------------------------------------
+
+
+def _in_scs_exp_cone(s: np.ndarray) -> bool:
+    x, y, z = s
+    return y > 0 and y * np.exp(x / y) <= z * (1 + 1e-12)
+
+
+def _in_scs_dual_exp_cone(s: np.ndarray) -> bool:
+    u, v, w = s
+    return u < 0 and -u * np.exp(v / u) <= np.e * w * (1 + 1e-12)
+
+
+@pytest.mark.parametrize(
+    ("body", "point", "member"),
+    [
+        # (3, 1, 1): 3 >= 1 * exp(1 / 1)
+        (_EXPCONE_CBF, np.array([3.0, 1.0, 1.0]), _in_scs_exp_cone),
+        # (1, 0, -1): 1 >= 1 * exp(-1) * exp(0)
+        (_DUAL_EXPCONE_CBF, np.array([1.0, 0.0, -1.0]), _in_scs_dual_exp_cone),
+    ],
+    ids=["EXP", "EXP*"],
+)
+def test_read_cbf_maps_variable_exp_cones_to_scs_orientation(tmp_path: Path, body, point, member):
+    from solver_benchmarks.datasets.cblib import read_cbf_cone_problem
+
+    problem, _meta = read_cbf_cone_problem(_write_cbf(tmp_path, "orient", body))
+    z = int(problem["cone"].get("z", 0))
+    a = problem["A"].toarray()[z:]
+    b = problem["b"][z:]
+    assert member(b - a @ point)
+
+
+_EXP_CONSTRAINT_CBF = """VER
+1
+
+OBJSENSE
+MIN
+
+VAR
+1 1
+F 1
+
+CON
+3 1
+EXP 3
+
+OBJACOORD
+1
+0 1.0
+
+ACOORD
+1
+0 0 1.0
+
+BCOORD
+2
+1 1.0
+2 1.0
+"""
+
+
+def test_exp_constraint_cone_solves_to_known_optimum(tmp_path: Path):
+    """min t s.t. (t, 1, 1) in CBF EXP, i.e. t >= exp(1): optimum is e."""
+    scs = pytest.importorskip("scs")
+    from solver_benchmarks.datasets.cblib import read_cbf_cone_problem
+
+    problem, _meta = read_cbf_cone_problem(_write_cbf(tmp_path, "exp_con", _EXP_CONSTRAINT_CBF))
+    sol = scs.solve(
+        {"A": problem["A"], "b": problem["b"], "c": problem["q"]},
+        problem["cone"],
+        verbose=False,
+        eps_abs=1e-8,
+        eps_rel=1e-8,
+    )
+    assert sol["info"]["status"] == "solved"
+    assert sol["x"][0] == pytest.approx(np.e, rel=1e-5)
