@@ -517,6 +517,48 @@ def test_ecos_solves_socp(tmp_path):
     assert result.kkt["dual_res_rel"] < 1e-4
 
 
+def _small_exp_cone_problem() -> dict:
+    """min t  s.t.  t <= 10,  (1, 1, t) in K_exp.
+
+    K_exp is the canonical (SCS/Clarabel) cone y exp(x / y) <= z, so the
+    constraint reads e <= t and the optimum is t = e. ECOS orders its cone
+    as z exp(x / z) <= y; passing the rows through unswapped makes this
+    problem primal infeasible for ECOS.
+    """
+    return {
+        "P": None,
+        "q": np.array([1.0]),
+        "A": sp.csc_matrix(np.array([[1.0], [0.0], [0.0], [-1.0]])),
+        "b": np.array([10.0, 1.0, 1.0, 0.0]),
+        "cone": {"l": 1, "ep": 1},
+    }
+
+
+def test_ecos_solves_exp_cone_in_canonical_orientation(tmp_path):
+    pytest.importorskip("ecos")
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+    adapter = ECOSSolverAdapter({"verbose": False})
+    result = adapter.solve(_make_cone_problem(_small_exp_cone_problem()), tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(np.e, rel=1e-5)
+    # The KKT check runs on the canonical data, so it also checks that the
+    # duals and slacks were mapped back from ECOS's cone order.
+    assert result.kkt is not None
+    assert result.kkt["primal_res_rel"] < 1e-6
+    assert result.kkt["dual_res_rel"] < 1e-6
+    assert result.kkt["duality_gap_rel"] < 1e-6
+
+
+def test_ecos_exp_row_perm_swaps_last_two_rows_of_each_exp_block():
+    from solver_benchmarks.solvers.ecos_adapter import _ecos_exp_row_perm
+
+    assert _ecos_exp_row_perm(4, 0) is None
+    perm = _ecos_exp_row_perm(8, 2)
+    assert perm.tolist() == [0, 1, 2, 4, 3, 5, 7, 6]
+    assert (perm[perm] == np.arange(8)).all()
+
+
 def test_ecos_merges_legacy_free_cone_key(tmp_path):
     """The ``f`` (free) cone key folds into the zero cone."""
     pytest.importorskip("ecos")

@@ -115,6 +115,13 @@ class ECOSSolverAdapter(SolverAdapter):
             data["c"], data["G"], data["h"], dims, A=data["A"], b=data["b"], **kwargs
         )
         elapsed = time.perf_counter() - start
+        ineq_perm = data.get("ineq_perm")
+        if ineq_perm is not None:
+            # Inequality duals and slacks back to the canonical cone order.
+            raw = dict(raw)
+            for key in ("z", "s"):
+                if raw.get(key) is not None:
+                    raw[key] = np.asarray(raw[key], dtype=float)[ineq_perm]
 
         info = dict(raw.get("info", {}))
         mark_time_limit_ignored = _mark_time_limit_ignored
@@ -474,6 +481,14 @@ def _cone_to_ecos(cone_problem: dict):
     b_eq = b[:z_count]
     a_ineq = a[z_count:, :]
     b_ineq = b[z_count:]
+    # The canonical (SCS/Clarabel) exponential cone is (x, y, z) with
+    # y exp(x / y) <= z; ECOS's is (x, y, z) with z exp(x / z) <= y. Swap
+    # the last two rows of each 3-row block; the swap is its own inverse,
+    # so the same permutation maps ECOS's duals and slacks back.
+    ineq_perm = _ecos_exp_row_perm(a_ineq.shape[0], e_count)
+    if ineq_perm is not None:
+        a_ineq = a_ineq[ineq_perm, :]
+        b_ineq = b_ineq[ineq_perm]
 
     dims = {"l": l_count, "q": [int(d) for d in q_list], "e": e_count}
     cone_dict: dict = {}
@@ -493,10 +508,24 @@ def _cone_to_ecos(cone_problem: dict):
             "h": b_ineq,
             "A": sp.csc_matrix(a_eq),
             "b": b_eq,
+            "ineq_perm": ineq_perm,
         },
         dims,
         cone_dict,
     )
+
+
+def _ecos_exp_row_perm(n_ineq: int, e_count: int) -> np.ndarray | None:
+    """Row permutation of the inequality block swapping (y, z) in every
+    exponential cone; the exp cones are the last ``3 * e_count`` rows."""
+    if not e_count:
+        return None
+    perm = np.arange(n_ineq)
+    start = n_ineq - 3 * e_count
+    for k in range(e_count):
+        i = start + 3 * k
+        perm[i + 1], perm[i + 2] = i + 2, i + 1
+    return perm
 
 
 def _mark_time_limit_ignored(info, time_limit):
