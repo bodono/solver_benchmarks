@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import gzip
 import re
+import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -99,8 +101,13 @@ class CBLIBDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
+        max_size_mb = self.options.get("max_size_mb")
         if all_problems:
             names = cblib_remote_problem_names()
+            # CBLIB's index holds instances of several hundred MB compressed; with
+            # max_size_mb only those under the cap are fetched (sizes by HEAD request).
+            if max_size_mb is not None:
+                names = cblib_names_under_size(names, max_size_mb)
         elif problem_names:
             names = list(problem_names)
         else:
@@ -122,6 +129,31 @@ def cblib_remote_problem_names() -> list[str]:
         html = response.read().decode("utf-8", "replace")
     filenames = re.findall(r'href="([^"]+\.cbf\.gz)"', html)
     return sorted(_strip_cbf_suffix(filename) for filename in filenames)
+
+
+def cblib_names_under_size(names: list[str], max_size_mb: float) -> list[str]:
+    threshold_bytes = float(max_size_mb) * 1.0e6
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        sizes = list(pool.map(cblib_remote_size_bytes, names))
+    return [name for name, size in zip(names, sizes) if size <= threshold_bytes]
+
+
+def cblib_remote_size_bytes(name: str) -> int:
+    stem = _strip_cbf_suffix(Path(name).name)
+    request = urllib.request.Request(f"{CBLIB_BASE_URL}/{stem}.cbf.gz", method="HEAD")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content_length = response.headers.get("Content-Length")
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"Could not fetch CBLIB size for {name!r}: {exc}") from exc
+    if content_length is None:
+        raise RuntimeError(f"CBLIB did not report a Content-Length for {name!r}")
+    try:
+        return int(content_length)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"CBLIB reported an invalid Content-Length for {name!r}: {content_length!r}"
+        ) from exc
 
 
 def download_cblib_problem(name: str, folder: Path) -> Path:
