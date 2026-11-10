@@ -917,7 +917,7 @@ Run and analysis commands:
 | `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
-| `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default. |
+| `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
@@ -1085,6 +1085,30 @@ plots the fraction of problems with `r[p, s] <= tau`. Failed or inaccurate solve
 have infinite ratios by default and never enter the solved fraction. Problems
 where every solver fails remain in the denominator. The per-problem best is
 computed only from successful, finite metrics.
+
+### Known outcomes
+
+Datasets that know a problem's outcome record it as
+`metadata.expected_status`: `optimal`, `infeasible` or `unbounded`. Every
+success count, failure table, profile, geomean and plot scores rows against
+it:
+
+- `infeasible` (NETLIB `subset: infeasible`, all of Liu-Pataki, SDPLIB
+  `infd1`/`infd2`/`infp1`/`infp2`, DC OPF cases labelled infeasible): solved
+  only by `primal_infeasible` or `dual_infeasible`. Either certificate proves
+  no optimal pair exists, and some instances (NETLIB `cplex1`) are primal and
+  dual infeasible at once. Weakly infeasible Liu-Pataki instances are held to
+  the same rule.
+- `unbounded`: solved only by `dual_infeasible`.
+- `optimal`, or no recorded outcome: solved only by a success status
+  (`optimal` by default).
+
+So a claimed optimum on an infeasible problem is a failure, and so is a
+certificate on a solvable one. Inaccurate certificates and the ambiguous
+`primal_or_dual_infeasible` never count, as `optimal_inaccurate` never counts,
+and a certificate the harness checked and found invalid (`kkt.valid` false) is
+a failure. Runs recorded before this field existed are scored the same way:
+the outcome is inferred from the dataset id, problem name and source path.
 
 Generate shifted geometric means:
 

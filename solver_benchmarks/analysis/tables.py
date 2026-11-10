@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
 from solver_benchmarks.analysis.profiles import deduplicate_for_pivot
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
@@ -48,7 +49,7 @@ def solver_metrics(
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
         total = len(group)
-        successful = group["status"].isin(success_statuses)
+        successful = solved_mask(group, success_statuses)
         success_count = int(successful.sum())
         run_times = _numeric_column(group, "run_time_seconds")
         iterations = _numeric_column(group, "iterations")
@@ -99,7 +100,7 @@ def kkt_summary(
     if results.empty:
         return pd.DataFrame(columns=columns)
 
-    successful = results[results["status"].isin(success_statuses)]
+    successful = results[solved_mask(results, success_statuses)]
     if successful.empty:
         return pd.DataFrame(columns=columns)
 
@@ -256,7 +257,7 @@ def difficulty_scaling(
     rows = []
     for (solver_id, bin_id), group in sized.groupby(["solver_id", "__bin__"], observed=True):
         sizes_in_bin = group[size_field].astype(float)
-        successful = group[group["status"].isin(success_statuses)]
+        successful = group[solved_mask(group, success_statuses)]
         success_metric = pd.to_numeric(successful[metric], errors="coerce").dropna()
         rows.append(
             {
@@ -310,7 +311,7 @@ def setup_solve_breakdown(
         or "solve_time_seconds" not in results
     ):
         return pd.DataFrame(columns=columns)
-    successful = results[results["status"].isin(success_statuses)].copy()
+    successful = results[solved_mask(results, success_statuses)].copy()
     if successful.empty:
         return pd.DataFrame(columns=columns)
     successful["setup_time_seconds"] = pd.to_numeric(
@@ -429,7 +430,7 @@ def failure_rates(
     rows = []
     for solver_id, group in results.groupby("solver_id", observed=True):
         total = len(group)
-        successful = group["status"].isin(success_statuses)
+        successful = solved_mask(group, success_statuses)
         success_count = int(successful.sum())
         status_counts = group["status"].value_counts(dropna=False).sort_index()
         rows.append(
@@ -688,7 +689,7 @@ def pairwise_speedups(
     if results.empty or metric not in results:
         return pd.DataFrame(columns=columns)
 
-    successful = results[results["status"].isin(success_statuses)].copy()
+    successful = results[solved_mask(results, success_statuses)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
     keys = _problem_keys(successful)
@@ -783,7 +784,7 @@ def objective_spreads(
     if results.empty or "objective_value" not in results:
         return pd.DataFrame(columns=columns)
 
-    successful = results[results["status"].isin(success_statuses)].copy()
+    successful = results[solved_mask(results, success_statuses)].copy()
     successful["objective_value"] = pd.to_numeric(
         successful["objective_value"], errors="coerce"
     )
@@ -878,8 +879,9 @@ def failures_with_successful_alternatives(
     frame = results.copy()
     if metric in frame:
         frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
-    successes = frame[frame["status"].isin(success_statuses)].copy()
-    failures = frame[~frame["status"].isin(success_statuses)].copy()
+    solved = solved_mask(frame, success_statuses)
+    successes = frame[solved].copy()
+    failures = frame[~solved].copy()
     if successes.empty or failures.empty:
         return pd.DataFrame(columns=columns)
 
@@ -1095,7 +1097,7 @@ def performance_ratio_matrix(
         success_statuses = set(status.SOLUTION_PRESENT)
     if results.empty or metric not in results:
         return pd.DataFrame()
-    successful = results[results["status"].isin(success_statuses)].copy()
+    successful = results[solved_mask(results, success_statuses)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
     keys = _problem_keys(successful)

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.sdplib import (
     extract_from_tar,
@@ -94,7 +96,7 @@ class SDPLIBDataset(Dataset):
                     dataset_id=self.dataset_id, name=name, kind=CONE, path=self.tar_path,
                     metadata={"source": str(self.tar_path), "format": "tar:jld2", "size_bytes": int(size_bytes)},
                 ), 3)
-        return [specs[k] for k in sorted(specs) if self._in_subset(k)]
+        return [_with_expected(specs[k]) for k in sorted(specs) if self._in_subset(k)]
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -142,3 +144,11 @@ class SDPLIBDataset(Dataset):
             f"Restore the converted archive at {self.tar_path}, or place converted "
             f"`.jld2` files in {self.folder}."
         )
+
+
+def _with_expected(spec: ProblemSpec) -> ProblemSpec:
+    """Record the known outcome: the four infeasible instances have no optimal
+    pair (either kind of certificate is accepted, so the SDPA-to-cone sign
+    convention does not matter); every other SDPLIB instance is solvable."""
+    outcome = status.EXPECT_INFEASIBLE if spec.name in SDPLIB_INFEASIBLE else status.EXPECT_OPTIMAL
+    return replace(spec, metadata={**spec.metadata, "expected_status": outcome})

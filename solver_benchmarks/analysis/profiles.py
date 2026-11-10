@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import numpy as np
 import pandas as pd
 
+from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
 from solver_benchmarks.core import status
 
 DEFAULT_FAILURE_PENALTY = 1.0e3
@@ -86,7 +87,7 @@ def deduplicate_for_pivot(
         # every row as successful so behavior matches the old code path.
         if "status" in sortable.columns:
             valid = np.isfinite(sortable["__metric_for_dedup"]) & sortable["__metric_for_dedup"].ge(0)
-            sortable["__failure_for_dedup"] = ~(sortable["status"].isin(success_statuses) & valid)
+            sortable["__failure_for_dedup"] = ~(solved_mask(sortable, success_statuses) & valid)
             sort_columns = ["__failure_for_dedup", "__metric_for_dedup"]
         else:
             sort_columns = ["__metric_for_dedup"]
@@ -161,8 +162,10 @@ def performance_profile(
     # Unlike pivot_table, pivot preserves rows and solver columns whose
     # metrics are all missing (e.g. an entire worker-error shard).
     values = deduped.pivot(index=index, columns="solver_id", values=metric)
-    statuses = deduped.pivot(index=index, columns="solver_id", values="status")
-    success_mask = statuses.isin(success_statuses) & np.isfinite(values) & values.ge(0)
+    solved = deduped.assign(__solved=solved_mask(deduped, success_statuses)).pivot(
+        index=index, columns="solver_id", values="__solved"
+    )
+    success_mask = solved.fillna(False).astype(bool) & np.isfinite(values) & values.ge(0)
     values = values.clip(lower=min_value)
     successful_values = values.where(success_mask)
     if np.isfinite(max_value) and successful_values.ge(max_value).any().any():
@@ -295,7 +298,7 @@ def shifted_geomean(
         values = pd.to_numeric(
             group.get(metric, pd.Series(np.nan, index=group.index)), errors="coerce"
         ).to_numpy(dtype=float, copy=True)
-        successful = group["status"].isin(success_statuses).to_numpy() & np.isfinite(values) & (values >= 0)
+        successful = solved_mask(group, success_statuses).to_numpy() & np.isfinite(values) & (values >= 0)
         success_count = int(successful.sum())
         failure_count = int(len(group) - success_count)
         reported_max = None

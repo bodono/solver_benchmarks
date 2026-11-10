@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scipy.io import loadmat
 
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
@@ -44,11 +45,11 @@ class DCOPFDataset(Dataset):
     def list_problems(self) -> list[ProblemSpec]:
         selection = self.options.get("subset")
         subset = _normalize_subset(selection)
+        labels_path = self.data_dir / "feasibility.json"
+        labels = json.loads(labels_path.read_text()) if labels_path.exists() else {}
         if isinstance(selection, str) and selection in ("feasible", "infeasible"):
-            labels_path = self.data_dir / "feasibility.json"
             if not labels_path.exists():
                 return []
-            labels = json.loads(labels_path.read_text())
             subset = {name for name, label in labels.items() if label == selection}
         return [
             ProblemSpec(
@@ -60,6 +61,7 @@ class DCOPFDataset(Dataset):
                     "source": str(path),
                     "format": "matpower-dc-opf",
                     "data_revision": MATPOWER_REVISION,
+                    **_expected_metadata(labels.get(path.stem)),
                 },
             )
             for path in sorted(self.data_dir.glob("*.mat"))
@@ -97,6 +99,15 @@ class DCOPFDataset(Dataset):
             names = [name for name, label in labels.items() if label == selection]
         for name in names:
             download_matpower_case(name, self.data_dir)
+
+
+def _expected_metadata(label: str | None) -> dict:
+    """Map a MATPOWER DC OPF feasibility label to the case's known outcome."""
+    if label == "feasible":
+        return {"expected_status": status.EXPECT_OPTIMAL}
+    if label == "infeasible":
+        return {"expected_status": status.EXPECT_INFEASIBLE}
+    return {}
 
 
 def download_feasibility_labels(folder: Path) -> Path:
