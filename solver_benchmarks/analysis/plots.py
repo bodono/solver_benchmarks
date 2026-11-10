@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.analysis.load import load_results
+from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
 from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.profiles import (
     deduplicate_for_pivot,
@@ -41,7 +42,6 @@ from solver_benchmarks.analysis.tables import (
     setup_solve_breakdown,
     status_matrix,
 )
-from solver_benchmarks.core import status
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +164,7 @@ def _unique_problem_count(results: pd.DataFrame) -> int:
 def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
     if metric not in results:
         return None
-    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    successful = results[solved_mask(results)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     # Keep zero-duration successes (instantly-solved problems) so the
     # cactus curve correctly counts them; previously a strict ``> 0``
@@ -213,7 +213,7 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
 def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | None:
     if metric not in results:
         return None
-    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    successful = results[solved_mask(results)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
 
@@ -389,7 +389,7 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
     if not available:
         return None
 
-    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    successful = results[solved_mask(results)].copy()
     if successful.empty:
         return None
 
@@ -457,7 +457,7 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
     if not available:
         return None
 
-    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    successful = results[solved_mask(results)].copy()
     if successful.empty:
         return None
 
@@ -524,7 +524,7 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
     if not available:
         return None
 
-    successful = results[results["status"].isin(status.SOLUTION_PRESENT)].copy()
+    successful = results[solved_mask(results)].copy()
     if successful.empty:
         return None
 

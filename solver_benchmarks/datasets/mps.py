@@ -18,6 +18,7 @@ import numpy as np
 import scipy.sparse as sp
 
 import problem_classes.qpsreader as qpsreader
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.emps import decode_emps, is_emps_header
 
@@ -58,10 +59,15 @@ class MPSLPDataset(Dataset):
                     "source": str(path),
                     "format": "mps",
                     **_mps_candidate_size_metadata(paths),
+                    **self.expected_metadata(),
                 },
             )
             for name, paths in sorted(candidates.items())
         ]
+
+    def expected_metadata(self) -> dict:
+        """Known outcome shared by every problem of this collection, if any."""
+        return {}
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -96,6 +102,13 @@ class NetlibDataset(MPSLPDataset):
         if subset is None:
             subset = "infeasible" if self.options.get("infeasible", False) else "feasible"
         return self.problem_classes_dir / "netlib_data" / str(subset)
+
+    def expected_metadata(self) -> dict:
+        if self.folder.name == "infeasible":
+            return {"expected_status": status.EXPECT_INFEASIBLE}
+        if self.folder.name == "feasible":
+            return {"expected_status": status.EXPECT_OPTIMAL}
+        return {}
 
 
 class KenningtonDataset(MPSLPDataset):

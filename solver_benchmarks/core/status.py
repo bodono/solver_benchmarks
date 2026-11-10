@@ -29,3 +29,24 @@ ANY_INFEASIBLE = {
     DUAL_INFEASIBLE_INACCURATE,
     PRIMAL_OR_DUAL_INFEASIBLE,
 }
+
+# Known outcome of a problem, recorded by datasets as ``metadata["expected_status"]``.
+# Problems without one are assumed to have an optimal solution, so success for
+# them is unchanged: the status must be in the caller's success set.
+EXPECT_OPTIMAL = "optimal"
+# Primal infeasible. Either certificate counts: a valid dual-infeasibility
+# certificate also proves no optimal pair exists, and some infeasible
+# problems (e.g. NETLIB cplex1) are primal and dual infeasible at once.
+EXPECT_INFEASIBLE = "infeasible"
+# Primal feasible but unbounded: only a dual-infeasibility certificate is
+# correct, since no valid primal-infeasibility certificate can exist.
+EXPECT_UNBOUNDED = "unbounded"
+EXPECTED_OUTCOMES = (EXPECT_OPTIMAL, EXPECT_INFEASIBLE, EXPECT_UNBOUNDED)
+
+# Only an accurate certificate counts, as only ``optimal`` counts for a
+# solution; the ``*_inaccurate`` and ambiguous ``primal_or_dual_infeasible``
+# statuses carry no certificate the harness can trust.
+CERTIFICATE_SUCCESS = {
+    EXPECT_INFEASIBLE: frozenset({PRIMAL_INFEASIBLE, DUAL_INFEASIBLE}),
+    EXPECT_UNBOUNDED: frozenset({DUAL_INFEASIBLE}),
+}

@@ -9,6 +9,7 @@ import numpy as np
 import scipy.io
 import scipy.sparse as sp
 
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
 from .base import Dataset
@@ -55,6 +56,9 @@ class LiuPatakiDataset(Dataset):
                         "format": "sedumi_mat",
                         "size_bytes": path.stat().st_size,
                         **metadata,
+                        # Infeasible and weakly infeasible instances alike:
+                        # none has an optimal solution.
+                        "expected_status": status.EXPECT_INFEASIBLE,
                     },
                 )
             )
