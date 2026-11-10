@@ -13,8 +13,12 @@ import pandas as pd
 import pytest
 
 from solver_benchmarks.analysis.outcomes import expected_outcomes, success_mask
-from solver_benchmarks.analysis.profiles import performance_profile
-from solver_benchmarks.analysis.tables import solver_metrics
+from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
+from solver_benchmarks.analysis.tables import (
+    failure_rates,
+    failures_with_successful_alternatives,
+    solver_metrics,
+)
 from solver_benchmarks.core import status
 from solver_benchmarks.datasets.dc_opf import DCOPFDataset
 from solver_benchmarks.datasets.liu_pataki import LiuPatakiDataset
@@ -249,3 +253,45 @@ def test_sdplib_records_expected_outcome(tmp_path):
         "infp1": status.EXPECT_INFEASIBLE,
         "infd2": status.EXPECT_INFEASIBLE,
     }
+
+
+def test_failure_rates_score_by_expected_outcome():
+    rates = failure_rates(_mixed_results()).set_index("solver_id")
+    assert rates.loc["A", "success_count"] == 2
+    assert rates.loc["B", "success_count"] == 1
+    assert rates.loc["B", "failure_count"] == 1
+
+
+def test_shifted_geomean_counts_false_optimum_as_failure():
+    means = shifted_geomean(_mixed_results(), metric="iterations", success_statuses=None).set_index(
+        "solver_id"
+    )
+    count_cols = [c for c in means.columns if "success" in c and "count" in c]
+    assert count_cols, means.columns
+    assert means.loc["A", count_cols[0]] == 2
+    assert means.loc["B", count_cols[0]] == 1
+
+
+def test_failures_with_successful_alternatives_flags_false_optimum():
+    table = failures_with_successful_alternatives(_mixed_results())
+    assert not table.empty
+    assert set(table["problem"]) == {"infeasible"}
+    assert set(table["solver_id"]) == {"B"}
+
+
+def test_cactus_plot_counts_only_correct_outcomes(tmp_path, monkeypatch):
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from solver_benchmarks.analysis import plots
+
+    seen = []
+
+    def recording_mask(frame, *args, **kwargs):
+        mask = success_mask(frame, *args, **kwargs)
+        seen.append(sorted(zip(frame.loc[mask, "solver_id"], frame.loc[mask, "problem"])))
+        return mask
+
+    monkeypatch.setattr(plots, "solved_mask", recording_mask)
+    plots._write_cactus(_mixed_results(), tmp_path, "run_time_seconds")
+    assert seen == [[("A", "feasible"), ("A", "infeasible"), ("B", "feasible")]]
