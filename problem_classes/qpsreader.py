@@ -10,6 +10,7 @@ import re
 import tempfile
 import warnings
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from scipy import sparse
@@ -78,8 +79,25 @@ def _check_for_quadratic_sections(path: Path) -> None:
         )
 
 
-def readMpsLp(filename):
-    """Read an MPS LP file and return ``(mat, c, l, u)`` in canonical bound form.
+class MpsProblem(NamedTuple):
+    """An LP read from an MPS file, as the minimisation the harness solves:
+    minimise ``c'x + offset`` subject to ``l <= mat x <= u``."""
+
+    mat: sparse.csc_matrix
+    c: np.ndarray
+    l: np.ndarray
+    u: np.ndarray
+    # Constant term of the objective of the minimisation: the file's constant,
+    # with its sign changed if the file states a maximisation.
+    offset: float
+    # Whether the file states a maximisation. ``c`` and ``offset`` are then
+    # minus the file's, and the optimum of the file is minus the optimum of
+    # the minimisation.
+    maximise: bool
+
+
+def readMpsProblem(filename) -> MpsProblem:
+    """Read an MPS LP file as the minimisation the harness solves.
 
     Supports plain ``.mps``, gzip-compressed ``.mps.gz``, and bzip2-compressed
     ``.mps.bz2`` files. HiGHS' ``readModel`` only accepts plain MPS files on
@@ -92,11 +110,19 @@ def readMpsLp(filename):
 
     if suffix.endswith(".gz") or path.suffix.lower() == ".gz":
         with _decompressed_temp_file(path, gzip.open) as tmp:
-            return _read_uncompressed_mps(tmp)
+            return _read_uncompressed_mps_problem(tmp)
     if suffix.endswith(".bz2") or path.suffix.lower() == ".bz2":
         with _decompressed_temp_file(path, bz2.open) as tmp:
-            return _read_uncompressed_mps(tmp)
-    return _read_uncompressed_mps(str(path))
+            return _read_uncompressed_mps_problem(tmp)
+    return _read_uncompressed_mps_problem(str(path))
+
+
+def readMpsLp(filename):
+    """Read an MPS LP file and return ``(mat, c, l, u)`` in canonical bound form.
+
+    The objective's constant term is left out; ``readMpsProblem`` returns it.
+    """
+    return readMpsProblem(filename)[:4]
 
 
 @contextlib.contextmanager
@@ -114,6 +140,10 @@ def _decompressed_temp_file(path: Path, opener):
 
 
 def _read_uncompressed_mps(filename: str):
+    return _read_uncompressed_mps_problem(filename)[:4]
+
+
+def _read_uncompressed_mps_problem(filename: str) -> MpsProblem:
     import highspy
 
     h = highspy.Highs()
@@ -136,12 +166,15 @@ def _read_uncompressed_mps(filename: str):
     )
     c = np.asarray(lp.col_cost_, dtype=float)
     # Everything downstream minimises. A file that HiGHS reads as a
-    # maximisation is posed as the minimisation of minus its objective, as
-    # the CBLIB and QPLIB loaders do. The sense is read without a fallback:
-    # a HiGHS build that does not report it must fail here, not hand back a
-    # maximisation as a minimisation.
-    if lp.sense_ == highspy.ObjSense.kMaximize:
+    # maximisation is posed as the minimisation of minus its objective,
+    # constant term included, as the CBLIB and QPLIB loaders do. The sense
+    # is read without a fallback: a HiGHS build that does not report it must
+    # fail here, not hand back a maximisation as a minimisation.
+    offset = float(lp.offset_)
+    maximise = bool(lp.sense_ == highspy.ObjSense.kMaximize)
+    if maximise:
         c = -c
+        offset = -offset
     n = c.size
     x_low = _sanitize_lower(np.asarray(lp.col_lower_, dtype=float))
     x_upper = _sanitize_upper(np.asarray(lp.col_upper_, dtype=float))
@@ -155,4 +188,4 @@ def _read_uncompressed_mps(filename: str):
         (a, sparse.eye(n, format="csr")[finite_var_bounds, :]),
         format="csc",
     )
-    return mat, c, l, u
+    return MpsProblem(mat, c, l, u, offset, maximise)

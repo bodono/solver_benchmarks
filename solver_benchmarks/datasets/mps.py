@@ -72,13 +72,15 @@ class MPSLPDataset(Dataset):
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
         assert spec.path is not None
-        a, c, l, u = qpsreader.readMpsLp(str(spec.path))
+        # The minimisation the harness solves: for a file that states a
+        # maximisation, the costs and the constant are minus the file's.
+        a, c, l, u, offset, maximise = qpsreader.readMpsProblem(str(spec.path))
         a = sp.csc_matrix(a)
         n = a.shape[1]
         qp = {
             "P": sp.csc_matrix((n, n)),
             "q": np.asarray(c, dtype=float),
-            "r": 0.0,
+            "r": float(offset),
             "A": a,
             "l": np.asarray(l, dtype=float),
             "u": np.asarray(u, dtype=float),
@@ -88,7 +90,11 @@ class MPSLPDataset(Dataset):
         }
         if self.options.get("add_quadratic", False):
             qp["P"] = sp.eye(n, format="csc")
-        return ProblemData(self.dataset_id, name, QP, qp, metadata=dict(spec.metadata))
+        # As for QPLIB: the problem is always posed as a minimisation, and
+        # the sense the file states is recorded beside it. For "max" the
+        # recorded objective is minus the file's optimum.
+        metadata = {**spec.metadata, "original_obj_type": "max" if maximise else "min"}
+        return ProblemData(self.dataset_id, name, QP, qp, metadata=metadata)
 
 
 class NetlibDataset(MPSLPDataset):
