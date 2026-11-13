@@ -377,7 +377,7 @@ Current maintained adapters:
 | HiGHS | `highs` | QP | Direct LP/QP adapter through `highspy`; strong LP baseline. |
 | ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite; optional on Python < 3.14 while wheels are available. |
 | PIQP | `piqp` | QP | Direct sparse/dense QP adapter. |
-| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP/SOCP subsets, optional on Python < 3.14 while wheels are available. |
+| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets, optional on Python < 3.14 while wheels are available. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. |
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. |

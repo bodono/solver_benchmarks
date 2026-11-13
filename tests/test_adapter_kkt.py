@@ -180,6 +180,45 @@ def test_sdpa_reports_kkt_for_small_cone_lp(tmp_path: Path):
     assert result.kkt["dual_res_rel"] < 1e-4
 
 
+def _small_soc_problem(q) -> dict:
+    # min t s.t. x1 >= 1 and (t, x1, x2) in the second-order cone: optimum 1.
+    cone = {"l": 1, "q": q} if q else {"l": 1}
+    rows = [[0.0, -1.0, 0.0]]
+    if q:
+        rows += [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]
+    return {
+        "P": None,
+        "q": np.array([1.0, 0.0, 0.0]),
+        "A": sp.csc_matrix(rows),
+        "b": np.array([-1.0] + [0.0] * (len(rows) - 1)),
+        "r": 0.0,
+        "n": 3,
+        "m": len(rows),
+        "cone": cone,
+        "obj_type": "min",
+    }
+
+
+@pytest.mark.parametrize("q", [[3], 3])
+def test_sdpa_skips_a_problem_with_a_second_order_cone(tmp_path: Path, q):
+    # sdpa-python ends the Python process on a second-order cone (exit status
+    # 0, no result), so the adapter must refuse the problem before the call.
+    # If it did not, this test would take the test run down with it.
+    result = _solve_cone("sdpa", _small_soc_problem(q), tmp_path)
+    assert result.status == status.SKIPPED_UNSUPPORTED
+    assert "second-order" in result.info["reason"]
+
+
+def test_sdpa_still_prepares_a_problem_whose_second_order_list_is_empty():
+    sdpap = pytest.importorskip("sdpap")
+    from solver_benchmarks.solvers.sdpa_adapter import _prepare_sdpap_problem
+
+    problem = _small_soc_problem([])
+    problem["cone"] = {"l": 1, "q": []}
+    prepared = _prepare_sdpap_problem(problem, sdpap)
+    assert prepared.a.shape[0] == 1
+
+
 @pytest.mark.parametrize("solver_name", ["scs", "clarabel", "sdpa", "cvxopt"])
 def test_solvers_agree_on_small_sdp_with_psd_cone(solver_name: str, tmp_path: Path):
     # Verifies that all conic adapters interpret the canonical PSD triangle vec
