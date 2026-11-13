@@ -208,6 +208,13 @@ not download and convert the original SDPLIB files automatically. If the
 converted archive is absent, restore `sdplib.tar` or place converted `.jld2`
 files in `problem_classes/sdplib_data`.
 
+Three members of the archive are damaged and cannot be read: `maxG55`,
+`maxG60` and `thetaG51` (stretches of each file are zeros). Their original
+SDPLIB files are bundled beside the archive as `.dat-s.gz`, and an original
+file takes precedence over the archive member of the same name, so these three
+are read from the originals. If you keep the archive somewhere else
+(`data_root`), take the three `.dat-s.gz` files with it.
+
 Every prepare command also has a heavily-signposted wrapper script under
 `scripts/`:
 
@@ -332,7 +339,9 @@ Notes on the semantics:
 - Datasets can advertise a more precise comparison size via
   `ProblemSpec.metadata["size_bytes"]`. The runner and listing/status tools
   prefer that value when present. This is used for archive-backed datasets
-  such as `sdplib.tar`, where the threshold applies to each archive member,
+  such as `sdplib.tar`, where the threshold applies to each archive member
+  (an original SDPLIB file that replaces a member is filtered by the member's
+  size, not its own),
   and for MPS datasets that have both `.mps` and `.mps.gz` encodings of the
   same problem, where the smallest available local encoding is used for the
   size decision.
