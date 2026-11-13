@@ -143,6 +143,17 @@ def _prepare_sdpap_problem(cone_problem: dict, sdpap) -> _PreparedSDPAProblem:
     unsupported = set(cone) - {"f", "z", "l", "q", "s"}
     if unsupported:
         raise ValueError(f"SDPA adapter does not support cone keys: {', '.join(sorted(unsupported))}")
+    if any(int(dim) for dim in _as_tuple(cone.get("q", ()))):
+        # sdpa-python ends the Python process on any second-order cone: it
+        # prints "block struct :: line 93 in sdpa_block.cpp" and exits with
+        # status 0, even for a single cone of dimension 3 handed straight to
+        # sdpap.solve (seen with 0.2.3). The problem is refused here, so the
+        # row says why instead of the worker disappearing. The layout of the
+        # second-order blocks below is kept for a release that solves them.
+        raise ValueError(
+            "SDPA adapter does not run problems with second-order cones: "
+            "sdpa-python ends the process on them"
+        )
     blocks = _cone_blocks(cone)
     row = sum(block[2] for block in blocks)
     if row != raw_a.shape[0]:
