@@ -86,6 +86,16 @@ class Dataset(ABC):
         self.repo_root = Path(repo_root).resolve() if repo_root else _default_repo_root()
         self.options = options
 
+    @classmethod
+    def signature_options(cls, options: dict[str, Any]) -> dict[str, Any]:
+        """The dataset options as they enter a run's resume signature.
+
+        By default, the options as given. A dataset overrides this when the
+        meaning of an absent option has changed, so that results recorded
+        under the old meaning are not taken for results of the new one.
+        """
+        return dict(options)
+
     @abstractmethod
     def list_problems(self) -> list[ProblemSpec]:
         raise NotImplementedError

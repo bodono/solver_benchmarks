@@ -769,7 +769,9 @@ def solve_signature(
             "dataset": {
                 "id": dataset.id,
                 "name": dataset.name,
-                "dataset_options": dataset.dataset_options,
+                "dataset_options": _signature_dataset_options(
+                    dataset.name, dataset.dataset_options
+                ),
             },
             "solver": {
                 "id": solver.id,
@@ -807,7 +809,9 @@ def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], s
                     "dataset": {
                         "id": dataset_id,
                         "name": str(dataset["name"]),
-                        "dataset_options": dict(dataset.get("dataset_options") or {}),
+                        "dataset_options": _signature_dataset_options(
+                            str(dataset["name"]), dict(dataset.get("dataset_options") or {})
+                        ),
                     },
                     "solver": {
                         "id": solver_id,
@@ -819,6 +823,21 @@ def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], s
                 length=24,
             )
     return signatures
+
+
+def _signature_dataset_options(name: str, options: dict[str, Any]) -> dict[str, Any]:
+    """Dataset options as the dataset wants them hashed (see Dataset.signature_options)."""
+    # Imported here: the dataset adapters import this package's core modules.
+    from solver_benchmarks.datasets.registry import get_dataset
+
+    try:
+        dataset_cls = get_dataset(name)
+    except KeyError:
+        return dict(options)
+    # Registered adapters need not derive from Dataset; one without the hook
+    # hashes its options as given.
+    hook = getattr(dataset_cls, "signature_options", None)
+    return dict(options) if hook is None else hook(dict(options))
 
 
 def _effective_timeout(config: RunConfig, solver: SolverConfig) -> float | None:

@@ -379,6 +379,14 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
         f"{out_dir}: {summary['rows']} rows from {summary['sources']} runs"
         + (f", {summary['duplicate_keys']} duplicated keys" if summary["duplicate_keys"] else "")
     )
+    mixed = summary["mixed_forms"]
+    if mixed:
+        shown = ", ".join(mixed[:5]) + (", ..." if len(mixed) > 5 else "")
+        click.echo(
+            f"warning: {len(mixed)} problems were posed with different numbers of rows across "
+            f"these runs, so their results are not comparable: {shown}",
+            err=True,
+        )
 
 
 @main.command("kkt-verify")

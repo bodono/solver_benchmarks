@@ -115,6 +115,7 @@ def merge_runs(
         records.extend(rows)
         per_source.append({"run_dir": str(src), "rows": len(rows)})
     duplicates = sum(1 for count in seen.values() if count > 1)
+    mixed_forms = _problems_posed_in_several_forms(records)
     _write_jsonl(out / "results.jsonl", records)
     manifests = [_read_manifest(src) for src in sources]
     manifest = json.loads(json.dumps(manifests[0])) if manifests else {}
@@ -155,12 +156,37 @@ def merge_runs(
         "source_manifests": manifests,
         "selections": selections,
         "duplicate_keys": duplicates,
+        "mixed_forms": mixed_forms,
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for name in _COPIED_FILES:
         if (sources[0] / name).exists():
             shutil.copy(sources[0] / name, out / name)
-    return {"rows": len(records), "sources": len(sources), "duplicate_keys": duplicates}
+    return {
+        "rows": len(records),
+        "sources": len(sources),
+        "duplicate_keys": duplicates,
+        "mixed_forms": mixed_forms,
+    }
+
+
+def _problems_posed_in_several_forms(records: Iterable[dict[str, Any]]) -> list[str]:
+    """Problems whose rows disagree on the number of constraint rows.
+
+    The rows of one ``(dataset, problem)`` should all come from the same
+    problem data. If two shards posed it differently (for example SDPLIB with
+    its declared blocks in one and as one merged block in the other), their
+    results are not comparable, and the row count recorded with each result
+    is where that shows. Rows without one (skips, some failures) are ignored.
+    """
+    sizes: dict[tuple[str, str], set[int]] = {}
+    for row in records:
+        metadata = row.get("metadata")
+        rows_posed = metadata.get("m") if isinstance(metadata, dict) else None
+        if isinstance(rows_posed, int) and not isinstance(rows_posed, bool):
+            key = (str(row.get("dataset")), str(row.get("problem")))
+            sizes.setdefault(key, set()).add(rows_posed)
+    return sorted(f"{dataset}/{problem}" for (dataset, problem), seen in sizes.items() if len(seen) > 1)
 
 
 def _union_dataset_entries(configs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
