@@ -73,12 +73,37 @@ def read_sdplib_jld2(path: Path) -> dict:
     }
 
 
+def read_sdplib_block_sizes(path: Path) -> tuple[int, ...] | None:
+    """The block structure a converted SDPLIB file records, or None if it has none.
+
+    The converted files keep SDPLIB's block structure next to the matrices,
+    as ``blockvec`` in SDPA notation: a positive entry is a semidefinite
+    block of that order, a negative entry a diagonal block of that many
+    nonnegative variables, in order along the diagonal of the stored
+    matrices. (For the 92 bundled problems it equals the third line of the
+    original ``.dat-s`` file.)
+    """
+    try:
+        import h5py
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Install h5py to load SDPLIB .jld2 problems") from exc
+
+    with h5py.File(path, "r") as handle:
+        if "blockvec" not in handle:
+            return None
+        values = np.array(handle["blockvec"], dtype=float).reshape(-1)
+    sizes = tuple(int(round(value)) for value in values)
+    if not sizes or any(size == 0 or size != value for size, value in zip(sizes, values, strict=True)):
+        raise ValueError(f"{path.name}: blockvec {values.tolist()!r} is not a list of block sizes")
+    return sizes
+
+
 def split_into_declared_blocks(problem: dict, block_sizes: Sequence[int]) -> dict:
     """Give a problem read from the converted archive the blocks SDPLIB declares.
 
     The converted archive stores each constraint as one ``n x n`` matrix, so
     ``read_sdplib_jld2`` returns a single positive semidefinite cone of order
-    ``n``. SDPLIB states most of its problems as block diagonal: several
+    ``n``. SDPLIB states 39 of its 92 problems as block diagonal: several
     semidefinite blocks, and sometimes a diagonal block of plain nonnegative
     variables. Stored as one block, every entry between two blocks becomes a
     row of ``A`` that is entirely zero with a zero right-hand side, and a
