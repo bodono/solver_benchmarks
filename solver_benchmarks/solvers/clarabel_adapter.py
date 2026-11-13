@@ -10,7 +10,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, QP, ProblemData
+from solver_benchmarks.core.problem import CONE, QP, ProblemData, cone_items_in_row_order
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 from solver_benchmarks.transforms.psd import (
@@ -259,7 +259,8 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
     keep_rows: list[int] = []
     cone_dict: dict = {}
     row = 0
-    for name, value in cone.items():
+    # Rows follow the fixed layout, not the order of the dictionary's keys.
+    for name, value in cone_items_in_row_order(cone):
         if name in ("f", "z"):
             dim = int(value)
             if dim:

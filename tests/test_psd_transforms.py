@@ -75,31 +75,33 @@ def test_vec_round_trip_through_row_major():
 
 
 def test_cone_row_perm_handles_mixed_layout():
-    # Cone has 2 zero rows, then a 3x3 PSD block (6 rows), then 2 nonneg rows.
-    cone = {"z": 2, "s": [3], "l": 2}
+    # Rows are 2 zero rows, 2 nonneg rows, then a 3x3 PSD block (6 rows):
+    # the fixed layout, whatever order the dictionary lists its keys in.
+    cone = {"z": 2, "l": 2, "s": [3]}
     idx = cone_row_perm_canonical_to_row_major(cone, 10)
     # Identity for non-PSD rows.
-    assert list(idx[:2]) == [0, 1]
-    assert list(idx[8:]) == [8, 9]
-    # PSD rows are permuted within [2, 8). For n=3, p=[0,1,3,2,4,5];
+    assert list(idx[:4]) == [0, 1, 2, 3]
+    # PSD rows are permuted within [4, 10). For n=3, p=[0,1,3,2,4,5];
     # canonical-to-row-major idx is argsort(p) shifted by start.
     p = col_major_to_row_major_perm(3)
-    expected = 2 + np.argsort(p)
-    assert list(idx[2:8]) == list(expected)
+    expected = 4 + np.argsort(p)
+    assert list(idx[4:10]) == list(expected)
+    assert list(cone_row_perm_canonical_to_row_major({"s": [3], "l": 2, "z": 2}, 10)) == list(idx)
 
 
 def test_cone_vec_round_trip_mixed_layout():
+    # One zero row, two nonneg rows, then the PSD block; the keys are listed
+    # in another order on purpose, the rows follow the fixed layout.
     cone = {"l": 2, "s": [4], "z": 1}
     rng = np.random.default_rng(7)
     m = _symmetric_matrix(4)
     psd_block = _col_major_lower_vec(m, scale=True)
-    canonical = np.concatenate([rng.normal(size=2), psd_block, rng.normal(size=1)])
+    canonical = np.concatenate([rng.normal(size=3), psd_block])
     row_major = cone_vec_canonical_to_row_major(canonical, cone)
     # Non-PSD entries unchanged.
-    assert np.allclose(row_major[:2], canonical[:2])
-    assert np.allclose(row_major[-1:], canonical[-1:])
+    assert np.allclose(row_major[:3], canonical[:3])
     # PSD entries match the row-major-lower vec of the same matrix.
-    assert np.allclose(row_major[2:12], _row_major_lower_vec(m, scale=True))
+    assert np.allclose(row_major[3:13], _row_major_lower_vec(m, scale=True))
     back = cone_vec_row_major_to_canonical(row_major, cone)
     assert np.allclose(back, canonical)
 

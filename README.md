@@ -112,7 +112,7 @@ Current maintained adapters:
 | Mittelmann SDP | `mittelmann_sdp` | Cone/SDP | Mittelmann's SDP test set in SDPA-S sparse format (G-graph maxcut relaxations + Lovász theta numbers); downloads from `plato.asu.edu`. |
 | SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files (or original `.dat-s` files placed beside the archive); requires `h5py`. Problems are posed with the block structure the original SDPLIB files declare (several semidefinite blocks, and diagonal blocks as nonnegative rows); the converted files store one dense matrix and the structure comes from `solver_benchmarks/transforms/sdplib_blocks.py`. `dataset_options.subset: feasible` (default), `infeasible` (the four instances `infd1`, `infd2`, `infp1`, `infp2`) or `all`. `dataset_options.blocks: merged` poses each problem read from the archive as one semidefinite block of the full order instead, as results from before the block table were produced (an original `.dat-s` file has no merged form). |
 | TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
-| DIMACS | `dimacs` | Cone | Reads `.mat` and `.mat.gz`; rotated Lorentz cones are not yet supported. |
+| DIMACS | `dimacs` | Cone | Reads SeDuMi-format `.mat` and `.mat.gz` and poses the file's dual, `maximize b'y` subject to `c - A'y in K*`, as `minimize -b'y`: rows in SeDuMi's order (free, linear, second-order, PSD), each PSD block as the scaled lower triangle of its symmetric part. The recorded objective is minus the published optimum. Rotated Lorentz cones are not yet supported. |
 | CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. |
 | MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
 | LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
@@ -1312,6 +1312,23 @@ problem = {
     "obj_type": "min",
 }
 ```
+
+The constraint is `b - A x in K`. The rows of `A` and `b` are stacked cone by
+cone in one fixed order, the one SCS uses: zero (`z`), nonnegative (`l`), box
+(`bl`/`bu`), second-order (`q`), PSD (`s`), complex PSD (`cs`), exponential
+(`ep`), dual exponential (`ed`), power (`p`). List the keys of `cone` in that
+order. The key order does not set the layout: solvers and the KKT check read
+the rows in the fixed order. `ProblemData` refuses a cone dictionary whose keys
+are listed in another order, and one whose sizes do not add up to the rows of
+`A` (checked when it can size every key), so a loader that lists its cones in
+the order it stacked them fails at load when that is not the fixed order. A PSD
+block of order `d` takes `d (d + 1) / 2` rows: the lower triangle column by
+column, off-diagonal entries times `sqrt(2)`.
+
+The check cannot see rows stacked in another order under a correctly listed
+dictionary, or a wrong PSD scaling: either still gives a well-posed problem,
+and only the optimum shows it. When a source publishes optimal values, add a
+test that solves a few small instances and compares against them.
 
 Current conic support depends on the solver adapter. SCS supports general conic
 data accepted by SCS. PDLP supports only linear zero/nonnegative cones; zero

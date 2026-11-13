@@ -579,8 +579,8 @@ def test_ecos_skips_unsupported_cone_keys(tmp_path):
     cone = {
         "P": None,
         "q": np.array([1.0]),
-        "A": sp.csc_matrix([[1.0]]),
-        "b": np.array([0.0]),
+        "A": sp.csc_matrix([[1.0], [0.0], [1.0]]),
+        "b": np.zeros(3),
         "cone": {"s": [2]},  # SDP cone is not supported by ECOS
     }
     adapter = ECOSSolverAdapter({"verbose": False})

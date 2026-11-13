@@ -472,11 +472,9 @@ def _cone_to_ecos(cone_problem: dict):
             None,
         )
 
-    # Reorder rows so the zero cone (equalities) come first, then
-    # NN, then SOCP, then exp, matching the cone_dict layout that
-    # CONE-form problems are expected to follow. We trust the caller
-    # already laid out rows in (z, l, q*, e*) order — that's the
-    # convention in the synthetic / SDPLIB / DIMACS datasets.
+    # Rows are in the fixed layout of a cone problem: the zero cone
+    # (equalities) first, then NN, then SOCP, then exp. ProblemData
+    # refuses a cone dictionary listed in another order.
     a_eq = a[:z_count, :]
     b_eq = b[:z_count]
     a_ineq = a[z_count:, :]

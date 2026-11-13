@@ -7,11 +7,11 @@ import re
 import urllib.request
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import scipy.io
 import scipy.sparse as sp
-import scipy.sparse.linalg
 
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
@@ -27,6 +27,19 @@ class DIMACSDataset(Dataset):
     data_source = "bundled data; official source https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances/"
     data_patterns = ("*.mat", "*.mat.gz")
     prepare_command = "python scripts/prepare_dimacs.py"
+
+    @classmethod
+    def signature_options(cls, options: dict[str, Any]) -> dict[str, Any]:
+        """Results recorded before the conversion was corrected are not resumed.
+
+        Until then every PSD block was scaled wrongly, so the problems with one
+        were not the published problems, and the KKT check read the rows of a
+        problem with linear and second-order cones in the wrong order. Those
+        signatures were computed from the options as given; the marker makes
+        the signatures differ, so a run directory from before the change
+        solves its DIMACS problems again instead of keeping those rows.
+        """
+        return {**options, "conversion": 2}
 
     @property
     def folder(self) -> Path:
@@ -82,51 +95,72 @@ class DIMACSDataset(Dataset):
 
 
 def _read_dimacs(path: Path) -> dict:
+    """Read a DIMACS problem in SeDuMi format as a cone problem.
+
+    The file holds ``A``, ``b``, ``c`` and the cone ``K`` of the pair
+
+        minimize c'x  subject to  Ax = b, x in K
+        maximize b'y  subject to  c - A'y in K*
+
+    and the problem returned is the second one, as ``minimize -b'y`` with one
+    row of ``c - A'y`` per cone entry. SeDuMi stacks the cones as free, linear,
+    second-order, PSD, whatever order the fields of ``K`` are stored in, and
+    that is also the row layout used here.
+
+    A PSD block of order ``d`` takes ``d * d`` rows in the file, the whole
+    matrix column by column. Here it takes the ``d * (d + 1) / 2`` rows of its
+    lower triangle, column by column, with the off-diagonal entries times
+    ``sqrt(2)``. SeDuMi asks only that the symmetric part of ``c - A'y`` be
+    PSD, so the entry used is the mean of the two mirrored rows. That matters
+    for a file whose constraint matrices are not symmetric as stored: in
+    ``fap09`` and ``fap25`` each one is a single entry ``E_ij``.
+
+    The objective recorded for a run is that of the minimisation, ``-b'y``:
+    minus the optimum published for the challenge.
+    """
     data = _loadmat_maybe_gzip(path)
-    c = -_dense_vector(data["b"])
-    b = _dense_vector(data["c"])
-    k = data["K"]
+    raw_a = data["A"].T if "A" in data else data["At"]
+    raw_a = sp.csr_matrix(raw_a, dtype=float)
+    n_rows, n_vars = raw_a.shape
+    objective = -_vector(data["b"], n_vars, "b")
+    rhs = _vector(data["c"], n_rows, "c")
 
-    try:
-        raw_a = data["A"].T
-    except KeyError:
-        raw_a = data["At"]
-    raw_a = sp.csc_matrix(raw_a)
-    raw_a.data = raw_a.data.astype(float)
+    free, linear, soc, psd = _cone_sizes(data["K"])
+    first_psd_row = free + linear + sum(soc)
+    if first_psd_row + sum(order * order for order in psd) != n_rows:
+        raise ValueError(
+            f"{path.name}: K accounts for "
+            f"{first_psd_row + sum(order * order for order in psd)} rows but A has {n_rows}"
+        )
 
-    if b.ndim == 0:
-        b = np.zeros(raw_a.shape[0])
-    if c.ndim == 0:
-        c = np.zeros(raw_a.shape[1])
+    a_parts = [raw_a[:first_psd_row, :]]
+    b_parts = [rhs[:first_psd_row]]
+    if psd:
+        lower, upper, weight = _psd_triangle_rows(psd, first_psd_row)
+        mean_rows = 0.5 * (raw_a[lower, :] + raw_a[upper, :])
+        a_parts.append(sp.diags(weight) @ mean_rows)
+        b_parts.append(weight * (0.5 * (rhs[lower] + rhs[upper])))
 
-    cone, rows_to_keep, free_rows, dropped_rows, b = _parse_dimacs_cone(k, raw_a.shape[0], b)
-    if free_rows:
-        a_free = raw_a[free_rows, :] - raw_a[dropped_rows, :]
-        b_free = b[free_rows] - b[dropped_rows]
-        # Use a small tolerance instead of an exact-zero comparison: the
-        # subtraction of equal entries in finite precision can produce
-        # tiny numerical residues which would otherwise spuriously
-        # promote upper/lower row pairs into "free" rows.
-        residual_tol = 1.0e-12
-        a_residual = float(sp.linalg.norm(a_free)) if a_free.nnz else 0.0
-        b_residual = float(np.linalg.norm(b_free)) if b_free.size else 0.0
-        if b_residual > residual_tol or a_residual > residual_tol:
-            a = sp.vstack((a_free, raw_a[rows_to_keep, :]), format="csc")
-            b = np.hstack((b_free, b[rows_to_keep]))
-            cone["f"] = int(cone.get("f", 0) + len(b_free))
-        else:
-            a = sp.csc_matrix(raw_a[rows_to_keep, :])
-            b = b[rows_to_keep]
-    else:
-        a = sp.csc_matrix(raw_a[rows_to_keep, :])
-        b = b[rows_to_keep]
+    a = sp.csc_matrix(sp.vstack(a_parts, format="csc"))
+    a.eliminate_zeros()
+    a.sort_indices()
+    b = np.concatenate(b_parts)
 
-    a = a.sorted_indices()
+    # Keys in row order; an empty cone is left out.
+    cone: dict = {}
+    if free:
+        cone["z"] = free
+    if linear:
+        cone["l"] = linear
+    if soc:
+        cone["q"] = soc
+    if psd:
+        cone["s"] = psd
     return {
         "P": None,
         "A": a,
         "b": np.asarray(b, dtype=float),
-        "q": np.asarray(c, dtype=float),
+        "q": np.asarray(objective, dtype=float),
         "r": 0.0,
         "n": int(a.shape[1]),
         "m": int(a.shape[0]),
@@ -142,54 +176,59 @@ def _loadmat_maybe_gzip(path: Path) -> dict:
     return scipy.io.loadmat(path)
 
 
-def _dense_vector(value):
-    if not isinstance(value, np.ndarray):
+def _vector(value, size: int, label: str) -> np.ndarray:
+    if sp.issparse(value):
         value = value.toarray()
-    elif sp.issparse(value):
-        value = value.toarray()
-    return np.squeeze(np.asarray(value, dtype=float))
+    vector = np.asarray(value, dtype=float).reshape(-1)
+    if vector.size == size:
+        return vector
+    if vector.size <= 1 and not np.any(vector):
+        # A zero vector stored as a single zero, or as nothing.
+        return np.zeros(size)
+    raise ValueError(f"DIMACS vector {label} has {vector.size} entries, expected {size}")
 
 
-def _parse_dimacs_cone(k, n_rows: int, b: np.ndarray):
+def _cone_sizes(k) -> tuple[int, int, list[int], list[int]]:
+    """Sizes of the free, linear, second-order and PSD cones of a SeDuMi ``K``."""
     names = k.dtype.names or ()
-    if "r" in names and np.sum(k["r"][0][0]) > 0:
+
+    def sizes(field: str) -> list[int]:
+        if field not in names:
+            return []
+        value = k[field][0][0]
+        if sp.issparse(value):
+            value = value.toarray()
+        entries = np.asarray(value, dtype=float).reshape(-1)
+        if np.any(entries != np.round(entries)) or np.any(entries < 0):
+            raise ValueError(f"DIMACS cone field K.{field} is not a list of sizes")
+        return [int(entry) for entry in entries if entry > 0]
+
+    if sizes("r"):
         raise ValueError("DIMACS rotated Lorentz cones are not supported yet")
+    return sum(sizes("f")), sum(sizes("l")), sizes("q"), sizes("s")
 
-    current = 0
-    dropped_rows: list[int] = []
-    free_rows: list[int] = []
-    cone: dict = {}
 
-    if "f" in names:
-        cone["f"] = int(np.sum(k["f"][0][0]))
-        current += cone["f"]
-    if "q" in names:
-        q = np.squeeze(k["q"][0][0].astype(int)).tolist()
-        if isinstance(q, int):
-            q = [q]
-        cone["q"] = q
-        current += int(np.sum(q))
-    if "l" in names:
-        cone["l"] = int(np.sum(k["l"][0][0]))
-        current += cone["l"]
-    if "s" in names:
-        s_blocks = np.squeeze(k["s"][0][0].astype(int)).tolist()
-        if isinstance(s_blocks, int):
-            s_blocks = [s_blocks]
-        cone["s"] = s_blocks
-        for block in s_blocks:
-            matrix_indices = np.arange(block * block).reshape(block, block).T
-            diag = current + np.diag(matrix_indices)
-            triu = np.triu_indices(block, 1)
-            upper = current + matrix_indices[triu]
-            lower = current + matrix_indices[triu[1], triu[0]]
-            b[diag] /= np.sqrt(2.0)
-            dropped_rows += upper.tolist()
-            free_rows += lower.tolist()
-            current += block * block
-
-    rows_to_keep = [row for row in range(n_rows) if row not in dropped_rows]
-    return cone, rows_to_keep, free_rows, dropped_rows, b
+def _psd_triangle_rows(
+    orders: list[int], first_row: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """For PSD blocks stored as whole matrices, column by column, from
+    ``first_row``: the row of each lower-triangle entry (column by column), the
+    row of its mirror image, and the weight of the entry (1 on the diagonal,
+    ``sqrt(2)`` off it).
+    """
+    lower: list[np.ndarray] = []
+    upper: list[np.ndarray] = []
+    weight: list[np.ndarray] = []
+    row = first_row
+    for order in orders:
+        # Pairs (col, i) with col <= i, col varying slowest: the lower
+        # triangle column by column. Entry (i, col) is at row + col * order + i.
+        col, i = np.triu_indices(order)
+        lower.append(row + col * order + i)
+        upper.append(row + i * order + col)
+        weight.append(np.where(i == col, 1.0, np.sqrt(2.0)))
+        row += order * order
+    return np.concatenate(lower), np.concatenate(upper), np.concatenate(weight)
 
 
 def dimacs_remote_problem_names() -> list[str]:

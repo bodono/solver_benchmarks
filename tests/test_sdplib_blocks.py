@@ -62,7 +62,7 @@ def test_split_recovers_every_block_in_declared_order():
 
     assert merged["A"].shape[0] == rows_before and merged["cone"] == {"s": [8]}
     assert split["cone"] == {"l": 2, "s": [3, 1, 2]}
-    # Consumers read the row layout from the order of the keys.
+    # Keys are listed in row order; ProblemData refuses another listing.
     assert list(split["cone"]) == ["l", "s"]
     assert split["m"] == split["A"].shape[0] == 2 + 6 + 1 + 3
     assert split["n"] == 3 and np.array_equal(split["q"], merged["q"])
