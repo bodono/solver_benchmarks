@@ -135,6 +135,13 @@ def _read_uncompressed_mps(filename: str):
         shape=(raw.num_row_, raw.num_col_),
     )
     c = np.asarray(lp.col_cost_, dtype=float)
+    # Everything downstream minimises. A file that HiGHS reads as a
+    # maximisation is posed as the minimisation of minus its objective, as
+    # the CBLIB and QPLIB loaders do. The sense is read without a fallback:
+    # a HiGHS build that does not report it must fail here, not hand back a
+    # maximisation as a minimisation.
+    if lp.sense_ == highspy.ObjSense.kMaximize:
+        c = -c
     n = c.size
     x_low = _sanitize_lower(np.asarray(lp.col_lower_, dtype=float))
     x_upper = _sanitize_upper(np.asarray(lp.col_upper_, dtype=float))

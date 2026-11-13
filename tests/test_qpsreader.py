@@ -116,6 +116,11 @@ def test_readMpsLp_accepts_highs_warning_with_populated_model(monkeypatch, tmp_p
         col_upper_ = [1.0e30]
         row_lower_ = [-1.0e30]
         row_upper_ = [1.0]
+        sense_ = "minimize"
+
+    class FakeObjSense:
+        kMinimize = "minimize"
+        kMaximize = "maximize"
 
     class FakeHighs:
         def silent(self):
@@ -127,7 +132,9 @@ def test_readMpsLp_accepts_highs_warning_with_populated_model(monkeypatch, tmp_p
         def getLp(self):
             return FakeLp()
 
-    fake_highspy = types.SimpleNamespace(Highs=FakeHighs, HighsStatus=FakeStatus)
+    fake_highspy = types.SimpleNamespace(
+        Highs=FakeHighs, HighsStatus=FakeStatus, ObjSense=FakeObjSense
+    )
     monkeypatch.setitem(sys.modules, "highspy", fake_highspy)
 
     path = tmp_path / "warning.mps"
@@ -204,3 +211,112 @@ def test_readMpsLp_normalizes_sentinel_bounds_to_inf(tmp_path: Path):
     assert a.shape == (2, 2)
     assert l.tolist() == [1.0, 0.0]
     assert u.tolist() == [np.inf, np.inf]
+
+
+_MAX_BODY = """\
+ROWS
+ N  COST
+ L  C1
+ L  C2
+COLUMNS
+    X    COST   3.0   C1   1.0
+    X    C2     1.0
+    Y    COST   2.0   C1   1.0
+    Y    C2     3.0
+RHS
+    RHS   C1   4.0   C2   6.0
+BOUNDS
+ UP BND   X   3.0
+ENDATA
+"""
+
+
+@pytest.mark.parametrize(
+    ("objsense", "expected_cost"),
+    [
+        # maximise 3x + 2y is posed as minimise -3x - 2y.
+        ("OBJSENSE\n    MAX\n", [-3.0, -2.0]),
+        ("OBJSENSE\n    MAXIMIZE\n", [-3.0, -2.0]),
+        ("OBJSENSE MAX\n", [-3.0, -2.0]),
+        ("OBJSENSE\n    MIN\n", [3.0, 2.0]),
+        ("", [3.0, 2.0]),
+    ],
+)
+def test_readMpsLp_poses_a_maximisation_as_a_minimisation(
+    tmp_path: Path, objsense: str, expected_cost: list[float]
+):
+    pytest.importorskip("highspy")
+    path = _write(tmp_path / "sense.mps", "NAME          SENSE\n" + objsense + _MAX_BODY)
+    a, c, l, u = qpsreader.readMpsLp(str(path))
+    assert c.tolist() == expected_cost
+    # The constraints do not depend on the sense.
+    assert a.toarray().tolist() == [[1.0, 1.0], [1.0, 3.0], [1.0, 0.0], [0.0, 1.0]]
+    assert l.tolist() == [-np.inf, -np.inf, 0.0, 0.0]
+    assert u.tolist() == [4.0, 6.0, 3.0, np.inf]
+
+
+@pytest.mark.parametrize(("suffix", "opener"), [(".mps.gz", gzip.open), (".mps.bz2", bz2.open)])
+def test_readMpsLp_sense_survives_compression(tmp_path: Path, suffix: str, opener):
+    pytest.importorskip("highspy")
+    body = "NAME          SENSE\nOBJSENSE\n    MAX\n" + _MAX_BODY
+    path = tmp_path / f"sense{suffix}"
+    with opener(path, "wb") as handle:
+        handle.write(body.encode())
+    _, c, _, _ = qpsreader.readMpsLp(str(path))
+    assert c.tolist() == [-3.0, -2.0]
+
+
+def test_readMpsLp_fails_if_highs_does_not_report_the_sense(monkeypatch, tmp_path: Path):
+    # A build without the sense must not hand a maximisation back as a
+    # minimisation: there is no fallback.
+    highspy = pytest.importorskip("highspy")
+    monkeypatch.delattr(highspy, "ObjSense")
+    path = _write(tmp_path / "sense.mps", "NAME          SENSE\nOBJSENSE\n    MAX\n" + _MAX_BODY)
+    with pytest.raises(AttributeError, match="ObjSense"):
+        qpsreader.readMpsLp(str(path))
+
+
+def test_mps_dataset_solves_a_maximisation_to_its_optimum(tmp_path: Path):
+    # maximise 3x + 2y, x + y <= 4, x + 3y <= 6, 0 <= x <= 3, y >= 0: the
+    # optimum is 11 at (3, 1). Read as a minimisation of 3x + 2y, which is
+    # what the loader used to do, the answer is 0 at the origin.
+    pytest.importorskip("highspy")
+    from solver_benchmarks.core import status
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers.registry import get_solver
+
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    _write(folder / "maxlp.mps", "NAME          MAXLP\nOBJSENSE\n    MAX\n" + _MAX_BODY)
+
+    dataset = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root)
+    problem = dataset.load_problem("maxlp")
+    assert problem.qp["q"].tolist() == [-3.0, -2.0]
+    assert problem.qp["obj_type"] == "min"
+
+    result = get_solver("highs")({"verbose": False}).solve(problem, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(-11.0, abs=1e-7)
+
+
+def test_mps_dataset_reports_an_unbounded_maximisation_as_unbounded(tmp_path: Path):
+    # maximise x + y with x - y <= 1 and x, y >= 0 has no upper bound. Read as
+    # a minimisation it has the optimum 0 at the origin.
+    pytest.importorskip("highspy")
+    from solver_benchmarks.core import status
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers.registry import get_solver
+
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    _write(folder / "unbounded.mps", "\n".join([
+        "NAME          UNB", "OBJSENSE", "    MAX", "ROWS", " N  COST", " L  C1", "COLUMNS",
+        "    X    COST   1.0   C1   1.0", "    Y    COST   1.0   C1   -1.0",
+        "RHS", "    RHS   C1   1.0", "ENDATA", "",
+    ]))
+
+    problem = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root).load_problem("unbounded")
+    result = get_solver("highs")({"verbose": False}).solve(problem, tmp_path)
+    assert result.status in {status.DUAL_INFEASIBLE, status.PRIMAL_OR_DUAL_INFEASIBLE}

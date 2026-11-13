@@ -121,6 +121,17 @@ Current maintained adapters:
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
 | Synthetic cone smoke test | `synthetic_cone` | Cone | Tiny deterministic conic LP test problem. |
 
+Every problem is posed as a minimisation. An MPS file that HiGHS reads as a
+maximisation (NETLIB, Kennington, MIPLIB and Mittelmann are read from MPS,
+through HiGHS) is posed as the minimisation of minus its objective, as CBLIB
+and QPLIB maximisations are, and the objective recorded for it is that of the
+minimisation. Two limits: HiGHS reads the sense from an `OBJSENSE` section
+(`MAX` or `MAXIMIZE` on the next line) or from `OBJSENSE MAX` on one line
+before `ROWS`, and takes other spellings (`OBJSENSE MAXIMIZE` on one line, an
+`OBJSENSEMPS` section) for a minimisation without a warning; and the MPS
+datasets do not read a constant term in the objective, so the recorded value
+leaves it out (of the bundled files only NETLIB `e226` has one).
+
 Check local dataset availability:
 
 ```bash
