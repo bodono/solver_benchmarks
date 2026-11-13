@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import tarfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -38,7 +39,9 @@ def extract_from_tar(tar_path: Path, name: str, cache_dir: Path) -> Path:
         source = archive.extractfile(member)
         if source is None:
             raise FileNotFoundError(member_name)
-        target.write_bytes(source.read())
+        # Copied in pieces: the largest member is 395 MB.
+        with source, open(target, "wb") as sink:
+            shutil.copyfileobj(source, sink)
     return target
 
 
@@ -91,11 +94,18 @@ def read_sdplib_block_sizes(path: Path) -> tuple[int, ...] | None:
     with h5py.File(path, "r") as handle:
         if "blockvec" not in handle:
             return None
-        values = np.array(handle["blockvec"], dtype=float).reshape(-1)
-    sizes = tuple(int(round(value)) for value in values)
-    if not sizes or any(size == 0 or size != value for size, value in zip(sizes, values, strict=True)):
+        try:
+            values = np.array(handle["blockvec"], dtype=float).reshape(-1)
+        except (TypeError, ValueError, OSError) as exc:
+            raise ValueError(f"{path.name}: blockvec is not a list of block sizes ({exc})") from exc
+    if (
+        values.size == 0
+        or not np.all(np.isfinite(values))
+        or np.any(values == 0)
+        or np.any(values != np.round(values))
+    ):
         raise ValueError(f"{path.name}: blockvec {values.tolist()!r} is not a list of block sizes")
-    return sizes
+    return tuple(int(value) for value in values)
 
 
 def split_into_declared_blocks(problem: dict, block_sizes: Sequence[int]) -> dict:

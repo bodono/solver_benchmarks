@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import tarfile
 from pathlib import Path
 
 import numpy as np
@@ -13,8 +16,6 @@ from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.transforms.sdpa import parse_sdpa_s, sdpa_to_cone_problem
 from solver_benchmarks.transforms.sdplib import (
     _psd_vec,
-    extract_from_tar,
-    list_sdplib_tar,
     read_sdplib_block_sizes,
     split_into_declared_blocks,
 )
@@ -193,7 +194,10 @@ def test_block_sizes_are_read_from_the_file(tmp_path: Path):
     assert read_sdplib_block_sizes(_write_jld2_like(tmp_path / "c.jld2", None)) is None
 
 
-@pytest.mark.parametrize("blockvec", [[2.5, 3.0], [2.0, 0.0], []])
+@pytest.mark.parametrize(
+    "blockvec",
+    [[2.5, 3.0], [2.0, 0.0], [], [float("inf"), 4.0], [float("-inf")], [float("nan"), 4.0]],
+)
 def test_block_sizes_that_are_not_sizes_are_rejected(tmp_path: Path, blockvec):
     with pytest.raises(ValueError, match="not a list of block sizes"):
         read_sdplib_block_sizes(_write_jld2_like(tmp_path / "bad.jld2", blockvec))
@@ -243,21 +247,48 @@ def test_bundled_problems_load_with_declared_blocks(
     assert np.count_nonzero(merged.cone["b"]) == np.count_nonzero(declared.cone["b"])
 
 
+def _recorded_blocks(archive: Path, scratch: Path) -> dict[str, tuple[int, ...] | None]:
+    """The block record of every archive member, in one pass over the archive.
+
+    Each member is copied to a scratch file, read and removed, so the pass
+    costs one decompression of the archive and never holds a member in memory
+    (the largest is 395 MB).
+    """
+    recorded = {}
+    scratch.mkdir(parents=True, exist_ok=True)
+    target = scratch / "member.jld2"
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            if not member.name.endswith(".jld2"):
+                continue
+            source = tar.extractfile(member)
+            assert source is not None, member.name
+            with source, open(target, "wb") as sink:
+                shutil.copyfileobj(source, sink)
+            recorded[Path(member.name).stem] = read_sdplib_block_sizes(target)
+            target.unlink()
+    return recorded
+
+
 @pytest.mark.slow
 def test_every_bundled_problem_records_its_blocks_and_splits(repo_root: Path, tmp_path: Path):
-    # Reads the record of every archive member, checks the sample against what
-    # the original files declare, and loads the 39 problems that have more
-    # than one block: a record that did not fit the stored matrices would
-    # leave a nonzero outside the blocks (and raise) or change the row count.
+    # Reads the record of every archive member and compares it with what the
+    # original SDPLIB files declare on their third line (the fixture holds
+    # those, read from the originals, not from the archive). Then loads the
+    # 39 problems that have more than one block: a record that did not fit
+    # the stored matrices would leave a nonzero outside the blocks (and
+    # raise) or change the row count.
     dataset = _archive_dataset(repo_root, tmp_path, subset="all")
     archive = repo_root / "problem_classes/sdplib_data/sdplib.tar"
-    recorded = {
-        name: read_sdplib_block_sizes(extract_from_tar(archive, name, tmp_path / "members"))
-        for name in sorted(list_sdplib_tar(archive))
+    declared = {
+        name: tuple(sizes)
+        for name, sizes in json.loads(
+            (repo_root / "tests/fixtures/sdplib_declared_blocks.json").read_text()
+        ).items()
     }
-    assert len(recorded) == 92 and all(sizes for sizes in recorded.values())
-    for name, sizes in DECLARED.items():
-        assert recorded[name] == sizes, name
+    recorded = _recorded_blocks(archive, tmp_path / "scratch")
+    assert len(recorded) == 92 and recorded == declared
+    assert all(DECLARED[name] == recorded[name] for name in DECLARED)
     with_diagonal = {name for name, sizes in recorded.items() if any(size < 0 for size in sizes)}
     assert with_diagonal == {"arch0", "arch2", "arch4", "arch8", "ss30"}
     several = {name: sizes for name, sizes in recorded.items() if len(sizes) > 1}
@@ -305,7 +336,7 @@ def _signature(dataset_options: dict) -> str:
 
 
 def test_resume_signature_separates_the_two_forms():
-    # A run directory from before the block structure was read holds merged-form rows whose
+    # A run directory from before problems got their declared blocks holds merged-form rows whose
     # signature was computed from options without a ``blocks`` key.
     config = parse_run_config({
         "run": {"dataset": "sdplib", "dataset_options": {"subset": "all"}},

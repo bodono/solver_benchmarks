@@ -28,7 +28,7 @@ SDPLIB_SUBSETS = ("feasible", "infeasible", "all")
 # the block structure of the original SDPLIB file, which the converted file
 # records. ``merged``: as one semidefinite block of the full order, which is
 # how the matrices are stored and how this adapter posed every problem
-# before it read the block structure.
+# before it gave the block-diagonal problems their declared blocks.
 SDPLIB_BLOCKS = ("declared", "merged")
 
 
@@ -60,7 +60,7 @@ class SDPLIBDataset(Dataset):
 
     @classmethod
     def signature_options(cls, options: dict[str, Any]) -> dict[str, Any]:
-        """Results recorded before the block structure was read are merged-form results.
+        """Results recorded before problems got their declared blocks are merged-form results.
 
         Their signatures were computed from options with no ``blocks`` key, so
         that is what ``blocks: merged`` hashes to, and the declared form
