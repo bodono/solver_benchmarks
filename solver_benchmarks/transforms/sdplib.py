@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tarfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -70,6 +71,98 @@ def read_sdplib_jld2(path: Path) -> dict:
         "cone": {"s": [n]},
         "obj_type": "min",
     }
+
+
+def split_into_declared_blocks(problem: dict, block_sizes: Sequence[int]) -> dict:
+    """Give a problem read from the converted archive the blocks SDPLIB declares.
+
+    The converted archive stores each constraint as one ``n x n`` matrix, so
+    ``read_sdplib_jld2`` returns a single positive semidefinite cone of order
+    ``n``. SDPLIB states most of its problems as block diagonal: several
+    semidefinite blocks, and sometimes a diagonal block of plain nonnegative
+    variables. Stored as one block, every entry between two blocks becomes a
+    row of ``A`` that is entirely zero with a zero right-hand side, and a
+    solver has to factor one matrix of order ``n`` where the problem as
+    published has many small ones.
+
+    ``block_sizes`` is the block structure in SDPA notation, in order along
+    the diagonal of the merged matrix: a positive entry is a semidefinite
+    block of that order, a negative entry a diagonal block of that many
+    nonnegative variables. The result has one ``l`` row per variable of each
+    diagonal block followed by one ``s`` block per semidefinite block, both
+    in the declared order. This is the layout ``sdpa_to_cone_problem``
+    produces from the original file. The rows that are dropped are the
+    entries outside every block; a nonzero there means ``block_sizes`` does
+    not describe this problem, and raises.
+    """
+    cone = {key: value for key, value in dict(problem["cone"]).items() if value}
+    orders = list(cone.get("s", []))
+    if set(cone) != {"s"} or len(orders) != 1:
+        raise ValueError(
+            "split_into_declared_blocks expects a single semidefinite block, "
+            f"got cone {problem['cone']!r}"
+        )
+    n = int(orders[0])
+    sizes = [int(size) for size in block_sizes]
+    if any(size == 0 for size in sizes) or sum(abs(size) for size in sizes) != n:
+        raise ValueError(
+            f"Block sizes {tuple(sizes)} do not add up to the order {n} of the stored matrix"
+        )
+    if sizes == [n]:
+        return problem
+
+    linear_rows: list[np.ndarray] = []
+    psd_rows: list[np.ndarray] = []
+    offset = 0
+    for size in sizes:
+        if size < 0:
+            diagonal = offset + np.arange(-size, dtype=np.int64)
+            linear_rows.append(_col_major_lower_index_array(diagonal, diagonal, n))
+        else:
+            # Column-major lower triangle of the block: column j, rows i >= j.
+            cols, rows = np.triu_indices(size)
+            psd_rows.append(
+                _col_major_lower_index_array(
+                    offset + rows.astype(np.int64), offset + cols.astype(np.int64), n
+                )
+            )
+        offset += abs(size)
+    kept = np.concatenate(linear_rows + psd_rows)
+
+    a = sp.csr_matrix(problem["A"], copy=True)
+    a.eliminate_zeros()
+    b = np.asarray(problem["b"], dtype=float).reshape(-1)
+    outside = np.ones(a.shape[0], dtype=bool)
+    outside[kept] = False
+    stray = np.flatnonzero(outside & ((np.diff(a.indptr) > 0) | (b != 0.0)))
+    if stray.size:
+        i, j = _col_major_lower_entry(int(stray[0]), n)
+        raise ValueError(
+            f"Entry ({i}, {j}) of the stored matrices is nonzero but lies outside the "
+            f"declared blocks {tuple(sizes)} ({stray.size} such entries)"
+        )
+
+    split = dict(problem)
+    split["A"] = a[kept, :].tocsc()
+    split["b"] = b[kept]
+    split["m"] = int(kept.size)
+    num_linear = sum(-size for size in sizes if size < 0)
+    split["cone"] = {}
+    if num_linear:
+        split["cone"]["l"] = int(num_linear)
+    psd_orders = [size for size in sizes if size > 0]
+    if psd_orders:
+        split["cone"]["s"] = psd_orders
+    return split
+
+
+def _col_major_lower_entry(index: int, n: int) -> tuple[int, int]:
+    """Inverse of ``_col_major_lower_index``: the entry (i, j), i >= j, at ``index``."""
+    j = 0
+    while index >= n - j:
+        index -= n - j
+        j += 1
+    return j + index, j
 
 
 def _parse_sparse_matrix(handle, idx: int) -> sp.csc_matrix:

@@ -317,3 +317,23 @@ def test_verify_keeps_merge_provenance_including_source_manifests(tmp_path):
     # the complete merge provenance is still reachable after two verifications
     v2 = json.loads((tmp_path / "v2" / "manifest.json").read_text())["derived"]
     assert v2["source_derived"]["source_derived"]["kind"] == "merge"
+
+
+def test_merge_reports_problems_posed_in_different_forms(tmp_path):
+    from solver_benchmarks.analysis.derive import merge_runs
+
+    def row(problem, solver_id, rows_posed):
+        base = _row(problem, solver_id)
+        metadata = dict(base.get("metadata") or {})
+        if rows_posed is not None:
+            metadata["m"] = rows_posed
+        return {**base, "metadata": metadata}
+
+    # hinf1 as one merged block (105 rows) in one shard and with its declared
+    # blocks (41 rows) in the other; truss1 the same in both; one skip row.
+    a = _write_run(tmp_path, "a", [row("hinf1", "s1", 105), row("truss1", "s1", 19), row("skip", "s1", None)])
+    b = _write_run(tmp_path, "b", [row("hinf1", "s2", 41), row("truss1", "s2", 19)])
+    summary = merge_runs([a, b], tmp_path / "merged")
+    assert summary["mixed_forms"] == ["d/hinf1"]
+    manifest = json.loads((tmp_path / "merged" / "manifest.json").read_text())
+    assert manifest["derived"]["mixed_forms"] == ["d/hinf1"]
