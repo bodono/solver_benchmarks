@@ -1,8 +1,10 @@
 """Prepare SDPLIB data from the bundled converted JLD2 archive.
 
-The benchmark reads converted `.jld2` files, not original SDPLIB `.dat-s`
-files. This script extracts selected problems from
-problem_classes/sdplib_data/sdplib.tar when present.
+The benchmark reads converted `.jld2` files, and an original SDPLIB `.dat-s`
+file placed beside the archive in preference to the converted one (three are
+bundled). This script extracts selected problems from
+problem_classes/sdplib_data/sdplib.tar when present; a problem that has an
+original beside the archive is left alone.
 
 Examples:
   python scripts/prepare_sdplib.py

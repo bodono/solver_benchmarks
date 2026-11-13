@@ -101,36 +101,54 @@ class SDPLIBDataset(Dataset):
 
         An original SDPA-S file (``.dat-s`` then ``.dat-s.gz``) placed in the
         data folder replaces both an extracted ``.jld2`` and the tar member of
-        the same name, which is how corrupt archive entries (maxG55, maxG60)
-        are overridden; otherwise ``.jld2`` beats the tar member.
+        the same name; otherwise ``.jld2`` beats the tar member. Three archive
+        members are damaged and cannot be read (maxG55, maxG60, thetaG51:
+        stretches of each file are zeros), so their original files are
+        bundled beside the archive and are what these three are read from.
+
+        For the size filter (``max_size_mb``) a problem has the size of its
+        converted file, whichever file it is read from: an original that
+        replaces an archive member, or an extracted ``.jld2``, is filtered by
+        that file's size, and only an original with no converted counterpart
+        by its own. An original is a far smaller file (the bundled maxG60
+        original is 0.15 MB, its member 395 MB), and the three bundled ones
+        are the largest problems of the set; filtered by their own size they
+        would pass any limit.
         """
         self._check_options()
         specs: dict[str, ProblemSpec] = {}
         rank: dict[str, int] = {}
+        member_sizes = list_sdplib_tar(self.tar_path) if self.tar_path.exists() else {}
+        entries = sorted(self.folder.iterdir()) if self.folder.is_dir() else []
+        # Size of the converted file of each name: the archive member, or an
+        # extracted .jld2 where there is no archive.
+        converted_sizes = {path.stem: int(path.stat().st_size) for path in entries if path.suffix == ".jld2"}
+        converted_sizes.update(member_sizes)
 
         def offer(name: str, spec: ProblemSpec, priority: int) -> None:
             if name not in specs or priority < rank[name]:
                 specs[name] = spec
                 rank[name] = priority
 
-        if self.folder.is_dir():
-            for path in sorted(self.folder.iterdir()):
-                if path.name.endswith(".dat-s.gz"):
-                    stem, prio = path.name[: -len(".dat-s.gz")], 1
-                elif path.name.endswith(".dat-s"):
-                    stem, prio = path.name[: -len(".dat-s")], 0
-                elif path.suffix == ".jld2":
-                    stem, prio = path.stem, 2
-                else:
-                    continue
-                fmt = "sdpa-s" if prio < 2 else "jld2"
-                offer(stem, ProblemSpec(dataset_id=self.dataset_id, name=stem, kind=CONE, path=path,
-                                        metadata={"source": str(path), "format": fmt}), prio)
+        for path in entries:
+            stem = _original_stem(path)
+            if stem is not None:
+                prio = 1 if path.name.endswith(".gz") else 0
+            elif path.suffix == ".jld2":
+                stem, prio = path.stem, 2
+            else:
+                continue
+            fmt = "sdpa-s" if prio < 2 else "jld2"
+            metadata: dict = {"source": str(path), "format": fmt}
+            if fmt == "sdpa-s" and stem in converted_sizes:
+                metadata["size_bytes"] = converted_sizes[stem]
+            offer(stem, ProblemSpec(dataset_id=self.dataset_id, name=stem, kind=CONE, path=path,
+                                    metadata=metadata), prio)
         # Tar members share ProblemSpec.path (the archive itself). Surface
         # the per-member size via metadata["size_bytes"] so the runner-level
         # size filter can compare against the member, not the whole archive.
-        if self.tar_path.exists():
-            for name, size_bytes in sorted(list_sdplib_tar(self.tar_path).items()):
+        if member_sizes:
+            for name, size_bytes in sorted(member_sizes.items()):
                 offer(name, ProblemSpec(
                     dataset_id=self.dataset_id, name=name, kind=CONE, path=self.tar_path,
                     metadata={"source": str(self.tar_path), "format": "tar:jld2", "size_bytes": int(size_bytes)},
@@ -186,24 +204,36 @@ class SDPLIBDataset(Dataset):
                 return
             raise RuntimeError(
                 "SDPLIB data is missing. This repository expects the converted "
-                f"JLD2 archive at {self.tar_path}. The original SDPLIB files are "
-                "not loaded directly; convert them to the expected JLD2 archive "
-                "or restore problem_classes/sdplib_data/sdplib.tar."
+                f"JLD2 archive at {self.tar_path}: restore "
+                "problem_classes/sdplib_data/sdplib.tar, or place converted "
+                f"`.jld2` files or original `.dat-s` files in {self.folder}."
             )
         members = list_sdplib_tar(self.tar_path)
         names = list(members) if all_problems else list(problem_names or SDPLIB_DEFAULT_SUBSET)
         missing = [name for name in names if name not in members]
         if missing:
             raise RuntimeError(f"Unknown SDPLIB problem(s): {', '.join(missing)}")
+        # A member that has an original beside the archive is never read
+        # (and the three bundled originals replace members that cannot be).
+        originals = {_original_stem(path) for path in self.folder.iterdir()} - {None}
         for name in names:
-            extract_from_tar(self.tar_path, name, self.folder)
+            if name not in originals:
+                extract_from_tar(self.tar_path, name, self.folder)
 
     def missing_data_message(self) -> str:
         return (
             "SDPLIB data is missing and cannot be downloaded automatically. "
             f"Restore the converted archive at {self.tar_path}, or place converted "
-            f"`.jld2` files in {self.folder}."
+            f"`.jld2` files or original `.dat-s` files in {self.folder}."
         )
+
+
+def _original_stem(path: Path) -> str | None:
+    """The problem name if ``path`` is an original SDPLIB file, else None."""
+    for suffix in (".dat-s.gz", ".dat-s"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return None
 
 
 def _with_expected(spec: ProblemSpec) -> ProblemSpec:
