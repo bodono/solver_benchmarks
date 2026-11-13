@@ -171,6 +171,43 @@ def test_parse_sdpa_s_accepts_comma_and_brace_separators():
     assert parsed.blocks[0].order == 3 and parsed.blocks[0].is_psd is True
 
 
+def test_parse_sdpa_s_accepts_labelled_header_lines():
+    """The SDPA manual's examples label the header ('3 = mDIM'), and some
+    distributed files keep the labels. They must not change what is read."""
+    from solver_benchmarks.transforms.sdpa import parse_sdpa_s
+
+    plain = """\
+2
+2
+2 -2
+1.0 2.0
+0 1 1 1 1.0
+1 1 1 2 0.5
+1 2 1 1 1.0
+2 1 2 2 1.0
+2 2 2 2 -1.0
+"""
+    labelled = """\
+"Example: mDIM = 2, nBLOCK = 2, {2, -2}"
+   2  =  mDIM
+   2  =  nBLOCK
+  (2, -2)  = bLOCKsTRUCT
+{1.0, 2.0}
+0 1 1 1 1.0
+1 1 1 2 0.5
+1 2 1 1 1.0
+2 1 2 2 1.0
+2 2 2 2 -1.0
+"""
+    parsed, reference = parse_sdpa_s(labelled), parse_sdpa_s(plain)
+    assert parsed.blocks == reference.blocks
+    assert parsed.b.tolist() == reference.b.tolist() == [1.0, 2.0]
+    assert parsed.c_blocks == reference.c_blocks
+    assert parsed.a_blocks == reference.a_blocks
+    assert parsed.m == 2
+    assert [(block.order, block.is_psd) for block in parsed.blocks] == [(2, True), (2, False)]
+
+
 def test_parse_sdpa_s_rejects_truncated_file():
     from solver_benchmarks.transforms.sdpa import parse_sdpa_s
 

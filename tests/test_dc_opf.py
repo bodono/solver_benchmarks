@@ -369,6 +369,151 @@ def test_dc_opf_lp_rejects_case_with_no_generators():
 
 
 # ---------------------------------------------------------------------------
+# Out-of-service elements: MATPOWER removes them from the problem.
+# ---------------------------------------------------------------------------
+
+
+_ISOLATED_BUS = [4.0, 4.0, 50.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 135.0, 1.0, 1.05, 0.95]
+_BRANCH_TO_ISOLATED = [3.0, 4.0, 0.0, 0.1, 0.0, 200.0, 200.0, 200.0, 0.0, 0.0, 1.0, -360.0, 360.0]
+
+
+def _assert_same_problem(got: dict, expected: dict) -> None:
+    assert got["n"] == expected["n"] and got["m"] == expected["m"]
+    assert (got["A"] != expected["A"]).nnz == 0
+    assert (got["P"] != expected["P"]).nnz == 0
+    for key in ("q", "l", "u"):
+        np.testing.assert_array_equal(got[key], expected[key])
+    assert got["r"] == expected["r"]
+
+
+@pytest.mark.parametrize("with_branch", [False, True])
+def test_dc_opf_lp_drops_isolated_bus_with_its_demand_and_branches(with_branch: bool):
+    """A type 4 bus is not part of the network. Its demand cannot be
+    served (kept in the balance it makes the case infeasible, or, with a
+    branch still marked in service, it is served although MATPOWER says
+    the bus is out), so the problem is the one without the bus."""
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    expected, expected_metadata = dc_opf_lp(deepcopy(THREE_BUS))
+    case = deepcopy(THREE_BUS)
+    case["bus"] = np.vstack([case["bus"], _ISOLATED_BUS])
+    if with_branch:
+        case["branch"] = np.vstack([case["branch"], _BRANCH_TO_ISOLATED])
+    problem, metadata = dc_opf_lp(case)
+
+    _assert_same_problem(problem, expected)
+    assert metadata["num_buses"] == 3
+    assert metadata["num_isolated_buses"] == 1
+    assert metadata["num_branches_active"] == 3
+    assert expected_metadata["num_isolated_buses"] == 0
+
+
+def test_dc_opf_lp_isolated_bus_before_the_others_keeps_indices_right():
+    """Removing a bus shifts the rows of the ones after it: the generator
+    and branch endpoints must follow, and so must the reference bus."""
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    expected, expected_metadata = dc_opf_lp(deepcopy(THREE_BUS))
+    case = deepcopy(THREE_BUS)
+    first = list(_ISOLATED_BUS)
+    first[0] = 7.0
+    case["bus"] = np.vstack([first, case["bus"]])
+    problem, metadata = dc_opf_lp(case)
+
+    _assert_same_problem(problem, expected)
+    assert metadata["reference_bus_index"] == expected_metadata["reference_bus_index"]
+
+
+def test_dc_opf_lp_generator_at_isolated_bus_is_off():
+    """It keeps its variable, fixed at zero, and brings no cost."""
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    base, _ = dc_opf_lp(deepcopy(THREE_BUS))
+    case = deepcopy(THREE_BUS)
+    case["bus"] = np.vstack([case["bus"], _ISOLATED_BUS])
+    case["gen"] = np.vstack(
+        [case["gen"], [4.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 1.0, 200.0, 0.0]]
+    )
+    case["gencost"] = np.vstack([case["gencost"], [2.0, 0.0, 0.0, 2.0, 1.0, 9.0]])
+    problem, metadata = dc_opf_lp(case)
+
+    assert problem["n"] == base["n"] + 1
+    column = problem["A"][:, 2].toarray().ravel()
+    bound_row = problem["m"] - 1  # generator bounds are the last rows
+    assert np.flatnonzero(column).tolist() == [bound_row]
+    assert problem["l"][bound_row] == 0.0 and problem["u"][bound_row] == 0.0
+    assert problem["q"][2] == 0.0
+    assert problem["r"] == base["r"] == 0.0
+    assert metadata["num_generators"] == 3
+    assert metadata["num_generators_in_service"] == 2
+
+
+def test_dc_opf_lp_generator_that_is_off_adds_no_constant_cost():
+    """MATPOWER leaves a generator with status 0 out of the objective, so
+    its constant term must not be in ``r``."""
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    case = deepcopy(TWO_BUS)
+    case["gen"] = np.vstack(
+        [case["gen"], [1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 0.0, 100.0, 0.0]]
+    )
+    case["gencost"] = np.vstack([case["gencost"], [2.0, 0.0, 0.0, 2.0, 3.0, 7.0]])
+    problem, metadata = dc_opf_lp(case)
+
+    assert problem["r"] == 5.0  # the generator in service; not 5 + 7
+    assert problem["q"].tolist() == [2000.0, 0.0, 0.0, 0.0]
+    assert problem["l"][-1] == 0.0 and problem["u"][-1] == 0.0
+    assert metadata["num_generators_in_service"] == 1
+
+
+def test_dc_opf_lp_generator_that_is_off_gets_no_piecewise_linear_cost():
+    """With a cost variable it would be charged its cost at zero output
+    (here 5), which MATPOWER does not count."""
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    case = deepcopy(TWO_BUS)
+    case["gencost"] = np.array([[2.0, 0.0, 0.0, 2.0, 20.0, 5.0, 0.0, 0.0, 0.0, 0.0]])
+    case["gen"] = np.vstack(
+        [case["gen"], [1.0, 0.0, 0.0, 100.0, -100.0, 1.0, 100.0, 0.0, 100.0, 0.0]]
+    )
+    case["gencost"] = np.vstack(
+        [case["gencost"], [1.0, 0.0, 0.0, 3.0, 0.0, 5.0, 50.0, 505.0, 100.0, 1505.0]]
+    )
+    problem, metadata = dc_opf_lp(case)
+
+    assert metadata["num_piecewise_linear_costs"] == 0
+    assert problem["n"] == 2 + 2  # two generators, two buses, no cost variable
+    assert problem["r"] == 5.0
+
+
+def test_dc_opf_lp_isolated_bus_case_solves_to_the_optimum_without_it(tmp_path: Path):
+    """End to end: with the bus kept, this case is infeasible."""
+    pytest.importorskip("clarabel")
+    from solver_benchmarks.core import status
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.clarabel_adapter import ClarabelSolverAdapter
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    case = deepcopy(THREE_BUS)
+    case["bus"] = np.vstack([case["bus"], _ISOLATED_BUS])
+    problem, _ = dc_opf_lp(case)
+    result = ClarabelSolverAdapter({"verbose": False}).solve(
+        ProblemData("test", "case3iso", QP, problem), tmp_path
+    )
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(1000.0, abs=1.0)
+
+
+def test_dc_opf_lp_rejects_case_with_every_bus_isolated():
+    from solver_benchmarks.transforms.dc_opf import dc_opf_lp
+
+    case = deepcopy(TWO_BUS)
+    case["bus"][:, 1] = 4.0
+    with pytest.raises(ValueError, match="no buses in service"):
+        dc_opf_lp(case)
+
+
+# ---------------------------------------------------------------------------
 # Dataset list_problems / load_problem.
 # ---------------------------------------------------------------------------
 
