@@ -32,8 +32,17 @@ class QPLIB:
         cursor.skip_lines(2)
 
         # min / max
+        # The sense is the first word of the line, in any case; the rest
+        # of the line is a comment. Anything else is an error: guessing
+        # would negate the objective of a file that says MINIMIZE.
         line = cursor.next_line()
-        original_obj_type = "min" if "minimize" in line else "max"
+        words = line.split()
+        sense = words[0].lower() if words else ""
+        if sense not in ("minimize", "maximize"):
+            raise ValueError(
+                f"QPLIB objective sense must be 'minimize' or 'maximize', got {line!r}"
+            )
+        original_obj_type = "min" if sense == "minimize" else "max"
 
         # number of variables
         n = cursor.next_int_with_keyword("variables")

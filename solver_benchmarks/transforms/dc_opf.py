@@ -18,14 +18,34 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     if len(gen) == 0:
         raise ValueError("MATPOWER case has no generators.")
 
+    # What is out of service is not part of the problem, as in MATPOWER
+    # (ext2int): isolated buses (type 4) go, with their demand, and so do
+    # the branches and generators attached to them; a branch with status
+    # 0 goes; a generator with status <= 0 produces nothing and costs
+    # nothing. An isolated bus kept in the power balance makes the case
+    # infeasible whenever it has demand, since nothing can reach it.
+    # Generators that are off keep their variable, fixed at zero, so the
+    # variable layout does not depend on the status column.
+    isolated = bus[:, 1] == 4
+    bus = bus[~isolated]
+    if len(bus) == 0:
+        raise ValueError("MATPOWER case has no buses in service.")
     n_bus, n_gen = len(bus), len(gen)
     n_primary = n_bus + n_gen
     bus_index = {int(row[0]): i for i, row in enumerate(bus)}
+    in_service = np.array(sorted(bus_index))
     ref = int(np.argmax(bus[:, 1] == 3))  # Defaults to bus 0 if no reference is specified.
-    branch = branch[(branch[:, 10] != 0) & (branch[:, 3] != 0)]
+    branch = branch[
+        (branch[:, 10] != 0)
+        & (branch[:, 3] != 0)
+        & np.isin(branch[:, 0].astype(int), in_service)
+        & np.isin(branch[:, 1].astype(int), in_service)
+    ]
     incidence, flow, shift = _network(branch, bus_index)
+    gen_on = (gen[:, 7].astype(int) > 0) & np.isin(gen[:, 0].astype(int), in_service)
+    on = np.flatnonzero(gen_on)
     generators = sp.csc_matrix(
-        (np.ones(n_gen), ([bus_index[int(g)] for g in gen[:, 0]], np.arange(n_gen))),
+        (np.ones(len(on)), ([bus_index[int(g)] for g in gen[on, 0]], on)),
         shape=(n_bus, n_gen),
     )
 
@@ -45,8 +65,8 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     limits = branch[limited, 5] / base_mva
     line_bounds = sp.hstack([sp.csc_matrix((sum(limited), n_gen)), flow[limited]])
     gen_bounds = sp.hstack([sp.eye(n_gen), sp.csc_matrix((n_gen, n_bus))])
-    gen_min = np.where(gen[:, 7].astype(int) > 0, gen[:, 9] / base_mva, 0.0)
-    gen_max = np.where(gen[:, 7].astype(int) > 0, gen[:, 8] / base_mva, 0.0)
+    gen_min = np.where(gen_on, gen[:, 9] / base_mva, 0.0)
+    gen_max = np.where(gen_on, gen[:, 8] / base_mva, 0.0)
 
     angle_min, angle_max = branch[:, 11], branch[:, 12]
     angle_limited = (
@@ -62,7 +82,7 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     l = np.concatenate([demand, reference_angles, shift[limited] - limits, angle_lower, gen_min])
     u = np.concatenate([demand, reference_angles, shift[limited] + limits, angle_upper, gen_max])
 
-    pwl_a, pwl_b = _piecewise_linear_costs(gencost, n_primary, base_mva)
+    pwl_a, pwl_b = _piecewise_linear_costs(gencost, n_primary, base_mva, gen_on)
     n_vars = pwl_a.shape[1]
     n_cost_vars = n_vars - n_primary
     if n_cost_vars:
@@ -75,7 +95,7 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
         )
         l = np.concatenate([l, np.full(len(pwl_b), -np.inf)])
         u = np.concatenate([u, pwl_b])
-    p, q, r, dropped = _polynomial_costs(gencost, n_vars, base_mva)
+    p, q, r, dropped = _polynomial_costs(gencost, n_vars, base_mva, gen_on)
     q[n_primary:] = 1.0
 
     problem = {
@@ -91,7 +111,9 @@ def dc_opf_lp(case: dict) -> tuple[dict, dict]:
     }
     metadata = {
         "num_buses": n_bus,
+        "num_isolated_buses": int(np.sum(isolated)),
         "num_generators": n_gen,
+        "num_generators_in_service": int(np.sum(gen_on)),
         "num_branches_active": len(branch),
         "num_lines_with_flow_limit": int(sum(limited)),
         "reference_bus_index": ref,
@@ -120,8 +142,11 @@ def _network(branch: np.ndarray, bus_index: dict[int, int]):
     return incidence, flow, shift
 
 
-def _polynomial_costs(gencost: np.ndarray, n_vars: int, base_mva: float):
-    """Scale MW costs for 0.5 * x.T @ P @ x + q.T @ x + r in per-unit."""
+def _polynomial_costs(gencost: np.ndarray, n_vars: int, base_mva: float, gen_on: np.ndarray):
+    """Scale MW costs for 0.5 * x.T @ P @ x + q.T @ x + r in per-unit.
+
+    A generator that is off contributes nothing, its constant term included.
+    """
     diagonal, q = np.zeros(n_vars), np.zeros(n_vars)
     r = 0.0
     dropped: dict[str, list[int | tuple[int, float]]] = {
@@ -130,7 +155,7 @@ def _polynomial_costs(gencost: np.ndarray, n_vars: int, base_mva: float):
     }
     for g, row in enumerate(gencost):
         model = row[0]
-        if model == 1:
+        if model == 1 or not gen_on[g]:
             continue
         if model != 2:
             dropped["unknown_model"].append((g, float(model)))
@@ -151,9 +176,16 @@ def _piecewise_linear_costs(
     gencost: np.ndarray,
     n_vars: int,
     base_mva: float,
+    gen_on: np.ndarray,
 ) -> tuple[sp.csc_matrix, np.ndarray]:
-    """Encode each segment as slope * Pg - cost <= -intercept."""
-    generators: np.ndarray | list[int] = np.flatnonzero(gencost[:, 0] == 1) if gencost.size else []
+    """Encode each segment as slope * Pg - cost <= -intercept.
+
+    Only generators in service get a cost variable: one that is off would
+    otherwise be charged its cost at zero output.
+    """
+    generators: np.ndarray | list[int] = (
+        np.flatnonzero((gencost[:, 0] == 1) & gen_on[: len(gencost)]) if gencost.size else []
+    )
     rows, cols, values = [], [], []
     bounds: list[float] = []
     for i, g in enumerate(generators):

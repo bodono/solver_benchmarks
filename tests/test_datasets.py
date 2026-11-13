@@ -850,6 +850,44 @@ def test_qplib_loader_handles_min_direction_without_negation(tmp_path: Path):
     assert qp["q"][0] == 2.0  # unchanged
 
 
+@pytest.mark.parametrize(
+    ("direction", "expected"),
+    [
+        ("MINIMIZE", "min"),
+        ("Minimize   # objective sense", "min"),
+        ("MAXIMIZE", "max"),
+        ("maximize # not to minimize", "max"),
+    ],
+)
+def test_qplib_loader_reads_the_sense_word_in_any_case(
+    tmp_path: Path, direction: str, expected: str
+):
+    """The sense is the first word of its line. A test for the substring
+    'minimize' read MINIMIZE as a maximisation and negated the objective."""
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n7777\n")
+    _write_minimal_qplib(folder / "QPLIB_7777.qplib", direction=direction)
+
+    problem = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root).load_problem("7777")
+
+    assert problem.metadata.get("original_obj_type") == expected
+    assert problem.qp["q"][0] == (2.0 if expected == "min" else -2.0)
+
+
+def test_qplib_loader_rejects_an_unknown_sense(tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    (folder / "list_convex_qps.txt").write_text("CCB (1)\n-------\n6666\n")
+    _write_minimal_qplib(folder / "QPLIB_6666.qplib", direction="1 variables")
+
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
+    with pytest.raises(ValueError, match="objective sense"):
+        dataset.load_problem("6666")
+
+
 def test_qplib_loader_with_constraints_assembles_a_and_bounds(tmp_path: Path):
     """The single-pass parser must produce the same A/l/u shapes as
     the old multi-read implementation when constraints are present.

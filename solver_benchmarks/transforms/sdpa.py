@@ -292,6 +292,10 @@ def _strip_comments(text: str) -> str:
     The standard recommends comments only appear at the top, but real
     files in the wild sometimes interleave them; treat both leading-
     line and inline comments as stripped from that character to EOL.
+
+    ``=`` also starts a comment: the SDPA manual's own examples label
+    the header lines (``3 = mDIM``, ``1 = nBLOCK``, ``2 = bLOCKsTRUCT``),
+    and ``=`` cannot occur in a number.
     """
     out_lines = []
     for line in text.splitlines():
@@ -300,8 +304,8 @@ def _strip_comments(text: str) -> str:
             continue
         if stripped[0] in ('"', "*"):
             continue
-        # Strip inline comments after a `*` or `"` if present.
-        for marker in ("*", '"'):
+        # Strip inline comments after a `*`, `"` or `=` if present.
+        for marker in ("*", '"', "="):
             idx = line.find(marker)
             if idx >= 0:
                 line = line[:idx]
