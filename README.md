@@ -345,7 +345,7 @@ Current maintained adapters:
 | Solver | ID | Supported types | Notes |
 |---|---|---|---|
 | QTQP | `qtqp` | QP | Converts QP bounds to nonnegative cone form internally. Needs qtqp >= 0.0.7; tolerances are `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (the harness also accepts `eps`/`eps_abs`/`eps_rel` and the pre-0.0.7 `atol`/`rtol`, translated to whatever the installed version takes). |
-| cpo3 | `cpo3` | QP | Rust interior-point solver (Mehrotra predictor-corrector) for LPs and QPs, converted to zero / nonnegative cone form like QTQP. Install from the public repository with `pip install git+https://github.com/cpo3-org/cpo3.git` (needs a Rust toolchain). Tolerances are Clarabel-style `tol_feas`, `tol_gap_abs`, `tol_gap_rel`, `tol_infeas_abs`, `tol_infeas_rel`; `eps` / `eps_abs` / `eps_rel` map onto them. |
+| cpo3 | `cpo3` | QP, cone | Rust interior-point solver (Mehrotra predictor-corrector) for LPs, QPs and SOCPs. QPs are converted to zero / nonnegative cone form like QTQP; cone problems use native zero/nonnegative/SOC cones, and those with other cone kinds (PSD, exponential) or a cpo3 build without second-order cones are recorded as `skipped_unsupported`. Install from the public repository with `pip install git+https://github.com/cpo3-org/cpo3.git` (needs a Rust toolchain). Tolerances are Clarabel-style `tol_feas`, `tol_gap_abs`, `tol_gap_rel`, `tol_infeas_abs`, `tol_infeas_rel`; `eps` / `eps_abs` / `eps_rel` map onto them. |
 | SCS | `scs` | QP, cone | Supports SCS box-cone form for QPs and native conic data. |
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
