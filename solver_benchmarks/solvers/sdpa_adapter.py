@@ -11,7 +11,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, ProblemData
+from solver_benchmarks.core.problem import CONE, ProblemData, cone_items_in_row_order
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
@@ -176,7 +176,8 @@ def _prepare_sdpap_problem(cone_problem: dict, sdpap) -> _PreparedSDPAProblem:
 def _cone_blocks(cone: dict) -> list[tuple[str, int, int, int]]:
     blocks = []
     row = 0
-    for key, value in cone.items():
+    # Rows follow the fixed layout, not the order of the dictionary's keys.
+    for key, value in cone_items_in_row_order(cone):
         if key in {"f", "z"}:
             dim = int(value)
             if dim:

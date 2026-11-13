@@ -15,6 +15,8 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.core.problem import cone_items_in_row_order
+
 _EPS = 1.0e-16
 # Bounds at or beyond this magnitude are treated as infinite. The datasets
 # document +-1e20 as their infinity sentinel and the transform layer drops
@@ -344,7 +346,8 @@ def _project_cones(
     def _take(vec, width):
         return vec[row:row + width] if vec is not None else None
 
-    for name, value in cone.items():
+    # Rows follow the fixed layout, not the order of the dictionary's keys.
+    for name, value in cone_items_in_row_order(cone):
         if name in ("f", "z"):
             dim = int(value)
             if s is not None:
@@ -387,6 +390,9 @@ def _project_cones(
                 # Malformed cone — record but do not advance the row
                 # cursor in a way that misaligns downstream reads.
                 unsupported.append("box")
+                continue
+            if not bl.size and not bu.size:
+                # An empty box takes no rows, as in SCS.
                 continue
             box_width = 1 + max(bl.size, bu.size)
             # Track which key has already consumed the slice so iteration

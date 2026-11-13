@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from solver_benchmarks.core.problem import cone_items_in_row_order
+
 
 def col_major_to_row_major_perm(n: int) -> np.ndarray:
     """Return ``p`` such that ``v_row[p[k]] == v_col[k]`` for all ``k``,
@@ -54,10 +56,13 @@ def cone_row_perm_canonical_to_row_major(cone: dict, m: int) -> np.ndarray:
     """
     idx = np.arange(m, dtype=np.intp)
     row = 0
-    for name, value in cone.items():
+    for name, value in cone_items_in_row_order(cone):
         if name in ("f", "z", "l"):
             row += int(value)
             continue
+        if name in ("bl", "bu"):
+            # Box rows sit before the PSD rows and are not sized here.
+            raise ValueError("PSD rows cannot be located in a cone with a box")
         if name == "q":
             for dim in _as_list(value):
                 row += int(dim)
@@ -91,10 +96,13 @@ def cone_vec_row_major_to_canonical(v: np.ndarray, cone: dict) -> np.ndarray:
 def _apply_cone_vec_perm(v: np.ndarray, cone: dict, *, direction: str) -> np.ndarray:
     out = np.asarray(v, dtype=float).copy()
     row = 0
-    for name, value in cone.items():
+    for name, value in cone_items_in_row_order(cone):
         if name in ("f", "z", "l"):
             row += int(value)
             continue
+        if name in ("bl", "bu"):
+            # Box rows sit before the PSD rows and are not sized here.
+            raise ValueError("PSD rows cannot be located in a cone with a box")
         if name == "q":
             for dim in _as_list(value):
                 row += int(dim)
