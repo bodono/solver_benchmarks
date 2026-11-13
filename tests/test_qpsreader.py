@@ -117,6 +117,7 @@ def test_readMpsLp_accepts_highs_warning_with_populated_model(monkeypatch, tmp_p
         row_lower_ = [-1.0e30]
         row_upper_ = [1.0]
         sense_ = "minimize"
+        offset_ = 0.0
 
     class FakeObjSense:
         kMinimize = "minimize"
@@ -320,3 +321,88 @@ def test_mps_dataset_reports_an_unbounded_maximisation_as_unbounded(tmp_path: Pa
     problem = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root).load_problem("unbounded")
     result = get_solver("highs")({"verbose": False}).solve(problem, tmp_path)
     assert result.status in {status.DUAL_INFEASIBLE, status.PRIMAL_OR_DUAL_INFEASIBLE}
+
+
+# minimise x + 10 subject to x >= 4: the constant is the negated right-hand
+# side of the objective row.
+_CONSTANT_MIN = """\
+NAME          CONST
+ROWS
+ N  COST
+ G  C1
+COLUMNS
+    X    COST   1.0   C1   1.0
+RHS
+    RHS   COST   -10.0   C1   4.0
+ENDATA
+"""
+
+# maximise 3x + 2y + 5 over the region of _MAX_BODY: 11 + 5 = 16.
+_CONSTANT_MAX = "NAME          CONSTMAX\nOBJSENSE\n    MAX\n" + _MAX_BODY.replace(
+    "    RHS   C1   4.0   C2   6.0\n", "    RHS   C1   4.0   C2   6.0\n    RHS   COST   -5.0\n"
+)
+
+
+def test_readMpsProblem_returns_the_objective_constant(tmp_path: Path):
+    pytest.importorskip("highspy")
+    minimise = qpsreader.readMpsProblem(str(_write(tmp_path / "min.mps", _CONSTANT_MIN)))
+    assert minimise.c.tolist() == [1.0] and minimise.offset == 10.0 and minimise.maximise is False
+    # A maximisation is returned as the minimisation of minus its objective,
+    # the constant included.
+    maximise = qpsreader.readMpsProblem(str(_write(tmp_path / "max.mps", _CONSTANT_MAX)))
+    assert maximise.c.tolist() == [-3.0, -2.0] and maximise.offset == -5.0 and maximise.maximise is True
+    # readMpsLp keeps its four values.
+    a, c, l, u = qpsreader.readMpsLp(str(tmp_path / "max.mps"))
+    assert c.tolist() == [-3.0, -2.0] and a.shape == (4, 2)
+
+
+def _solve_netlib_file(tmp_path: Path, name: str, body: str):
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers.registry import get_solver
+    from solver_benchmarks.worker import _reported_objective
+
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True, exist_ok=True)
+    _write(folder / f"{name}.mps", body)
+    problem = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root).load_problem(name)
+    result = get_solver("highs")({"verbose": False}).solve(problem, tmp_path)
+    return problem, result, _reported_objective(problem, result.objective_value)
+
+
+def test_mps_dataset_records_the_objective_with_its_constant(tmp_path: Path):
+    pytest.importorskip("highspy")
+    from solver_benchmarks.core import status
+
+    problem, result, reported = _solve_netlib_file(tmp_path, "constmin", _CONSTANT_MIN)
+    assert problem.qp["r"] == 10.0 and problem.metadata["original_obj_type"] == "min"
+    assert result.status == status.OPTIMAL
+    assert reported == pytest.approx(14.0, abs=1e-7)  # 4 + 10, the optimum the file states
+
+    problem, result, reported = _solve_netlib_file(tmp_path, "constmax", _CONSTANT_MAX)
+    assert problem.qp["r"] == -5.0 and problem.metadata["original_obj_type"] == "max"
+    assert problem.qp["obj_type"] == "min"
+    assert result.status == status.OPTIMAL
+    assert reported == pytest.approx(-16.0, abs=1e-7)  # minus the file's optimum, 11 + 5
+
+
+def test_netlib_e226_is_recorded_with_its_constant():
+    # The one bundled file with a constant term (7.113). Its optimum as HiGHS
+    # solves the file is -11.6389; the Netlib table lists -18.7519, the value
+    # without the constant, which is what the harness used to record.
+    pytest.importorskip("highspy")
+    from solver_benchmarks.core import status
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers.registry import get_solver
+    from solver_benchmarks.worker import _reported_objective
+
+    dataset = get_dataset("netlib")()
+    if "e226" not in {spec.name for spec in dataset.list_problems()}:
+        pytest.skip("bundled Netlib data is not present")
+    problem = dataset.load_problem("e226")
+    assert problem.qp["r"] == pytest.approx(7.113)
+    assert problem.metadata["original_obj_type"] == "min"
+    result = get_solver("highs")({"verbose": False}).solve(problem, Path("."))
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(-18.7519290, rel=1e-6)
+    assert _reported_objective(problem, result.objective_value) == pytest.approx(-11.6389290, rel=1e-6)
