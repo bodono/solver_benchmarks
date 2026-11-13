@@ -160,18 +160,23 @@ def _parse_dimacs_cone(k, n_rows: int, b: np.ndarray):
     free_rows: list[int] = []
     cone: dict = {}
 
+    # SeDuMi orders the cone blocks free, linear, Lorentz, (rotated), PSD,
+    # whatever order the fields of ``K`` are stored in. The cone dictionary
+    # describes the rows of ``A`` in its own key order, so it must be built in
+    # that order: listing ``q`` ahead of ``l`` would swap the linear and
+    # second-order rows of every problem that has both.
     if "f" in names:
         cone["f"] = int(np.sum(k["f"][0][0]))
         current += cone["f"]
+    if "l" in names:
+        cone["l"] = int(np.sum(k["l"][0][0]))
+        current += cone["l"]
     if "q" in names:
         q = np.squeeze(k["q"][0][0].astype(int)).tolist()
         if isinstance(q, int):
             q = [q]
         cone["q"] = q
         current += int(np.sum(q))
-    if "l" in names:
-        cone["l"] = int(np.sum(k["l"][0][0]))
-        current += cone["l"]
     if "s" in names:
         s_blocks = np.squeeze(k["s"][0][0].astype(int)).tolist()
         if isinstance(s_blocks, int):
