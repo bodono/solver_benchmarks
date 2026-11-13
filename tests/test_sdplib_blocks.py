@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import tarfile
 from pathlib import Path
 
 import numpy as np
@@ -11,10 +14,27 @@ import scipy.sparse as sp
 from solver_benchmarks.core.config import _stable_digest, parse_run_config, solve_signature
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.transforms.sdpa import parse_sdpa_s, sdpa_to_cone_problem
-from solver_benchmarks.transforms.sdplib import _psd_vec, split_into_declared_blocks
-from solver_benchmarks.transforms.sdplib_blocks import SDPLIB_BLOCK_SIZES
+from solver_benchmarks.transforms.sdplib import (
+    _psd_vec,
+    read_sdplib_block_sizes,
+    split_into_declared_blocks,
+)
 
 SQRT2 = np.sqrt(2.0)
+
+# What the third line of the original SDPLIB file declares, for a sample.
+DECLARED = {
+    "arch0": (161, -174),
+    "control5": (50, 25),
+    "hinf1": (4, 4, 6),
+    "hinf8": (5, 5, 6),
+    "hinf13": (7, 9, 14),
+    "ss30": (294, -132),
+    "theta1": (50,),
+    "truss1": (2, 2, 2, 2, 2, 2, 1),
+    "truss5": (*(10,) * 33, 1),
+    "control1": (10, 5),
+}
 
 
 def _merged_problem(matrices: list[np.ndarray], c: np.ndarray) -> dict:
@@ -160,25 +180,27 @@ def test_split_rejects_a_problem_that_is_not_one_block():
         split_into_declared_blocks(merged, (2, 2))
 
 
-def test_block_table_is_well_formed():
-    assert len(SDPLIB_BLOCK_SIZES) == 92
-    for name, sizes in SDPLIB_BLOCK_SIZES.items():
-        assert sizes and all(isinstance(size, int) and size != 0 for size in sizes), name
-    assert SDPLIB_BLOCK_SIZES["arch0"] == (161, -174)
-    assert SDPLIB_BLOCK_SIZES["hinf8"] == (5, 5, 6)
-    assert SDPLIB_BLOCK_SIZES["truss1"] == (2, 2, 2, 2, 2, 2, 1)
-    assert SDPLIB_BLOCK_SIZES["theta1"] == (50,)
-    assert SDPLIB_BLOCK_SIZES["hinf13"] == (7, 9, 14)
-    assert SDPLIB_BLOCK_SIZES["control5"] == (50, 25)
-    assert SDPLIB_BLOCK_SIZES["ss30"] == (294, -132)
-    assert SDPLIB_BLOCK_SIZES["truss5"] == (*(10,) * 33, 1)
-    # Diagonal blocks: only the arch problems and ss30 have one.
-    with_diagonal = {name for name, sizes in SDPLIB_BLOCK_SIZES.items() if any(s < 0 for s in sizes)}
-    assert with_diagonal == {"arch0", "arch2", "arch4", "arch8", "ss30"}
-    # 39 problems are declared with more than one block.
-    several = {name for name, sizes in SDPLIB_BLOCK_SIZES.items() if len(sizes) > 1}
-    assert len(several) == 39
-    assert {name.rstrip("0123456789") for name in several} == {"arch", "control", "hinf", "ss", "truss"}
+def _write_jld2_like(path: Path, blockvec) -> Path:
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as handle:
+        if blockvec is not None:
+            handle["blockvec"] = np.asarray(blockvec, dtype=float)
+    return path
+
+
+def test_block_sizes_are_read_from_the_file(tmp_path: Path):
+    assert read_sdplib_block_sizes(_write_jld2_like(tmp_path / "a.jld2", [161.0, -174.0])) == (161, -174)
+    assert read_sdplib_block_sizes(_write_jld2_like(tmp_path / "b.jld2", [50.0])) == (50,)
+    assert read_sdplib_block_sizes(_write_jld2_like(tmp_path / "c.jld2", None)) is None
+
+
+@pytest.mark.parametrize(
+    "blockvec",
+    [[2.5, 3.0], [2.0, 0.0], [], [float("inf"), 4.0], [float("-inf")], [float("nan"), 4.0]],
+)
+def test_block_sizes_that_are_not_sizes_are_rejected(tmp_path: Path, blockvec):
+    with pytest.raises(ValueError, match="not a list of block sizes"):
+        read_sdplib_block_sizes(_write_jld2_like(tmp_path / "bad.jld2", blockvec))
 
 
 def _archive_dataset(repo_root: Path, tmp_path: Path, **options):
@@ -209,8 +231,8 @@ def test_bundled_problems_load_with_declared_blocks(
     declared = _archive_dataset(repo_root, tmp_path, subset="all").load_problem(name)
     assert declared.cone["cone"] == cone and list(declared.cone["cone"]) == list(cone)
     assert declared.metadata["block_structure"] == "declared"
-    assert declared.metadata["num_blocks"] == len(SDPLIB_BLOCK_SIZES[name])
-    assert declared.metadata["block_orders"] == [abs(size) for size in SDPLIB_BLOCK_SIZES[name]]
+    assert declared.metadata["num_blocks"] == len(DECLARED[name])
+    assert declared.metadata["block_orders"] == [abs(size) for size in DECLARED[name]]
     rows = cone.get("l", 0) + sum(order * (order + 1) // 2 for order in cone["s"])
     assert declared.cone["A"].shape[0] == declared.cone["m"] == declared.cone["b"].size == rows
 
@@ -225,18 +247,58 @@ def test_bundled_problems_load_with_declared_blocks(
     assert np.count_nonzero(merged.cone["b"]) == np.count_nonzero(declared.cone["b"])
 
 
+def _recorded_blocks(archive: Path, scratch: Path) -> dict[str, tuple[int, ...] | None]:
+    """The block record of every archive member, in one pass over the archive.
+
+    Each member is copied to a scratch file, read and removed, so the pass
+    costs one decompression of the archive and never holds a member in memory
+    (the largest is 395 MB).
+    """
+    recorded = {}
+    scratch.mkdir(parents=True, exist_ok=True)
+    target = scratch / "member.jld2"
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            if not member.name.endswith(".jld2"):
+                continue
+            source = tar.extractfile(member)
+            assert source is not None, member.name
+            with source, open(target, "wb") as sink:
+                shutil.copyfileobj(source, sink)
+            recorded[Path(member.name).stem] = read_sdplib_block_sizes(target)
+            target.unlink()
+    return recorded
+
+
 @pytest.mark.slow
-def test_every_problem_declared_with_several_blocks_splits(repo_root: Path, tmp_path: Path):
-    # A wrong table entry either leaves a nonzero outside the blocks (and
-    # raises) or changes the row count; this loads all 39 to see neither.
+def test_every_bundled_problem_records_its_blocks_and_splits(repo_root: Path, tmp_path: Path):
+    # Reads the record of every archive member and compares it with what the
+    # original SDPLIB files declare on their third line (the fixture holds
+    # those, read from the originals, not from the archive). Then loads the
+    # 39 problems that have more than one block: a record that did not fit
+    # the stored matrices would leave a nonzero outside the blocks (and
+    # raise) or change the row count.
     dataset = _archive_dataset(repo_root, tmp_path, subset="all")
-    for name, sizes in sorted(SDPLIB_BLOCK_SIZES.items()):
-        if len(sizes) == 1:
-            continue
+    archive = repo_root / "problem_classes/sdplib_data/sdplib.tar"
+    declared = {
+        name: tuple(sizes)
+        for name, sizes in json.loads(
+            (repo_root / "tests/fixtures/sdplib_declared_blocks.json").read_text()
+        ).items()
+    }
+    recorded = _recorded_blocks(archive, tmp_path / "scratch")
+    assert len(recorded) == 92 and recorded == declared
+    assert all(DECLARED[name] == recorded[name] for name in DECLARED)
+    with_diagonal = {name for name, sizes in recorded.items() if any(size < 0 for size in sizes)}
+    assert with_diagonal == {"arch0", "arch2", "arch4", "arch8", "ss30"}
+    several = {name: sizes for name, sizes in recorded.items() if len(sizes) > 1}
+    assert len(several) == 39
+    assert {name.rstrip("0123456789") for name in several} == {"arch", "control", "hinf", "ss", "truss"}
+    for name, sizes in several.items():
         cone = dataset.load_problem(name).cone
         assert cone["cone"].get("l", 0) == sum(-size for size in sizes if size < 0), name
         assert cone["cone"]["s"] == [size for size in sizes if size > 0], name
-        rows = sum(-s if s < 0 else s * (s + 1) // 2 for s in sizes)
+        rows = sum(-size if size < 0 else size * (size + 1) // 2 for size in sizes)
         assert cone["A"].shape[0] == rows, name
 
 
@@ -274,7 +336,7 @@ def _signature(dataset_options: dict) -> str:
 
 
 def test_resume_signature_separates_the_two_forms():
-    # A run directory from before the block table holds merged-form rows whose
+    # A run directory from before problems got their declared blocks holds merged-form rows whose
     # signature was computed from options without a ``blocks`` key.
     config = parse_run_config({
         "run": {"dataset": "sdplib", "dataset_options": {"subset": "all"}},

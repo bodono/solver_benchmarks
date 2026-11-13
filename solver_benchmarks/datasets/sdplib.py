@@ -11,10 +11,10 @@ from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.sdplib import (
     extract_from_tar,
     list_sdplib_tar,
+    read_sdplib_block_sizes,
     read_sdplib_jld2,
     split_into_declared_blocks,
 )
-from solver_benchmarks.transforms.sdplib_blocks import SDPLIB_BLOCK_SIZES
 
 from .base import Dataset
 
@@ -25,9 +25,10 @@ SDPLIB_DEFAULT_SUBSET = ("arch0", "control1", "theta1")
 SDPLIB_INFEASIBLE = ("infd1", "infd2", "infp1", "infp2")
 SDPLIB_SUBSETS = ("feasible", "infeasible", "all")
 # How a problem read from the converted archive is posed. ``declared``: with
-# the block structure of the original SDPLIB file. ``merged``: as one
-# semidefinite block of the full order, which is how the archive stores it
-# and how this adapter posed every problem before the block table existed.
+# the block structure of the original SDPLIB file, which the converted file
+# records. ``merged``: as one semidefinite block of the full order, which is
+# how the matrices are stored and how this adapter posed every problem
+# before it gave the block-diagonal problems their declared blocks.
 SDPLIB_BLOCKS = ("declared", "merged")
 
 
@@ -59,7 +60,7 @@ class SDPLIBDataset(Dataset):
 
     @classmethod
     def signature_options(cls, options: dict[str, Any]) -> dict[str, Any]:
-        """Results recorded before the block table existed are merged-form results.
+        """Results recorded before problems got their declared blocks are merged-form results.
 
         Their signatures were computed from options with no ``blocks`` key, so
         that is what ``blocks: merged`` hashes to, and the declared form
@@ -158,11 +159,10 @@ class SDPLIBDataset(Dataset):
             path = extract_from_tar(path, name, self.folder / ".cache")
         problem = read_sdplib_jld2(path)
         metadata = dict(spec.metadata)
-        # The archive has no block structure, so it comes from the table of
-        # what the original files declare. A file that is not an SDPLIB
-        # problem (one a user placed here) stays as the single block it is
-        # stored as.
-        sizes = SDPLIB_BLOCK_SIZES.get(name) if self.blocks == "declared" else None
+        # The matrices are stored whole; the file records the blocks apart.
+        # A converted file without that record stays the single block it
+        # is stored as.
+        sizes = read_sdplib_block_sizes(path) if self.blocks == "declared" else None
         if sizes is None:
             order = int(problem["cone"]["s"][0])
             metadata.update({"block_structure": "merged", "num_blocks": 1, "block_orders": [order]})
