@@ -542,10 +542,16 @@ def main(
     camps = {s.get("campaign") or campaign for s in shards}
     if camps & {"scs332m", "scs332c"} and require_cpu != "25/1":
         raise SystemExit("campaigns scs332m / scs332c run on AMD Zen 3 Milan only: pass --require-cpu 25/1")
-    if camps & {"scs332gs", "scs332c"} and require_gpu != GPU_HOST_332:
-        raise SystemExit(f"campaigns scs332gs / scs332c run on one GPU host type: pass --require-gpu '{GPU_HOST_332}'")
+    if camps & {"scs332gs", "scs332g2", "scs332c"} and require_gpu != GPU_HOST_332:
+        raise SystemExit(f"campaigns scs332gs / scs332g2 / scs332c run on one GPU host type: pass --require-gpu '{GPU_HOST_332}'")
     if "scs332g" in camps:
-        raise SystemExit("scs332g holds rows from the A100 PCIe / Intel 6/106 host; SCS GPU now runs as scs332gs")
+        raise SystemExit("scs332g holds rows from the A100 PCIe / Intel 6/106 host; SCS GPU now runs as scs332g2")
+    # scs332gs measured cvxgrp/scs#513's cuDSS setting (scs-python 91df3fcd); scs332g2 is the SCS GPU
+    # re-run with the fix and must not be built from that commit.
+    if "scs332gs" in camps:
+        raise SystemExit("scs332gs (#513's cuDSS setting) is finished; the SCS GPU re-run is scs332g2")
+    if "scs332g2" in camps and SCS_PYTHON_REF.startswith("91df3fcd"):
+        raise SystemExit("scs332g2 needs the scs-python commit with the cuDSS fix, not 91df3fcd")
     print(f"SCS_PYTHON_REF={SCS_PYTHON_REF or '(PyPI scs)'} require_cpu={require_cpu or '(any)'} "
           f"require_gpu={require_gpu or '(any)'}", flush=True)
     if only:
