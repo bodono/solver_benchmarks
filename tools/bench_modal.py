@@ -67,12 +67,19 @@ def _with_scs_source(image: modal.Image) -> modal.Image:
             f"-d /tmp/mkl mkl-static=={MKL_STATIC_VERSION} mkl-include=={MKL_STATIC_VERSION}",
             "for w in /tmp/mkl/*.whl; do python -m zipfile -e $w /tmp/mkl/unpacked; done "
             "&& mkdir -p /opt/mkl-static && cp -r /tmp/mkl/unpacked/*.data/data/. /opt/mkl-static/ && rm -rf /tmp/mkl",
-            "cd /opt/scs-python && python -m pip install --no-build-isolation --no-deps --force-reinstall "
-            "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static . 2>&1 | tail -5",
+            "cd /opt/scs-python && " + _logged_build(
+                "python -m pip install -v --no-build-isolation --no-deps --force-reinstall "
+                "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static ."),
             "python -c 'import scs, numpy; from scs import _scs_mkl; "
             "print(\"scs\", scs.__version__, \"with MKL; numpy\", numpy.__version__)'",
         )
     )
+
+
+def _logged_build(cmd: str) -> str:
+    """Run a build quietly; on failure print the end of its log and fail the image step.
+    (Piping into tail, as before, hid the error and let a failed build pass.)"""
+    return f"({cmd}) > /tmp/scs_build.log 2>&1 && tail -3 /tmp/scs_build.log || (tail -200 /tmp/scs_build.log; exit 1)"
 
 
 def _scs_python_checkout() -> list[str]:
@@ -126,8 +133,8 @@ gpu_image = (
     .pip_install(*HARNESS_PKGS, *SOLVER_PKGS_GPU, "meson-python", "meson", "ninja", "cython")
     .run_commands(
         *_scs_python_checkout(),
-        "cd /opt/scs-python && python -m pip install --no-build-isolation "
-        "-Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true . 2>&1 | tail -5",
+        "cd /opt/scs-python && " + _logged_build(
+            "python -m pip install -v --no-build-isolation -Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true ."),
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
     )
     # NVIDIA cuOpt: GPU PDLP for LP and QP, the like-for-like GPU comparator.
