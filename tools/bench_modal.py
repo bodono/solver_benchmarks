@@ -227,10 +227,31 @@ if CPO3_REPO.is_dir():
 VOLUMES = {"/data": data_vol, "/results": results_vol}
 
 
-def _run(campaign: str, name: str, config_yaml: str) -> dict:
+def _cpu_family_model() -> str:
+    """'family/model' of the host CPU, e.g. '25/1' for AMD EPYC Zen 3 (Milan). gVisor masks
+    the model name string but not these numbers."""
+    import re
+    text = Path("/proc/cpuinfo").read_text()
+    fam = re.search(r"^cpu family\s*:\s*(\d+)", text, re.M)
+    mod = re.search(r"^model\s*:\s*(\d+)", text, re.M)
+    return f"{fam.group(1) if fam else '?'}/{mod.group(1) if mod else '?'}"
+
+
+def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
     import os
     import time
 
+    # Modal places a container on whatever host type is free (AMD Zen 3 and Zen 4,
+    # several Intel generations), and they differ in speed. When a CPU type is
+    # required, a container on another host does nothing, stops taking inputs (so
+    # the retry gets a new container) and reports the host; the orchestrator
+    # queues the shard again.
+    if require_cpu:
+        host = _cpu_family_model()
+        if host != require_cpu:
+            import modal.experimental
+            modal.experimental.stop_fetching_inputs()
+            return {"name": name, "exit": 75, "rows": 0, "seconds": 0.0, "wrong_host": host}
     cfg = Path(f"/tmp/{name}.yaml")
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
@@ -273,46 +294,46 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
 
 
 @app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=20 * 3600, max_containers=32)
-def run_shard_cpu(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 # For shards that die at the 16 GiB limit (interior-point solvers on the large
 # SDPLIB instances): same image, four times the memory, fewer at a time.
 @app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=16)
-def run_shard_cpu_big(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_cpu_big(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 @app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=10)
-def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 @app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=1)
-def run_shard_cuopt(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_cuopt(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 @app.function(image=pdlp_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-def run_shard_pdlp(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_pdlp(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 @app.function(image=qtqp_cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-def run_shard_qtqp_cpu(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_qtqp_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 @app.function(image=qtqp_gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=2)
-def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str) -> dict:
-    return _run(campaign, name, config_yaml)
+def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu)
 
 
 if cpo3_image is not None:
     @app.function(image=cpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-    def run_shard_cpo3_cpu(campaign: str, name: str, config_yaml: str) -> dict:
-        return _run(campaign, name, config_yaml)
+    def run_shard_cpo3_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+        return _run(campaign, name, config_yaml, require_cpu)
 
 
 @app.function(image=cpu_image, cpu=2.0)
@@ -431,6 +452,9 @@ RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, 
 # (Brendan, 2026-11-14: "Do it fast"); September ran 2 / 16 / 8. 10 GPUs is the workspace's
 # limit on its current plan: above it the extra shards queue, and the guard below would still
 # charge them from spawn.
+# Runner kinds that run on CPU hosts, to which --require-cpu applies (GPU hosts are not filtered).
+CPU_KINDS = {"cpu", "cpu_big", "pdlp", "qtqp_cpu", "cpo3_cpu"}
+MAX_HOST_TRIES = 12
 MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 10, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
 
 
@@ -446,9 +470,10 @@ def main(
     cpu_kind: str = "cpu",
     probe: bool = False,
     probe_cuopt_only: bool = False,
+    require_cpu: str = "",
 ):
     import time
-    from collections import deque
+    from collections import Counter, deque
 
     if probe:
         print(probe_cpu.remote())
@@ -478,6 +503,7 @@ def main(
     if cpo3_image is not None:
         runners["cpo3_cpu"] = run_shard_cpo3_cpu
     pending = deque(shards)
+    tries: Counter = Counter()  # wrong-host attempts per shard (require_cpu)
     running: dict = {}  # call -> (shard, start)
     spent = 0.0
     done = failed = 0
@@ -505,7 +531,8 @@ def main(
                 pending.rotate(-1)
                 continue
             pending.popleft()
-            call = runners[k].spawn(campaign, sh["name"], Path(sh["config"]).read_text())
+            req = require_cpu if k in CPU_KINDS else ""
+            call = runners[k].spawn(campaign, sh["name"], Path(sh["config"]).read_text(), req)
             running[call] = (sh, time.time())
             in_flight[k] += 1
             launched += 1
@@ -525,6 +552,13 @@ def main(
             del running[call]
             hours = (time.time() - t0) / 3600
             spent += hours * RATES_PER_HOUR[sh["kind"]]
+            if r.get("wrong_host"):
+                tries[sh["name"]] += 1
+                if tries[sh["name"]] < MAX_HOST_TRIES:
+                    pending.append(sh)
+                    print(f"  {sh['name']}: host {r['wrong_host']}, not {require_cpu}; queued again (try {tries[sh['name']]})", flush=True)
+                    continue
+                r["error"] = f"no {require_cpu} host in {MAX_HOST_TRIES} tries"
             if r.get("exit") == 0:
                 done += 1
             else:
