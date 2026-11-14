@@ -249,9 +249,16 @@ def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> d
     if require_cpu:
         host = _cpu_family_model()
         if host != require_cpu:
-            import modal.experimental
-            modal.experimental.stop_fetching_inputs()
-            return {"name": name, "exit": 75, "rows": 0, "seconds": 0.0, "wrong_host": host}
+            # Best effort: the stop is a server call; if it fails, Modal may hand the
+            # retry to this same container, which costs one more try (the orchestrator
+            # caps tries), never a wrong-host row.
+            try:
+                import modal.experimental
+                modal.experimental.stop_fetching_inputs()
+            except Exception as exc:  # noqa: BLE001
+                print(f"stop_fetching_inputs failed: {exc!r}", flush=True)
+            return {"name": name, "exit": 75, "rows": 0, "seconds": 0.0, "wrong_host": host,
+                    "task": os.environ.get("MODAL_TASK_ID", "")}
     cfg = Path(f"/tmp/{name}.yaml")
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
@@ -266,13 +273,24 @@ def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> d
     t0 = time.time()
     # Record the host for this shard: the rows do not (gVisor masks the CPU model
     # string, but family and model numbers show), nor do they record the GPU or cuDSS.
-    with (run_dir / "host.txt").open("w") as fh:
+    # One block per container, appended: a shard resumed by a later container (a
+    # relaunch, a preemption restart) keeps the record of the hosts that solved its
+    # earlier rows; rows_before says how many rows each container found.
+    def _rows_now() -> int:
+        f = run_dir / "results.jsonl"
+        return sum(1 for line in f.read_text().splitlines() if line.strip()) if f.exists() else 0
+    with (run_dir / "host.txt").open("a") as fh:
+        fh.write(f"=== container start {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                 f"task={os.environ.get('MODAL_TASK_ID', '')} rows_before={_rows_now()} host={_cpu_family_model()}\n")
+        fh.flush()
         subprocess.run(
             "grep -m1 'model name' /proc/cpuinfo; grep -m1 '^cpu family' /proc/cpuinfo; "
             "grep -m1 -E '^model[[:space:]]+:' /proc/cpuinfo; nproc; "
             "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null; "
             "dpkg-query -W 'libcudss*' 2>/dev/null; "
-            "python -c 'import scs, numpy; print(\"scs\", scs.__version__, \"numpy\", numpy.__version__)'",
+            "python -c 'import scs, numpy; print(\"scs\", scs.__version__, \"numpy\", numpy.__version__)'; "
+            "echo scs-python $(git -C /opt/scs-python rev-parse HEAD 2>/dev/null || echo none) "
+            "scs_source $(git -C /opt/scs-python/scs_source rev-parse HEAD 2>/dev/null || echo none)",
             shell=True, stdout=fh, stderr=subprocess.STDOUT, cwd="/root/repo", check=False,
         )
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
@@ -286,6 +304,9 @@ def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> d
         while proc.poll() is None:
             time.sleep(120)
             results_vol.commit()
+    with (run_dir / "host.txt").open("a") as fh:
+        fh.write(f"=== container end {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                 f"exit={proc.returncode} rows_after={_rows_now()}\n")
     results_vol.commit()
     rows = 0
     if (run_dir / "results.jsonl").exists():
@@ -455,6 +476,7 @@ RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, 
 # Runner kinds that run on CPU hosts, to which --require-cpu applies (GPU hosts are not filtered).
 CPU_KINDS = {"cpu", "cpu_big", "pdlp", "qtqp_cpu", "cpo3_cpu"}
 MAX_HOST_TRIES = 12
+MAX_POLL_ERRORS = 30  # consecutive transient errors polling one call (about 10 minutes)
 MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 10, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
 
 
@@ -486,6 +508,9 @@ def main(
     if campaign.startswith("scs332") and not SCS_PYTHON_REF:
         raise SystemExit("campaign scs332* measures an unreleased SCS: set SCS_PYTHON_REF to the scs-python commit")
     shards = json.loads(Path(spec).read_text())
+    if any((s.get("campaign") or campaign) == "scs332m" for s in shards) and require_cpu != "25/1":
+        raise SystemExit("campaign scs332m is the AMD Zen 3 Milan re-run: pass --require-cpu 25/1")
+    print(f"SCS_PYTHON_REF={SCS_PYTHON_REF or '(PyPI scs)'} require_cpu={require_cpu or '(any)'}", flush=True)
     if only:
         shards = [s for s in shards if only in s["name"]]
     if exclude:
@@ -504,6 +529,7 @@ def main(
         runners["cpo3_cpu"] = run_shard_cpo3_cpu
     pending = deque(shards)
     tries: Counter = Counter()  # wrong-host attempts per shard (require_cpu)
+    poll_errors: Counter = Counter()  # consecutive transient poll errors per call
     running: dict = {}  # call -> (shard, start)
     spent = 0.0
     done = failed = 0
@@ -532,7 +558,7 @@ def main(
                 continue
             pending.popleft()
             req = require_cpu if k in CPU_KINDS else ""
-            call = runners[k].spawn(campaign, sh["name"], Path(sh["config"]).read_text(), req)
+            call = runners[k].spawn(sh.get("campaign") or campaign, sh["name"], Path(sh["config"]).read_text(), req)
             running[call] = (sh, time.time())
             in_flight[k] += 1
             launched += 1
@@ -540,14 +566,19 @@ def main(
             sh, t0 = running[call]
             try:
                 r = call.get(timeout=0)
+                poll_errors.pop(call, None)
             except TimeoutError:
+                poll_errors.pop(call, None)
                 continue
             except Exception as exc:
                 # Transient Modal client/API errors (deadline exceeded, connection
                 # reset) are not shard failures: the container keeps running.
                 if "Deadline" in str(exc) or "Connection" in type(exc).__name__ or "ServiceError" in type(exc).__name__:
-                    print(f"  transient error polling {sh['name']}: {str(exc)[:80]}; will retry", flush=True)
-                    continue
+                    poll_errors[call] += 1
+                    if poll_errors[call] < MAX_POLL_ERRORS:
+                        print(f"  transient error polling {sh['name']}: {str(exc)[:80]}; will retry", flush=True)
+                        continue
+                    exc = RuntimeError(f"{MAX_POLL_ERRORS} poll errors in a row, last: {str(exc)[:120]}")
                 r = {"name": sh["name"], "exit": -1, "rows": 0, "seconds": time.time() - t0, "error": str(exc)[:200]}
             del running[call]
             hours = (time.time() - t0) / 3600
@@ -556,7 +587,7 @@ def main(
                 tries[sh["name"]] += 1
                 if tries[sh["name"]] < MAX_HOST_TRIES:
                     pending.append(sh)
-                    print(f"  {sh['name']}: host {r['wrong_host']}, not {require_cpu}; queued again (try {tries[sh['name']]})", flush=True)
+                    print(f"  {sh['name']}: host {r['wrong_host']} (task {r.get('task', '')}), not {require_cpu}; queued again (try {tries[sh['name']]})", flush=True)
                     continue
                 r["error"] = f"no {require_cpu} host in {MAX_HOST_TRIES} tries"
             if r.get("exit") == 0:
