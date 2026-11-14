@@ -500,10 +500,12 @@ RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, 
 CPU_KINDS = {"cpu", "cpu_big", "pdlp", "qtqp_cpu", "cpo3_cpu"}
 # Runner kinds on GPU hosts, to which --require-gpu applies ('GPU NAME|FAMILY/MODEL').
 GPU_KINDS = {"gpu", "cuopt", "qtqp_gpu"}
-MAX_HOST_TRIES = 12
-# The GPU host of the SCS 3.3.2 refresh: the A100 80GB PCIe on Intel family 6 model 106,
-# 27 of the 42 GPU shards of the first scs332 run (the rest: A100-SXM4 on three host CPUs).
-GPU_HOST_332 = "NVIDIA A100 80GB PCIe|6/106"
+MAX_HOST_TRIES = 40  # distinct wrong-host containers per shard (one container can reject several)
+# The GPU host of the SCS 3.3.2 refresh: the A100-SXM4-80GB on an AMD Zen 3 Milan host
+# (family 25 model 1, the CPU type of the CPU runs). Modal's A100-80GB pool is mixed: on
+# 2026-11-14 the PCIe card on Intel 6/106 went from 27 of 42 GPU containers in the morning to
+# 5 of 45 by 14:00; SXM4 was two thirds of the containers, about a third of those on Milan.
+GPU_HOST_332 = "NVIDIA A100-SXM4-80GB|25/1"
 MAX_POLL_ERRORS = 30  # consecutive transient errors polling one call (about 10 minutes)
 MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 9, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
 
@@ -540,8 +542,10 @@ def main(
     camps = {s.get("campaign") or campaign for s in shards}
     if camps & {"scs332m", "scs332c"} and require_cpu != "25/1":
         raise SystemExit("campaigns scs332m / scs332c run on AMD Zen 3 Milan only: pass --require-cpu 25/1")
-    if camps & {"scs332g", "scs332c"} and require_gpu != GPU_HOST_332:
-        raise SystemExit(f"campaigns scs332g / scs332c run on one GPU host type: pass --require-gpu '{GPU_HOST_332}'")
+    if camps & {"scs332gs", "scs332c"} and require_gpu != GPU_HOST_332:
+        raise SystemExit(f"campaigns scs332gs / scs332c run on one GPU host type: pass --require-gpu '{GPU_HOST_332}'")
+    if "scs332g" in camps:
+        raise SystemExit("scs332g holds rows from the A100 PCIe / Intel 6/106 host; SCS GPU now runs as scs332gs")
     print(f"SCS_PYTHON_REF={SCS_PYTHON_REF or '(PyPI scs)'} require_cpu={require_cpu or '(any)'} "
           f"require_gpu={require_gpu or '(any)'}", flush=True)
     if only:
@@ -561,7 +565,8 @@ def main(
     if cpo3_image is not None:
         runners["cpo3_cpu"] = run_shard_cpo3_cpu
     pending = deque(shards)
-    tries: Counter = Counter()  # wrong-host attempts per shard (require_cpu)
+    tries: Counter = Counter()  # distinct wrong-host containers per shard (require_cpu / require_gpu)
+    seen_tasks: set = set()
     poll_errors: Counter = Counter()  # consecutive transient poll errors per call
     running: dict = {}  # call -> (shard, start)
     spent = 0.0
@@ -612,13 +617,20 @@ def main(
                     if poll_errors[call] < MAX_POLL_ERRORS:
                         print(f"  transient error polling {sh['name']}: {str(exc)[:80]}; will retry", flush=True)
                         continue
-                    exc = RuntimeError(f"{MAX_POLL_ERRORS} poll errors in a row, last: {str(exc)[:120]}")
+                    try:
+                        call.cancel()
+                    except Exception as cexc:  # noqa: BLE001
+                        print(f"cancel failed: {cexc}", flush=True)
+                    exc = RuntimeError(f"{MAX_POLL_ERRORS} poll errors in a row (cancelled), last: {str(exc)[:120]}")
                 r = {"name": sh["name"], "exit": -1, "rows": 0, "seconds": time.time() - t0, "error": str(exc)[:200]}
             del running[call]
             hours = (time.time() - t0) / 3600
             spent += hours * RATES_PER_HOUR[sh["kind"]]
             if r.get("wrong_host"):
-                tries[sh["name"]] += 1
+                key = (sh["name"], r.get("task") or f"anon{len(seen_tasks)}")
+                if key not in seen_tasks:
+                    seen_tasks.add(key)
+                    tries[sh["name"]] += 1
                 if tries[sh["name"]] < MAX_HOST_TRIES:
                     pending.append(sh)
                     want = require_gpu if sh["kind"] in GPU_KINDS else require_cpu
@@ -632,6 +644,6 @@ def main(
             flag = "" if r.get("exit") == 0 else f"  EXIT {r.get('exit')} {r.get('error', '')}"
             print(f"{r['name']:58s} rows={r.get('rows', 0):4d} {hours * 60:7.1f} min  spent~${spent:7.2f}{flag}", flush=True)
         if launched or not running:
-            print(f"  [{time.strftime('%H:%M')}] running={len(running)} pending={len(pending)} done={done} failed={failed} spent~${spent:.2f}", flush=True)
+            print(f"  [{time.strftime('%H:%M')}] running={len(running)} pending={len(pending)} done={done} failed={failed} spent~${spent:.2f} projected~${projected:.2f}", flush=True)
         time.sleep(20)
     print(f"finished: done={done} failed={failed} pending={len(pending)} spent~${spent:.2f}")
