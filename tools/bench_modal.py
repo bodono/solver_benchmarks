@@ -32,12 +32,10 @@ SOLVER_PKGS = [
     "osqp==1.1.3", "clarabel==0.11.1", "piqp==0.6.4", "proxsuite==0.7.3", "highspy==1.15.1", "ortools==9.15.6755",
     "cvxopt==1.3.3", "sdpa-python==0.2.3", "ecos",
 ]
-# The GPU image (Python 3.10) runs only SCS on cuDSS, so it keeps September's
-# unpinned list: an exact pin without a Python 3.10 wheel would break its build.
+# The GPU image runs only SCS on cuDSS, so it keeps September's unpinned list.
 SOLVER_PKGS_GPU = ["osqp", "clarabel", "piqp", "proxsuite", "highspy<1.16", "ortools", "cvxopt", "sdpa-python", "ecos"]
 HARNESS_PKGS = ["click", "h5py", "matplotlib>=3.9", "numpy", "pandas", "pyarrow", "PyYAML", "scipy", "psutil"]
-# numpy and scipy as in the September CPU rows. Only for the Python 3.12 CPU
-# image: the GPU image has Python 3.10, which these releases do not support.
+# numpy and scipy as in the September CPU rows (CPU image only).
 CPU_NUMERIC_PINS = ["numpy==2.5.3", "scipy==1.18.1"]
 
 # The SCS under test. By default the CPU images install the released scs from
@@ -100,15 +98,16 @@ cpu_image = (
 )
 
 CUDA_IMAGE = "nvidia/cuda:12.6.3-devel-ubuntu22.04"
+# Python 3.12 from Modal rather than Ubuntu 22.04's 3.10: the harness needs 3.11
+# or newer since f18e724 (the September image, built before that, had 3.10).
 gpu_image = (
-    modal.Image.from_registry(CUDA_IMAGE)
-    .apt_install("git", "pkg-config", "build-essential", "libopenblas-dev", "liblapack-dev", "ninja-build",
-                 "python3", "python3-dev", "python3-pip", "python3-venv", "python-is-python3")
+    modal.Image.from_registry(CUDA_IMAGE, add_python="3.12")
+    .apt_install("git", "pkg-config", "build-essential", "libopenblas-dev", "liblapack-dev", "ninja-build")
     .run_commands(
         "python -m pip install --upgrade pip",
         # cuDSS from NVIDIA's apt repo; the metapackage installs CUDA 12 and 13 builds, we want 12
         "apt-get update && apt-get install -y cudss",
-        "python3 - <<'PY'\n"
+        "python - <<'PY'\n"
         "import glob, os, pathlib\n"
         "inc = sorted(glob.glob('/usr/include/libcudss/12/cudss.h')) or sorted(glob.glob('/usr/include/**/cudss.h', recursive=True))\n"
         "lib = sorted(glob.glob('/usr/lib/x86_64-linux-gnu/libcudss/12/libcudss.so')) or sorted(glob.glob('/usr/lib/**/libcudss.so', recursive=True))\n"
