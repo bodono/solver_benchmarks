@@ -33,9 +33,11 @@ SOLVER_PKGS = [
     "cvxopt==1.3.3", "sdpa-python==0.2.3", "ecos",
 ]
 # The GPU image runs only SCS on cuDSS, so it keeps September's unpinned list.
-SOLVER_PKGS_GPU = ["osqp", "clarabel", "piqp", "proxsuite", "highspy<1.16", "ortools", "cvxopt", "sdpa-python", "ecos"]
+# highspy reads the MPS files, so it is pinned to the CPU image's version.
+SOLVER_PKGS_GPU = ["osqp", "clarabel", "piqp", "proxsuite", "highspy==1.15.1", "ortools", "cvxopt", "sdpa-python", "ecos"]
 HARNESS_PKGS = ["click", "h5py", "matplotlib>=3.9", "numpy", "pandas", "pyarrow", "PyYAML", "scipy", "psutil"]
-# numpy and scipy as in the September CPU rows (CPU image only).
+# numpy and scipy as the September merged manifests record them (system.library_versions;
+# the rows themselves do not). CPU image only.
 CPU_NUMERIC_PINS = ["numpy==2.5.3", "scipy==1.18.1"]
 
 # The SCS under test. By default the CPU images install the released scs from
@@ -72,6 +74,7 @@ def _with_scs_source(image: modal.Image) -> modal.Image:
                 "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static ."),
             "python -c 'import scs, numpy; from scs import _scs_mkl; "
             "print(\"scs\", scs.__version__, \"with MKL; numpy\", numpy.__version__)'",
+            "git -C /opt/scs-python/scs_source log -1 --format='scs_source %H %s'",
         )
     )
 
@@ -141,9 +144,14 @@ gpu_image = (
         "cd /opt/scs-python && " + _logged_build(
             "python -m pip install -v --no-build-isolation -Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true ."),
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
+        "git -C /opt/scs-python/scs_source log -1 --format='scs_source %H %s'",
+        "dpkg-query -W 'cudss*' 'libcudss*' || true",
     )
     # NVIDIA cuOpt: GPU PDLP for LP and QP, the like-for-like GPU comparator.
     .pip_install("cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    # cuopt-cu12 may move numpy: check the SCS build again after it
+    .run_commands("python -c 'from scs import _scs_cudss; import scs, numpy; "
+                  "print(\"scs\", scs.__version__, \"cuDSS still ok; numpy\", numpy.__version__)'")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -228,12 +236,24 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     run_dir = Path("/results") / campaign / name
     run_dir.mkdir(parents=True, exist_ok=True)
     # Modal's cpu= request is a reservation (containers see and may burst to more cores), so every
-    # threading runtime is pinned to the reserved core count: OpenMP (MKL, OpenBLAS), Rayon and the
-    # BLAS variants. (Commit 946e11c of the September campaign branch, used there from 2026-09-20.)
+    # threading runtime is pinned to the reserved core count: OpenMP, Rayon and the BLAS variants.
+    # (Commit 946e11c of the September campaign branch, used there from 2026-09-20.) SCS's MKL
+    # backend links sequential MKL, so these pins only affect OpenBLAS users and Rayon.
     threads = os.environ.get("OMP_NUM_THREADS", "4")
     env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=threads, RAYON_NUM_THREADS=threads,
                MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads)
     t0 = time.time()
+    # Record the host for this shard: the rows do not (gVisor masks the CPU model
+    # string, but family and model numbers show), nor do they record the GPU or cuDSS.
+    with (run_dir / "host.txt").open("w") as fh:
+        subprocess.run(
+            "grep -m1 'model name' /proc/cpuinfo; grep -m1 '^cpu family' /proc/cpuinfo; "
+            "grep -m1 -E '^model[[:space:]]+:' /proc/cpuinfo; nproc; "
+            "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null; "
+            "dpkg-query -W 'libcudss*' 2>/dev/null; "
+            "python -c 'import scs, numpy; print(\"scs\", scs.__version__, \"numpy\", numpy.__version__)'",
+            shell=True, stdout=fh, stderr=subprocess.STDOUT, cwd="/root/repo", check=False,
+        )
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
         proc = subprocess.Popen(
             [sys.executable, "-m", "solver_benchmarks.cli", "run", str(cfg), "--run-dir", str(run_dir),
@@ -434,6 +454,8 @@ def main(
     if probe_cuopt_only:
         print(probe_cuopt.remote())
         return
+    if campaign.startswith("scs332") and not SCS_PYTHON_REF:
+        raise SystemExit("campaign scs332* measures an unreleased SCS: set SCS_PYTHON_REF to the scs-python commit")
     shards = json.loads(Path(spec).read_text())
     if only:
         shards = [s for s in shards if only in s["name"]]
