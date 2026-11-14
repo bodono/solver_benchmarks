@@ -162,7 +162,7 @@ gpu_image = (
 cuopt_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "cuopt-cu12==26.8.0", extra_index_url="https://pypi.nvidia.com")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -237,7 +237,29 @@ def _cpu_family_model() -> str:
     return f"{fam.group(1) if fam else '?'}/{mod.group(1) if mod else '?'}"
 
 
-def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
+def _gpu_name() -> str:
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=60).stdout.strip().splitlines()
+        return out[0].strip() if out else "none"
+    except Exception:  # noqa: BLE001
+        return "none"
+
+
+def _host_ok(require_cpu: str, require_gpu: str) -> tuple[bool, str]:
+    """require_cpu 'FAMILY/MODEL'; require_gpu 'GPU NAME|FAMILY/MODEL' (the GPU model,
+    e.g. 'NVIDIA A100 80GB PCIe', must match exactly, and the host CPU too)."""
+    cpu = _cpu_family_model()
+    if require_gpu:
+        want_gpu, _, want_cpu = require_gpu.partition("|")
+        gpu = _gpu_name()
+        return (gpu == want_gpu and (not want_cpu or cpu == want_cpu)), f"{gpu}|{cpu}"
+    if require_cpu:
+        return cpu == require_cpu, cpu
+    return True, cpu
+
+
+def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
     import os
     import time
 
@@ -246,9 +268,9 @@ def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> d
     # required, a container on another host does nothing, stops taking inputs (so
     # the retry gets a new container) and reports the host; the orchestrator
     # queues the shard again.
-    if require_cpu:
-        host = _cpu_family_model()
-        if host != require_cpu:
+    if require_cpu or require_gpu:
+        ok, host = _host_ok(require_cpu, require_gpu)
+        if not ok:
             # Best effort: the stop is a server call; if it fails, Modal may hand the
             # retry to this same container, which costs one more try (the orchestrator
             # caps tries), never a wrong-host row.
@@ -289,6 +311,7 @@ def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> d
             "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null; "
             "dpkg-query -W 'libcudss*' 2>/dev/null; "
             "python -c 'import scs, numpy; print(\"scs\", scs.__version__, \"numpy\", numpy.__version__)'; "
+            "python -c 'import importlib.metadata as m\nfor p in (\"scs\",\"numpy\",\"scipy\",\"osqp\",\"clarabel\",\"piqp\",\"proxsuite\",\"highspy\",\"ortools\",\"cvxopt\",\"sdpa-python\",\"cuopt-cu12\"):\n try: print(\"pkg\", p, m.version(p))\n except Exception: pass'; "
             "echo scs-python $(git -C /opt/scs-python rev-parse HEAD 2>/dev/null || echo none) "
             "scs_source $(git -C /opt/scs-python/scs_source rev-parse HEAD 2>/dev/null || echo none)",
             shell=True, stdout=fh, stderr=subprocess.STDOUT, cwd="/root/repo", check=False,
@@ -315,46 +338,46 @@ def _run(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> d
 
 
 @app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=16384, timeout=20 * 3600, max_containers=32)
-def run_shard_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 # For shards that die at the 16 GiB limit (interior-point solvers on the large
 # SDPLIB instances): same image, four times the memory, fewer at a time.
 @app.function(image=cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=16)
-def run_shard_cpu_big(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_cpu_big(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 @app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=10)
-def run_shard_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 @app.function(image=cuopt_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=1)
-def run_shard_cuopt(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_cuopt(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 @app.function(image=pdlp_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-def run_shard_pdlp(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_pdlp(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 @app.function(image=qtqp_cpu_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-def run_shard_qtqp_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_qtqp_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 @app.function(image=qtqp_gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=2)
-def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-    return _run(campaign, name, config_yaml, require_cpu)
+def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+    return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 if cpo3_image is not None:
     @app.function(image=cpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-    def run_shard_cpo3_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "") -> dict:
-        return _run(campaign, name, config_yaml, require_cpu)
+    def run_shard_cpo3_cpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
+        return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
 @app.function(image=cpu_image, cpu=2.0)
@@ -475,7 +498,12 @@ RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, 
 # charge them from spawn.
 # Runner kinds that run on CPU hosts, to which --require-cpu applies (GPU hosts are not filtered).
 CPU_KINDS = {"cpu", "cpu_big", "pdlp", "qtqp_cpu", "cpo3_cpu"}
+# Runner kinds on GPU hosts, to which --require-gpu applies ('GPU NAME|FAMILY/MODEL').
+GPU_KINDS = {"gpu", "cuopt", "qtqp_gpu"}
 MAX_HOST_TRIES = 12
+# The GPU host of the SCS 3.3.2 refresh: the A100 80GB PCIe on Intel family 6 model 106,
+# 27 of the 42 GPU shards of the first scs332 run (the rest: A100-SXM4 on three host CPUs).
+GPU_HOST_332 = "NVIDIA A100 80GB PCIe|6/106"
 MAX_POLL_ERRORS = 30  # consecutive transient errors polling one call (about 10 minutes)
 MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 10, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
 
@@ -493,6 +521,7 @@ def main(
     probe: bool = False,
     probe_cuopt_only: bool = False,
     require_cpu: str = "",
+    require_gpu: str = "",
 ):
     import time
     from collections import Counter, deque
@@ -508,9 +537,13 @@ def main(
     if campaign.startswith("scs332") and not SCS_PYTHON_REF:
         raise SystemExit("campaign scs332* measures an unreleased SCS: set SCS_PYTHON_REF to the scs-python commit")
     shards = json.loads(Path(spec).read_text())
-    if any((s.get("campaign") or campaign) == "scs332m" for s in shards) and require_cpu != "25/1":
-        raise SystemExit("campaign scs332m is the AMD Zen 3 Milan re-run: pass --require-cpu 25/1")
-    print(f"SCS_PYTHON_REF={SCS_PYTHON_REF or '(PyPI scs)'} require_cpu={require_cpu or '(any)'}", flush=True)
+    camps = {s.get("campaign") or campaign for s in shards}
+    if camps & {"scs332m", "scs332c"} and require_cpu != "25/1":
+        raise SystemExit("campaigns scs332m / scs332c run on AMD Zen 3 Milan only: pass --require-cpu 25/1")
+    if camps & {"scs332g", "scs332c"} and require_gpu != GPU_HOST_332:
+        raise SystemExit(f"campaigns scs332g / scs332c run on one GPU host type: pass --require-gpu '{GPU_HOST_332}'")
+    print(f"SCS_PYTHON_REF={SCS_PYTHON_REF or '(PyPI scs)'} require_cpu={require_cpu or '(any)'} "
+          f"require_gpu={require_gpu or '(any)'}", flush=True)
     if only:
         shards = [s for s in shards if only in s["name"]]
     if exclude:
@@ -557,8 +590,9 @@ def main(
                 pending.rotate(-1)
                 continue
             pending.popleft()
-            req = require_cpu if k in CPU_KINDS else ""
-            call = runners[k].spawn(sh.get("campaign") or campaign, sh["name"], Path(sh["config"]).read_text(), req)
+            req_c = require_cpu if k in CPU_KINDS else ""
+            req_g = require_gpu if k in GPU_KINDS else ""
+            call = runners[k].spawn(sh.get("campaign") or campaign, sh["name"], Path(sh["config"]).read_text(), req_c, req_g)
             running[call] = (sh, time.time())
             in_flight[k] += 1
             launched += 1
@@ -587,9 +621,10 @@ def main(
                 tries[sh["name"]] += 1
                 if tries[sh["name"]] < MAX_HOST_TRIES:
                     pending.append(sh)
-                    print(f"  {sh['name']}: host {r['wrong_host']} (task {r.get('task', '')}), not {require_cpu}; queued again (try {tries[sh['name']]})", flush=True)
+                    want = require_gpu if sh["kind"] in GPU_KINDS else require_cpu
+                    print(f"  {sh['name']}: host {r['wrong_host']} (task {r.get('task', '')}), not {want}; queued again (try {tries[sh['name']]})", flush=True)
                     continue
-                r["error"] = f"no {require_cpu} host in {MAX_HOST_TRIES} tries"
+                r["error"] = f"no {require_gpu if sh['kind'] in GPU_KINDS else require_cpu} host in {MAX_HOST_TRIES} tries"
             if r.get("exit") == 0:
                 done += 1
             else:
