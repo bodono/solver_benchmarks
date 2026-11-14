@@ -349,7 +349,7 @@ def run_shard_cpu_big(campaign: str, name: str, config_yaml: str, require_cpu: s
     return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
 
-@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=10)
+@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=9)
 def run_shard_gpu(campaign: str, name: str, config_yaml: str, require_cpu: str = "", require_gpu: str = "") -> dict:
     return _run(campaign, name, config_yaml, require_cpu, require_gpu)
 
@@ -505,7 +505,7 @@ MAX_HOST_TRIES = 12
 # 27 of the 42 GPU shards of the first scs332 run (the rest: A100-SXM4 on three host CPUs).
 GPU_HOST_332 = "NVIDIA A100 80GB PCIe|6/106"
 MAX_POLL_ERRORS = 30  # consecutive transient errors polling one call (about 10 minutes)
-MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 10, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
+MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 9, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
 
 
 @app.local_entrypoint()
