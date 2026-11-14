@@ -24,15 +24,77 @@ data_vol = modal.Volume.from_name("scs-bench-data", create_if_missing=True)
 results_vol = modal.Volume.from_name("scs-bench-results", create_if_missing=True)
 
 REPO_IGNORE = ["results", "problem_classes", "campaign", ".venv*", ".git", "**/__pycache__", "reports", "*.log"]
+# The versions the September 2026 campaign ran with (they were what the index
+# served then; each row records them in metadata.runtime). The refresh keeps
+# the September rows of these solvers on qp, lp and the Mittelmann LPs, and
+# re-solves some of them, so the images must not pick up newer releases.
 SOLVER_PKGS = [
-    "osqp", "clarabel", "piqp", "proxsuite", "highspy<1.16", "ortools", "cvxopt", "sdpa-python", "ecos",
+    "osqp==1.1.3", "clarabel==0.11.1", "piqp==0.6.4", "proxsuite==0.7.3", "highspy==1.15.1", "ortools==9.15.6755",
+    "cvxopt==1.3.3", "sdpa-python==0.2.3", "ecos",
 ]
+# The GPU image (Python 3.10) runs only SCS on cuDSS, so it keeps September's
+# unpinned list: an exact pin without a Python 3.10 wheel would break its build.
+SOLVER_PKGS_GPU = ["osqp", "clarabel", "piqp", "proxsuite", "highspy<1.16", "ortools", "cvxopt", "sdpa-python", "ecos"]
 HARNESS_PKGS = ["click", "h5py", "matplotlib>=3.9", "numpy", "pandas", "pyarrow", "PyYAML", "scipy", "psutil"]
+# numpy and scipy as in the September CPU rows. Only for the Python 3.12 CPU
+# image: the GPU image has Python 3.10, which these releases do not support.
+CPU_NUMERIC_PINS = ["numpy==2.5.3", "scipy==1.18.1"]
+
+# The SCS under test. By default the CPU images install the released scs from
+# PyPI and the GPU image builds the default branch of scs-python against
+# cuDSS. To benchmark an SCS that is not released yet, set
+# SCS_PYTHON_REF=<commit of bodono/scs-python>: both the CPU image and the GPU
+# image then build that commit, with the SCS core its scs_source submodule
+# pins. The CPU build is configured like the x86-64 Linux wheel on PyPI: the
+# MKL Pardiso backend links Intel's static, sequential MKL (the mkl-static
+# release the wheel build uses), so it is the default (AUTO) backend, as in
+# a pip install. The other backends use the image's OpenBLAS, where the wheel
+# vendors its own. The variable is read on the machine that launches the run;
+# inside a container it is unset, and nothing here may then depend on it.
+SCS_PYTHON_REF = os.environ.get("SCS_PYTHON_REF")
+MKL_STATIC_VERSION = "2026.1.0"  # as in scs-python's .github/scripts/install_mkl_static.sh
+
+
+def _with_scs_source(image: modal.Image) -> modal.Image:
+    """Replace the PyPI scs in ``image`` by a build of SCS_PYTHON_REF (see above)."""
+    if not SCS_PYTHON_REF:
+        return image
+    return (
+        image.apt_install("pkg-config", "ninja-build")
+        .pip_install("meson-python", "meson", "ninja", "cython")
+        .run_commands(
+            *_scs_python_checkout(),
+            # Intel's static MKL archives, laid out as scs-python's wheel build does
+            "python -m pip download --quiet --no-deps --only-binary=:all: --platform manylinux_2_28_x86_64 "
+            f"-d /tmp/mkl mkl-static=={MKL_STATIC_VERSION} mkl-include=={MKL_STATIC_VERSION}",
+            "for w in /tmp/mkl/*.whl; do python -m zipfile -e $w /tmp/mkl/unpacked; done "
+            "&& mkdir -p /opt/mkl-static && cp -r /tmp/mkl/unpacked/*.data/data/. /opt/mkl-static/ && rm -rf /tmp/mkl",
+            "cd /opt/scs-python && python -m pip install --no-build-isolation --no-deps --force-reinstall "
+            "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static . 2>&1 | tail -5",
+            "python -c 'import scs, numpy; from scs import _scs_mkl; "
+            "print(\"scs\", scs.__version__, \"with MKL; numpy\", numpy.__version__)'",
+        )
+    )
+
+
+def _scs_python_checkout() -> list[str]:
+    """Commands that leave the scs-python source to build in /opt/scs-python."""
+    if not SCS_PYTHON_REF:
+        return ["git clone --recursive --depth 1 https://github.com/bodono/scs-python.git /opt/scs-python"]
+    return [
+        "git clone https://github.com/bodono/scs-python.git /opt/scs-python",
+        f"cd /opt/scs-python && git fetch origin {SCS_PYTHON_REF} && git checkout --detach {SCS_PYTHON_REF} "
+        "&& git submodule update --init --recursive "
+        "&& git log --oneline -1 && git -C scs_source log --oneline -1",
+    ]
+
 
 cpu_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("build-essential", "libopenblas-dev", "liblapack-dev", "git")
-    .pip_install(*HARNESS_PKGS, *SOLVER_PKGS, "scs")
+    _with_scs_source(
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install("build-essential", "libopenblas-dev", "liblapack-dev", "git")
+        .pip_install(*HARNESS_PKGS, *SOLVER_PKGS, *CPU_NUMERIC_PINS, "scs")
+    )
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -62,9 +124,9 @@ gpu_image = (
         "PKG_CONFIG_PATH": "/usr/local/cuda/lib64/pkgconfig:/usr/local/cuda/pkgconfig:/usr/local/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig",
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu/libcudss/12:/usr/lib/x86_64-linux-gnu",
     })
-    .pip_install(*HARNESS_PKGS, *SOLVER_PKGS, "meson-python", "meson", "ninja", "cython")
+    .pip_install(*HARNESS_PKGS, *SOLVER_PKGS_GPU, "meson-python", "meson", "ninja", "cython")
     .run_commands(
-        "git clone --recursive --depth 1 https://github.com/bodono/scs-python.git /opt/scs-python",
+        *_scs_python_checkout(),
         "cd /opt/scs-python && python -m pip install --no-build-isolation "
         "-Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true . 2>&1 | tail -5",
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
@@ -154,7 +216,12 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
     run_dir.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
+    # Modal's cpu= request is a reservation (containers see and may burst to more cores), so every
+    # threading runtime is pinned to the reserved core count: OpenMP (MKL, OpenBLAS), Rayon and the
+    # BLAS variants. (Commit 946e11c of the September campaign branch, used there from 2026-09-20.)
+    threads = os.environ.get("OMP_NUM_THREADS", "4")
+    env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=threads, RAYON_NUM_THREADS=threads,
+               MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads)
     t0 = time.time()
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
         proc = subprocess.Popen(
