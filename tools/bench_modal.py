@@ -132,6 +132,11 @@ gpu_image = (
     })
     .pip_install(*HARNESS_PKGS, *SOLVER_PKGS_GPU, "meson-python", "meson", "ninja", "cython")
     .run_commands(
+        # Modal's standalone Python ships a python-3.12.pc that names its build
+        # prefix, /install; with /usr/local/lib/pkgconfig on PKG_CONFIG_PATH (for
+        # cudss.pc) Meson takes the headers from there. Point it at the real prefix.
+        "[ -e /install ] || ln -s \"$(python -c 'import sys; print(sys.base_prefix)')\" /install",
+        "ls /install/include/python3.12/Python.h",
         *_scs_python_checkout(),
         "cd /opt/scs-python && " + _logged_build(
             "python -m pip install -v --no-build-isolation -Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true ."),
