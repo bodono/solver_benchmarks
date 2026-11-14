@@ -284,7 +284,7 @@ def run_shard_cpu_big(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=16)
+@app.function(image=gpu_image, volumes=VOLUMES, gpu="A100-80GB", cpu=8.0, memory=65536, timeout=20 * 3600, max_containers=10)
 def run_shard_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
@@ -427,9 +427,11 @@ def probe_cuopt() -> str:
 #   big CPU shard (also the PDLP shard): 4 cores x $0.135 + 64 GiB x $0.024 ~ $2.08/h
 RATES_PER_HOUR = {"cpu": 0.92 * 1.2, "cpu_big": 2.08 * 1.2, "pdlp": 2.08 * 1.2, "gpu": 5.12 * 1.2, "cuopt": 5.12 * 1.2,
                   "qtqp_cpu": 2.08 * 1.2, "qtqp_gpu": 5.12 * 1.2, "cpo3_cpu": 2.08 * 1.2}
-# The SCS 3.3.2 refresh (Nov 2026) runs 16 A100s, 32 CPU and 16 big-CPU containers at once
-# (Brendan, 2026-11-14: "Do it fast"); September ran 2 / 16 / 8.
-MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 16, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
+# The SCS 3.3.2 refresh (Nov 2026) runs 10 A100s, 32 CPU and 16 big-CPU containers at once
+# (Brendan, 2026-11-14: "Do it fast"); September ran 2 / 16 / 8. 10 GPUs is the workspace's
+# limit on its current plan: above it the extra shards queue, and the guard below would still
+# charge them from spawn.
+MAX_IN_FLIGHT = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "gpu": 10, "cuopt": 1, "qtqp_cpu": 8, "qtqp_gpu": 2, "cpo3_cpu": 8}
 
 
 @app.local_entrypoint()
