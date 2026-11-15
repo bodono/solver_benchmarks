@@ -73,9 +73,10 @@ def run_benchmark(
 ) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
     config = resolve_output_dir(config, repo_root)
-    # Workers start in repo_root; a data_root relative to this process's
-    # directory must name the same place there.
-    config = dataclasses.replace(config, datasets=resolve_data_roots(config.datasets, Path.cwd()))
+    # Like output_dir, a relative data_root names a directory under repo_root,
+    # where the workers start; made absolute, it names the same place when
+    # this process lists the problems from another directory.
+    config = dataclasses.replace(config, datasets=resolve_data_roots(config.datasets, repo_root))
     if stream_solver_output is None:
         stream_solver_output = stream_output
     if run_dir is not None and not config.resume:

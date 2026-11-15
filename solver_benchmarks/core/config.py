@@ -208,29 +208,24 @@ class EnvironmentRunConfig:
 
 
 def load_run_config(path: str | Path) -> RunConfig:
-    """Load a run config file.
-
-    A relative ``dataset_options.data_root`` is resolved against the
-    config file's directory.
-    """
     path = Path(path)
     raw = _with_default_run_name(_load_mapping(path), path.stem)
-    return parse_run_config(raw, base_dir=path.parent)
+    return parse_run_config(raw)
 
 
 def load_environment_run_config(path: str | Path) -> EnvironmentRunConfig:
     path = Path(path)
     raw = _with_default_run_name(_load_mapping(path), path.stem)
-    return parse_environment_run_config(raw, base_dir=path.parent)
+    return parse_environment_run_config(raw)
 
 
-def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunConfig:
+def parse_run_config(raw: dict[str, Any]) -> RunConfig:
     """Parse and validate a run config mapping.
 
     Unknown keys, unregistered solver or dataset names and ids that would
     share an artifact directory raise ValueError. Empty (null) sections
-    count as empty. With ``base_dir``, a relative ``data_root`` dataset
-    option is resolved against it.
+    count as empty. Relative paths stay relative: the runner resolves
+    ``output_dir`` and ``data_root`` against the repository root.
     """
     raw = _mapping(raw, "config")
     _check_keys(
@@ -246,8 +241,6 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
     run = _mapping(raw.get("run"), "run")
     _check_keys(run, _RUN_KEYS, "run")
     datasets = _parse_datasets(raw, run)
-    if base_dir is not None:
-        datasets = resolve_data_roots(datasets, base_dir)
 
     solvers = _parse_solver_entries(raw.get("solvers"), context="solver")
     if not solvers:
@@ -295,9 +288,10 @@ def resolve_data_roots(
 ) -> list[DatasetConfig]:
     """Make each relative ``data_root`` dataset option absolute under ``base_dir``.
 
-    The runner lists problems in its own working directory but starts each
-    worker in the repository root, so a relative path would name two
-    different directories.
+    The runner passes the repository root, as for ``output_dir``. It lists
+    problems in its own working directory but starts each worker in the
+    repository root, so a relative path would name two different
+    directories.
     """
     resolved = []
     for dataset in datasets:
@@ -324,10 +318,7 @@ def resolve_output_dir(config: RunConfig, root: str | Path) -> RunConfig:
     )
 
 
-def parse_environment_run_config(
-    raw: dict[str, Any],
-    base_dir: Path | None = None,
-) -> EnvironmentRunConfig:
+def parse_environment_run_config(raw: dict[str, Any]) -> EnvironmentRunConfig:
     raw = _mapping(raw, "config")
     environments_raw = _entries(raw.get("environments"), "environments")
     if not environments_raw:
@@ -378,7 +369,7 @@ def parse_environment_run_config(
         for solver in environments[0].solvers
     ]
     return EnvironmentRunConfig(
-        run=parse_run_config(child_raw, base_dir=base_dir),
+        run=parse_run_config(child_raw),
         environments=environments,
     )
 

@@ -304,7 +304,7 @@ Useful dataset options:
 | Dataset | Option | Meaning |
 |---|---|---|
 | All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
-| All file-backed datasets | `data_root=<path>` | Read the dataset's files under `<path>` instead of `<repo_root>/problem_classes`. In a config file, a relative path is resolved against the config file's directory. |
+| All file-backed datasets | `data_root=<path>` | Read the dataset's files under `<path>` instead of `<repo_root>/problem_classes`. In a config file, a relative path is resolved under the repository root, like `run.output_dir`; `bench run --data-root` resolves it against the current directory. |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
 | `sdplib` | `subset=feasible`, `subset=infeasible` or `subset=all` | Select the SDPLIB feasibility subset (default `feasible`). |
 | `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the merged-form rows move to `results.superseded.jsonl`, so use a new run directory to keep both forms. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |

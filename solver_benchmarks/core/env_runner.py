@@ -12,6 +12,7 @@ from pathlib import Path
 from solver_benchmarks.core.config import (
     EnvironmentConfig,
     EnvironmentRunConfig,
+    resolve_data_roots,
     resolve_output_dir,
 )
 from solver_benchmarks.core.runner import refuse_to_rerun_into
@@ -40,6 +41,9 @@ def run_environment_matrix(
         ],
     )
     combined_config = resolve_output_dir(combined_config, repo_root)
+    combined_config = replace(
+        combined_config, datasets=resolve_data_roots(combined_config.datasets, repo_root)
+    )
     if run_dir is None:
         env_name = (
             f"{combined_config.name}_env"

@@ -212,19 +212,53 @@ def test_ids_that_share_an_artifact_directory_are_rejected_across_environments()
         parse_environment_run_config(raw)
 
 
-def test_relative_data_root_resolves_against_the_config_file(tmp_path: Path, monkeypatch):
+def test_relative_data_root_resolves_against_the_repo_root(monkeypatch, tmp_path: Path):
+    """Like run.output_dir, and as before when run from the repository root:
+    not against the config file's directory or the caller's."""
+    from solver_benchmarks.core.result import ProblemResult
+    from solver_benchmarks.core.runner import run_benchmark
+
+    repo = tmp_path / "repo"
+    data = repo / "mydata" / "netlib_data" / "feasible"
+    data.mkdir(parents=True)
+    afiro = REPO_ROOT / "problem_classes" / "netlib_data" / "feasible" / "afiro.mps.gz"
+    (data / "afiro.mps.gz").write_bytes(afiro.read_bytes())
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "rel.yaml"
     path.write_text(
-        "run:\n  datasets:\n    - name: netlib\n      dataset_options: {data_root: mydata}\n"
-        "    - name: synthetic_qp\n      dataset_options: {data_root: /abs/data}\n"
+        "run:\n  output_dir: " + str(tmp_path / "runs") + "\n"
+        "  datasets:\n    - name: netlib\n      include: [afiro]\n"
+        "      dataset_options: {data_root: mydata}\n"
         "solvers: [{id: s, solver: scs}]\n"
     )
-    monkeypatch.chdir(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
     config = load_run_config(path)
-    assert config.datasets[0].dataset_options["data_root"] == str((config_dir / "mydata").resolve())
-    assert config.datasets[1].dataset_options["data_root"] == "/abs/data"
+    assert config.datasets[0].dataset_options["data_root"] == "mydata"
+
+    payloads = []
+
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        payloads.append(payload)
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id="s", solver="scs",
+            status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.01,
+            artifact_dir=payload["artifacts_dir"],
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, timed_out=False)
+
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake)
+    store = run_benchmark(config, repo_root=repo)
+    resolved = str((repo / "mydata").resolve())
+    assert [payload["problem"] for payload in payloads] == ["afiro"]
+    assert payloads[0]["dataset_options"]["data_root"] == resolved
+    manifest = json.loads(store.manifest_path.read_text())
+    assert manifest["config"]["datasets"][0]["dataset_options"]["data_root"] == resolved
 
 
 def test_run_finds_bundled_data_from_outside_the_repository(
