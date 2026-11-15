@@ -147,8 +147,13 @@ class MittelmannSDPDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
+        subset = _normalize_subset(self.options.get("subset"))
         if problem_names:
             names = list(problem_names)
+        elif subset is not None:
+            # A single name given as the subset is not passed in as
+            # problem names; it is what the run will look for.
+            names = sorted(subset)
         else:
             names = list(MITTELMANN_SDP_DEFAULT_SUBSET)
         # ``all_problems`` is treated the same as the default subset:

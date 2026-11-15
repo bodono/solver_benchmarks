@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import pickle
 import urllib.request
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -15,11 +17,17 @@ from solver_benchmarks.transforms.cones import INF_BOUND
 
 from .base import Dataset, atomic_write_bytes
 
+# The data are read from a fixed commit, as the DC OPF cases are, so that
+# two preparations at different times fetch the same problems under the
+# same names. (This is the head of ``main`` when the pin was added.)
+MPC_QPBENCHMARK_REVISION = "954906ac1f48b77e84a5bc314b7c2f00fb0d4ebc"
 MPC_QPBENCHMARK_API_URL = (
     "https://api.github.com/repos/qpsolvers/mpc_qpbenchmark/contents/data"
+    f"?ref={MPC_QPBENCHMARK_REVISION}"
 )
 MPC_QPBENCHMARK_RAW_URL = (
-    "https://raw.githubusercontent.com/qpsolvers/mpc_qpbenchmark/main/data"
+    "https://raw.githubusercontent.com/qpsolvers/mpc_qpbenchmark/"
+    f"{MPC_QPBENCHMARK_REVISION}/data"
 )
 MPC_QPBENCHMARK_DEFAULT_SUBSET = ("LIPMWALK0", "WHLIPBAL0", "QUADCMPC1")
 MPC_ZERO_ROW_BOUND_TOL = 1.0e-16  # Absolute data-cleanup threshold
@@ -91,10 +99,13 @@ class MPCQPBenchmarkDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
+        subset = _normalize_subset(self.options.get("subset"))
         if all_problems:
             names = mpc_qpbenchmark_remote_problem_names()
         elif problem_names:
             names = list(problem_names)
+        elif subset is not None:
+            names = sorted(subset)
         else:
             names = list(MPC_QPBENCHMARK_DEFAULT_SUBSET)
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -103,8 +114,16 @@ class MPCQPBenchmarkDataset(Dataset):
 
 
 def read_mpc_qpbenchmark_npz(path: Path) -> tuple[dict, dict]:
-    data = np.load(path, allow_pickle=True)
-    p = sp.csc_matrix(np.asarray(data["P"], dtype=float))
+    """Read a QP from the .npz schema of qpsolvers/mpc_qpbenchmark.
+
+    ``P`` is the Hessian of ``0.5 x'Px``: the whole symmetric matrix, or
+    one triangle of it, which is mirrored (see ``_symmetric_hessian``).
+    ``G``, ``h``, ``A``, ``b``, ``lb`` and ``ub`` are optional; a missing
+    key and a ``None`` placeholder mean the same. Arrays are numeric; the
+    file is read without unpickling anything but ``None`` placeholders.
+    """
+    data = _load_npz_arrays(path)
+    p = _symmetric_hessian(sp.csc_matrix(np.asarray(data["P"], dtype=float)), path)
     q = np.asarray(data["q"], dtype=float).reshape(-1)
     n = q.size
 
@@ -201,13 +220,108 @@ def download_mpc_qpbenchmark_problem(name: str, folder: Path) -> Path:
     return target
 
 
-def _optional_array(data, key: str):
-    if key not in data.files:
+def _optional_array(data: dict, key: str):
+    return data.get(key)
+
+
+def _symmetric_hessian(p: sp.csc_matrix, path: Path) -> sp.csc_matrix:
+    """``P`` as the whole symmetric matrix of the objective ``0.5 x'Px``.
+
+    A file may store the whole matrix or one triangle of it (CUTEst's
+    coordinate Hessian routines return one). Adapters read ``P``
+    differently (some its upper triangle, some its lower, some all of it),
+    so a triangle passed on as it is would be a different problem for each
+    of them. A triangle is mirrored, as the QPLIB loader mirrors the
+    triangle QPLIB stores. A matrix that is symmetric to rounding is kept
+    as stored; one that is neither symmetric nor triangular does not say
+    which problem it means, and is rejected.
+    """
+    if p.shape[0] != p.shape[1]:
+        raise ValueError(f"{path.name}: P must be square, got shape {p.shape}")
+    p = sp.csc_matrix(p)
+    p.eliminate_zeros()
+    asymmetry = abs(p - p.T)
+    if asymmetry.nnz == 0 or asymmetry.max() <= 1e-12 * max(1.0, float(abs(p).max())):
+        return p
+    lower = sp.tril(p, -1)
+    upper = sp.triu(p, 1)
+    if upper.nnz == 0:
+        return sp.csc_matrix(p + lower.T)
+    if lower.nnz == 0:
+        return sp.csc_matrix(p + upper.T)
+    raise ValueError(
+        f"{path.name}: P is neither symmetric nor triangular; store the full "
+        "symmetric Hessian of 0.5 x'Px or one triangle of it"
+    )
+
+
+def _load_npz_arrays(path: Path) -> dict[str, np.ndarray]:
+    """The arrays of an .npz file, without unpickling anything but ``None``.
+
+    ``np.savez(..., G=None)`` stores a 0-d object array, which numpy can
+    only read by unpickling, and unpickling a downloaded file can run code.
+    Such an entry is read with an unpickler that knows nothing but numpy's
+    array reconstruction, and is left out (as a missing key is) when it
+    holds ``None``. Any other object array, a scipy.sparse matrix saved
+    with ``np.savez`` among them, is an error.
+    """
+    arrays: dict[str, np.ndarray] = {}
+    with np.load(path, allow_pickle=False) as data:
+        for key in data.files:
+            try:
+                arrays[key] = data[key]
+            except ValueError:
+                if _read_object_array(path, key) is not None:
+                    raise ValueError(
+                        f"{path.name}: {key!r} is an object array; only numeric arrays "
+                        "(a sparse matrix stored dense) and None placeholders are read"
+                    ) from None
+    return arrays
+
+
+def _read_object_array(path: Path, key: str):
+    """The item of the 0-d object array ``key`` if it is None, else a marker object."""
+    try:
+        with zipfile.ZipFile(path) as archive, archive.open(f"{key}.npy") as handle:
+            version = np.lib.format.read_magic(handle)
+            if version == (1, 0):
+                shape, _, dtype = np.lib.format.read_array_header_1_0(handle)
+            elif version == (2, 0):
+                shape, _, dtype = np.lib.format.read_array_header_2_0(handle)
+            else:
+                return _NOT_NONE
+            if shape != () or not dtype.hasobject:
+                return _NOT_NONE
+            value = _ArrayOnlyUnpickler(handle).load()
+    except (pickle.UnpicklingError, KeyError, ValueError, EOFError, OSError):
+        return _NOT_NONE
+    if isinstance(value, np.ndarray) and value.shape == () and value.item() is None:
         return None
-    value = data[key]
-    if value.shape == () and value.dtype == object and value.item() is None:
-        return None
-    return value
+    return _NOT_NONE
+
+
+_NOT_NONE = object()
+
+
+class _ArrayOnlyUnpickler(pickle.Unpickler):
+    """Unpickles numpy arrays of plain Python values and nothing else."""
+
+    def find_class(self, module: str, name: str):
+        if (module, name) == ("numpy", "ndarray"):
+            return np.ndarray
+        if (module, name) == ("numpy", "dtype"):
+            return np.dtype
+        if name == "_reconstruct" and module in ("numpy.core.multiarray", "numpy._core.multiarray"):
+            return _ndarray_reconstruct()
+        raise pickle.UnpicklingError(f"{module}.{name} is not allowed in an .npz object array")
+
+
+def _ndarray_reconstruct():
+    try:
+        from numpy._core.multiarray import _reconstruct  # numpy >= 2
+    except ImportError:  # pragma: no cover - numpy 1.x
+        from numpy.core.multiarray import _reconstruct  # type: ignore[no-redef]
+    return _reconstruct
 
 
 def _normalize_subset(value) -> set[str] | None:

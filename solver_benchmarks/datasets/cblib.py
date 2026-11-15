@@ -149,6 +149,10 @@ class CBLIBDataset(Dataset):
                 names = cblib_names_under_size(names, max_size_mb)
         elif problem_names:
             names = list(problem_names)
+        elif (subset := _normalize_subset(self.options.get("subset"))) is not None:
+            # A single name given as the subset is not passed in as problem
+            # names; it is what the run will look for.
+            names = sorted(subset)
         else:
             names = list(CBLIB_DEFAULT_SUBSET)
         self.folder.mkdir(parents=True, exist_ok=True)

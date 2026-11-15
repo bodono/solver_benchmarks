@@ -189,7 +189,9 @@ class LibsvmQPDataset(Dataset):
             # most of which are too large to fit a small-QP benchmark.
             names = list(LIBSVM_DEFAULT_SUBSET)
         else:
-            names = list(LIBSVM_DEFAULT_SUBSET)
+            # The datasets the subset option names (the default subset when
+            # it names none): one name is not passed in as problem names.
+            names = sorted(_normalize_subset(self.options.get("subset")))
         self.folder.mkdir(parents=True, exist_ok=True)
         for name in names:
             download_libsvm_dataset(name, self.folder)
