@@ -274,6 +274,10 @@ python scripts/prepare_dimacs.py
 python scripts/prepare_cutest_qp.py
 ```
 
+`scripts/research/` holds one-off scripts and SCS patches from the Anderson
+acceleration experiments. They need a patched SCS build and local results that
+are not in the repository, and they are not maintained; see its `README.md`.
+
 The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
 follows the full CBLIB directory index and may download mixed-integer or
 currently unsupported CBF files; the `cblib` adapter lists continuous

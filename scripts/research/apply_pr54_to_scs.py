@@ -4,12 +4,13 @@ Mirrors the aa-trust-factor branch's modifications (which target the
 canonical aa.c) into scs-python's vendored copy + scs.c + glbopts.h.
 
 Idempotent: bails out if AA_TRUST_FACTOR is already defined.
+
+    python scripts/research/apply_pr54_to_scs.py /path/to/scs-python/scs_source
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
-
-SCS = Path("/Users/bodonoghue/git/scs-python/scs_source")
 
 
 def patch_file(path: Path, old: str, new: str, *, allow_present: bool = False) -> bool:
@@ -25,6 +26,10 @@ def patch_file(path: Path, old: str, new: str, *, allow_present: bool = False) -
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("scs_source", type=Path,
+                        help="the scs_source directory of an scs-python checkout (holds include/ and src/)")
+    SCS = parser.parse_args().scs_source
     glb = SCS / "include" / "glbopts.h"
     if "AA_TRUST_FACTOR" in glb.read_text():
         print("scs-python already patched; nothing to do.")

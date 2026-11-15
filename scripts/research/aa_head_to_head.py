@@ -46,7 +46,7 @@ _ds_cache = {}
 def get_ds(n):
     if n not in _ds_cache:
         _ds_cache[n] = (MarosMeszarosDataset() if n == "maros_meszaros"
-                        else NetlibDataset(dataset_options={"subset": "feasible"}))
+                        else NetlibDataset(subset="feasible"))
     return _ds_cache[n]
 
 

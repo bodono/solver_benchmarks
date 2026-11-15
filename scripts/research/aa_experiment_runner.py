@@ -29,7 +29,7 @@ def get_ds(name):
         if name == "maros_meszaros":
             _ds_cache[name] = MarosMeszarosDataset()
         elif name == "netlib_feasible":
-            _ds_cache[name] = NetlibDataset(dataset_options={"subset": "feasible"})
+            _ds_cache[name] = NetlibDataset(subset="feasible")
         else:
             raise ValueError(name)
     return _ds_cache[name]
