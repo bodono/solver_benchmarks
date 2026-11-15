@@ -121,7 +121,7 @@ Current maintained adapters:
 | MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`, at a pinned commit (`MPC_QPBENCHMARK_REVISION`). `.npz` files are read without unpickling: an object array is accepted only as a `None` placeholder for a missing array. `P` may be the whole symmetric Hessian or one triangle of it, which is mirrored; a `P` that is neither is rejected. |
 | LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
 | DC OPF | `dc_opf` | QP | DC Optimal Power Flow problems from evaluated MATPOWER cases (`.mat` files downloaded from a pinned snapshot into `dc_opf_data/<revision>/`; the `.m` files bundled in `dc_opf_data/` are MATPOWER's sources of the default cases, kept for reference and not read). An LP when every generator cost is linear or piecewise linear, a QP when costs are quadratic. Sparse power-balance equalities, line-flow inequality limits, generator box bounds. What a case marks as out of service is left out, as MATPOWER does: an isolated bus (type 4) with its demand and the branches and generators attached to it, and a generator that is off, which stays as a variable fixed at zero and adds nothing to the cost. |
-| CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. Read with the MPC `.npz` schema (see `EXPORT_README.md`, written on the first prepare): `P` dense, the whole symmetric Hessian or one triangle. Preparing checks that the requested exports exist and names the missing ones. |
+| CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. Read with the MPC `.npz` schema: `P` dense, the whole symmetric Hessian or one triangle. Preparing checks that the requested exports exist; when some are missing it names them and writes `EXPORT_README.md`, with the schema, into `cutest_qp_data/`. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
 | Synthetic cone smoke test | `synthetic_cone` | Cone | Tiny deterministic conic LP test problem. |
 
@@ -166,9 +166,14 @@ are prepared explicitly. The convention is:
 - `bench run CONFIG --prepare-data` or `run.auto_prepare_data: true` prepares
   data implied by the config before solving. If `include` is set, those problem
   names are prepared. If `dataset_options.subset: all` is set, the dataset's
-  full remote index is prepared. If the subset names problems (a name, a list
-  or a comma-separated string, or for QPLIB a category such as `ccb`), those are
-  prepared. Otherwise the dataset's small default subset is prepared.
+  full remote index is prepared. If the subset names problems, those are
+  prepared: a single name, a list or a comma-separated string, for the datasets
+  whose `subset` takes problem names (`qplib`, where a category such as `ccb`
+  also works, `mpc_qpbenchmark`, `cutest_qp`, `cblib`, `mittelmann_sdp`,
+  `tsplib_sdp`, `dc_opf` and `libsvm_qp`). Otherwise the dataset's small
+  default subset is prepared. Requested problems that are already present are
+  not requested again, and a failed preparation stops the run with an error
+  naming the dataset.
 - `bench data prepare DATASET` downloads or extracts a small default subset.
 - `bench data prepare DATASET --problem NAME` prepares one or more named problems.
 - `bench data prepare DATASET --all` opts into the largest known source for that dataset.
@@ -476,7 +481,7 @@ as YAML 1.2 and JSON read them:
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
 | `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
-| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. Requested problems that are already present are not requested again, and a failed preparation stops the run with an error naming the dataset. For `cblib`, `mittelmann_sdp` and `libsvm_qp`, a `subset` naming a single problem prepares that problem. |
+| `run.auto_prepare_data` | If true, prepare the missing requested data before listing and solving: the problems `include` names, else those `dataset_options.subset` names (for the datasets whose subset takes problem names), else the dataset's small default subset. Problems already present are not requested again, and a failed preparation stops the run with an error naming the dataset. The details are under [Supported Datasets](#supported-datasets). |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
