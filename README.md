@@ -453,12 +453,12 @@ Important fields:
 | `run.parallelism` | Number of concurrent subprocess solves. |
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
-| `run.timeout_seconds` | Default subprocess timeout per solve. |
+| `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
 | `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
-| `solvers[].timeout_seconds` | Optional per-solver timeout override. |
+| `solvers[].timeout_seconds` | Optional per-solver override of `run.timeout_seconds`. |
 | `solvers[].sweep` | Optional mapping of setting name to a non-empty list of values. Expands to the full Cartesian product. |
 | `solvers[].id_template` | Optional Python format string used to name expanded sweep variants. |
 
@@ -1041,7 +1041,7 @@ Files:
 Each solve runs in a subprocess. This gives:
 
 - Native solver crashes do not kill the main runner.
-- Timeouts are enforced per solve.
+- Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C kills the running workers too, and a parallel run keeps the results that had already finished.
 - Solver stdout/stderr are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.

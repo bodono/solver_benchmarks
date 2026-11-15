@@ -13,6 +13,7 @@ worker threads, then asserts that:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -149,3 +150,107 @@ def test_parallel_run_writes_parquet_at_end(
 
     df = pd.read_parquet(store.results_parquet_path)
     assert len(df) == PROBLEM_COUNT
+
+
+def _parallel_config(tmp_path: Path, parallelism: int = 2):
+    return parse_run_config(
+        {
+            "run": {
+                "dataset": "parallel_fixture",
+                "output_dir": str(tmp_path / "runs"),
+                "parallelism": parallelism,
+            },
+            "solvers": [{"id": "parallel_stub", "solver": "parallel_stub", "settings": {}}],
+        }
+    )
+
+
+@pytest.mark.parametrize("parallelism", [1, 2])
+def test_a_failing_task_becomes_a_worker_error_row(
+    monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int
+):
+    """An OSError launching one worker (EMFILE, ENOMEM, ...) must not abort
+    the run and throw away every other result."""
+    monkeypatch.setitem(dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter)
+
+    def flaky(cmd, **kwargs):
+        if json.loads(Path(cmd[-1]).read_text())["problem"] == "p003":
+            raise OSError(24, "Too many open files")
+        return _fake_run_subprocess(cmd, **kwargs)
+
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", flaky)
+    store = run_benchmark(_parallel_config(tmp_path, parallelism), repo_root=repo_root)
+
+    rows = {
+        row["problem"]: row
+        for row in map(json.loads, store.results_jsonl_path.read_text().splitlines())
+    }
+    assert len(rows) == PROBLEM_COUNT
+    assert rows["p003"]["status"] == "worker_error"
+    assert "Too many open files" in rows["p003"]["error"]
+    assert rows["p003"]["metadata"]["resume_signature"]
+    assert {row["status"] for name, row in rows.items() if name != "p003"} == {"optimal"}
+    assert store.results_parquet_path.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
+def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """Ctrl+C reaches only the runner (workers run in their own sessions).
+    Queued solves must not start, running workers must be killed rather than
+    recorded, and results that had already finished must be written."""
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter)
+    started: list[str] = []
+    lock = threading.Lock()
+
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        problem = json.loads(Path(cmd[-1]).read_text())["problem"]
+        with lock:
+            started.append(problem)
+        if problem == "p000":
+            return _fake_run_subprocess(
+                cmd, cwd=cwd, timeout=timeout, stdout_path=stdout_path,
+                stderr_path=stderr_path, stream_output=stream_output,
+            )
+        # A long solve, killed only if the runner kills its process group.
+        return real_run_subprocess(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=cwd, timeout=None, stdout_path=stdout_path, stderr_path=stderr_path,
+            stream_output=False,
+        )
+
+    real_run_subprocess = runner._run_subprocess
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", worker)
+    real_record = runner._ProgressReporter.record_result
+
+    def record_then_interrupt(self, result):
+        real_record(self, result)
+        # Let the second worker start its subprocess, then press Ctrl+C.
+        deadline = time.monotonic() + 10
+        while len(started) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.5)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner._ProgressReporter, "record_result", record_then_interrupt)
+    started_at = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(_parallel_config(tmp_path), run_dir=tmp_path / "run", repo_root=repo_root)
+    assert time.monotonic() - started_at < 20
+    rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
+    assert [row["problem"] for row in rows] == ["p000"]
+    assert len(started) <= 3
+    leftover = subprocess.run(
+        ["pgrep", "-f", "import time; time.sleep(60)"], capture_output=True, text=True
+    )
+    assert leftover.stdout.strip() == ""
