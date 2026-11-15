@@ -14,11 +14,13 @@ def loadmat(file, **kwargs):
     SciPy 1.18 warns on every call that the default becomes sparse arrays
     in 1.20, which would make this the one loader handing ``csc_array``
     downstream. Versions without the ``spmatrix`` keyword return matrices
-    anyway.
+    anyway; any other TypeError is raised as it is.
     """
     try:
         return scipy.io.loadmat(file, spmatrix=True, **kwargs)
-    except TypeError:
+    except TypeError as exc:
+        if "spmatrix" not in str(exc):
+            raise
         return scipy.io.loadmat(file, **kwargs)
 
 

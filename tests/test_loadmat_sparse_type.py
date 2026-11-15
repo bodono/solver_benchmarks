@@ -69,3 +69,36 @@ def test_loadmat_without_the_spmatrix_keyword_still_works(tmp_path: Path, monkey
 
     assert sp.isspmatrix(module.loadmat(tmp_path / "x.mat")["A"])
     assert calls == [{}]
+
+
+def test_loadmat_retries_a_stream_from_its_start(monkeypatch):
+    # The DC OPF download check hands loadmat a BytesIO; an old SciPy may
+    # read from it before rejecting the keyword, and the retry must not
+    # start where that attempt stopped.
+    import io
+
+    seen = []
+
+    def old_loadmat(file_name, mdict=None, appendmat=True, **kwargs):
+        seen.append(file_name.read())
+        if "spmatrix" in kwargs:
+            raise TypeError("loadmat() got an unexpected keyword argument 'spmatrix'")
+        return {}
+
+    monkeypatch.setattr(base_module.scipy.io, "loadmat", old_loadmat)
+    base_module.loadmat(io.BytesIO(b"MATLAB 5.0"))
+    assert seen == [b"MATLAB 5.0", b"MATLAB 5.0"]
+
+
+@pytest.mark.parametrize("module", [mm_module, base_module], ids=["maros_meszaros", "datasets.base"])
+def test_loadmat_does_not_retry_an_unrelated_type_error(tmp_path: Path, monkeypatch, module):
+    calls = []
+
+    def broken_loadmat(file_name, mdict=None, appendmat=True, **kwargs):
+        calls.append(kwargs)
+        raise TypeError("damaged file")
+
+    monkeypatch.setattr(module.scipy.io, "loadmat", broken_loadmat)
+    with pytest.raises(TypeError, match="damaged file"):
+        module.loadmat(tmp_path / "x.mat")
+    assert len(calls) == 1

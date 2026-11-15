@@ -21,11 +21,18 @@ def loadmat(file, **kwargs) -> dict:
 
     SciPy 1.18 warns on every call that the default becomes sparse arrays in
     1.20; the .mat loaders ask for matrices explicitly, as every other loader
-    returns. Versions without the ``spmatrix`` keyword return matrices anyway.
+    returns. Versions without the ``spmatrix`` keyword return matrices anyway;
+    on those the call is repeated without it, from the start of ``file`` if
+    it is a stream (the first attempt may have read from it). Any other
+    TypeError is raised as it is.
     """
     try:
         return scipy.io.loadmat(file, spmatrix=True, **kwargs)
-    except TypeError:
+    except TypeError as exc:
+        if "spmatrix" not in str(exc):
+            raise
+        if hasattr(file, "seek"):
+            file.seek(0)
         return scipy.io.loadmat(file, **kwargs)
 
 
