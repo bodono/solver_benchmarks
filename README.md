@@ -223,7 +223,13 @@ adapter reads converted `.jld2` files, or extracts them from
 `problem_classes/sdplib_data/sdplib.tar` when that archive is present. It does
 not download and convert the original SDPLIB files automatically. If the
 converted archive is absent, restore `sdplib.tar` or place converted `.jld2`
-files in `problem_classes/sdplib_data`.
+files in `problem_classes/sdplib_data`. A problem read from the archive is
+extracted once into `sdplib_data/.cache/`, through a temporary file renamed
+into place when complete, so concurrent workers never read a partial file; a
+cached file whose size differs from the archive member is extracted again.
+The list of archive members is kept in `.cache/sdplib.tar.index.json` and
+rebuilt when the archive's size or modification time changes, since listing
+the compressed archive means decompressing all of it.
 
 Three members of the archive are damaged and cannot be read: `maxG55`,
 `maxG60` and `thetaG51` (stretches of each file are zeros). Their original
