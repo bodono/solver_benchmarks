@@ -104,7 +104,9 @@ class QPLIBDataset(Dataset):
         if all_problems:
             names = list(qplib_index(self.folder))
         elif problem_names:
-            names = list(problem_names)
+            # A list or comma-separated subset reaches here as problem names
+            # and may mix categories with IDs (``[ccb, 8495]``).
+            names = sorted(_subset_ids(self.folder, list(problem_names)) or ())
         else:
             # A category (``subset: ccb``) or a single ID is not passed in as
             # problem names; without this the default trio was fetched and

@@ -255,6 +255,38 @@ def test_qplib_prepare_downloads_the_configured_subset(tmp_path: Path, monkeypat
 
 
 @pytest.mark.parametrize(
+    ("subset", "expected"),
+    [
+        (["ccb", "dcl"], ["8495", "8500", "8790", "8792", "8991"]),
+        ("ccb,8495", ["8495", "8790", "8792", "8991"]),
+        (["DCL", "QPLIB_9001"], ["8495", "8500", "9001"]),
+    ],
+)
+def test_qplib_auto_prepare_expands_categories_in_a_list_subset(
+    tmp_path: Path, monkeypatch, subset, expected
+):
+    # A list or comma-separated subset is forwarded by auto-prepare as
+    # problem names; a category among them raised "QPLIB problem names must
+    # be numeric IDs" although listing accepts the same subset.
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.data_prepare import data_prepare_selection
+
+    _qplib_folder(tmp_path)
+    config = parse_run_config(
+        {"run": {"dataset": "qplib", "dataset_options": {"subset": subset}},
+         "solvers": [{"id": "scs", "solver": "scs"}]}
+    )
+    problem_names, all_problems = data_prepare_selection(config, config.datasets[0])
+    assert problem_names is not None and not all_problems
+    fetched = []
+    monkeypatch.setattr(qplib_module, "download_qplib_problem", lambda name, folder: fetched.append(name))
+
+    _dataset("qplib", tmp_path, subset=subset).prepare_data(problem_names)
+
+    assert fetched == expected
+
+
+@pytest.mark.parametrize(
     ("dataset_id", "module", "function", "subset", "expected"),
     [
         ("mpc_qpbenchmark", mpc_module, "download_mpc_qpbenchmark_problem", "LIPMWALK1", ["LIPMWALK1"]),
