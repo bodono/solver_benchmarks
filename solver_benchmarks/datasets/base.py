@@ -9,9 +9,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import scipy.io
+
 # Re-exported: the download helpers write their files with it.
 from solver_benchmarks.core.atomic import atomic_write_bytes as atomic_write_bytes
 from solver_benchmarks.core.problem import ProblemData, ProblemSpec
+
+
+def loadmat(file, **kwargs) -> dict:
+    """``scipy.io.loadmat`` returning sparse variables as scipy.sparse matrices.
+
+    SciPy 1.18 warns on every call that the default becomes sparse arrays in
+    1.20; the .mat loaders ask for matrices explicitly, as every other loader
+    returns. Versions without the ``spmatrix`` keyword return matrices anyway.
+    """
+    try:
+        return scipy.io.loadmat(file, spmatrix=True, **kwargs)
+    except TypeError:
+        return scipy.io.loadmat(file, **kwargs)
 
 
 def validate_gzip_payload(compressed: bytes) -> None:

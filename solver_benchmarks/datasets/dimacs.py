@@ -10,15 +10,20 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import scipy.io
 import scipy.sparse as sp
 
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes, validate_gzip_payload
+from .base import Dataset, atomic_write_bytes, loadmat, validate_gzip_payload
 
 DIMACS_BASE_URL = "https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances"
 DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")
+# filtinf1 is the infeasible variant of filter48_socp in the DIMACS library:
+# its SeDuMi primal has no feasible point, and the problem posed here (the
+# SeDuMi dual) has an improving ray, so it has no optimal pair and only a
+# certificate solves it. The other instances have published optima.
+DIMACS_INFEASIBLE = ("filtinf1",)
 
 
 class DIMACSDataset(Dataset):
@@ -71,7 +76,15 @@ class DIMACSDataset(Dataset):
                     name=name,
                     kind=CONE,
                     path=path,
-                    metadata={"source": str(path), "format": "mat"},
+                    metadata={
+                        "source": str(path),
+                        "format": "mat",
+                        **(
+                            {"expected_status": status.EXPECT_INFEASIBLE}
+                            if name in DIMACS_INFEASIBLE
+                            else {}
+                        ),
+                    },
                 )
             )
         return specs
@@ -172,8 +185,8 @@ def _read_dimacs(path: Path) -> dict:
 def _loadmat_maybe_gzip(path: Path) -> dict:
     if path.name.endswith(".gz"):
         with gzip.open(path, "rb") as handle:
-            return scipy.io.loadmat(BytesIO(handle.read()))
-    return scipy.io.loadmat(path)
+            return loadmat(BytesIO(handle.read()))
+    return loadmat(path)
 
 
 def _vector(value, size: int, label: str) -> np.ndarray:

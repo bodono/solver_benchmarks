@@ -7,13 +7,11 @@ import json
 import urllib.request
 from pathlib import Path
 
-from scipy.io import loadmat
-
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, loadmat
 
 MATPOWER_REVISION = "d295273485e88127d8b582927cfa0c54e5ce7279"
 MATPOWER_BASE_URL = (

@@ -295,3 +295,26 @@ def test_cactus_plot_counts_only_correct_outcomes(tmp_path, monkeypatch):
     monkeypatch.setattr(plots, "solved_mask", recording_mask)
     plots._write_cactus(_mixed_results(), tmp_path, "run_time_seconds")
     assert seen == [[("A", "feasible"), ("A", "infeasible"), ("B", "feasible")]]
+
+
+def test_dimacs_records_filtinf1_as_infeasible(tmp_path):
+    """filtinf1, the infeasible variant of filter48_socp in the DIMACS
+    library, was scored as solvable: an "optimal" counted as a success and
+    a certificate as a failure."""
+    from solver_benchmarks.datasets.dimacs import DIMACSDataset
+
+    folder = tmp_path / "dimacs_data"
+    folder.mkdir()
+    for name in ("filtinf1", "filter48_socp"):
+        (folder / f"{name}.mat.gz").write_bytes(b"")
+    got = {s.name: s.metadata.get("expected_status") for s in DIMACSDataset(data_root=tmp_path).list_problems()}
+    assert got == {"filtinf1": status.EXPECT_INFEASIBLE, "filter48_socp": None}
+
+    archived = _frame(
+        [
+            {"dataset": "dimacs", "problem": "filtinf1", "metadata.source": "/v/problem_classes/dimacs_data/filtinf1.mat.gz"},
+            {"dataset": "conic", "problem": "filtinf1", "metadata.source": "/v/problem_classes/dimacs_data/filtinf1.mat.gz"},
+            {"dataset": "dimacs", "problem": "filter48_socp", "metadata.source": "filter48_socp.mat.gz"},
+        ]
+    )
+    assert expected_outcomes(archived).tolist() == [status.EXPECT_INFEASIBLE, status.EXPECT_INFEASIBLE, None]

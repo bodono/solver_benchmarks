@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.core import status
+from solver_benchmarks.datasets.dimacs import DIMACS_INFEASIBLE
 from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 EXPECTED_COLUMN = "metadata.expected_status"
@@ -40,6 +41,8 @@ def _inferred_outcome(dataset: object, problem: object, source: object) -> str |
         # Every instance is infeasible or weakly infeasible by construction.
         return status.EXPECT_INFEASIBLE
     if ("/sdplib_data/" in path or dataset == "sdplib") and problem in SDPLIB_INFEASIBLE:
+        return status.EXPECT_INFEASIBLE
+    if ("/dimacs_data/" in path or dataset == "dimacs") and problem in DIMACS_INFEASIBLE:
         return status.EXPECT_INFEASIBLE
     return None
 
