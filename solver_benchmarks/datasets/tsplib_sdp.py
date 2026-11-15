@@ -55,7 +55,8 @@ class TSPLIBSDPDataset(Dataset):
         subset: comma-separated string or list of TSPLIB instance
             names. ``None`` (default) and ``"all"`` mean *no name
             filter* (show every instance found locally) — matching
-            the Mittelmann SDP / CBLib pattern.
+            the Mittelmann SDP / CBLib pattern. ``"default"`` lists
+            those of ``TSPLIB_DEFAULT_SUBSET``.
     """
 
     dataset_id = "tsplib_sdp"
@@ -86,12 +87,19 @@ class TSPLIBSDPDataset(Dataset):
             return []
         subset = _normalize_subset(self.options.get("subset"))
         specs: list[ProblemSpec] = []
+        paths: dict[str, Path] = {}
         for path in sorted(self.folder.iterdir()):
             name = _tsplib_name(path)
             if name is None:
                 continue
             if subset is not None and name not in subset:
                 continue
+            # A plain copy beside the download (say, gunzipped to look at
+            # it) is the same problem, read from the plain file.
+            existing = paths.get(name)
+            if existing is None or (existing.name.endswith(".gz") and not path.name.endswith(".gz")):
+                paths[name] = path
+        for name, path in sorted(paths.items()):
             specs.append(
                 ProblemSpec(
                     dataset_id=self.dataset_id,
@@ -426,6 +434,8 @@ def _tsplib_name(path: Path) -> str | None:
 def _normalize_subset(value) -> set[str] | None:
     if value is None or value == "all":
         return None
+    if value == "default":
+        return set(TSPLIB_DEFAULT_SUBSET)
     if isinstance(value, str):
         return {item.strip() for item in value.split(",") if item.strip()}
     return {str(item) for item in value}

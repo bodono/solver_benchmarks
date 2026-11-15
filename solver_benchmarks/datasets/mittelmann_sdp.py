@@ -6,9 +6,11 @@ LP/QP collections. Most instances are at:
     https://plato.asu.edu/ftp/sdp/
 
 in SDPA-S sparse format (``.dat-s`` or ``.dat-s.gz``). The default
-subset here is a handful of small-to-medium instances that solve in
-under a few seconds with modern interior-point SDP codes — suitable
-for regression tests and quick comparative benchmarks.
+subset here is six small-to-medium instances: truss topology design
+(``trto3``, ``buck3``), ``rose13``, ``cnhil8``, ``biggs`` and one maxcut
+relaxation (``G40mc``, a single PSD block of order 2000). They are
+far from uniform: with Clarabel some solve in seconds, ``buck3`` took
+about 17 s and ``rose13`` about a minute on one machine.
 
 The full curated list at Mittelmann's site contains many larger
 instances (graph relaxations, Lovász theta numbers, SDPLIB
@@ -38,8 +40,8 @@ KOCVARA_SDP_BASE_URL = "https://web.mat.bham.ac.uk/kocvara/pennon/problems"
 MITTELMANN_SDP_DOWNLOAD_ATTEMPTS = 3
 MITTELMANN_SDP_DOWNLOAD_TIMEOUT = 30
 
-# Curated default: small-to-medium SDPLIB-style instances (Lovász
-# theta numbers and graph-coloring SDPs) that ship in SDPA-S format.
+# Curated default: small-to-medium instances in SDPA-S format (truss
+# topology design, rose13, cnhil8, biggs and the maxcut relaxation G40mc).
 # Each entry maps the problem name (used as the ProblemSpec name) to
 # its remote filename relative to ``MITTELMANN_SDP_BASE_URL``.
 MITTELMANN_SDP_DEFAULT_SUBSET: dict[str, str] = {
@@ -60,17 +62,20 @@ class MittelmannSDPDataset(Dataset):
     """Download and serve Mittelmann's SDP test instances.
 
     Options:
-        subset: comma-separated string or list of problem names. None
-            (default) → ``MITTELMANN_SDP_DEFAULT_SUBSET``. The string
-            ``"all"`` is the same as the default — there is no remote
+        subset: comma-separated string or list of problem names.
+            ``None`` (default) and ``"all"`` list every instance found
+            locally; ``"default"`` lists those of
+            ``MITTELMANN_SDP_DEFAULT_SUBSET``. Preparation downloads the
+            default subset unless names are given: there is no remote
             enumeration since Mittelmann's site is a fixed collection.
     """
 
     dataset_id = "mittelmann_sdp"
     description = (
         "Mittelmann's SDP benchmark instances in SDPA-S sparse format. "
-        "Complements the LP / QP Mittelmann sets; instances are PSD-"
-        "block SDPs of the form min C•X s.t. A_k•X = b_k, X ⪰ 0."
+        "Complements the LP / QP Mittelmann sets; each file holds SDPA's "
+        "pair min c'x s.t. sum_k x_k F_k - F_0 ⪰ 0 and max F_0•Y s.t. "
+        "F_k•Y = c_k, Y ⪰ 0, and the first is posed."
     )
     data_source = "external download from https://plato.asu.edu/ftp/sdp/"
     data_patterns = ("*.dat-s", "*.dat-s.gz")
@@ -91,12 +96,19 @@ class MittelmannSDPDataset(Dataset):
             return []
         subset = _normalize_subset(self.options.get("subset"))
         specs: list[ProblemSpec] = []
+        paths: dict[str, Path] = {}
         for path in sorted(self.folder.iterdir()):
             name = _sdpa_name(path)
             if name is None:
                 continue
             if subset is not None and name not in subset:
                 continue
+            # A plain copy beside the download (say, gunzipped to look at
+            # it) is the same problem, read from the plain file.
+            existing = paths.get(name)
+            if existing is None or (existing.name.endswith(".gz") and not path.name.endswith(".gz")):
+                paths[name] = path
+        for name, path in sorted(paths.items()):
             specs.append(
                 ProblemSpec(
                     dataset_id=self.dataset_id,
@@ -238,9 +250,12 @@ def _normalize_subset(value) -> set[str] | None:
     Returns ``None`` when no filter should apply (show every problem
     found on disk) — matching the CBLib / Mittelmann LP/QP pattern so
     config-file expectations remain consistent across datasets.
+    ``"default"`` is the curated default subset, as for CBLIB.
     """
     if value is None or value == "all":
         return None
+    if value == "default":
+        return set(MITTELMANN_SDP_DEFAULT_SUBSET)
     if isinstance(value, str):
         return {item.strip() for item in value.split(",") if item.strip()}
     return {str(item) for item in value}
