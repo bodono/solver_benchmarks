@@ -177,3 +177,216 @@ def test_clarabel_status_mapping_table():
     # than crashing.
     assert _map_clarabel_status("ThisStatusDoesNotExist") == status.SOLVER_ERROR
     assert _map_clarabel_status("") == status.SOLVER_ERROR
+
+
+# A solve stopped by its iteration or time limit is reported as
+# max_iter_reached / time_limit even when the solver salvages the last (or
+# best) iterate as "solved inaccurate" / "almost solved"; the solver's own
+# word stays on info["raw_status"]. Scoring treats optimal_inaccurate and the
+# limit statuses alike (neither counts as solved; kkt-verify --promote can
+# promote either), so this changes the label, not the score.
+
+
+def test_osqp_inaccurate_statuses_at_a_limit_map_to_that_limit():
+    osqp = pytest.importorskip("osqp")
+    from solver_benchmarks.solvers.osqp_adapter import _map_osqp_status
+
+    for name in (
+        "OSQP_SOLVED_INACCURATE",
+        "OSQP_PRIMAL_INFEASIBLE_INACCURATE",
+        "OSQP_DUAL_INFEASIBLE_INACCURATE",
+    ):
+        value = osqp.constant(name)
+        assert _map_osqp_status(value, osqp, hit_iteration_limit=True) == status.MAX_ITER_REACHED
+        assert _map_osqp_status(value, osqp, hit_iteration_limit=False) == status.TIME_LIMIT
+    expected = {
+        "OSQP_SOLVED": status.OPTIMAL,
+        "OSQP_MAX_ITER_REACHED": status.MAX_ITER_REACHED,
+        "OSQP_TIME_LIMIT_REACHED": status.TIME_LIMIT,
+        "OSQP_PRIMAL_INFEASIBLE": status.PRIMAL_INFEASIBLE,
+        "OSQP_DUAL_INFEASIBLE": status.DUAL_INFEASIBLE,
+        "OSQP_NON_CVX": status.SOLVER_ERROR,
+    }
+    for name, canonical in expected.items():
+        assert _map_osqp_status(osqp.constant(name), osqp, hit_iteration_limit=False) == canonical
+    assert _map_osqp_status(-12345, osqp, hit_iteration_limit=False) == status.SOLVER_ERROR
+
+
+def test_osqp_solved_inaccurate_at_max_iter_is_reported_as_max_iter(tmp_path):
+    # OSQP only reports "solved inaccurate" when it hits max_iter or its time
+    # limit and the final iterate passes its 10x-looser check. Sweep max_iter
+    # on a random QP until that happens.
+    pytest.importorskip("osqp")
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.osqp_adapter import OSQPSolverAdapter
+
+    rng = np.random.default_rng(0)
+    n, m = 50, 80
+    b = rng.normal(size=(n, n))
+    qp = {
+        "P": sp.csc_matrix(b.T @ b / n + 0.1 * np.eye(n)),
+        "q": rng.normal(size=n),
+        "A": sp.csc_matrix(rng.normal(size=(m, n))),
+        "l": -rng.uniform(size=m),
+        "u": rng.uniform(size=m),
+    }
+    problem = ProblemData("t", "p", QP, qp)
+    seen = 0
+    for max_iter in range(200, 400, 7):
+        settings = {
+            "verbose": False, "max_iter": max_iter, "check_termination": 1,
+            "eps_abs": 1e-6, "eps_rel": 1e-6,
+        }
+        result = OSQPSolverAdapter(settings).solve(problem, tmp_path)
+        if result.info["raw_status"] == "solved inaccurate":
+            seen += 1
+            assert result.status == status.MAX_ITER_REACHED
+            assert result.iterations == max_iter
+            assert result.objective_value is None
+            assert result.kkt is not None
+    if not seen:
+        pytest.skip("this OSQP build never stopped at 'solved inaccurate' here")
+
+
+def test_osqp_inaccurate_infeasibility_names_the_certificate_it_carries():
+    osqp = pytest.importorskip("osqp")
+    from solver_benchmarks.solvers.osqp_adapter import _certificate_kind
+
+    assert _certificate_kind(osqp.constant("OSQP_PRIMAL_INFEASIBLE_INACCURATE"), osqp) == (
+        status.PRIMAL_INFEASIBLE_INACCURATE
+    )
+    assert _certificate_kind(osqp.constant("OSQP_DUAL_INFEASIBLE_INACCURATE"), osqp) == (
+        status.DUAL_INFEASIBLE_INACCURATE
+    )
+    for name in ("OSQP_SOLVED", "OSQP_SOLVED_INACCURATE", "OSQP_PRIMAL_INFEASIBLE"):
+        assert _certificate_kind(osqp.constant(name), osqp) is None
+
+
+def test_osqp_keeps_the_certificate_of_an_inaccurate_infeasibility_at_a_limit(tmp_path):
+    # OSQP returns NaN x / y with "primal infeasible inaccurate" (reported as
+    # the limit), but still returns prim_inf_cert; its residuals are kept.
+    pytest.importorskip("osqp")
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.osqp_adapter import OSQPSolverAdapter
+
+    rng = np.random.default_rng(2)
+    n = 5
+    a = rng.normal(size=(8, n))
+    # Row 0 bounded in [-1, 0.5] and again in [2, 3]: primal infeasible.
+    a = np.vstack([a, a[:1]])
+    l = np.concatenate([-np.ones(8), [2.0]])
+    u = np.concatenate([np.ones(8), [3.0]])
+    l[0], u[0] = -1.0, 0.5
+    qp = {
+        "P": sp.diags(rng.uniform(0, 1, n), format="csc"),
+        "q": rng.normal(size=n),
+        "A": sp.csc_matrix(a),
+        "l": l,
+        "u": u,
+    }
+    problem = ProblemData("t", "p", QP, qp)
+    seen = 0
+    for max_iter in (5, 10, 20, 30, 50, 75, 100):
+        settings = {"verbose": False, "max_iter": max_iter, "check_termination": 1}
+        result = OSQPSolverAdapter(settings).solve(problem, tmp_path)
+        if result.info["raw_status"] == "primal infeasible inaccurate":
+            seen += 1
+            assert result.status == status.MAX_ITER_REACHED
+            assert result.kkt is not None
+            assert result.kkt["certificate"] == "primal_infeasible"
+            assert "primal_res_rel" not in result.kkt
+    if not seen:
+        pytest.skip("this OSQP build never stopped at 'primal infeasible inaccurate' here")
+
+
+def test_qtqp_almost_solved_maps_by_why_the_solve_stopped():
+    from solver_benchmarks.solvers.qtqp_adapter import _map_qtqp_status
+
+    # Best-iterate salvage after running out of iterations: a limit status.
+    assert _map_qtqp_status("almost_solved", hit_iteration_limit=True) == status.MAX_ITER_REACHED
+    # Salvage after a numerical breakdown: the near-solution is inaccurate.
+    assert _map_qtqp_status("almost_solved", hit_iteration_limit=False) == status.OPTIMAL_INACCURATE
+    assert _map_qtqp_status("almost_solved") == status.OPTIMAL_INACCURATE
+    assert _map_qtqp_status("hit_max_iter") == status.MAX_ITER_REACHED
+
+
+@pytest.mark.parametrize("last_attempt, expected", [
+    (9, status.MAX_ITER_REACHED),
+    (4, status.OPTIMAL_INACCURATE),
+])
+def test_qtqp_adapter_reports_almost_solved_at_max_iter_as_max_iter(
+    monkeypatch, tmp_path, last_attempt, expected
+):
+    import sys
+    from types import SimpleNamespace
+
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.qtqp_adapter import QTQPSolverAdapter
+
+    class FakeQTQP:
+        def __init__(self, a, b, c, z, p):
+            self.n, self.m = a.shape[1], a.shape[0]
+
+        def solve(self, max_iter=100, **kwargs):
+            # qtqp keeps the zero-based attempt index on ``it``.
+            self.it = last_attempt
+            return SimpleNamespace(
+                status=SimpleNamespace(value="almost_solved"),
+                stats=[],
+                iterations=last_attempt,
+                x=np.zeros(self.n),
+                y=np.zeros(self.m),
+                s=np.ones(self.m),
+            )
+
+    monkeypatch.setitem(sys.modules, "qtqp", SimpleNamespace(QTQP=FakeQTQP))
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.ones(2),
+        "A": sp.eye(2, format="csc"),
+        "l": -np.ones(2),
+        "u": np.ones(2),
+    }
+    result = QTQPSolverAdapter({"max_iter": 10}).solve(ProblemData("t", "p", QP, qp), tmp_path)
+    assert result.status == expected
+    assert result.info["raw_status"] == "almost_solved"
+
+
+def test_proxqp_closest_primal_feasible_is_not_an_infeasibility_verdict(tmp_path):
+    # ProxSuite documents PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE as "the
+    # closest (in L2 sense) feasible problem is solved", and its sparse
+    # backend returns it for a feasible problem too, with the true solution.
+    # So it stays optimal_inaccurate (not primal_infeasible_inaccurate), and
+    # the KKT check of the returned point decides whether kkt-verify promotes.
+    pytest.importorskip("proxsuite")
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.proxqp_adapter import ProxQPSolverAdapter
+
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.ones(2),
+        "A": sp.eye(2, format="csc"),
+        "l": -5 * np.ones(2),
+        "u": 5 * np.ones(2),
+    }
+    settings = {
+        "verbose": False,
+        "primal_infeasibility_solving": True,
+        "check_duality_gap": False,
+    }
+    result = ProxQPSolverAdapter(settings).solve(ProblemData("t", "p", QP, qp), tmp_path)
+    assert result.info["status"].endswith("PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE")
+    assert result.status == status.OPTIMAL_INACCURATE
+    assert result.kkt["primal_res_rel"] < 1e-4 and result.kkt["dual_res_rel"] < 1e-4

@@ -5,9 +5,13 @@ cuOpt solves ``min c'x + (1/2) x'(Q + Q')x`` subject to
 ``min (1/2) x'P x + q'x, l <= A x <= u`` maps onto it with ``Q = P / 2``
 and free variables, so the objective is identical.
 
-The dual sign convention and the termination-status enum are checked at
-runtime against the installed cuOpt (see ``_probe``), since the Python API
-has changed across releases.
+Neither the dual sign nor the termination statuses are probed at run time.
+cuOpt's duals have the opposite sign to the harness convention (checked
+numerically on an active-bound LP); the ``dual_sign`` setting overrides it if
+a release flips it, which would otherwise show up as large ``dual_res_rel``
+on every solve. Termination names are matched against a static table across
+spellings (``_STATUS_MAP``); a name it does not know becomes ``solver_error``
+and the name itself is kept on ``info["termination"]``.
 """
 
 from __future__ import annotations
@@ -26,12 +30,13 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
-
-INF_BOUND = 1.0e20
+from .qp_split import normalize_qp_bounds
 
 
 def _import_cuopt():
@@ -43,13 +48,6 @@ def _import_cuopt():
             "Install cuopt-cu12 (NVIDIA pip index) on a CUDA machine to use cuOpt"
         ) from exc
     return data_model, solver, solver_settings
-
-
-def _clean_bounds(v: np.ndarray) -> np.ndarray:
-    out = np.asarray(v, dtype=np.float64).copy()
-    out[out <= -INF_BOUND] = -np.inf
-    out[out >= INF_BOUND] = np.inf
-    return out
 
 
 def _termination_name(solution) -> str:
@@ -130,8 +128,7 @@ class CuOptSolverAdapter(SolverAdapter):
         p = sp.csc_matrix(qp["P"])
         a = sp.csr_matrix(qp["A"])
         q = np.asarray(qp["q"], dtype=np.float64)
-        l = _clean_bounds(qp["l"])
-        u = _clean_bounds(qp["u"])
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
         n = a.shape[1]
 
         model = data_model.DataModel()
@@ -149,6 +146,13 @@ class CuOptSolverAdapter(SolverAdapter):
                 half.data.astype(np.float64), half.indices.astype(np.int32), half.indptr.astype(np.int32)
             )
 
+        translated: dict = {}
+        if "max_iter" in settings:
+            max_iter = int(settings.pop("max_iter"))
+            if "iteration_limit" not in settings:
+                settings["iteration_limit"] = max_iter
+                translated["iteration_limit"] = max_iter
+
         opts = solver_settings.SolverSettings()
         # ``eps`` sets all six of cuOpt's tolerances; ``eps_abs`` / ``eps_rel``
         # set the absolute and relative primal, dual and gap tolerances
@@ -164,7 +168,10 @@ class CuOptSolverAdapter(SolverAdapter):
         if threads is not None:
             opts.set_parameter("num_cpu_threads", int(threads))
         for key, value in settings.items():
-            opts.set_parameter(key, value)
+            try:
+                opts.set_parameter(key, value)
+            except Exception as exc:
+                raise ValueError(f"Invalid cuOpt setting {key!r}={value!r}: {exc}") from exc
         if verbose:
             try:
                 opts.set_parameter("log_to_console", True)
@@ -183,16 +190,18 @@ class CuOptSolverAdapter(SolverAdapter):
             "primal_objective": _maybe_float(solution.get_primal_objective()),
             "dual_objective": _maybe_float(solution.get_dual_objective()),
         }
+        if translated:
+            info["settings_translated"] = translated
         try:
             info["lp_stats"] = {k: _jsonable(v) for k, v in dict(solution.get_lp_stats()).items()}
         except Exception:  # pragma: no cover
             pass
         x = y = None
         kkt_dict = None
-        if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE, status.TIME_LIMIT, status.MAX_ITER_REACHED}:
+        if mapped in status.ANY_FEASIBLE:
             x = np.asarray(solution.get_primal_solution(), dtype=np.float64)
             y = np.asarray(solution.get_dual_solution(), dtype=np.float64)
-            if x.size == n and y.size == a.shape[0]:
+            if x.size == n and y.size == a.shape[0] and finite_point(x, y):
                 kkt_dict = kkt.qp_residuals(p, q, sp.csc_matrix(a), l, u, x, dual_sign * y)
         iterations = None
         stats = info.get("lp_stats") or {}
@@ -202,7 +211,7 @@ class CuOptSolverAdapter(SolverAdapter):
                 break
         return SolverResult(
             status=mapped,
-            objective_value=info["primal_objective"] if x is not None else None,
+            objective_value=reported_objective(mapped, info["primal_objective"]),
             iterations=iterations,
             run_time_seconds=elapsed,
             solve_time_seconds=info["solve_time"],

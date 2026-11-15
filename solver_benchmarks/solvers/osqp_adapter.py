@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import scipy.sparse as sp
@@ -16,11 +17,15 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     mark_threads_ignored,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    translate_eps_alias,
 )
+from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
 
 class OSQPSolverAdapter(SolverAdapter):
@@ -51,34 +56,52 @@ class OSQPSolverAdapter(SolverAdapter):
             settings["time_limit"] = float(time_limit)
         # OSQP does not expose a thread count knob.
         threads = pop_threads(settings)
+        translated = translate_eps_alias(settings)
         p = sp.csc_matrix(qp["P"])
         a = sp.csc_matrix(qp["A"])
+        # OSQP counts a bound as infinite only beyond OSQP_INFTY * MIN_SCALING
+        # (1e26), so the datasets' +-1e20 sentinel must become a true
+        # infinity here; otherwise it is a finite bound that slows the solve
+        # and breaks infeasibility detection. Rows with no finite bound are
+        # left out (they would still enter OSQP's scaling) and get a zero
+        # multiplier when the duals are mapped back.
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
+        kept = ~free_row_mask(l, u)
+        a_kept = a if kept.all() else a[np.flatnonzero(kept), :]
 
         solver = osqp.OSQP()
         start = time.perf_counter()
-        solver.setup(p, qp["q"], a, qp["l"], qp["u"], **settings)
-        raw = solver.solve()
+        try:
+            solver.setup(p, qp["q"], a_kept, l[kept], u[kept], **settings)
+            raw = solver.solve()
+        except _osqp_exception(osqp) as exc:
+            code = exc.args[0] if exc.args else None
+            if code == _OSQP_SETTINGS_VALIDATION_ERROR:
+                raise ValueError(
+                    "OSQP rejected a setting value (see its message in stdout.log): "
+                    f"{sorted(settings)}"
+                ) from exc
+            # Data validation (e.g. l > u) and a non-convex P are the solver
+            # failing on this problem, not a harness error.
+            error_info = {"raw_status": "error", "error": f"OSQPException: {code}"}
+            mark_threads_ignored(error_info, threads)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info=error_info,
+            )
         elapsed = time.perf_counter() - start
 
-        status_map = {
-            osqp.constant("OSQP_SOLVED"): status.OPTIMAL,
-            osqp.constant("OSQP_SOLVED_INACCURATE"): status.OPTIMAL_INACCURATE,
-            osqp.constant("OSQP_MAX_ITER_REACHED"): status.MAX_ITER_REACHED,
-            osqp.constant("OSQP_PRIMAL_INFEASIBLE"): status.PRIMAL_INFEASIBLE,
-            osqp.constant("OSQP_DUAL_INFEASIBLE"): status.DUAL_INFEASIBLE,
-            osqp.constant("OSQP_TIME_LIMIT_REACHED"): status.TIME_LIMIT,
-        }
-        for name, canonical in [
-            ("OSQP_PRIMAL_INFEASIBLE_INACCURATE", status.PRIMAL_INFEASIBLE_INACCURATE),
-            ("OSQP_DUAL_INFEASIBLE_INACCURATE", status.DUAL_INFEASIBLE_INACCURATE),
-            ("OSQP_NON_CVX", status.SOLVER_ERROR),
-        ]:
-            try:
-                status_map[osqp.constant(name)] = canonical
-            except (ValueError, KeyError, AttributeError):
-                continue
-        mapped = status_map.get(raw.info.status_val, status.SOLVER_ERROR)
-        info = {
+        iterations = _maybe_int(raw.info.iter)
+        max_iter = getattr(getattr(solver, "settings", None), "max_iter", None)
+        if max_iter is None:
+            max_iter = settings.get("max_iter", _OSQP_DEFAULT_MAX_ITER)
+        mapped = _map_osqp_status(
+            raw.info.status_val,
+            osqp,
+            hit_iteration_limit=iterations is not None and iterations >= int(max_iter),
+        )
+        info: dict[str, Any] = {
             key: getattr(raw.info, key, None)
             for key in [
                 "status",
@@ -97,12 +120,17 @@ class OSQPSolverAdapter(SolverAdapter):
             ]
             if hasattr(raw.info, key)
         }
-        kkt_dict = _compute_kkt(mapped, raw, qp, p, a)
+        info["raw_status"] = getattr(raw.info, "status", None)
+        kkt_dict = _compute_kkt(
+            _certificate_kind(raw.info.status_val, osqp) or mapped, raw, qp, p, a, l, u, kept
+        )
         mark_threads_ignored(info, threads)
+        if translated:
+            info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
-            objective_value=_objective_value(mapped, raw),
-            iterations=_maybe_int(raw.info.iter),
+            objective_value=reported_objective(mapped, raw.info.obj_val),
+            iterations=iterations,
             run_time_seconds=elapsed,
             setup_time_seconds=_maybe_float(getattr(raw.info, "setup_time", None)),
             solve_time_seconds=_maybe_float(getattr(raw.info, "solve_time", None)),
@@ -116,18 +144,86 @@ class OSQPSolverAdapter(SolverAdapter):
         )
 
 
-def _compute_kkt(mapped_status, raw, qp, p, a):
+# OSQP's default iteration cap, used only if the solver does not expose its
+# settings after setup.
+_OSQP_DEFAULT_MAX_ITER = 4000
+# osqp_error_type in OSQP's C API (not exported by the Python package):
+# 1 data validation, 2 settings validation, 4 non-convex problem, ...
+_OSQP_SETTINGS_VALIDATION_ERROR = 2
+
+
+def _osqp_exception(osqp):
+    """The exception type osqp raises for solver errors (if this build has one)."""
+    exc = getattr(osqp, "OSQPException", None)
+    return exc if isinstance(exc, type) and issubclass(exc, Exception) else ()
+
+
+# OSQP labels a limit-hit iterate that passes its looser check with these.
+_INACCURATE_AT_LIMIT = (
+    "OSQP_SOLVED_INACCURATE",
+    "OSQP_PRIMAL_INFEASIBLE_INACCURATE",
+    "OSQP_DUAL_INFEASIBLE_INACCURATE",
+)
+
+
+def _map_osqp_status(status_val, osqp, *, hit_iteration_limit: bool) -> str:
+    """Canonical status for OSQP's ``info.status_val``.
+
+    OSQP reports the ``*_INACCURATE`` statuses only after it stops on
+    ``max_iter`` or ``time_limit`` and the final iterate passes its 10x looser
+    check; the solve still ended on a limit, so it is reported as that limit
+    (iteration count at ``max_iter``: max_iter_reached, else time_limit).
+    """
+    status_map = {
+        osqp.constant("OSQP_SOLVED"): status.OPTIMAL,
+        osqp.constant("OSQP_MAX_ITER_REACHED"): status.MAX_ITER_REACHED,
+        osqp.constant("OSQP_PRIMAL_INFEASIBLE"): status.PRIMAL_INFEASIBLE,
+        osqp.constant("OSQP_DUAL_INFEASIBLE"): status.DUAL_INFEASIBLE,
+        osqp.constant("OSQP_TIME_LIMIT_REACHED"): status.TIME_LIMIT,
+    }
+    limit = status.MAX_ITER_REACHED if hit_iteration_limit else status.TIME_LIMIT
+    for name, canonical in [
+        *((name, limit) for name in _INACCURATE_AT_LIMIT),
+        ("OSQP_NON_CVX", status.SOLVER_ERROR),
+    ]:
+        try:
+            status_map[osqp.constant(name)] = canonical
+        except (ValueError, KeyError, AttributeError, RuntimeError):
+            continue
+    return status_map.get(status_val, status.SOLVER_ERROR)
+
+
+def _certificate_kind(status_val, osqp) -> str | None:
+    """The certificate an ``*_INFEASIBLE_INACCURATE`` status carries, if any.
+
+    Those statuses are reported as the limit the solve stopped on, and their
+    ``x`` / ``y`` are NaN, but OSQP still returns the (inaccurate) certificate;
+    its residuals are kept on ``kkt``. They never count as success: the row's
+    status is a limit, and kkt-verify finds no solution residuals to promote.
+    """
+    for name, kind in (
+        ("OSQP_PRIMAL_INFEASIBLE_INACCURATE", status.PRIMAL_INFEASIBLE_INACCURATE),
+        ("OSQP_DUAL_INFEASIBLE_INACCURATE", status.DUAL_INFEASIBLE_INACCURATE),
+    ):
+        try:
+            if status_val == osqp.constant(name):
+                return kind
+        except (ValueError, KeyError, AttributeError, RuntimeError):
+            continue
+    return None
+
+
+def _compute_kkt(mapped_status, raw, qp, p, a, l, u, kept):
     q = np.asarray(qp["q"], dtype=float)
-    l = np.asarray(qp["l"], dtype=float)
-    u = np.asarray(qp["u"], dtype=float)
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+    m = a.shape[0]
+    if mapped_status in status.ANY_FEASIBLE:
         x = getattr(raw, "x", None)
-        y = getattr(raw, "y", None)
-        if x is None or y is None:
+        y = scatter_rows(m, kept, getattr(raw, "y", None))
+        if not finite_point(x, y):
             return None
         return kkt.qp_residuals(p, q, a, l, u, x, y)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
-        cert = getattr(raw, "prim_inf_cert", None)
+        cert = scatter_rows(m, kept, getattr(raw, "prim_inf_cert", None))
         if cert is None:
             return None
         return kkt.qp_primal_infeasibility_cert(a, l, u, cert)
@@ -136,12 +232,6 @@ def _compute_kkt(mapped_status, raw, qp, p, a):
         if cert is None:
             return None
         return kkt.qp_dual_infeasibility_cert(p, q, a, l, u, cert)
-    return None
-
-
-def _objective_value(mapped_status, raw):
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        return _maybe_float(raw.info.obj_val)
     return None
 
 

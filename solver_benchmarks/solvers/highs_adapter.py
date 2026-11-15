@@ -14,11 +14,16 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    EPS_ALIASES,
     SolverAdapter,
     SolverUnavailable,
     pop_threads,
+    pop_time_limit,
+    refuse_settings,
+    reported_objective,
     settings_with_defaults,
 )
+from .qp_split import free_row_mask, normalize_qp_bounds
 
 
 class HighsSolverAdapter(SolverAdapter):
@@ -43,8 +48,7 @@ class HighsSolverAdapter(SolverAdapter):
         p = sp.csc_matrix(qp["P"])
         q = np.asarray(qp["q"], dtype=float)
         a = sp.csr_matrix(qp["A"])
-        l = np.asarray(qp["l"], dtype=float)
-        u = np.asarray(qp["u"], dtype=float)
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
         n = int(qp.get("n", q.shape[0]))
         m = int(qp.get("m", a.shape[0]))
 
@@ -64,10 +68,10 @@ class HighsSolverAdapter(SolverAdapter):
             np.array([], dtype=np.int32),
             np.array([], dtype=float),
         )
-        row_lower = _highs_bounds(l, -inf)
-        row_upper = _highs_bounds(u, inf)
+        row_lower = np.where(np.isneginf(l), -inf, l)
+        row_upper = np.where(np.isposinf(u), inf, u)
         # Free rows can trigger heap corruption in HiPO 1.15.1.
-        keep = ~(np.isneginf(row_lower) & np.isposinf(row_upper))
+        keep = ~free_row_mask(l, u)
         a_highs = a[keep]
         solver.addRows(
             a_highs.shape[0],
@@ -112,9 +116,7 @@ class HighsSolverAdapter(SolverAdapter):
             )
         return SolverResult(
             status=mapped,
-            objective_value=float(info.objective_function_value)
-            if mapped in status.SOLUTION_PRESENT
-            else None,
+            objective_value=reported_objective(mapped, info.objective_function_value),
             iterations=_highs_iterations(info),
             run_time_seconds=elapsed,
             info={
@@ -133,50 +135,85 @@ class HighsSolverAdapter(SolverAdapter):
         )
 
 
+# HiGHS caps each algorithm separately; ``max_iter`` sets all of them.
+_ITERATION_LIMIT_OPTIONS = (
+    "simplex_iteration_limit",
+    "ipm_iteration_limit",
+    "qp_iteration_limit",
+    "pdlp_iteration_limit",
+)
+
+
 def _configure_highs(solver, settings: dict) -> None:
+    """Apply ``settings`` to a ``highspy.Highs`` instance.
+
+    highspy reports an unknown option or a bad value by returning
+    ``HighsStatus.kError`` rather than raising, so every return value is
+    checked and a rejected setting raises ValueError naming it.
+    """
+    refuse_settings(
+        settings,
+        EPS_ALIASES,
+        "HiGHS",
+        "it has no absolute/relative tolerance pair; set its own tolerances, e.g. "
+        "primal_feasibility_tolerance, dual_feasibility_tolerance, "
+        "ipm_optimality_tolerance",
+    )
     if "verbose" in settings:
-        solver.setOptionValue("output_flag", bool(settings.pop("verbose")))
-    for source, target in [
-        ("time_limit_sec", "time_limit"),
-        ("time_limit_secs", "time_limit"),
-        ("time_limit", "time_limit"),
-    ]:
-        if source in settings:
-            solver.setOptionValue(target, settings.pop(source))
+        _set_option(solver, "output_flag", bool(settings.pop("verbose")))
+    time_limit = pop_time_limit(settings)
+    if time_limit is not None:
+        _set_option(solver, "time_limit", float(time_limit))
     threads = pop_threads(settings)
     if threads is not None:
-        try:
-            solver.setOptionValue("threads", int(threads))
-        except Exception:
-            pass
+        _set_option(solver, "threads", int(threads))
     if "max_iter" in settings:
-        # HiGHS uses a separate iteration cap per algorithm. Forward
-        # the user's max_iter to all of them so an LP solved by IPM,
-        # a QP solved by the QP code, or a PDLP run is also capped.
         max_iter = settings.pop("max_iter")
-        for option in (
-            "simplex_iteration_limit",
-            "ipm_iteration_limit",
-            "qp_iteration_limit",
-            "pdlp_iteration_limit",
-        ):
+        accepted = 0
+        for option in _ITERATION_LIMIT_OPTIONS:
             try:
-                solver.setOptionValue(option, max_iter)
+                result = solver.setOptionValue(option, int(max_iter))
             except Exception:
-                # Older highspy versions lack one of these options;
-                # ignore so the available ones still take effect.
-                pass
+                # Older highspy builds lack some of these options; the
+                # available ones still take effect.
+                continue
+            if not _is_error(result):
+                accepted += 1
+        if not accepted:
+            raise ValueError(f"Invalid HiGHS setting 'max_iter'={max_iter!r}")
     for key, value in settings.items():
-        solver.setOptionValue(key, value)
+        _set_option(solver, key, value)
 
 
-def _highs_bounds(values, inf_value: float) -> np.ndarray:
-    bounds = np.asarray(values, dtype=float).copy()
-    if inf_value > 0:
-        bounds[bounds >= 1.0e20] = inf_value
-    else:
-        bounds[bounds <= -1.0e20] = inf_value
-    return bounds
+def _set_option(solver, key: str, value) -> None:
+    hint = ""
+    if isinstance(value, bool) and _is_string_option(solver, key):
+        # YAML 1.1 reads unquoted on/off (and yes/no) as booleans, but
+        # HiGHS's on/off options (presolve, run_crossover, parallel, ranging)
+        # are strings that refuse a bool.
+        value = "on" if value else "off"
+        hint = " (an unquoted on/off in YAML is read as a boolean)"
+    if _is_error(solver.setOptionValue(key, value)):
+        raise ValueError(
+            f"Invalid HiGHS setting {key!r}={value!r}{hint}: unknown option or value "
+            "rejected by HiGHS (see its log)"
+        )
+
+
+def _is_string_option(solver, key: str) -> bool:
+    get_type = getattr(solver, "getOptionType", None)
+    if get_type is None:
+        return False
+    try:
+        result = get_type(key)
+    except Exception:
+        return False
+    option_type = result[-1] if isinstance(result, tuple) else result
+    return getattr(option_type, "name", None) == "kString"
+
+
+def _is_error(result) -> bool:
+    return getattr(result, "name", None) == "kError"
 
 
 def _map_highs_status(model_status, highspy) -> str:
@@ -207,10 +244,13 @@ def _map_highs_status(model_status, highspy) -> str:
 
 
 def _highs_iterations(info) -> int | None:
+    """Iterations of the algorithm that ran (HiGHS keeps -1 for the others,
+    and for all of them when the solve errored before iterating)."""
     values = [
-        getattr(info, "qp_iteration_count", 0),
-        getattr(info, "ipm_iteration_count", 0),
-        getattr(info, "simplex_iteration_count", 0),
-        getattr(info, "pdlp_iteration_count", 0),
+        getattr(info, "qp_iteration_count", None),
+        getattr(info, "ipm_iteration_count", None),
+        getattr(info, "simplex_iteration_count", None),
+        getattr(info, "pdlp_iteration_count", None),
     ]
-    return int(max(values)) if values else None
+    counts = [int(value) for value in values if value is not None and value >= 0]
+    return max(counts) if counts else None

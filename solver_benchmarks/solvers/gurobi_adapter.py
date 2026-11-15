@@ -15,12 +15,16 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    EPS_ALIASES,
     SolverAdapter,
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    refuse_settings,
+    reported_objective,
     settings_with_defaults,
 )
+from .qp_split import normalize_qp_bounds
 
 
 class GurobiSolverAdapter(SolverAdapter):
@@ -47,14 +51,15 @@ class GurobiSolverAdapter(SolverAdapter):
         a_mat = sp.csr_matrix(qp["A"])
         n = int(qp.get("n", q.shape[0]))
         m = int(qp.get("m", a_mat.shape[0]))
-        lower = _finite_bounds(qp["l"], -grb.GRB.INFINITY, lower=True)
-        upper = _finite_bounds(qp["u"], grb.GRB.INFINITY, lower=False)
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
+        lower = np.where(np.isneginf(l), -grb.GRB.INFINITY, l)
+        upper = np.where(np.isposinf(u), grb.GRB.INFINITY, u)
 
         env = _create_environment(grb)
         try:
             model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
             try:
-                _configure_gurobi(model, self.settings, grb)
+                translated = _configure_gurobi(model, self.settings, grb)
 
                 variables = [
                     model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY)
@@ -96,6 +101,7 @@ class GurobiSolverAdapter(SolverAdapter):
                 start = time.perf_counter()
                 try:
                     model.optimize()
+                    resolved = _resolve_inf_or_unbd(model, grb, self.settings)
                 except Exception as exc:
                     return SolverResult(
                         status=status.SOLVER_ERROR,
@@ -113,8 +119,8 @@ class GurobiSolverAdapter(SolverAdapter):
                 return SolverResult(
                     status=mapped,
                     kkt=kkt_dict,
-                    objective_value=(
-                        kkt_dict["primal_obj"] if kkt_dict is not None else None
+                    objective_value=reported_objective(
+                        mapped, kkt_dict["primal_obj"] if kkt_dict is not None else None
                     ),
                     iterations=_maybe_int(
                         getattr(model, "BarIterCount", None)
@@ -128,6 +134,8 @@ class GurobiSolverAdapter(SolverAdapter):
                         "solver_reported_runtime": _maybe_float(
                             getattr(model, "Runtime", None)
                         ),
+                        **({"settings_translated": translated} if translated else {}),
+                        **({"inf_or_unbd_resolved": True} if resolved else {}),
                     },
                 )
             finally:
@@ -136,6 +144,25 @@ class GurobiSolverAdapter(SolverAdapter):
                 model.dispose()
         finally:
             env.dispose()
+
+
+def _resolve_inf_or_unbd(model, grb, settings: dict) -> bool:
+    """Tell an infeasible model from an unbounded one after INF_OR_UNBD.
+
+    Gurobi's presolve dual reductions can prove only that a model has no
+    optimum; its documented remedy is to set DualReductions=0 and
+    reoptimize. Without it the row is primal_or_dual_infeasible, which never
+    counts as a certificate. Returns whether the model was re-solved (the
+    elapsed time covers both solves, as HiGHS's internal re-solve does).
+    """
+    if model.Status != grb.GRB.INF_OR_UNBD:
+        return False
+    for key, value in settings.items():
+        if key.lower() == "dualreductions" and int(value) == 0:
+            return False  # already off: the answer is final
+    model.setParam("DualReductions", 0)
+    model.optimize()
+    return True
 
 
 def _create_environment(grb):
@@ -168,17 +195,29 @@ def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
     return None
 
 
-def _finite_bounds(values, inf_value: float, *, lower: bool) -> np.ndarray:
-    arr = np.asarray(values, dtype=float).copy()
-    if lower:
-        arr[arr <= -1.0e20] = inf_value
-    else:
-        arr[arr >= 1.0e20] = inf_value
-    return arr
+def _configure_gurobi(model, settings: dict, grb) -> dict:
+    """Apply ``settings`` to ``model``; return the aliases it translated.
 
-
-def _configure_gurobi(model, settings: dict, grb) -> None:
+    ``max_iter`` caps both the barrier and the simplex iteration counts
+    (unless either is given by its Gurobi name). The ``eps`` aliases are
+    refused: Gurobi's tolerances are not an absolute/relative pair. A
+    parameter Gurobi rejects raises ValueError naming it.
+    """
     settings = settings_with_defaults(settings)
+    refuse_settings(
+        settings,
+        EPS_ALIASES,
+        "Gurobi",
+        "set its own tolerances instead (FeasibilityTol, OptimalityTol, BarConvTol)",
+    )
+    translated: dict = {}
+    if "max_iter" in settings:
+        max_iter = int(settings.pop("max_iter"))
+        given = {key.lower() for key in settings}
+        for name in ("BarIterLimit", "IterationLimit"):
+            if name.lower() not in given:
+                settings[name] = max_iter
+                translated[name] = max_iter
     if not settings.pop("verbose", False):
         model.setParam("OutputFlag", 0)
     time_limit = pop_time_limit(settings)
@@ -189,7 +228,11 @@ def _configure_gurobi(model, settings: dict, grb) -> None:
         model.setParam("Threads", int(threads))
     settings.pop("high_accuracy", None)
     for key, value in settings.items():
-        model.setParam(key, value)
+        try:
+            model.setParam(key, value)
+        except grb.GurobiError as exc:
+            raise ValueError(f"Invalid Gurobi parameter {key!r}={value!r}: {exc}") from exc
+    return translated
 
 
 def _map_gurobi_status(raw_status: int, grb) -> str:

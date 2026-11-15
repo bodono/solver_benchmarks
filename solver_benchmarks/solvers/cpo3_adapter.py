@@ -46,6 +46,7 @@ from .base import (
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 
@@ -138,7 +139,12 @@ class Cpo3SolverAdapter(SolverAdapter):
             raise ValueError(f"cpo3.Settings does not accept {unknown}")
         if "linear_solver" in settings:
             settings["linear_solver"] = resolve_linear_solver(settings["linear_solver"], cpo3)
-        cpo3_settings = cpo3.Settings(**settings)
+        try:
+            cpo3_settings = cpo3.Settings(**settings)
+        except (TypeError, OverflowError) as exc:
+            # cpo3 refuses most bad values with a ValueError of its own; a
+            # negative count or a value of the wrong type fails conversion.
+            raise ValueError(f"cpo3 rejected a setting value in {sorted(settings)}: {exc}") from exc
 
         cones: list[Any] = []
         if cone_dict.get("z"):
@@ -185,9 +191,7 @@ class Cpo3SolverAdapter(SolverAdapter):
             result_info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(getattr(info, "pobj", None))
-            if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
-            else None,
+            objective_value=reported_objective(mapped, getattr(info, "pobj", None)),
             iterations=_maybe_int(getattr(info, "iters", None)),
             run_time_seconds=elapsed,
             # cpo3 reports one elapsed time, presolve, equilibration and every

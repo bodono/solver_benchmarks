@@ -40,21 +40,31 @@ def test_pop_time_limit_returns_none_when_unset():
 
 
 def test_pop_time_limit_rejects_non_numeric():
-    with pytest.raises(ValueError, match="finite non-negative"):
+    with pytest.raises(ValueError, match="finite positive"):
         pop_time_limit({"time_limit": "fast"})
 
 
 def test_pop_time_limit_rejects_bool():
-    with pytest.raises(ValueError, match="finite non-negative"):
+    with pytest.raises(ValueError, match="finite positive"):
         pop_time_limit({"time_limit": True})
-    with pytest.raises(ValueError, match="finite non-negative"):
+    with pytest.raises(ValueError, match="finite positive"):
         pop_time_limit({"time_limit": False})
 
 
 def test_pop_time_limit_rejects_nonfinite_and_negative():
     for value in (float("nan"), float("inf"), -float("inf"), "nan", "inf", -1):
-        with pytest.raises(ValueError, match="finite non-negative"):
+        with pytest.raises(ValueError, match="finite positive"):
             pop_time_limit({"time_limit": value})
+
+
+@pytest.mark.parametrize("alias", ["time_limit", "time_limit_sec", "time_limit_secs"])
+@pytest.mark.parametrize("value", [0, 0.0, "0", -0.0])
+def test_pop_time_limit_rejects_zero(alias, value):
+    # Solvers disagree on what a zero limit means (SCS: no limit; Clarabel,
+    # cpo3, HiGHS, PDLP: stop before the first iteration; OSQP: a settings
+    # error), so the shared helper refuses it instead of passing it on.
+    with pytest.raises(ValueError, match=r"positive.*omit the setting"):
+        pop_time_limit({alias: value})
 
 
 def test_pop_threads_basic():

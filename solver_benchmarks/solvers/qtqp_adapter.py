@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import numbers
 import time
 from pathlib import Path
 
@@ -21,10 +22,12 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 
@@ -63,16 +66,35 @@ class QTQPSolverAdapter(SolverAdapter):
             unknown = sorted(k for k in settings if k not in solve_params)
             if unknown:
                 raise ValueError(f"qtqp.solve() does not accept settings {unknown}; installed qtqp exposes {sorted(solve_params)}")
+        _check_setting_values(settings, translated)
         a, b, z = qp_to_nonnegative_cone(qp)
         p = sp.csc_matrix(qp["P"])
         c = np.asarray(qp["q"], dtype=float)
 
-        start = time.perf_counter()
-        solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
+        # Per-iteration statistics (collect_stats) are diagnostics computed
+        # inside the timed solve, 2-5 ms per solve on small problems; they are
+        # collected only when the config asks, and the result's objective
+        # comes from the returned point instead.
         solve_kwargs = dict(settings)
-        if "collect_stats" in inspect.signature(solver.solve).parameters:
-            solve_kwargs["collect_stats"] = True
-        solution = solver.solve(**solve_kwargs)
+        start = time.perf_counter()
+        try:
+            solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
+            solution = solver.solve(**solve_kwargs)
+        except (ValueError, ArithmeticError, np.linalg.LinAlgError) as exc:
+            # qtqp raises ValueError for data it cannot take (non-finite or
+            # non-symmetric P from the constructor; a non-convex P, from the
+            # KKT assembly inside solve()) and for failed factorizations: the
+            # solver failing on this problem. The setting values solve()
+            # would refuse with a ValueError were checked above, so a bad
+            # value still raises as a configuration error.
+            error_info = {"raw_status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            mark_time_limit_ignored(error_info, time_limit)
+            mark_threads_ignored(error_info, threads)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info=error_info,
+            )
         elapsed = time.perf_counter() - start
 
         raw_status = getattr(solution.status, "value", str(solution.status))
@@ -84,17 +106,21 @@ class QTQPSolverAdapter(SolverAdapter):
         # zero-based label, one below the completed count for any solve that
         # took a step, and is kept only as the fallback for older builds.
         iterations = _maybe_int(getattr(solution, "iterations", None))
+        objective = _point_objective(getattr(solution, "x", None), p, c)
         if not stats.empty:
             last = stats.tail(1).iloc[0]
-            objective = _maybe_float(last.get("pcost"))
+            if objective is None:
+                objective = _maybe_float(last.get("pcost"))
             if iterations is None:
                 iterations = _maybe_int(last.get("iter"))
             info = to_jsonable(last.to_dict())
         else:
-            objective = None
             info = {}
 
-        mapped = _map_qtqp_status(raw_status)
+        mapped = _map_qtqp_status(
+            raw_status,
+            hit_iteration_limit=_hit_iteration_limit(solver, iterations, solve_kwargs, sig),
+        )
         cone_dict: dict = {}
         if z:
             cone_dict["z"] = int(z)
@@ -108,7 +134,7 @@ class QTQPSolverAdapter(SolverAdapter):
             result_info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
-            objective_value=objective,
+            objective_value=reported_objective(mapped, objective),
             iterations=iterations,
             run_time_seconds=elapsed,
             info=result_info,
@@ -117,7 +143,79 @@ class QTQPSolverAdapter(SolverAdapter):
         )
 
 
-def _map_qtqp_status(raw_status) -> str:
+def _is_integer(value) -> bool:
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+# The ranges qtqp's solve() enforces, as (description, test) per setting. It
+# checks them with asserts (gone under ``python -O``, and with no message) or
+# with ValueErrors raised from the same call as its numerical failures, so the
+# adapter checks them first and names the setting.
+_SETTING_RANGES = {
+    **{
+        key: (">= 0", lambda v: _is_number(v) and v >= 0)
+        for key in (
+            "tol_feas", "tol_gap_abs", "tol_gap_rel", "tol_infeas_abs", "tol_infeas_rel",
+            "min_static_regularization", "linear_solver_atol", "linear_solver_rtol",
+            "atol", "rtol",
+        )
+    },
+    "certificate_ktratio": (">= 1", lambda v: _is_number(v) and v >= 1),
+    "step_size_scale": ("in (0, 1)", lambda v: _is_number(v) and 0 < v < 1),
+    "max_iter": ("an integer >= 1", lambda v: _is_integer(v) and v >= 1),
+    "max_iterative_refinement_steps": ("an integer >= 1", lambda v: _is_integer(v) and v >= 1),
+    "max_centrality_correctors": ("an integer >= 0", lambda v: _is_integer(v) and v >= 0),
+}
+
+
+def _check_setting_values(settings: dict, translated: dict) -> None:
+    """Raise ValueError naming a setting whose value qtqp would refuse."""
+    checks = dict(_SETTING_RANGES)
+    # gmres_restart is used, and checked, only with GMRES refinement.
+    strategy = settings.get("refinement_strategy")
+    if getattr(strategy, "name", strategy) != "RICHARDSON":
+        checks["gmres_restart"] = ("an integer >= 1", lambda v: _is_integer(v) and v >= 1)
+    # warm_start_threshold is checked only when there is a warm start.
+    if settings.get("warm_start") is not None:
+        checks["warm_start_threshold"] = (
+            "positive and finite",
+            lambda v: _is_number(v) and 0 < v < np.inf,
+        )
+    for key, value in settings.items():
+        if key in checks:
+            description, test = checks[key]
+            if not test(value):
+                source = " (set from eps_abs / eps_rel / eps)" if key in translated else ""
+                raise ValueError(
+                    f"Invalid QTQP setting {key!r}={value!r}{source}: must be {description}"
+                )
+
+
+def _point_objective(x, p, c) -> float | None:
+    """``0.5 x'Px + c'x`` at the returned point, or None if it is not finite."""
+    if not finite_point(x):
+        return None
+    x = np.asarray(x, dtype=float)
+    return float(0.5 * x @ (p @ x) + c @ x)
+
+
+def _map_qtqp_status(raw_status, *, hit_iteration_limit: bool = False) -> str:
+    """Canonical status for a qtqp ``SolutionStatus`` value.
+
+    qtqp returns ``almost_solved`` when it salvages its best iterate after
+    running out of iterations or after a numerical breakdown. The first is a
+    solve stopped by its iteration limit and is reported as such; the second
+    is an inaccurate solution. qtqp also answers ``almost_solved`` when
+    ``max_iter`` is exactly the number of iterations the solve needs, so that
+    converged point is reported as ``max_iter_reached`` too (OSQP would say
+    optimal there); ``bench kkt-verify --promote`` recovers it.
+    """
+    if str(raw_status) == "almost_solved" and hit_iteration_limit:
+        return status.MAX_ITER_REACHED
     return {
         "solved": status.OPTIMAL,
         "almost_solved": status.OPTIMAL_INACCURATE,
@@ -129,14 +227,34 @@ def _map_qtqp_status(raw_status) -> str:
     }.get(str(raw_status), status.SOLVER_ERROR)
 
 
+def _hit_iteration_limit(solver, iterations, solve_kwargs, signature) -> bool:
+    """Whether the solve used up its ``max_iter`` attempts.
+
+    qtqp keeps the zero-based index of its last attempt on ``solver.it``; the
+    completed-step count can be lower than ``max_iter`` when steps are
+    retried, so it is only the fallback.
+    """
+    max_iter = solve_kwargs.get("max_iter")
+    if max_iter is None:
+        parameter = signature.parameters.get("max_iter")
+        default = None if parameter is None else parameter.default
+        max_iter = None if default is inspect.Parameter.empty else default
+    if max_iter is None:
+        return False
+    last_attempt = getattr(solver, "it", None)
+    if isinstance(last_attempt, int):
+        return last_attempt + 1 >= int(max_iter)
+    return iterations is not None and iterations >= int(max_iter)
+
+
 def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
     x = getattr(solution, "x", None)
     y = getattr(solution, "y", None)
     s_slack = getattr(solution, "s", None)
     if x is None:
         return None
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None or s_slack is None:
+    if mapped_status in status.ANY_FEASIBLE:
+        if not finite_point(x, y, s_slack):
             return None
         return kkt.cone_residuals(p, c, a, b, cone_dict, x, y, s_slack)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:

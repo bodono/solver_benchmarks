@@ -890,18 +890,18 @@ def test_qtqp_compute_kkt_emits_dual_infeasibility_certificate():
     assert result.get("qtx") == pytest.approx(-1.0)
 
 
-def test_qtqp_compute_kkt_returns_none_for_unmapped_status():
-    """Statuses outside the OPTIMAL / INFEASIBLE / UNBOUNDED set (e.g.
-    SOLVER_ERROR, MAX_ITER_REACHED) must not produce a kkt dict."""
+def test_qtqp_compute_kkt_checks_every_returned_point():
+    """A limit-hit or failed solve that returns a finite point gets KKT
+    residuals like an optimal one (so kkt-verify --promote can judge it);
+    a non-finite point or an ambiguous infeasibility status gets none."""
     solution = SimpleNamespace(
         x=np.array([0.0]), y=np.array([0.0]), s=np.array([0.0])
     )
-    assert (
-        _drive_qtqp_compute_kkt(solution, status.SOLVER_ERROR) is None
-    )
-    assert (
-        _drive_qtqp_compute_kkt(solution, status.MAX_ITER_REACHED) is None
-    )
+    for mapped in (status.SOLVER_ERROR, status.MAX_ITER_REACHED, status.TIME_LIMIT):
+        assert _drive_qtqp_compute_kkt(solution, mapped)["form"] == "cone"
+    assert _drive_qtqp_compute_kkt(solution, status.PRIMAL_OR_DUAL_INFEASIBLE) is None
+    broken = SimpleNamespace(x=np.array([np.nan]), y=np.array([0.0]), s=np.array([0.0]))
+    assert _drive_qtqp_compute_kkt(broken, status.SOLVER_ERROR) is None
 
 
 # ---------------------------------------------------------------------------

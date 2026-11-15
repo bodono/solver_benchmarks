@@ -29,11 +29,17 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    translate_eps_alias,
 )
+from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
+# The datasets' documented infinity sentinel. Bounds are normalized with the
+# shared cutoff in qp_split (|bound| >= 1e19 is infinite) before use.
 INF_BOUND = 1.0e20
 # Protobuf messages must be smaller than 2 GiB, including the request envelope.
 MAX_PROTOBUF_BYTES = (1 << 31) - 1
@@ -73,10 +79,7 @@ class PDLPSolverAdapter(SolverAdapter):
         # Count exactly the entries the builder will retain: COO duplicates may
         # merge on conversion, and fully unbounded QP rows are omitted entirely.
         a = qp["A"]
-        retained_rows = ~(
-            (np.asarray(qp["l"], dtype=float) <= -INF_BOUND)
-            & (np.asarray(qp["u"], dtype=float) >= INF_BOUND)
-        )
+        retained_rows = ~free_row_mask(qp["l"], qp["u"])
         if (
             sp.issparse(a) and a.format in {"csr", "csc"}
             and a.has_canonical_format and np.all(retained_rows)
@@ -90,9 +93,12 @@ class PDLPSolverAdapter(SolverAdapter):
         if oversized is not None:
             return oversized
         model = _build_lp_model_from_qp(dict(qp, A=a))
+        row_count = a.shape[0]
+        retained = np.flatnonzero(retained_rows)
 
         def compute_kkt(mapped_status, x, y):
-            return _qp_kkt(mapped_status, qp, x, y)
+            # PDLP's dual has one entry per retained row; free rows get zero.
+            return _qp_kkt(mapped_status, qp, x, scatter_rows(row_count, retained, y))
 
         return _solve_model(model, self.settings, artifacts_dir, compute_kkt)
 
@@ -168,8 +174,7 @@ def _build_lp_model_from_qp(qp: dict):
 
     a = sp.csr_matrix(qp["A"])
     q = np.asarray(qp["q"], dtype=float)
-    l = np.asarray(qp["l"], dtype=float)
-    u = np.asarray(qp["u"], dtype=float)
+    l, u = normalize_qp_bounds(qp["l"], qp["u"])
 
     model = linear_solver_pb2.MPModelProto()
     model.name = "solver_benchmarks_pdlp"
@@ -187,7 +192,7 @@ def _build_lp_model_from_qp(qp: dict):
     for row_index in range(a.shape[0]):
         lower = float(l[row_index])
         upper = float(u[row_index])
-        if lower <= -INF_BOUND and upper >= INF_BOUND:
+        if lower == -np.inf and upper == np.inf:
             continue
         constraint = linear_solver_pb2.MPConstraintProto(name=f"constraint_{row_index}")
         start = a.indptr[row_index]
@@ -199,8 +204,8 @@ def _build_lp_model_from_qp(qp: dict):
         # 0 for lower_bound and upper_bound, so a one-sided constraint
         # ``Ax <= u`` whose lower_bound we leave unset would silently
         # become ``0 <= Ax <= u`` instead of ``-inf <= Ax <= u``.
-        constraint.lower_bound = lower if lower > -INF_BOUND else -np.inf
-        constraint.upper_bound = upper if upper < INF_BOUND else np.inf
+        constraint.lower_bound = lower
+        constraint.upper_bound = upper
         model.constraint.append(constraint)
     return model
 
@@ -264,7 +269,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     time_limit = pop_time_limit(settings)
     if time_limit is None:
         time_limit = settings.pop("solver_time_limit_sec", None)
-    threads = pop_threads(settings)
+    translated = translate_eps_alias(settings)
 
     request = linear_solver_pb2.MPModelRequest(
         enable_internal_solver_output=verbose,
@@ -275,6 +280,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         if not _set_time_limit(request, float(time_limit)):
             time_limit_ignored = True
 
+    given = sorted(settings)
     parameters = _pdlp_parameters_from_settings(settings)
     if settings:
         raise ValueError(f"Unsupported PDLP settings: {sorted(settings)}")
@@ -312,6 +318,15 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         text_format.MessageToString(response)
     )
 
+    invalid_parameter = getattr(
+        solve_log_pb2.TerminationReason, "TERMINATION_REASON_INVALID_PARAMETER", None
+    )
+    if invalid_parameter is not None and solve_log.termination_reason == invalid_parameter:
+        # PDLP validates its parameters only when asked to solve and answers
+        # with a termination reason; a bad value is a configuration error.
+        raise ValueError(
+            f"PDLP rejected a setting value in {given}: {solve_log.termination_string}"
+        )
     mapped_status = _map_status(solve_log)
     x = np.asarray(response.variable_value, dtype=float) if len(response.variable_value) else None
     # OR-Tools returns the dual negated relative to our QP sign convention
@@ -319,10 +334,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     y = -np.asarray(response.dual_value, dtype=float) if len(response.dual_value) else None
     kkt_dict = None
     if compute_kkt is not None and x is not None:
-        try:
-            kkt_dict = compute_kkt(mapped_status, x, y)
-        except Exception:
-            kkt_dict = None
+        kkt_dict = compute_kkt(mapped_status, x, y)
 
     info = {
         "termination_reason": solve_log_pb2.TerminationReason.Name(
@@ -336,19 +348,13 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     if time_limit_ignored:
         info["time_limit_ignored"] = True
         info["time_limit_seconds"] = float(time_limit)
-    if threads is not None:
-        # PDLP is single-threaded by design; surface so callers can detect.
-        info["threads_ignored"] = True
-        info["threads_requested"] = int(threads)
-    # Gate objective on a solution-bearing status; for infeasibility
-    # certs OR-Tools may still populate objective_value with the
-    # certificate's residual.
-    objective_present = mapped_status in status.SOLUTION_PRESENT or (
-        mapped_status == status.OPTIMAL_INACCURATE
-    )
+    if translated:
+        info["settings_translated"] = translated
+    # For infeasibility certificates OR-Tools may still fill objective_value
+    # with the certificate's residual; only a solution's objective is reported.
     return SolverResult(
         status=mapped_status,
-        objective_value=float(response.objective_value) if objective_present else None,
+        objective_value=reported_objective(mapped_status, response.objective_value),
         iterations=_extract_iterations(solve_log),
         run_time_seconds=elapsed,
         info=info,
@@ -369,6 +375,7 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
     eps_rel = settings.pop("eps_rel", None)
     max_iter = settings.pop("max_iter", None)
     max_iter = settings.pop("iteration_limit", max_iter)
+    threads = pop_threads(settings)
 
     parameters = solvers_pb2.PrimalDualHybridGradientParams()
     _apply_pure_pdlp_defaults(parameters)
@@ -381,6 +388,10 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
         criteria.eps_optimal_relative = float(eps_rel)
     if max_iter is not None:
         parameters.termination_criteria.iteration_limit = int(max_iter)
+    if threads:
+        # PDLP parallelizes its matrix-vector products over num_threads
+        # (default 1); 0 keeps that default, as for the other adapters.
+        parameters.num_threads = int(threads)
     if parameters_text:
         text_format.Merge(str(parameters_text), parameters)
     return parameters
@@ -407,8 +418,8 @@ def _apply_pure_pdlp_defaults(parameters) -> None:
 
 
 def _qp_kkt(mapped_status, qp, x, y):
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None:
+    if mapped_status in status.ANY_FEASIBLE:
+        if not finite_point(x, y):
             return None
         return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
@@ -428,8 +439,8 @@ def _cone_kkt(mapped_status, cone_problem, x, y):
     p = cone_problem.get("P")
     if p is None:
         p = sp.csc_matrix((a.shape[1], a.shape[1]))
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None:
+    if mapped_status in status.ANY_FEASIBLE:
+        if not finite_point(x, y):
             return None
         s = b - a @ x
         return kkt.cone_residuals(p, c, a, b, cone, x, y, s)
