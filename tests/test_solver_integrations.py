@@ -19,6 +19,7 @@ OPEN_SOURCE_SOLVERS = {
         "max_iters": 1000,
     },
     "clarabel": {"verbose": False},
+    "cpo3": {"verbose": False},
     "osqp": {
         "verbose": False,
         "eps_abs": 1.0e-8,
@@ -46,6 +47,7 @@ OPEN_SOURCE_CONE_SOLVERS = {
         "max_iters": 1000,
     },
     "clarabel": {"verbose": False},
+    "cpo3": {"verbose": False},
 }
 
 if sys.version_info < (3, 14):

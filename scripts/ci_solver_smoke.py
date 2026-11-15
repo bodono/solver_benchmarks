@@ -13,6 +13,7 @@ from solver_benchmarks.core.runner import run_benchmark
 
 SETTINGS = {
     "clarabel": {"verbose": True},
+    "cpo3": {"verbose": True},
     "cvxopt": {
         "verbose": True,
         "abstol": 1.0e-9,

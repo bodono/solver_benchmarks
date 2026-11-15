@@ -127,21 +127,27 @@ qtqp_gpu_image = (
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
-# cpo3 (Rust/PyO3 interior-point solver): built inside the image with maturin from a
-# local checkout named by CPO3_REPO (default ~/git/cpo3). The image
-# and its runner exist only when that checkout is present, so nothing else depends on it.
-CPO3_REPO = Path(os.environ.get("CPO3_REPO", str(Path.home() / "git" / "cpo3")))
+# cpo3 (Rust/PyO3 interior-point solver). The released wheel is installed from
+# PyPI; set CPO3_REPO=/path/to/checkout to build it inside the image with
+# maturin from a local checkout instead. As for QTQP, nothing here may depend on
+# a local path that is not guaranteed to exist.
+CPO3_PIN = "cpo3>=0.0.1"
 CPO3_IGNORE = ["target", ".venv", ".git", "**/__pycache__", "benchmarks", "**/*.so"]
-cpo3_image = None
-if CPO3_REPO.is_dir():
-    cpo3_image = (
-        cpu_image
-        .apt_install("curl")
-        .run_commands("curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal", "pip install maturin")
-        .add_local_dir(str(CPO3_REPO), "/root/cpo3", ignore=CPO3_IGNORE, copy=True)
-        .run_commands("PATH=/root/.cargo/bin:$PATH pip install /root/cpo3",
-                      "python -c 'import cpo3; print(cpo3.Settings())'")
-    )
+
+
+def _with_cpo3(image: modal.Image) -> modal.Image:
+    local = os.environ.get("CPO3_REPO")
+    if local:
+        return (
+            image.apt_install("curl")
+            .run_commands("curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal", "pip install maturin")
+            .add_local_dir(local, "/root/cpo3", ignore=CPO3_IGNORE, copy=True)
+            .run_commands("PATH=/root/.cargo/bin:$PATH pip install /root/cpo3")
+        )
+    return image.pip_install(CPO3_PIN)
+
+
+cpo3_image = _with_cpo3(cpu_image).run_commands("python -c 'import cpo3; print(cpo3.Settings())'")
 
 VOLUMES = {"/data": data_vol, "/results": results_vol}
 
@@ -211,10 +217,9 @@ def run_shard_qtqp_gpu(campaign: str, name: str, config_yaml: str) -> dict:
     return _run(campaign, name, config_yaml)
 
 
-if cpo3_image is not None:
-    @app.function(image=cpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
-    def run_shard_cpo3_cpu(campaign: str, name: str, config_yaml: str) -> dict:
-        return _run(campaign, name, config_yaml)
+@app.function(image=cpo3_image, volumes=VOLUMES, cpu=4.0, memory=65536, timeout=20 * 3600, max_containers=8)
+def run_shard_cpo3_cpu(campaign: str, name: str, config_yaml: str) -> dict:
+    return _run(campaign, name, config_yaml)
 
 
 @app.function(image=cpu_image, cpu=2.0)
@@ -370,9 +375,7 @@ def main(
         if s["kind"] == "cpu" and (cpu_kind != "cpu" or s["name"] in big_set):
             s["kind"] = "cpu_big" if s["name"] in big_set else cpu_kind
     runners = {"cpu": run_shard_cpu, "cpu_big": run_shard_cpu_big, "pdlp": run_shard_pdlp, "gpu": run_shard_gpu, "cuopt": run_shard_cuopt,
-               "qtqp_cpu": run_shard_qtqp_cpu, "qtqp_gpu": run_shard_qtqp_gpu}
-    if cpo3_image is not None:
-        runners["cpo3_cpu"] = run_shard_cpo3_cpu
+               "qtqp_cpu": run_shard_qtqp_cpu, "qtqp_gpu": run_shard_qtqp_gpu, "cpo3_cpu": run_shard_cpo3_cpu}
     pending = deque(shards)
     running: dict = {}  # call -> (shard, start)
     spent = 0.0
