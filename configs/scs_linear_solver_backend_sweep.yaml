@@ -18,6 +18,10 @@ run:
       dataset_options:
         max_size_mb: 1.0
 
+# Both arms use backends bundled in every SCS wheel. The platform-specific
+# backends can be added as further arms where the installed wheel has them:
+# linear_solver: mkl (x86-64 Linux and Windows wheels) or accelerate (macOS
+# wheels); elsewhere every solve of such an arm fails as worker_error.
 solvers:
   - id: scs_qdldl
     solver: scs
@@ -27,10 +31,10 @@ solvers:
       max_iters: 100000
       linear_solver: qdldl
 
-  - id: scs_accelerate
+  - id: scs_indirect
     solver: scs
     settings:
       eps_abs: 1.0e-4
       eps_rel: 1.0e-4
       max_iters: 100000
-      linear_solver: accelerate
+      linear_solver: cpu_indirect

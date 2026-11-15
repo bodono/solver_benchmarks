@@ -1,3 +1,7 @@
+# EXPERIMENTAL: needs an unreleased SCS build that accepts adaptive_alpha,
+# adaptive_diag_scale values above 1, den_floor_frac and num_l2_passes. With
+# only the released solvers from the package extras, the solves that need them
+# fail as worker_error. See configs/README.md.
 run:
   output_dir: results
   parallelism: 8

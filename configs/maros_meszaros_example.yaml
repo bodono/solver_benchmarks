@@ -9,15 +9,16 @@ run:
   timeout_seconds: 300
 
 solvers:
-  - id: qtqp_qdldl
+  # QTQP's default backend: MKL Pardiso on x86-64 Linux and Windows, Apple
+  # Accelerate on arm64 macOS (both installed by the qtqp extra there).
+  - id: qtqp_default
     solver: qtqp
-    settings:
-      linear_solver: qdldl
 
-  - id: qtqp_accelerate
+  # SciPy's sparse LU, installed with QTQP on every platform.
+  - id: qtqp_scipy
     solver: qtqp
     settings:
-      linear_solver: accelerate
+      linear_solver: scipy
 
   - id: scs_default
     solver: scs

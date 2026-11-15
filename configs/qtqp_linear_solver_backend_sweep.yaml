@@ -14,13 +14,19 @@ run:
         max_size_mb: 5.0
     - name: maros_meszaros
 
+# Both arms run with what the qtqp extra installs. To compare another backend,
+# install its package and add an arm: qdldl (pip install qdldl), cholmod
+# (scikit-sparse), or name the platform backend explicitly (pardiso on x86-64
+# Linux and Windows, accelerate on arm64 macOS); a backend whose module is
+# missing fails every solve as worker_error.
 solvers:
-  - id: qtqp_qdldl
+  # QTQP's default backend: MKL Pardiso on x86-64 Linux and Windows, Apple
+  # Accelerate on arm64 macOS.
+  - id: qtqp_default
     solver: qtqp
-    settings:
-      linear_solver: qdldl
 
-  - id: qtqp_accelerate
+  # SciPy's sparse LU, installed with QTQP on every platform.
+  - id: qtqp_scipy
     solver: qtqp
     settings:
-      linear_solver: accelerate
+      linear_solver: scipy

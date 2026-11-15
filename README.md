@@ -756,13 +756,19 @@ Bundled benchmark configs:
 |---|---|
 | `configs/synthetic_smoke.json` | Tiny one-problem smoke run. |
 | `configs/netlib_feasible_example.yaml` | NETLIB feasible subset example. |
-| `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example. |
+| `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example: QTQP with its default backend and with `linear_solver: scipy`, SCS, and Clarabel. |
 | `configs/maros_meszaros_qp_solvers.yaml` | Maros-Meszaros QP run comparing OSQP, SCS, Clarabel, QTQP, and cpo3. |
 | `configs/multi_dataset_example.yaml` | Example of one run spanning several datasets. |
 | `configs/scs_anderson_sweep.yaml` | SCS Anderson acceleration sweep over NETLIB feasible, MIPLIB instances up to 5 MB, Maros-Meszaros, and SDPLIB instances up to 1 MB. Includes `scs_aa_disabled` with `acceleration_lookback: 0`, plus the cross-product `acceleration_lookback: [5, 10, 20]` and `acceleration_interval: [1, 5, 10]`. |
-| `configs/qtqp_refinement_regularization_sweep.yaml` | QTQP sweep over NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Uses `linear_solver: qdldl` and sweeps `max_iterative_refinement_steps: [1, 3, 5, 10, 20]` by `min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]`. |
-| `configs/scs_linear_solver_backend_sweep.yaml` | SCS comparison of `linear_solver: qdldl` versus `linear_solver: accelerate` on the same datasets as the Anderson sweep. |
-| `configs/qtqp_linear_solver_backend_sweep.yaml` | QTQP comparison of `linear_solver: qdldl` versus `linear_solver: accelerate` on NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. |
+| `configs/qtqp_refinement_regularization_sweep.yaml` | QTQP sweep over NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Uses QTQP's default backend (MKL Pardiso on x86-64 Linux and Windows, Apple Accelerate on arm64 macOS) and sweeps `max_iterative_refinement_steps: [1, 3, 5, 10, 20]` by `min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]`. |
+| `configs/scs_linear_solver_backend_sweep.yaml` | SCS comparison of `linear_solver: qdldl` versus `linear_solver: cpu_indirect` (both bundled in every SCS wheel) on the same datasets as the Anderson sweep. `mkl` (x86-64 Linux and Windows wheels) and `accelerate` (macOS wheels) can be added as arms where the installed wheel has them. |
+| `configs/qtqp_linear_solver_backend_sweep.yaml` | QTQP comparison of its default backend (MKL Pardiso on x86-64 Linux and Windows, Apple Accelerate on arm64 macOS) versus `linear_solver: scipy` on NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Other backends such as `qdldl` need their own package (`pip install qdldl`); the `qtqp` extra does not install them. |
+
+These run with the released solvers that `pip install -e ".[all]"` installs. Most
+other files in `configs/` are research sweeps that need development builds of SCS
+or QTQP. Each of those starts with an `# EXPERIMENTAL:` header that names what it
+needs, and with the released packages their solves fail as `worker_error`. See
+[`configs/README.md`](configs/README.md).
 
 The command prints the run directory:
 
