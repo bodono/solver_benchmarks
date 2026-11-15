@@ -806,6 +806,98 @@ def test_cvxopt_keeps_infeasibility_claims_after_the_starting_point(tmp_path):
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.iterations > 0
     assert "conelp_discarded_claim" not in result.info
+    # coneqp, which cannot certify infeasibility, did not solve it either.
+    assert result.info["coneqp_cross_check"]["status"] not in {
+        status.OPTIMAL,
+        status.OPTIMAL_INACCURATE,
+    }
+
+
+def _false_claim_after_iteration_0(monkeypatch):
+    """Make conelp claim dual infeasibility at iteration 3 on any problem, as
+    it does on badly scaled feasible NETLIB LPs (scagr25, gfrd-pnc, nesm)."""
+    import cvxopt.solvers as cs
+
+    real_conelp = cs.conelp
+
+    def conelp(*args, **kwargs):
+        raw = dict(real_conelp(*args, **kwargs))
+        raw.update({"status": "dual infeasible", "iterations": 3})
+        return raw
+
+    monkeypatch.setattr(cs, "conelp", conelp)
+    return cs
+
+
+def test_cvxopt_overturns_a_later_claim_when_coneqp_solves_the_problem(monkeypatch, tmp_path):
+    pytest.importorskip("cvxopt")
+    _false_claim_after_iteration_0(monkeypatch)
+    lp = {"P": None, "A": sp.csc_matrix([[-1.0], [1.0]]), "b": np.array([0.0, 1.0]),
+          "q": np.array([-1.0]), "r": 0.0, "cone": {"l": 2}}
+    result = _solve("cvxopt", CONE, lp, {}, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(-1.0, abs=1e-6)
+    assert result.info["entry_point"] == "coneqp"
+    assert result.info["conelp_discarded_claim"] == {"status": "dual infeasible", "iterations": 3}
+    assert result.info["coneqp_cross_check"]["status"] == status.OPTIMAL
+
+
+def test_cvxopt_keeps_a_later_claim_when_coneqp_fails(monkeypatch, tmp_path):
+    pytest.importorskip("cvxopt")
+    cs = _false_claim_after_iteration_0(monkeypatch)
+
+    def coneqp(*args, **kwargs):
+        raise ArithmeticError("domain error")
+
+    monkeypatch.setattr(cs, "coneqp", coneqp)
+    lp = {"P": None, "A": sp.csc_matrix([[-1.0], [1.0]]), "b": np.array([0.0, 1.0]),
+          "q": np.array([-1.0]), "r": 0.0, "cone": {"l": 2}}
+    result = _solve("cvxopt", CONE, lp, {}, tmp_path)
+    assert result.status == status.DUAL_INFEASIBLE
+    assert result.info["entry_point"] == "conelp"
+    assert "conelp_discarded_claim" not in result.info
+    assert result.info["coneqp_cross_check"]["status"] == status.SOLVER_ERROR
+
+
+@pytest.mark.parametrize("settings, expected", [({}, "chol"), ({"kktsolver": "qr"}, "qr")])
+def test_cvxopt_conelp_uses_the_sparse_kkt_solver_for_soc_and_psd(settings, expected, tmp_path):
+    """conelp defaults to the dense 'qr' KKT solver on SOC / PSD cones (an
+    error after 490 s on DIMACS sched_50_50_scaled, 80 s with 'chol'); the
+    adapter passes coneqp's 'chol' unless kktsolver is set."""
+    pytest.importorskip("cvxopt")
+    import cvxopt.solvers as cs
+
+    seen = []
+    real_conelp = cs.conelp
+
+    def conelp(*args, **kwargs):
+        seen.append(kwargs.get("kktsolver"))
+        return real_conelp(*args, **kwargs)
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(cs, "conelp", conelp):
+        # min t s.t. ||(1, 1)|| <= t  ->  t = sqrt(2)
+        soc = {"P": None, "A": sp.csc_matrix([[-1.0], [0.0], [0.0]]), "b": np.array([0.0, 1.0, 1.0]),
+               "q": np.array([1.0]), "r": 0.0, "cone": {"q": [3]}}
+        result = _solve("cvxopt", CONE, soc, settings, tmp_path)
+    assert seen == [expected]
+    assert result.info["kktsolver"] == expected
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(np.sqrt(2.0), abs=1e-6)
+
+
+def test_ecos_adapter_imports_its_linear_algebra_at_module_load():
+    """The runner starts a fresh worker per solve, so a first-use import
+    inside the timed QP reformulation was charged to every ECOS solve
+    (0.15 s on HS53, more than the solve)."""
+    import subprocess
+    import sys
+
+    code = ("import sys; import solver_benchmarks.solvers.ecos_adapter; "
+            "print('scipy.linalg' in sys.modules and 'scipy.sparse.csgraph' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "True"
 
 
 def test_cvxopt_quadratic_objective_still_uses_coneqp(tmp_path):

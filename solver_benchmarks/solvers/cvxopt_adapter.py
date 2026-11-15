@@ -16,14 +16,19 @@ divides a residual by minus the current objective, so at the starting point
 with ``1 / feastol``: NETLIB agg, agg2, agg3 and grow7 (optima of 1e7 to
 5e7 in magnitude) were "dual infeasible" at iteration 0. Such a claim is
 not evidence, so the adapter discards it and solves the problem with
-``coneqp`` (recorded in ``info["conelp_discarded_claim"]``; the time of
-both calls is reported). Later claims are kept; CVXOPT can still certify
-infeasibility falsely on badly scaled problems (NETLIB scagr25 at iteration
-4, nesm at 17), and those rows count as failures. For SOC / PSD cones
-``conelp`` defaults to the ``qr`` KKT solver where ``coneqp`` used
-``chol``: up to about 2x slower on SDPLIB, and no more robust overall
-(better on control / truss, worse on several hinf and qap problems);
-``kktsolver: chol`` selects the latter.
+``coneqp``. A later claim can be false too on a badly scaled feasible
+problem (NETLIB scagr25 at iteration 4, gfrd-pnc at 1, nesm at 17), and
+its scaled residual can pass the certificate check, so the adapter also
+solves such a problem with ``coneqp``, which cannot certify infeasibility:
+the claim stands unless ``coneqp`` finds a solution, in which case that
+solution is reported. Either way ``info["conelp_discarded_claim"]`` and
+``info["coneqp_cross_check"]`` say what happened, and the time of both
+calls is reported, so a genuinely infeasible problem costs two solves.
+NETLIB shell stays a false claim (``coneqp`` fails on it, as before). For SOC
+/ PSD cones ``conelp`` would default to the dense ``qr`` KKT solver; the
+adapter passes the sparse ``chol`` that ``coneqp`` uses (``qr`` took DIMACS
+sched_50_50_scaled from 80 s to an error after 490 s) unless ``kktsolver``
+is set.
 
 Problems with a quadratic objective go through ``cvxopt.solvers.coneqp``
 (the same form plus ``(1/2) x' P x``), which only ever reports ``optimal``
@@ -146,6 +151,11 @@ class CVXOPTSolverAdapter(SolverAdapter):
             kkt_dim = int(data["P"].size[0]) + int(data["A"].size[0])
             if kkt_dim <= CVXOPT_DENSE_LDL_MAX_DIM:
                 kktsolver = "ldl"
+        if kktsolver is None and entry_point == "conelp" and (dims["q"] or dims["s"]):
+            # conelp would default to the dense 'qr' KKT solver for SOC / PSD
+            # cones; keep the sparse 'chol' coneqp used (DIMACS
+            # sched_50_50_scaled: 80 s with chol, an error after 490 s with qr).
+            kktsolver = "chol"
 
         def call(entry: str, kkt) -> dict:
             if entry == "conelp":
@@ -175,6 +185,7 @@ class CVXOPTSolverAdapter(SolverAdapter):
         raw: dict = {}
         solver_error: str | None = None
         discarded_claim: dict | None = None
+        cross_check: dict | None = None
         with _cvxopt_options(cs, options, verbose=verbose):
             max_iters = int(cs.options.get("maxiters", 100))
             feastol = float(cs.options.get("feastol", 1e-7))
@@ -187,18 +198,34 @@ class CVXOPTSolverAdapter(SolverAdapter):
             # other adapters handle native solver crashes.
             try:
                 raw = call(entry_point, kktsolver)
-                if entry_point == "conelp" and _is_starting_point_claim(raw):
-                    # conelp's infeasibility test at iteration 0 only says
-                    # the least-squares starting point has an objective
-                    # beyond 1/feastol in magnitude; solve with coneqp
-                    # (which has no 'qr' KKT solver).
-                    discarded_claim = {
+                if entry_point == "conelp" and _is_infeasibility_claim(raw):
+                    claim = {
                         "status": raw.get("status"),
                         "iterations": _maybe_int(raw.get("iterations")),
                     }
-                    entry_point = "coneqp"
-                    raw = {}
-                    raw = call(entry_point, None if kktsolver == "qr" else kktsolver)
+                    coneqp_kkt = None if kktsolver == "qr" else kktsolver
+                    if claim["iterations"] == 0:
+                        # conelp's infeasibility test at iteration 0 only says
+                        # the least-squares starting point has an objective
+                        # beyond 1/feastol in magnitude: not evidence. Solve
+                        # with coneqp (which has no 'qr' KKT solver).
+                        discarded_claim = claim
+                        entry_point = "coneqp"
+                        raw = {}
+                        raw = call(entry_point, coneqp_kkt)
+                    else:
+                        # A later claim can still be false on a badly scaled
+                        # feasible problem (NETLIB scagr25, gfrd-pnc, nesm),
+                        # and its scaled residual can pass the certificate
+                        # check. Keep it unless coneqp solves the problem.
+                        check, check_status = _coneqp_cross_check(
+                            call, coneqp_kkt, max_iters=max_iters, feastol=feastol
+                        )
+                        cross_check = {"status": check_status, "raw_status": check.get("status")}
+                        if check_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+                            discarded_claim = claim
+                            entry_point = "coneqp"
+                            raw = check
             except (ArithmeticError, ValueError) as exc:
                 solver_error = f"cvxopt.{entry_point} raised {type(exc).__name__}: {exc}"
             elapsed = time.perf_counter() - start
@@ -208,6 +235,8 @@ class CVXOPTSolverAdapter(SolverAdapter):
         info["entry_point"] = entry_point
         if discarded_claim is not None:
             info["conelp_discarded_claim"] = discarded_claim
+        if cross_check is not None:
+            info["coneqp_cross_check"] = cross_check
         if kktsolver is not None:
             info["kktsolver"] = kktsolver if isinstance(kktsolver, str) else repr(kktsolver)
         if translated:
@@ -258,18 +287,24 @@ class CVXOPTSolverAdapter(SolverAdapter):
         )
 
 
-def _is_starting_point_claim(raw: dict) -> bool:
-    """Whether ``conelp`` claimed infeasibility at its starting point.
+def _is_infeasibility_claim(raw: dict) -> bool:
+    """Whether ``conelp`` claimed primal or dual infeasibility."""
+    return str(raw.get("status", "")) in {"primal infeasible", "dual infeasible"}
 
-    At iteration 0 the certificate residual is about ``1 / |objective|`` of
-    the least-squares starting point (``max(|Ax|/|b|, |Gx + s|/|h|) / -q'x``
-    with ``Ax = b``), so the claim reflects the objective's scale, not the
-    problem's feasibility.
+
+def _coneqp_cross_check(call, kktsolver, *, max_iters: int, feastol: float) -> tuple[dict, str]:
+    """Solve with ``coneqp`` to test a later ``conelp`` infeasibility claim.
+
+    ``coneqp`` cannot certify infeasibility, so on a genuinely infeasible
+    problem it stops without a solution (or raises); only a solution it
+    finds overturns the claim. Its failures are returned as a status, never
+    raised, so the claim stands when the check cannot be made.
     """
-    return (
-        str(raw.get("status", "")) in {"primal infeasible", "dual infeasible"}
-        and _maybe_int(raw.get("iterations")) == 0
-    )
+    try:
+        check = call("coneqp", kktsolver)
+    except (ArithmeticError, ValueError):
+        return {}, status.SOLVER_ERROR
+    return check, _map_cvxopt_status(check, max_iters=max_iters, feastol=feastol)
 
 
 def _has_nonzeros(matrix) -> bool:

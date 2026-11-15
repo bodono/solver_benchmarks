@@ -58,7 +58,13 @@ import time
 from pathlib import Path
 
 import numpy as np
+import scipy.linalg as la
 import scipy.sparse as sp
+
+# Imported here, not in the timed reformulation: the runner starts a fresh
+# worker per solve, so a first-use import there would be charged to every
+# ECOS solve (about 0.15 s, more than the solve on small QPs).
+from scipy.sparse.csgraph import connected_components
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
@@ -394,8 +400,6 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
     n_rows = int(keep.size)
 
     if coupled.size:
-        from scipy.sparse.csgraph import connected_components
-
         coupling = off_diagonal[coupled][:, coupled]
         n_components, labels = connected_components(coupling, directed=False)
         sizes = np.bincount(labels, minlength=n_components)
@@ -453,8 +457,6 @@ def _dense_psd_square_root(p_sym: np.ndarray, *, scale: float = 0.0) -> np.ndarr
     that cut-off is negative curvature. ``scale`` lets a block of a larger
     ``P`` use the curvature scale of the whole matrix.
     """
-    import scipy.linalg as la
-
     try:
         return la.cholesky(p_sym, lower=False)
     except (np.linalg.LinAlgError, ValueError):
