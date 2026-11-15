@@ -108,7 +108,7 @@ Current maintained adapters:
 |---|---|---|---|
 | Maros-Meszaros | `maros_meszaros` | QP | Loads `.mat` QP files. |
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
-| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset (16 instances). Bundled in the repo as decoded MPS — NETLIB hosts these in EMPS (compressed-MPS) format which our `qpsreader` cannot parse, so the prepare path copies from the bundled checkout instead of fetching from the network. |
+| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset (16 instances). Bundled in the repo as decoded MPS — NETLIB hosts these in EMPS (compressed-MPS) format, which HiGHS cannot read, so the prepare path copies from the bundled checkout instead of fetching from the network (the EMPS decoder in `transforms/emps.py`, used for Mittelmann's EMPS files, would also decode the NETLIB originals). |
 | Liu-Pataki | `liu_pataki` | Cone/SDP | Bundled infeasible and weakly infeasible SeDuMi `.mat` SDP instances; converted to canonical PSD triangle cones. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only; downloads official MIPLIB 2017 benchmark `.mps.gz` files on request. |
 | QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. A download is parsed before it is cached, and only a transport failure (not an HTTP error such as a 404) is retried over plain HTTP. |
@@ -137,6 +137,15 @@ in the file's objective is part of the recorded objective (of the bundled
 files only NETLIB `e226` has one, 7.113: its recorded optimum is -11.6389,
 where the Netlib table lists -18.7519 without the constant). The sense the
 file states is recorded in the problem's metadata as `original_obj_type`.
+
+An MPS file read by these datasets may also carry a quadratic objective
+(`QUADOBJ`, `QMATRIX` or `QSECTION`, in a file named `.mps`); HiGHS reads it
+and it becomes the problem's `P` (none of the bundled files has one). A column
+whose only bound is an `UP` bound below zero is taken as free below, as CPLEX,
+Gurobi and lp_solve read it, with a warning; HiGHS alone keeps the default
+lower bound 0, which makes the problem infeasible. A lower bound the file
+states is kept. Compressed files are decompressed in pieces to a temporary
+file for HiGHS, never whole in memory.
 
 Check local dataset availability:
 
