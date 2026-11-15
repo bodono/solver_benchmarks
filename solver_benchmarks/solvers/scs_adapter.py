@@ -89,6 +89,7 @@ class SCSSolverAdapter(SolverAdapter):
         time_limit = pop_time_limit(settings)
         if time_limit is not None:
             settings["time_limit_secs"] = float(time_limit)
+        translated = translate_settings(settings)
         threads = pop_threads(settings)
         threads_ignored = False
         if threads is not None:
@@ -128,15 +129,22 @@ class SCSSolverAdapter(SolverAdapter):
         info = dict(raw.get("info", {}))
         if threads_ignored:
             mark_threads_ignored(info, threads)
-        mapped = _map_scs_status(info)
+        if translated:
+            info["settings_translated"] = translated
+        mapped = _map_scs_status(
+            info,
+            max_iters=settings.get("max_iters"),
+            time_limit_secs=settings.get("time_limit_secs"),
+        )
+        info["raw_status"] = info.get("status")
         trace = _read_csv_trace(settings.get("log_csv_filename"))
         kkt_dict = _compute_kkt(problem, mapped, raw, cone, inv_perm)
-        # Gate objective_value on a solution-bearing status (including
-        # OPTIMAL_INACCURATE). For infeasibility-certificate statuses
-        # SCS still populates pobj, but reporting it as the objective
-        # value is misleading because it's the certificate's normalizer,
-        # not the optimal value.
-        objective_present = mapped in status.SOLUTION_PRESENT or mapped == status.OPTIMAL_INACCURATE
+        # The objective is reported only for a claimed solution. For an
+        # infeasibility certificate SCS's pobj is the certificate's
+        # normalizer, and for an iterate cut off by max_iters or
+        # time_limit_secs it is the value at an arbitrary point; the KKT
+        # record keeps that point's primal objective for kkt-verify.
+        objective_present = mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
         return SolverResult(
             status=mapped,
             objective_value=_maybe_float(info.get("pobj")) if objective_present else None,
@@ -158,7 +166,10 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
         return None
     if problem.kind == QP:
         qp = problem.qp
-        if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE} and y is not None:
+        # Every status that may carry a usable point (including the
+        # max_iters / time-limit iterates) gets solution residuals, so
+        # ``kkt-verify --promote`` treats SCS like every other solver.
+        if mapped_status in status.ANY_FEASIBLE and y is not None:
             y_qp = unbox_scs_dual(y, cone, inv_perm)
             return kkt.qp_residuals(
                 qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y_qp
@@ -175,7 +186,7 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
     p = cone_problem.get("P")
     if p is None:
         p = sp.csc_matrix((sp.csc_matrix(cone_problem["A"]).shape[1],) * 2)
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE} and y is not None and s is not None:
+    if mapped_status in status.ANY_FEASIBLE and y is not None and s is not None:
         return kkt.cone_residuals(
             p,
             cone_problem["q"],
@@ -197,31 +208,100 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
     return None
 
 
-def _map_scs_status(info: dict) -> str:
+# SCS 3.x returns its "inaccurate" codes only when it stops on max_iters or
+# time_limit_secs: it then reports whichever of solved / infeasible /
+# unbounded looks least bad and appends the limit to the status text, e.g.
+# "solved (inaccurate - reached max_iters)".
+_SCS_INACCURATE = {
+    2: status.OPTIMAL_INACCURATE,
+    -6: status.DUAL_INFEASIBLE_INACCURATE,
+    -7: status.PRIMAL_INFEASIBLE_INACCURATE,
+}
+
+
+def _map_scs_status(
+    info: dict,
+    *,
+    max_iters: int | None = None,
+    time_limit_secs: float | None = None,
+) -> str:
+    """Translate SCS's ``info`` to a canonical status.
+
+    A run cut off by ``max_iters`` or ``time_limit_secs`` maps to
+    ``MAX_ITER_REACHED`` / ``TIME_LIMIT`` like every other adapter, never
+    to ``optimal_inaccurate`` or an ``*_infeasible_inaccurate`` guess; the
+    solver's own text stays on ``info`` (the adapter copies it to
+    ``raw_status``). The limit is read from the status text and, when the
+    text does not name it, from the iteration count and solve time against
+    the configured limits.
+    """
     # Codes from scs/include/glbopts.h.
     status_val = info.get("status_val")
+    text = str(info.get("status", "")).lower()
+    if status_val in _SCS_INACCURATE or "inaccurate" in text:
+        limit = _scs_limit_status(info, text, max_iters, time_limit_secs)
+        if limit is not None:
+            return limit
     if status_val == 1:
         return status.OPTIMAL
-    if status_val == 2:
-        return status.OPTIMAL_INACCURATE
+    if status_val in _SCS_INACCURATE:
+        return _SCS_INACCURATE[status_val]
     if status_val == -1:
         return status.DUAL_INFEASIBLE
     if status_val == -2:
         return status.PRIMAL_INFEASIBLE
-    if status_val == -6:
-        return status.DUAL_INFEASIBLE_INACCURATE
-    if status_val == -7:
-        return status.PRIMAL_INFEASIBLE_INACCURATE
     if status_val in {-3, -4, -5}:
         return status.SOLVER_ERROR
-    text = str(info.get("status", "")).lower()
+    # No recognised code: read the text, keeping "(inaccurate)" inaccurate.
+    inaccurate = "inaccurate" in text
     if "solved" in text:
-        return status.OPTIMAL
+        return status.OPTIMAL_INACCURATE if inaccurate else status.OPTIMAL
     if "infeasible" in text:
-        return status.PRIMAL_INFEASIBLE
+        return status.PRIMAL_INFEASIBLE_INACCURATE if inaccurate else status.PRIMAL_INFEASIBLE
     if "unbounded" in text:
-        return status.DUAL_INFEASIBLE
+        return status.DUAL_INFEASIBLE_INACCURATE if inaccurate else status.DUAL_INFEASIBLE
     return status.SOLVER_ERROR
+
+
+def _scs_limit_status(info, text, max_iters, time_limit_secs) -> str | None:
+    if "reached max_iter" in text:
+        return status.MAX_ITER_REACHED
+    if "reached time_limit" in text:
+        return status.TIME_LIMIT
+    iterations = _maybe_int(info.get("iter"))
+    if max_iters is not None and iterations is not None and iterations >= int(max_iters):
+        return status.MAX_ITER_REACHED
+    solve_ms = info.get("solve_time")
+    if (
+        time_limit_secs is not None
+        and float(time_limit_secs) > 0
+        and solve_ms is not None
+        and float(solve_ms) / 1000.0 >= float(time_limit_secs)
+    ):
+        return status.TIME_LIMIT
+    return None
+
+
+def translate_settings(settings: dict) -> dict:
+    """Map the harness aliases onto SCS's names, in place.
+
+    ``max_iter`` becomes ``max_iters`` and ``eps`` supplies ``eps_abs`` and
+    ``eps_rel`` (SCS's own names). An explicit native value always wins,
+    and only settings actually inserted are reported. Any other unknown
+    name is left for SCS, which rejects it with a ``TypeError`` naming it.
+    """
+    translated: dict = {}
+    max_iter = settings.pop("max_iter", None)
+    if max_iter is not None and "max_iters" not in settings:
+        settings["max_iters"] = int(max_iter)
+        translated["max_iters"] = int(max_iter)
+    eps = settings.pop("eps", None)
+    if eps is not None:
+        for key in ("eps_abs", "eps_rel"):
+            if key not in settings:
+                settings[key] = float(eps)
+                translated[key] = float(eps)
+    return translated
 
 
 def _read_csv_trace(path) -> list[dict]:

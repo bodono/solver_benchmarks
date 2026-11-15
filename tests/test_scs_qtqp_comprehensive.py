@@ -163,9 +163,9 @@ def _make_qp_problem(data: dict) -> ProblemData:
         ("solved", status.OPTIMAL),
         ("Solved (high accuracy)", status.OPTIMAL),
         ("infeasible", status.PRIMAL_INFEASIBLE),
-        ("infeasible (inaccurate)", status.PRIMAL_INFEASIBLE),
+        ("infeasible (inaccurate)", status.PRIMAL_INFEASIBLE_INACCURATE),
         ("unbounded", status.DUAL_INFEASIBLE),
-        ("unbounded (inaccurate)", status.DUAL_INFEASIBLE),
+        ("unbounded (inaccurate)", status.DUAL_INFEASIBLE_INACCURATE),
     ],
 )
 def test_scs_status_text_fallback_when_status_val_missing(status_text, expected):

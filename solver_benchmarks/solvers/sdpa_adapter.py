@@ -1,4 +1,35 @@
-"""SDPA adapter via sdpa-python."""
+"""SDPA adapter via sdpa-python.
+
+Settings are sdpa-python's own parameters (``maxIteration``, ``epsilonStar``,
+``epsilonDash``, ``lowerBound``, ``upperBound``, ``numThreads``, ...) plus the
+adapter's ``optimality_tolerance``, ``result_file`` and ``print``. The harness
+aliases are translated: ``max_iter`` -> ``maxIteration``, ``eps_abs`` ->
+``epsilonStar``, ``eps_rel`` -> ``epsilonDash`` (``eps`` supplies both) and
+``threads`` -> ``numThreads``. Any other name raises ``ValueError``:
+sdpa-python silently ignores names it does not know. SDPA has no time limit;
+one is recorded as ignored.
+
+Defaults that differ from sdpa-python's:
+
+* ``lowerBound`` / ``upperBound`` are -1e30 / 1e30 instead of -1e5 / 1e5.
+  SDPA stops with ``pUNBD`` / ``dUNBD`` as soon as an objective crosses
+  them, so with the library defaults any feasible problem whose optimum is
+  beyond about 1e5 in magnitude (SDPLIB qpG51, DIMACS torusg3-15) was
+  reported as unbounded or infeasible. Genuinely infeasible or unbounded
+  problems are still detected (``pINF_dFEAS`` / ``pFEAS_dINF``).
+* ``numThreads`` is 1 unless ``threads`` (or ``numThreads``) is given;
+  sdpa-python otherwise uses every core, which oversubscribes parallel runs
+  and makes its timings incomparable with single-threaded solvers.
+
+Status: ``pdOPT`` / ``pdFEAS`` are ``optimal`` when sdpa-python's primal and
+dual errors and relative duality gap are within ``optimality_tolerance``
+(default ``max(1e-6, epsilonStar, epsilonDash)``) and ``optimal_inaccurate``
+otherwise. sdpa-python reports a primal or dual error of ``None`` when its
+eigenvalue computation does not converge (common for PSD blocks of order 40
+and up); that error is then unknown and left out, not treated as a failure.
+A run that stops at ``maxIteration`` without SDPA declaring a solution or a
+certificate is ``max_iter_reached``.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +48,6 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
-    mark_threads_ignored,
     mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
@@ -57,9 +87,11 @@ class SDPASolverAdapter(SolverAdapter):
             return SolverResult(status=status.SKIPPED_UNSUPPORTED, info={"reason": str(exc)})
 
         settings = settings_with_defaults(self.settings)
-        optimality_tolerance = float(settings.pop("optimality_tolerance", 1.0e-6))
+        optimality_tolerance = settings.pop("optimality_tolerance", None)
         ignore_markers: dict = {}
         option = _sdpa_options(settings, artifacts_dir, info=ignore_markers)
+        if optimality_tolerance is None:
+            optimality_tolerance = _default_optimality_tolerance(option)
         start = time.perf_counter()
         result = sdpap.solve(prepared.a, prepared.b, prepared.c, prepared.k, prepared.j, option)
         elapsed = time.perf_counter() - start
@@ -73,28 +105,19 @@ class SDPASolverAdapter(SolverAdapter):
         x = _dense(x_raw)
         y_sdpap = _dense(y_raw)
         y = prepared.dual_to_original(y_sdpap)
-        mapped = _map_sdpa_status(sdpap_info, sdpa_info, option, optimality_tolerance)
-        slack = np.asarray(cone_problem["b"], dtype=float) - sp.csc_matrix(cone_problem["A"]) @ x
-        kkt_dict = None
-        if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-            p_mat = sp.csc_matrix((sp.csc_matrix(cone_problem["A"]).shape[1],) * 2)
-            kkt_dict = kkt.cone_residuals(
-                p_mat,
-                cone_problem["q"],
-                cone_problem["A"],
-                cone_problem["b"],
-                cone_problem["cone"],
-                x,
-                y,
-                slack,
-            )
+        mapped = _map_sdpa_status(sdpap_info, sdpa_info, option, float(optimality_tolerance))
+        kkt_dict = _compute_kkt(cone_problem, mapped, x, y)
+        objective_present = mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(sdpap_info.get("primalObj")),
+            objective_value=(
+                _maybe_float(sdpap_info.get("primalObj")) if objective_present else None
+            ),
             iterations=_maybe_int(sdpa_info.get("iteration")),
             run_time_seconds=elapsed,
             solve_time_seconds=_maybe_float(time_info.get("sdpa")),
             info={
+                "raw_status": sdpap_info.get("phasevalue"),
                 "phasevalue": sdpap_info.get("phasevalue"),
                 "primalObj": sdpap_info.get("primalObj"),
                 "dualObj": sdpap_info.get("dualObj"),
@@ -103,10 +126,33 @@ class SDPASolverAdapter(SolverAdapter):
                 "dualError": sdpap_info.get("dualError"),
                 "time": time_info,
                 "sdpa": sdpa_info,
+                "optimality_tolerance": float(optimality_tolerance),
+                "numThreads": option.get("numThreads"),
+                "lowerBound": option.get("lowerBound"),
+                "upperBound": option.get("upperBound"),
                 **ignore_markers,
             },
             kkt=kkt_dict,
         )
+
+
+def _compute_kkt(cone_problem: dict, mapped: str, x: np.ndarray, y: np.ndarray):
+    """Solution residuals for every status that may carry a point
+    (max-iter iterates included, so kkt-verify --promote treats SDPA like
+    every other solver); certificate checks for infeasibility statuses."""
+    a = sp.csc_matrix(cone_problem["A"])
+    b = np.asarray(cone_problem["b"], dtype=float)
+    cone = cone_problem["cone"]
+    p_mat = sp.csc_matrix((a.shape[1], a.shape[1]))
+    if mapped in status.ANY_FEASIBLE:
+        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+            return None
+        return kkt.cone_residuals(p_mat, cone_problem["q"], a, b, cone, x, y, b - a @ x)
+    if mapped in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        return kkt.cone_primal_infeasibility_cert(a, b, cone, y)
+    if mapped in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        return kkt.cone_dual_infeasibility_cert(p_mat, cone_problem["q"], a, cone, x)
+    return None
 
 
 @dataclass
@@ -254,6 +300,61 @@ def _psd_triangle_to_full(dim: int) -> sp.csc_matrix:
     return sp.csc_matrix((data, (rows, cols)), shape=(dim * dim, dim * (dim + 1) // 2))
 
 
+# sdpa-python's parameter names (sdpap.param). Anything else is ignored by
+# the library, so the adapter rejects it.
+_SDPAP_PARAMETERS = frozenset(
+    {
+        "maxIteration",
+        "epsilonStar",
+        "lambdaStar",
+        "omegaStar",
+        "lowerBound",
+        "upperBound",
+        "betaStar",
+        "betaBar",
+        "gammaStar",
+        "epsilonDash",
+        "mpfPrecision",
+        "isSymmetric",
+        "isDimacs",
+        "xPrint",
+        "yPrint",
+        "sPrint",
+        "infPrint",
+        "print",
+        "resultFile",
+        "sdpaResult",
+        "numThreads",
+        "frvMethod",
+        "convMethod",
+        "domainMethod",
+        "rangeMethod",
+        "rho",
+        "zeroPoint",
+    }
+)
+# sdpa-python resets a float parameter given as an int to its default (with a
+# printed warning), so these are coerced.
+_SDPAP_FLOATS = (
+    "epsilonStar",
+    "epsilonDash",
+    "lambdaStar",
+    "omegaStar",
+    "lowerBound",
+    "upperBound",
+    "betaStar",
+    "betaBar",
+    "gammaStar",
+    "rho",
+    "zeroPoint",
+)
+_SDPAP_INTS = ("maxIteration", "numThreads", "mpfPrecision")
+# Wide enough that SDPA's objective-bound stop (pUNBD / dUNBD) never fires
+# on a feasible, bounded problem; sdpa-python's defaults are -1e5 / 1e5.
+SDPA_LOWER_BOUND = -1.0e30
+SDPA_UPPER_BOUND = 1.0e30
+
+
 def _sdpa_options(
     settings: dict,
     artifacts_dir: Path,
@@ -262,52 +363,105 @@ def _sdpa_options(
 ) -> dict:
     """Translate adapter settings into the dict consumed by sdpap.solve.
 
-    The optional ``info`` dict gets ``time_limit_ignored`` /
-    ``threads_ignored`` markers when the user requested them — SDPA
-    does not expose either knob.
+    The optional ``info`` dict gets a ``time_limit_ignored`` marker when a
+    time limit was requested (SDPA has none) and ``settings_translated``
+    for the aliases that supplied a parameter.
     """
+    settings = dict(settings)
     options: dict = {}
+    translated: dict = {}
     verbose = bool(settings.pop("verbose", False))
     options["print"] = settings.pop("print", "display" if verbose else "no")
     if settings.pop("result_file", False):
         options["resultFile"] = str(artifacts_dir / "sdpa_result.txt")
-    if "max_iter" in settings:
-        options["maxIteration"] = int(settings.pop("max_iter"))
-    if "maxIteration" in settings:
-        options["maxIteration"] = int(settings.pop("maxIteration"))
-    if "eps_abs" in settings:
-        options["epsilonStar"] = float(settings.pop("eps_abs"))
-    if "eps_rel" in settings:
-        options["epsilonDash"] = float(settings.pop("eps_rel"))
     time_limit = pop_time_limit(settings)
     threads = pop_threads(settings)
+    max_iter = settings.pop("max_iter", None)
+    eps = settings.pop("eps", None)
+    eps_abs = settings.pop("eps_abs", eps)
+    eps_rel = settings.pop("eps_rel", eps)
+    unknown = sorted(str(key) for key in settings if key not in _SDPAP_PARAMETERS)
+    if unknown:
+        raise ValueError(
+            f"Unrecognized SDPA settings {unknown!r}; expected sdpa-python parameters "
+            f"{sorted(_SDPAP_PARAMETERS)!r}, optimality_tolerance, result_file, or the "
+            "aliases max_iter, eps, eps_abs, eps_rel, threads, time_limit"
+        )
+    options.update(settings)
+
+    def put(key: str, value) -> None:
+        if value is not None and key not in options:
+            options[key] = value
+            translated[key] = value
+
+    put("maxIteration", max_iter)
+    put("epsilonStar", eps_abs)
+    put("epsilonDash", eps_rel)
+    if threads is not None and threads >= 1:
+        put("numThreads", threads)
+    options.setdefault("numThreads", 1)
+    options.setdefault("lowerBound", SDPA_LOWER_BOUND)
+    options.setdefault("upperBound", SDPA_UPPER_BOUND)
+    for key in _SDPAP_FLOATS:
+        if key in options:
+            options[key] = float(options[key])
+    for key in _SDPAP_INTS:
+        if key in options:
+            options[key] = int(options[key])
+    for key in translated:
+        translated[key] = options[key]
     if info is not None:
         mark_time_limit_ignored(info, time_limit)
-        mark_threads_ignored(info, threads)
-    options.update(settings)
+        if translated:
+            info["settings_translated"] = translated
     return options
+
+
+def _default_optimality_tolerance(options: dict) -> float:
+    """The accuracy SDPA was asked for, but never tighter than 1e-6."""
+    requested = [
+        float(options[key]) for key in ("epsilonStar", "epsilonDash") if key in options
+    ]
+    return max([1.0e-6, *requested])
 
 
 def _map_sdpa_status(sdpap_info, sdpa_info, options: dict, tol: float) -> str:
     phase = str(sdpap_info.get("phasevalue", sdpa_info.get("phasevalue", "")))
-    primal_error = _safe_float(sdpap_info.get("primalError"))
-    dual_error = _safe_float(sdpap_info.get("dualError"))
-    gap = abs(_safe_float(sdpap_info.get("dualityGap")))
+    iterations = _maybe_int(sdpa_info.get("iteration"))
+    at_iteration_cap = iterations is not None and iterations >= int(
+        options.get("maxIteration", 100)
+    )
     if phase in {"pdOPT", "pdFEAS"}:
-        if max(primal_error, dual_error, gap) <= tol:
+        if phase == "pdFEAS" and at_iteration_cap:
+            # Feasible but not converged when the iteration cap hit.
+            return status.MAX_ITER_REACHED
+        # sdpa-python reports None for an error it could not compute (its
+        # ARPACK eigenvalue call failed to converge): unknown, so left out.
+        measures = [
+            abs(float(value))
+            for value in (
+                sdpap_info.get("primalError"),
+                sdpap_info.get("dualError"),
+                sdpap_info.get("dualityGap"),
+            )
+            if value is not None
+        ]
+        if all(np.isfinite(value) and value <= tol for value in measures):
             return status.OPTIMAL
         return status.OPTIMAL_INACCURATE
     # CLP-form (sdpapinfo) phasevalue convention. By LP duality, primal unbounded
     # (pUNBD) implies dual infeasible, and dual unbounded (dUNBD) implies primal
     # infeasible. sdpap.py flips SDPA's internal labels into this CLP convention
-    # (see GET_PRIMAL_STATUS_FROM_DUAL in the sdpap source).
+    # (see GET_PRIMAL_STATUS_FROM_DUAL in the sdpap source). pUNBD / dUNBD come
+    # from SDPA's objective bounds; with the adapter's default bounds they only
+    # fire beyond 1e30, and the certificate check is recorded either way.
     if phase in {"pINF_dFEAS", "dUNBD"}:
         return status.PRIMAL_INFEASIBLE
     if phase in {"pFEAS_dINF", "pUNBD"}:
         return status.DUAL_INFEASIBLE
     if phase == "pdINF":
         return status.PRIMAL_OR_DUAL_INFEASIBLE
-    if int(sdpa_info.get("iteration", 0)) >= int(options.get("maxIteration", 100)):
+    if at_iteration_cap:
         return status.MAX_ITER_REACHED
     return status.SOLVER_ERROR
 
@@ -322,12 +476,6 @@ def _as_tuple(value):
     if isinstance(value, (list, tuple)):
         return tuple(value)
     return (value,)
-
-
-def _safe_float(value) -> float:
-    if value is None:
-        return np.inf
-    return float(value)
 
 
 def _maybe_float(value):

@@ -2,12 +2,54 @@
 
 CVXOPT is an interior-point solver for convex problems with linear,
 second-order, and positive-semidefinite cone constraints, *and*
-quadratic objectives. We forward QPs and CONE-shape problems through
-``cvxopt.solvers.coneqp``::
+quadratic objectives. Problems with a linear objective (``P`` without
+nonzeros: LPs, SOCPs, SDPs) go through ``cvxopt.solvers.conelp``::
 
-    minimize    (1/2) x' P x + q' x
+    minimize    q' x
     subject to  G x + s = h,   s in K = R^l_+ × Q^q_1 × ... × S^s_1 × ...
                 A x = b
+
+which returns ``primal infeasible`` / ``dual infeasible`` with normalized
+certificates (``h'z + b'y = -1`` or ``q'x = -1``). Its infeasibility test
+divides a residual by minus the current objective, so at the starting point
+(iteration 0, a least-squares point) it only compares that point's objective
+with ``1 / feastol``: NETLIB agg, agg2, agg3 and grow7 (optima of 1e7 to
+5e7 in magnitude) were "dual infeasible" at iteration 0. Such a claim is
+not evidence, so the adapter discards it and solves the problem with
+``coneqp``. A later claim can be false too on a badly scaled feasible
+problem (NETLIB scagr25 at iteration 4, gfrd-pnc at 1, nesm at 17), and
+its scaled residual can pass the certificate check, so the adapter also
+solves such a problem with ``coneqp``, which cannot certify infeasibility:
+the claim stands unless ``coneqp`` finds a solution, in which case that
+solution is reported. Either way ``info["conelp_discarded_claim"]`` and
+``info["coneqp_cross_check"]`` say what happened, and the time of both
+calls is reported, so a genuinely infeasible problem costs two solves.
+NETLIB shell stays a false claim (``coneqp`` fails on it, as before). With
+second-order cones ``conelp`` would default to the dense ``qr`` KKT solver;
+the adapter passes the sparse ``chol`` that ``coneqp`` uses (``qr`` took
+DIMACS sched_50_50_scaled from 80 s to an error after 490 s) unless
+``kktsolver`` is set. PSD-only problems keep ``qr``: with ``chol``, ``conelp``
+fails on SDPLIB control1 and hinf9, which ``qr`` solves, though ``qr`` is
+slower and stops at ``maxiters`` on hinf1/6/14 and qap6/7.
+
+Problems with a quadratic objective go through ``cvxopt.solvers.coneqp``
+(the same form plus ``(1/2) x' P x``), which only ever reports ``optimal``
+or ``unknown`` and cannot certify infeasibility. A problem with no cone rows at all
+(only equalities) also goes to ``coneqp``, which then solves the KKT
+system ``[[P, A'], [A, 0]]`` once and reports ``optimal`` whatever the
+residual. CVXOPT's default ``chol2`` KKT solver returns a wrong point there
+when ``P`` is singular (Maros-Meszaros HS52, GENHS28), so the adapter uses
+the ``ldl`` KKT solver when ``n + p`` is at most
+``CVXOPT_DENSE_LDL_MAX_DIM`` (2000). ``ldl`` factors that KKT matrix as a
+dense ``(n + p) x (n + p)`` array, which would need 7.3 GB for AUG2DC
+(``n + p = 30200``), so larger systems keep ``chol2``; a wrong point from it
+is caught by the residual check below (``solver_error``).
+
+CVXOPT's ``unknown`` status covers both reaching ``maxiters`` and stopping
+early on a numerical failure (e.g. a singular KKT matrix). It maps to
+``MAX_ITER_REACHED`` only when the iteration count reached the effective
+``maxiters``; an early stop maps to ``OPTIMAL_INACCURATE`` when the gap
+and residuals are small and to ``SOLVER_ERROR`` otherwise.
 
 CVXOPT's PSD-cone vec layout differs from the canonical layout used
 elsewhere in this codebase: it uses BLAS unpacked 'L' storage —
@@ -17,10 +59,18 @@ with ``n*(n+1)/2`` entries and ``√2`` scaling on off-diagonals. We
 convert via a sparse permutation/scaling matrix.
 
 CVXOPT does not support exponential cones; CONE problems with the
-``e``/``ep`` key fall to ``SKIPPED_UNSUPPORTED``. Settings are global
-state in CVXOPT (``cvxopt.solvers.options``); the adapter snapshots
-and restores them around each solve so concurrent adapter instances
-in the same process do not leak knobs into each other.
+``e``/``ep`` key fall to ``SKIPPED_UNSUPPORTED``.
+
+Settings are CVXOPT's options (``maxiters``, ``abstol``, ``reltol``,
+``feastol``, ``refinement``, ``kktreg``, ``show_progress``, ``debug``,
+``use_correction``) plus ``kktsolver``, which is passed to the solver
+call. The harness aliases ``max_iter`` / ``max_iters`` (-> ``maxiters``),
+``eps`` / ``eps_abs`` (-> ``abstol`` and ``feastol``) and ``eps_rel``
+(-> ``reltol``) are translated (recorded in ``info.settings_translated``);
+any other name raises ``ValueError``, since CVXOPT would silently ignore
+it. Options are global state in CVXOPT (``cvxopt.solvers.options``); the
+adapter snapshots and restores them around each solve so sequential
+solves in the same process do not leak knobs into each other.
 """
 
 from __future__ import annotations
@@ -47,6 +97,11 @@ from .base import (
     pop_time_limit,
     settings_with_defaults,
 )
+
+# Largest equality-only KKT system (n + p rows) the adapter hands to CVXOPT's
+# ``ldl`` KKT solver, which factors it as a dense matrix (32 MB at this size).
+# Larger systems keep CVXOPT's default sparse ``chol2``.
+CVXOPT_DENSE_LDL_MAX_DIM = 2000
 
 
 class CVXOPTSolverAdapter(SolverAdapter):
@@ -76,6 +131,8 @@ class CVXOPTSolverAdapter(SolverAdapter):
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
         verbose = bool(settings.pop("verbose", False))
+        kktsolver = settings.pop("kktsolver", None)
+        options, translated = _resolve_options(settings)
 
         if problem.kind == QP:
             data, dims, cone_dict = _qp_to_cvxopt(problem.qp, cvxopt)
@@ -85,34 +142,109 @@ class CVXOPTSolverAdapter(SolverAdapter):
                 return built
             data, dims, cone_dict = built
 
+        has_cone_rows = data["G"].size[0] > 0
+        # conelp certifies infeasibility; coneqp cannot. conelp needs at
+        # least one cone row ([G; A] must have full column rank).
+        entry_point = "conelp" if has_cone_rows and not _has_nonzeros(data["P"]) else "coneqp"
+        if kktsolver is None and not has_cone_rows:
+            # coneqp solves the equality-constrained KKT system once; the
+            # default chol2 factorization gets it wrong for singular P, and
+            # ldl factors it densely, so only small systems switch.
+            kkt_dim = int(data["P"].size[0]) + int(data["A"].size[0])
+            if kkt_dim <= CVXOPT_DENSE_LDL_MAX_DIM:
+                kktsolver = "ldl"
+        if kktsolver is None and entry_point == "conelp" and dims["q"]:
+            # conelp would default to the dense 'qr' KKT solver once there are
+            # second-order cones; keep the sparse 'chol' coneqp used (DIMACS
+            # sched_50_50_scaled: 80 s with chol, an error after 490 s with
+            # qr). PSD-only problems keep 'qr', which conelp solves better
+            # (SDPLIB control1 and hinf9 are solver_error with chol).
+            kktsolver = "chol"
+
+        def call(entry: str, kkt) -> dict:
+            if entry == "conelp":
+                return cs.conelp(
+                    data["q"],
+                    data["G"],
+                    data["h"],
+                    dims,
+                    A=data["A"],
+                    b=data["b"],
+                    kktsolver=kkt,
+                )
+            return cs.coneqp(
+                data["P"],
+                data["q"],
+                G=data["G"],
+                h=data["h"],
+                dims=dims,
+                A=data["A"],
+                b=data["b"],
+                kktsolver=kkt,
+            )
+
         # Save and restore global CVXOPT options so the adapter does
         # not leak settings across concurrent solves. ``options`` is a
         # plain dict; copying it before / restoring after is safe.
         raw: dict = {}
         solver_error: str | None = None
-        with _cvxopt_options(cs, settings, verbose=verbose):
+        discarded_claim: dict | None = None
+        cross_check: dict | None = None
+        with _cvxopt_options(cs, options, verbose=verbose):
+            max_iters = int(cs.options.get("maxiters", 100))
+            feastol = float(cs.options.get("feastol", 1e-7))
             start = time.perf_counter()
             # CVXOPT can throw ``ArithmeticError`` / ``ValueError`` on
-            # numerical failures (e.g. an infeasible LP that pushes
-            # the IPM into a domain-error regime). Catch those and
-            # surface them as SOLVER_ERROR rather than letting the
-            # exception escape — matches how the other adapters
-            # handle native solver crashes.
+            # numerical failures (e.g. an infeasible QP that pushes
+            # coneqp into a domain-error regime, or a rank-deficient
+            # KKT system). Catch those and surface them as SOLVER_ERROR
+            # rather than letting the exception escape — matches how the
+            # other adapters handle native solver crashes.
             try:
-                raw = cs.coneqp(
-                    data["P"],
-                    data["q"],
-                    G=data["G"],
-                    h=data["h"],
-                    dims=dims,
-                    A=data["A"],
-                    b=data["b"],
-                )
+                raw = call(entry_point, kktsolver)
+                if entry_point == "conelp" and _is_infeasibility_claim(raw):
+                    claim = {
+                        "status": raw.get("status"),
+                        "iterations": _maybe_int(raw.get("iterations")),
+                    }
+                    coneqp_kkt = None if kktsolver == "qr" else kktsolver
+                    if claim["iterations"] == 0:
+                        # conelp's infeasibility test at iteration 0 only says
+                        # the least-squares starting point has an objective
+                        # beyond 1/feastol in magnitude: not evidence. Solve
+                        # with coneqp (which has no 'qr' KKT solver).
+                        discarded_claim = claim
+                        entry_point = "coneqp"
+                        raw = {}
+                        raw = call(entry_point, coneqp_kkt)
+                    else:
+                        # A later claim can still be false on a badly scaled
+                        # feasible problem (NETLIB scagr25, gfrd-pnc, nesm),
+                        # and its scaled residual can pass the certificate
+                        # check. Keep it unless coneqp solves the problem.
+                        check, check_status = _coneqp_cross_check(
+                            call, coneqp_kkt, max_iters=max_iters, feastol=feastol
+                        )
+                        cross_check = {"status": check_status, "raw_status": check.get("status")}
+                        if check_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+                            discarded_claim = claim
+                            entry_point = "coneqp"
+                            raw = check
             except (ArithmeticError, ValueError) as exc:
-                solver_error = f"cvxopt.coneqp raised {type(exc).__name__}: {exc}"
+                solver_error = f"cvxopt.{entry_point} raised {type(exc).__name__}: {exc}"
             elapsed = time.perf_counter() - start
 
         info = _flatten_info(raw)
+        info["raw_status"] = raw.get("status")
+        info["entry_point"] = entry_point
+        if discarded_claim is not None:
+            info["conelp_discarded_claim"] = discarded_claim
+        if cross_check is not None:
+            info["coneqp_cross_check"] = cross_check
+        if kktsolver is not None:
+            info["kktsolver"] = kktsolver if isinstance(kktsolver, str) else repr(kktsolver)
+        if translated:
+            info["settings_translated"] = translated
         if solver_error is not None:
             info["solver_error"] = solver_error
         mark_time_limit_ignored(info, time_limit)
@@ -125,15 +257,12 @@ class CVXOPTSolverAdapter(SolverAdapter):
                 info=info,
             )
 
-        mapped = _map_cvxopt_status(raw)
-        # Suppress objective for infeasibility-certificate statuses
-        # (mirrors SCS / ECOS contract).
-        objective_present = (
-            mapped in status.SOLUTION_PRESENT or mapped == status.OPTIMAL_INACCURATE
-        )
+        mapped = _map_cvxopt_status(raw, max_iters=max_iters, feastol=feastol)
+        # The objective is reported only for a claimed solution; limit
+        # iterates and certificates carry none (mirrors SCS / ECOS).
         objective = (
             _maybe_float(raw.get("primal objective"))
-            if objective_present
+            if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
             else None
         )
 
@@ -162,20 +291,91 @@ class CVXOPTSolverAdapter(SolverAdapter):
         )
 
 
+def _is_infeasibility_claim(raw: dict) -> bool:
+    """Whether ``conelp`` claimed primal or dual infeasibility."""
+    return str(raw.get("status", "")) in {"primal infeasible", "dual infeasible"}
+
+
+def _coneqp_cross_check(call, kktsolver, *, max_iters: int, feastol: float) -> tuple[dict, str]:
+    """Solve with ``coneqp`` to test a later ``conelp`` infeasibility claim.
+
+    ``coneqp`` cannot certify infeasibility, so on a genuinely infeasible
+    problem it stops without a solution (or raises); only a solution it
+    finds overturns the claim. Its failures are returned as a status, never
+    raised, so the claim stands when the check cannot be made.
+    """
+    try:
+        check = call("coneqp", kktsolver)
+    except (ArithmeticError, ValueError):
+        return {}, status.SOLVER_ERROR
+    return check, _map_cvxopt_status(check, max_iters=max_iters, feastol=feastol)
+
+
+def _has_nonzeros(matrix) -> bool:
+    """Whether a CVXOPT (sparse or dense) matrix has a nonzero entry."""
+    values = np.asarray(getattr(matrix, "V", matrix), dtype=float)
+    return bool(np.any(values != 0.0))
+
+
 # ---------------------------------------------------------------------------
 # Settings forwarding.
 # ---------------------------------------------------------------------------
 
 
-_CVXOPT_OPTION_ALIASES = {
-    # Cross-adapter -> CVXOPT-native option name.
-    "max_iter": "maxiters",
-    "max_iters": "maxiters",
-    "abstol": "abstol",
-    "reltol": "reltol",
-    "feastol": "feastol",
-    "refinement": "refinement",
-}
+# Names CVXOPT's conelp / coneqp read from ``cvxopt.solvers.options``.
+_CVXOPT_OPTIONS = frozenset(
+    {
+        "maxiters",
+        "abstol",
+        "reltol",
+        "feastol",
+        "refinement",
+        "kktreg",
+        "show_progress",
+        "debug",
+        "use_correction",
+    }
+)
+
+
+def _resolve_options(settings: dict) -> tuple[dict, dict]:
+    """Validate the settings and translate the harness aliases.
+
+    Returns ``(options, translated)``: the CVXOPT options to apply and the
+    entries the aliases inserted. ``max_iter`` / ``max_iters`` become
+    ``maxiters``; ``eps_abs`` (or ``eps``) supplies ``abstol`` and
+    ``feastol`` and ``eps_rel`` (or ``eps``) supplies ``reltol``. A native
+    name always wins over an alias. Any other name raises ``ValueError``:
+    CVXOPT ignores keys it does not know, so a typo would otherwise run
+    silently at the defaults.
+    """
+    settings = dict(settings)
+    max_iter = settings.pop("max_iter", None)
+    max_iters = settings.pop("max_iters", None)
+    eps = settings.pop("eps", None)
+    eps_abs = settings.pop("eps_abs", eps)
+    eps_rel = settings.pop("eps_rel", eps)
+    unknown = sorted(str(key) for key in settings if key not in _CVXOPT_OPTIONS)
+    if unknown:
+        raise ValueError(
+            f"Unrecognized CVXOPT settings {unknown!r}; expected CVXOPT options "
+            f"{sorted(_CVXOPT_OPTIONS)!r}, kktsolver, or the aliases max_iter, "
+            "eps, eps_abs, eps_rel"
+        )
+    options = dict(settings)
+    translated: dict = {}
+
+    def put(key: str, value) -> None:
+        if value is not None and key not in options:
+            options[key] = value
+            translated[key] = value
+
+    iteration_cap = max_iters if max_iters is not None else max_iter
+    put("maxiters", None if iteration_cap is None else int(iteration_cap))
+    put("abstol", None if eps_abs is None else float(eps_abs))
+    put("feastol", None if eps_abs is None else float(eps_abs))
+    put("reltol", None if eps_rel is None else float(eps_rel))
+    return options, translated
 
 
 @contextmanager
@@ -198,8 +398,7 @@ def _cvxopt_options(cs, settings: dict, *, verbose: bool):
     try:
         cs.options["show_progress"] = bool(verbose)
         for key, value in settings.items():
-            mapped_key = _CVXOPT_OPTION_ALIASES.get(key, key)
-            cs.options[mapped_key] = value
+            cs.options[key] = value
         yield
     finally:
         cs.options.clear()
@@ -211,60 +410,56 @@ def _cvxopt_options(cs, settings: dict, *, verbose: bool):
 # ---------------------------------------------------------------------------
 
 
-_CVXOPT_INFEASIBILITY_FAILURE_THRESHOLD = 1.0
 _CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD = 1e-3
 _CVXOPT_RELATIVE_GAP_ACCEPT_THRESHOLD = 1e-3
 
 
-def _map_cvxopt_status(raw: dict) -> str:
-    """CVXOPT exposes four status strings: ``optimal``, ``unknown``,
-    ``primal infeasible``, ``dual infeasible``.
+def _map_cvxopt_status(raw: dict, *, max_iters: int = 100, feastol: float = 1e-7) -> str:
+    """Translate a CVXOPT result to a canonical status.
 
-    The ``unknown`` status is ambiguous — it covers max-iter and
-    numerical failure. We disambiguate using the relative gap *and*
-    the primal/dual infeasibility metrics:
+    ``conelp`` reports ``optimal``, ``primal infeasible``, ``dual
+    infeasible`` or ``unknown``; ``coneqp`` only ``optimal`` or ``unknown``.
 
-    - **OPTIMAL_INACCURATE** requires a tight relative gap *and*
-      primal/dual infeasibilities below the accept threshold. Pre-fix
-      we promoted to OPTIMAL_INACCURATE on small gap alone, so a
-      result like ``{relative gap: 1e-5, primal infeasibility: 100}``
-      was recorded as a solution-bearing success. The combined check
-      makes that path safe.
-    - A single large infeasibility metric (above the failure
-      threshold) points at the corresponding certificate-style
-      INACCURATE status.
-    - Anything else falls through to MAX_ITER_REACHED.
+    - ``optimal`` is OPTIMAL when CVXOPT's own primal and dual infeasibility
+      are within ``feastol`` (always true after an interior-point run). The
+      one-shot KKT solve of a problem without cone rows returns ``optimal``
+      unconditionally, so a residual above ``feastol`` there demotes it:
+      OPTIMAL_INACCURATE when below the accept threshold, else SOLVER_ERROR.
+    - ``unknown`` is MAX_ITER_REACHED when the iteration count reached
+      ``maxiters``. An earlier stop (numerical trouble such as a singular
+      KKT matrix) is OPTIMAL_INACCURATE when the relative gap and both
+      infeasibilities are below the accept threshold, and SOLVER_ERROR
+      otherwise. A large iterate residual is not evidence of
+      infeasibility, so ``unknown`` never maps to a certificate status.
     """
     raw_status = str(raw.get("status", "")).lower()
+    prim_inf = raw.get("primal infeasibility")
+    dual_inf = raw.get("dual infeasibility")
     if raw_status == "optimal":
-        return status.OPTIMAL
+        reported = [
+            _coerce_finite_float(v) for v in (prim_inf, dual_inf) if v is not None
+        ]
+        worst = max((float("inf") if v is None else v for v in reported), default=0.0)
+        if worst <= feastol:
+            return status.OPTIMAL
+        if worst < _CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD:
+            return status.OPTIMAL_INACCURATE
+        return status.SOLVER_ERROR
     if raw_status == "primal infeasible":
         return status.PRIMAL_INFEASIBLE
     if raw_status == "dual infeasible":
         return status.DUAL_INFEASIBLE
     if raw_status == "unknown":
-        rel_gap = raw.get("relative gap")
-        prim_inf = raw.get("primal infeasibility")
-        dual_inf = raw.get("dual infeasibility")
+        iterations = _maybe_int(raw.get("iterations"))
+        if iterations is not None and iterations >= int(max_iters):
+            return status.MAX_ITER_REACHED
         if (
-            _is_finite_below(rel_gap, _CVXOPT_RELATIVE_GAP_ACCEPT_THRESHOLD)
+            _is_finite_below(raw.get("relative gap"), _CVXOPT_RELATIVE_GAP_ACCEPT_THRESHOLD)
             and _is_finite_below(prim_inf, _CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD)
             and _is_finite_below(dual_inf, _CVXOPT_INFEASIBILITY_ACCEPT_THRESHOLD)
         ):
             return status.OPTIMAL_INACCURATE
-        if (
-            prim_inf is not None
-            and _coerce_finite_float(prim_inf) is not None
-            and float(prim_inf) > _CVXOPT_INFEASIBILITY_FAILURE_THRESHOLD
-        ):
-            return status.PRIMAL_INFEASIBLE_INACCURATE
-        if (
-            dual_inf is not None
-            and _coerce_finite_float(dual_inf) is not None
-            and float(dual_inf) > _CVXOPT_INFEASIBILITY_FAILURE_THRESHOLD
-        ):
-            return status.DUAL_INFEASIBLE_INACCURATE
-        return status.MAX_ITER_REACHED
+        return status.SOLVER_ERROR
     return status.SOLVER_ERROR
 
 
@@ -614,15 +809,25 @@ def _maybe_int(value):
 
 def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict):
     """Forward to the canonical KKT helpers, reassembling duals into
-    the layout each helper expects."""
-    if x is None:
+    the layout each helper expects.
+
+    Solution residuals are computed for every status in ANY_FEASIBLE that
+    carries a point (max-iter iterates included, so kkt-verify --promote
+    treats CVXOPT like every other solver). A conelp primal-infeasibility
+    certificate comes with ``z``/``y`` but no ``x``.
+    """
+    if x is None and mapped_status not in {
+        status.PRIMAL_INFEASIBLE,
+        status.PRIMAL_INFEASIBLE_INACCURATE,
+    }:
         return None
-    x = np.asarray(x, dtype=float)
+    if x is not None:
+        x = np.asarray(x, dtype=float)
 
     if problem.kind == QP:
         qp = problem.qp
         n_eq = int(cone_dict.get("z", 0))
-        if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        if mapped_status in status.ANY_FEASIBLE:
             y_full = _qp_dual_in_native_order(qp, y_eq, z_ineq, n_eq)
             if y_full is None:
                 return None
@@ -662,7 +867,7 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
     if p is None:
         p = sp.csc_matrix((sp.csc_matrix(cone_problem["A"]).shape[1],) * 2)
     if (
-        mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
+        mapped_status in status.ANY_FEASIBLE
         and z_ineq is not None
         and s_slack is not None
     ):
