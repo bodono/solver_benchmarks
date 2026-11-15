@@ -979,7 +979,7 @@ Run and analysis commands:
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
 | `bench merge OUT_DIR RUN_DIR...` | `--overwrite` | Concatenate sharded runs into a new run directory; duplicated `(dataset, problem, solver)` rows are reported, not resolved. |
-| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH`, `--allow-missing`, `--promote`, `--overwrite` | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Rows with nothing to check are demoted unless `--allow-missing`; rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD) are kept, with the reason recorded. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. |
+| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH`, `--allow-missing`, `--promote`, `--overwrite` | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, PIQP, ProxQP, SDPA and the commercial adapters do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1151,7 +1151,8 @@ computed only from successful, finite metrics.
 Datasets that know a problem's outcome record it as
 `metadata.expected_status`: `optimal`, `infeasible` or `unbounded`. Every
 success count, failure table, profile, geomean and plot scores rows against
-it:
+it (runs recorded before this field existed are scored the same way, with the
+outcome inferred from the dataset id, problem name and source path):
 
 - `infeasible` (NETLIB `subset: infeasible`, all of Liu-Pataki, SDPLIB
   `infd1`/`infd2`/`infp1`/`infp2`, DC OPF cases labelled infeasible): solved
@@ -1173,9 +1174,10 @@ its residuals to be at most `1e-3`: `A'y` with the distance of `y` to the dual
 cone (or the weight `y` puts on absent bounds), or `Px` with the distance of
 `−Ax` to the cone. `kkt.cert_res` records the largest. That default only
 rejects what is clearly not a certificate; `bench kkt-verify --tol` holds
-certificates to its own tolerance. Runs recorded before this field existed are
-scored the same way: the outcome is inferred from the dataset id, problem name
-and source path.
+certificates to its own tolerance. Records written before `kkt.cert_res`
+existed keep, in reports, the sign-only `kkt.valid` they were stored with
+(the objective term is negative); only `bench kkt-verify` rebuilds their
+scaled residuals from the recorded absolute ones and checks them.
 
 Generate shifted geometric means:
 
@@ -1269,7 +1271,7 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 - Objective-spread and slowest-solve tables.
 - Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
-- KKT-residual summaries (`kkt_summary.csv` over successful optimality claims, `kkt_certificate_summary.csv` over certificates, `claimed_optimal_kkt_thresholds.csv` over the residuals `bench kkt-verify` checks) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack_rel` (`comp_slack` for records written before it existed) / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile with one panel per residual showing, for each solver, the fraction of its successful solves whose residual is at most tau. Exact zeros are drawn at `1e-16`.
+- KKT-residual summaries (`kkt_summary.csv` over successful optimality claims, `kkt_certificate_summary.csv` over infeasibility claims, counting the recorded certificates as valid, invalid or unchecked (`cert_unknown`), `claimed_optimal_kkt_thresholds.csv` over the residuals `bench kkt-verify` checks) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack_rel` (`comp_slack` for records written before it existed) / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile with one panel per residual showing, for each solver, the fraction of its successful solves whose residual is at most tau. Exact zeros are drawn at `1e-16`.
 - For multi-dataset runs, a `## By Dataset` section that re-emits the headline tables (solver metrics, failure rates, shifted geomean, KKT summary) sliced per dataset. The cross-dataset aggregates above the section remain the primary view.
 - An artifact index listing every CSV and plot written by the report command.
 

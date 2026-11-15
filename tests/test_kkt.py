@@ -559,6 +559,17 @@ def test_exp_cone_projection_satisfies_moreau_conditions():
         _check_projection(v, p, _in_exp_dual, _in_exp)
 
 
+def test_exp_cone_projection_of_a_row_does_not_depend_on_the_others():
+    # Each row stops iterating once it has converged, so projecting a large
+    # block costs what its rows need, and a row's result is the one it gets
+    # on its own.
+    rng = np.random.default_rng(2)
+    points = rng.normal(size=(300, 3)) * np.exp(3.0 * rng.normal(size=(300, 1)))
+    batch = kkt._project_exp(points)
+    single = np.vstack([kkt._project_exp(point[None, :]) for point in points])
+    np.testing.assert_array_equal(batch, single)
+
+
 def test_power_cone_projection_satisfies_moreau_conditions():
     rng = np.random.default_rng(1)
     points = rng.normal(size=(300, 3)) * rng.choice([0.01, 1.0, 100.0], size=(300, 1))

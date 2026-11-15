@@ -77,10 +77,15 @@ def test_penalty_needs_a_limit_for_every_solver(tmp_path):
 
 
 def test_geomean_warns_when_a_success_costs_more_than_a_failure(caplog):
+    from solver_benchmarks.analysis import profiles
+
+    profiles._warn_once.cache_clear()
     frame = pd.DataFrame([_row("p", "a", time=50.0), _row("p", "b", "time_limit", 10.0)])
     with caplog.at_level(logging.WARNING):
+        # a report computes the same geomean several times; say it once
         shifted_geomean(frame, max_value=20.0)
-    assert "failure penalty" in caplog.text
+        shifted_geomean(frame, max_value=20.0)
+    assert caplog.text.count("a: a successful solve's run_time_seconds is at or above the failure penalty") == 1
 
 
 # --- exact zeros ---

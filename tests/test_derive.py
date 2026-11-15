@@ -415,10 +415,119 @@ def test_verify_holds_certificates_to_the_tolerance(tmp_path):
     assert out[("loose", "a")]["metadata"]["kkt_verify"]["worst_field"] == "cert_res"
     assert out[("old", "a")]["status"] == "dual_infeasible_inaccurate"
     assert out[("old", "a")]["metadata"]["kkt_verify"]["worst"] == 5e-4
-    assert out[("none", "a")]["status"] == "primal_infeasible_inaccurate"
-    assert summary["kept"] == {"a": 1} and summary["demoted"] == {"a": 3}
-    kkt_verify(src, tmp_path / "out2", tol=1e-6, missing_is_failure=False)
-    assert _read_rows(tmp_path / "out2")[("none", "a")]["status"] == "primal_infeasible"
+    # no certificate recorded: nothing to hold against the solver
+    assert out[("none", "a")]["status"] == "primal_infeasible"
+    assert out[("none", "a")]["metadata"]["kkt_verify"]["reason"] == "no certificate recorded"
+    assert summary["kept"] == {"a": 2} and summary["demoted"] == {"a": 2}
+    assert summary["unverified_certificates"] == {"a": 1}
+    assert summary["missing_residuals"] == {}
+
+
+def test_verify_keeps_certificates_it_cannot_check_whatever_missing_is_failure(tmp_path):
+    # HiGHS, PIQP, ProxQP, SDPA and the commercial adapters record no
+    # certificate vector; that is no reason to fail their infeasibility claims.
+    exp = {"metadata": {"expected_status": "infeasible"}}
+    rows = [
+        {**_row("p1", "highs", status="primal_infeasible", kkt=None), **exp},
+        {**_row("p2", "highs", status="dual_infeasible", kkt={}), **exp},
+        {**_row("p1", "scs", status="primal_infeasible",
+                kkt={"certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": 1e-9, "dual_cone_res": 0.0,
+                     "cert_res": 1e-9, "cert_tol": 1e-3, "valid": True}), **exp},
+    ]
+    src = _write_run(tmp_path, "src", rows)
+    for missing_is_failure, name in ((True, "strict"), (False, "lenient")):
+        summary = kkt_verify(src, tmp_path / name, tol=1e-6, missing_is_failure=missing_is_failure)
+        out = _read_rows(tmp_path / name)
+        assert {key: row["status"] for key, row in out.items()} == {
+            ("p1", "highs"): "primal_infeasible", ("p2", "highs"): "dual_infeasible", ("p1", "scs"): "primal_infeasible"}
+        assert "kkt_verify" not in out[("p1", "scs")]["metadata"]
+        assert summary["demoted"] == {}
+        assert summary["kept"] == {"highs": 2, "scs": 1}
+        assert summary["unverified_certificates"] == {"highs": 2}
+
+
+def test_verify_checks_what_it_can_of_a_certificate_with_an_unsupported_cone(tmp_path):
+    exp = {"metadata": {"expected_status": "infeasible"}}
+
+    def cert_row(problem, kkt):
+        return {**_row(problem, "a", status="primal_infeasible", kkt=kkt), **exp}
+
+    # Current records: the cone distance is NaN, stored as null, and so is
+    # cert_res unless a known residual already fails CERT_TOL.
+    current = {"certificate": "primal_infeasible", "bty": -2.0, "dual_cone_res": None, "cert_res": None,
+               "valid": None, "unsupported_cones": ["cs"]}
+    # Older records reported the cone distance over the cones they could
+    # check only, and no cert_res.
+    older = {"certificate": "primal_infeasible", "bty": -2.0, "unsupported_cones": ["ep"]}
+    rows = [
+        cert_row("current_ok", {**current, "Aty_inf": 2e-9}),
+        cert_row("current_bad", {**current, "Aty_inf": 2e-4}),
+        # known residual fails CERT_TOL, so cert_res was recorded
+        cert_row("current_cert", {**current, "Aty_inf": 4e-3, "cert_res": 2e-3, "valid": False}),
+        cert_row("older_ok", {**older, "Aty_inf": 2e-9, "dual_cone_res": 0.0}),
+        cert_row("older_bad", {**older, "Aty_inf": 2e-9, "dual_cone_res": 2e-4}),
+    ]
+    src = _write_run(tmp_path, "src", rows)
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6)
+    out = _read_rows(tmp_path / "out")
+    statuses = {problem: row["status"] for (problem, _), row in out.items()}
+    assert statuses == {
+        "current_ok": "primal_infeasible",
+        "current_bad": "primal_infeasible_inaccurate",
+        "current_cert": "primal_infeasible_inaccurate",
+        "older_ok": "primal_infeasible",
+        "older_bad": "primal_infeasible_inaccurate",
+    }
+    assert out[("current_ok", "a")]["metadata"]["kkt_verify"]["worst"] == 1e-9
+    assert "cs" in out[("current_ok", "a")]["metadata"]["kkt_verify"]["reason"]
+    assert "ep" in out[("older_ok", "a")]["metadata"]["kkt_verify"]["reason"]
+    assert out[("older_bad", "a")]["metadata"]["kkt_verify"]["worst"] == 1e-4
+    assert "unknown" in out[("current_bad", "a")]["metadata"]["kkt_verify"]["reason"]
+    assert summary["unverified_certificates"] == {"a": 2}
+    # A cone the harness cannot check is unknown, not passed, at any tolerance.
+    loose = kkt_verify(src, tmp_path / "loose", tol=1e-2)
+    assert loose["demoted"] == {} and loose["unverified_certificates"] == {"a": 5}
+
+
+def test_verify_fails_a_certificate_whose_objective_term_is_not_negative(tmp_path):
+    # cert_res is inf then, which the results file stores as null.
+    kkt = {"certificate": "dual_infeasible", "qtx": 0.5, "Px_inf": 0.0, "Ax_cone_res": 0.0,
+           "cert_res": None, "cert_tol": 1e-3, "valid": False}
+    src = _write_run(tmp_path, "src", [_row("p1", "a", status="dual_infeasible", kkt=kkt)])
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6)
+    row = _read_rows(tmp_path / "out")[("p1", "a")]
+    assert row["status"] == "dual_infeasible_inaccurate"
+    assert row["metadata"]["kkt_verify"]["reason"].startswith("certificate residual inf")
+    assert summary["demoted"] == {"a": 1}
+
+
+def test_kkt_verify_cli_warns_about_certificates_it_could_not_check(tmp_path):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    rows = [_row("p1", "highs", status="primal_infeasible", kkt=None),
+            _row("p2", "highs", status="primal_infeasible", kkt=None)]
+    src = _write_run(tmp_path, "src", rows)
+    result = CliRunner().invoke(main, ["kkt-verify", str(src), "--tol", "1e-6", "--output-dir", str(tmp_path / "out")])
+    assert result.exit_code == 0, result.output
+    assert "highs\tkept=2\tdemoted=0" in result.stdout
+    assert "certificate could not be checked: highs=2" in result.stderr
+
+
+def test_derived_run_directories_follow_the_umask(tmp_path):
+    import os
+
+    src = _write_run(tmp_path, "src", [_row("p1", "a", kkt=None)])
+    previous = os.umask(0o022)
+    try:
+        kkt_verify(src, tmp_path / "verified", tol=1e-6)
+        merge_runs([src], tmp_path / "merged")
+        kkt_verify(src, tmp_path / "verified", tol=1e-6, overwrite=True)
+    finally:
+        os.umask(previous)
+    for name in ("verified", "merged"):
+        assert (tmp_path / name).stat().st_mode & 0o777 == 0o755
 
 
 def test_verify_does_not_demote_rows_whose_cones_could_not_be_checked(tmp_path):

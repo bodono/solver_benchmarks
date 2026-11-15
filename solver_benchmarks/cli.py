@@ -408,7 +408,10 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
 @click.option(
     "--allow-missing",
     is_flag=True,
-    help="Keep claimed-optimal rows that carry no KKT residuals (default: demote them).",
+    help=(
+        "Keep claimed-optimal rows that carry no KKT residuals (default: demote them). "
+        "Infeasibility claims without a checkable certificate are always kept, with a warning."
+    ),
 )
 @click.option(
     "--promote",
@@ -421,7 +424,11 @@ def kkt_verify_cmd(
 ) -> None:
     """Write a copy of RUN_DIR in which claimed-optimal solves whose
     independently computed relative KKT residuals exceed --tol are marked
-    optimal_inaccurate, so every solver is held to the same accuracy."""
+    optimal_inaccurate, and infeasibility claims whose scaled certificate
+    residual exceeds it the matching *_inaccurate status, so every solver
+    is held to the same accuracy. Infeasibility claims the harness cannot
+    check (no certificate recorded, or a cone it cannot project) are kept
+    and reported."""
     from solver_benchmarks.analysis.derive import kkt_verify
 
     out = output_dir or run_dir.parent / f"{run_dir.name}_kkt{tol:.0e}"
@@ -438,13 +445,17 @@ def kkt_verify_cmd(
             f"\tpromoted={summary['promoted'].get(solver_id, 0)}"
             f"\tno_residuals={summary['missing_residuals'].get(solver_id, 0)}"
         )
-    unverified = summary.get("unverified_cones") or {}
-    if unverified:
-        click.echo(
-            "warning: kept rows whose cone distances could not be checked: "
-            + ", ".join(f"{solver_id}={count}" for solver_id, count in sorted(unverified.items())),
-            err=True,
-        )
+    for key, what in (
+        ("unverified_cones", "rows whose cone distances could not be checked"),
+        ("unverified_certificates", "infeasibility claims whose certificate could not be checked"),
+    ):
+        unverified = summary.get(key) or {}
+        if unverified:
+            click.echo(
+                f"warning: kept {what}: "
+                + ", ".join(f"{solver_id}={count}" for solver_id, count in sorted(unverified.items())),
+                err=True,
+            )
     if summary.get("skipped_lines"):
         click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     click.echo(str(out))

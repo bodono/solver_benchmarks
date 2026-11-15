@@ -422,7 +422,13 @@ def kkt_certificate_summary(
     *,
     infeasible_statuses: set[str] | None = None,
 ) -> pd.DataFrame:
-    """Per-solver validity counts for infeasibility certificates."""
+    """Per-solver validity counts for infeasibility certificates.
+
+    ``cert_count`` counts the claims that recorded a certificate, split into
+    ``cert_valid``, ``cert_invalid`` and ``cert_unknown`` (a certificate the
+    harness could not check, such as one on a complex PSD cone). Claims from
+    adapters that record no certificate are in ``infeasible_count`` only.
+    """
     if infeasible_statuses is None:
         infeasible_statuses = {
             status.PRIMAL_INFEASIBLE,
@@ -436,6 +442,7 @@ def kkt_certificate_summary(
         "cert_count",
         "cert_valid",
         "cert_invalid",
+        "cert_unknown",
         "Aty_rel_max",
         "Px_rel_max",
     ]
@@ -447,18 +454,22 @@ def kkt_certificate_summary(
 
     rows = []
     for solver_id, group in infeasible.groupby("solver_id", observed=True):
-        valid_series = group.get("kkt.valid")
-        cert_rows = group if valid_series is None else group[valid_series.notna()]
-        valid_count = int(valid_series.fillna(False).astype(bool).sum()) if valid_series is not None else 0
+        valid = group["kkt.valid"] if "kkt.valid" in group else pd.Series(None, index=group.index, dtype=object)
+        recorded = valid.notna()
+        if "kkt.certificate" in group:
+            recorded |= group["kkt.certificate"].notna()
+        valid_count = int(valid.map(lambda v: v is True or v is np.True_).sum())
+        invalid_count = int(valid.map(lambda v: v is False or v is np.False_).sum())
         aty = _numeric_column(group, "kkt.Aty_rel")
         px = _numeric_column(group, "kkt.Px_rel")
         rows.append(
             {
                 "solver_id": solver_id,
                 "infeasible_count": int(len(group)),
-                "cert_count": int(len(cert_rows)),
+                "cert_count": int(recorded.sum()),
                 "cert_valid": valid_count,
-                "cert_invalid": int(len(cert_rows) - valid_count),
+                "cert_invalid": invalid_count,
+                "cert_unknown": int(recorded.sum()) - valid_count - invalid_count,
                 "Aty_rel_max": _max(aty),
                 "Px_rel_max": _max(px),
             }

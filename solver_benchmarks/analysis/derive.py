@@ -16,13 +16,14 @@ import logging
 import math
 import shutil
 import tempfile
+import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from solver_benchmarks.analysis.kkt import certificate_residual
+from solver_benchmarks.analysis.kkt import certificate_check
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
 
@@ -48,7 +49,7 @@ _CONE_FALLBACK = {"primal_cone_res_rel": "primal_cone_res", "dual_cone_res_rel":
 # Statuses that carry a returned point which may still pass the check.
 PROMOTABLE = {status.OPTIMAL_INACCURATE, status.MAX_ITER_REACHED, status.TIME_LIMIT}
 # Certificate statuses that count as a success, and what they become when
-# their certificate fails the check (see kkt.certificate_residual).
+# their certificate fails the check (see kkt.certificate_check).
 _CERTIFICATE_DEMOTION = {
     status.PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE_INACCURATE,
     status.DUAL_INFEASIBLE: status.DUAL_INFEASIBLE_INACCURATE,
@@ -120,11 +121,15 @@ def _staged_out_dir(out_dir: Path, overwrite: bool) -> Iterator[Path]:
     """Yield an empty sibling directory that replaces ``out_dir`` on success.
 
     On an exception the staging directory is removed and ``out_dir`` (if it
-    existed) is left as it was.
+    existed) is left as it was. The staging directory is made with a plain
+    ``mkdir`` under a unique name, not ``tempfile.mkdtemp``: it becomes the
+    output, so it must get the umask's permissions like any run directory
+    rather than mkdtemp's owner-only 0700.
     """
     _refuse_existing(out_dir, overwrite)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.", dir=out_dir.parent))
+    staging = out_dir.parent / f".{out_dir.name}.{uuid.uuid4().hex}"
+    staging.mkdir()
     try:
         yield staging
         if out_dir.exists():
@@ -365,9 +370,9 @@ def kkt_verify(
     cone- and QP-form records always add their cone distances and bound
     multipliers, see :func:`check_residuals`) is at or below ``tol``.
     Otherwise it becomes ``optimal_inaccurate`` and ``metadata.kkt_verify``
-    records why, which fields were checked and which one failed. Rows with
-    no residuals recorded are demoted too unless ``missing_is_failure`` is
-    False. A row whose only unknown residuals are the distances to cones the
+    records why, which fields were checked and which one failed. Claimed
+    optima with residuals missing are demoted too unless
+    ``missing_is_failure`` is False. A row whose only unknown residuals are the distances to cones the
     harness cannot project (``kkt.unsupported_cones``) is kept when the rest
     pass, with the reason recorded and counted under ``unverified_cones``.
 
@@ -375,8 +380,13 @@ def kkt_verify(
     are held to the same ``tol``: their largest residual once scaled so that
     the certificate's objective term is −1 (``kkt.cert_res``, rebuilt for
     older records) must be at or below it, or the row becomes the matching
-    ``*_inaccurate`` status. A certificate row with nothing to check
-    follows ``missing_is_failure``.
+    ``*_inaccurate`` status. A certificate row in which nothing fails but
+    not everything is known (the adapter recorded no certificate, as
+    several return none, or the distance to a cone the harness cannot
+    project is unknown) is kept whatever ``missing_is_failure`` says: that
+    is a gap in the adapter or the checker, not in the solver's accuracy.
+    The reason is recorded and the row counted under
+    ``unverified_certificates``.
 
     With ``promote``, the converse also applies: a solve the solver itself
     reported as inaccurate, iteration-limited or time-limited, but whose
@@ -400,6 +410,7 @@ def kkt_verify(
     missing: dict[str, int] = {}
     promoted: dict[str, int] = {}
     unverified: dict[str, int] = {}
+    unverified_certificates: dict[str, int] = {}
     checked_fields: set[str] = set()
 
     def count(tally: dict[str, int], solver_id: str) -> None:
@@ -428,22 +439,33 @@ def kkt_verify(
                 count(promoted, solver_id)
             continue
         if row_status in _CERTIFICATE_DEMOTION:
-            cert = certificate_residual(row.get("kkt") or {})
+            kkt = row.get("kkt") or {}
+            cert, complete = certificate_check(kkt)
             checked_fields.add("cert_res")
-            if cert is None:
-                count(missing, solver_id)
-                if not missing_is_failure:
-                    count(kept, solver_id)
-                    continue
-                reason = "no certificate residuals recorded"
-            elif cert > tol:
+            if cert is not None and cert > tol:
                 reason = f"certificate residual {cert:.3e} > {tol:.1e}"
-            else:
-                count(kept, solver_id)
+                if not complete:
+                    reason += " (some residuals unknown)"
+                annotate(row, fields=["cert_res"], worst=cert, worst_field="cert_res", reason=reason)
+                row["status"] = _CERTIFICATE_DEMOTION[row_status]
+                count(demoted, solver_id)
                 continue
-            annotate(row, fields=["cert_res"], worst=cert, worst_field="cert_res", reason=reason)
-            row["status"] = _CERTIFICATE_DEMOTION[row_status]
-            count(demoted, solver_id)
+            if not complete:
+                # Nothing fails, but not everything is known: the adapter
+                # recorded no certificate (several return none), or the
+                # distance to a cone the harness cannot project is unknown.
+                # Neither says anything about the solver's accuracy, so the
+                # row is kept, like an optimal row with such cones.
+                if cert is None:
+                    reason = "no certificate recorded"
+                else:
+                    cones = kkt.get("unsupported_cones")
+                    unknown = f"unsupported cones {sorted(cones)}" if cones else "some residuals unknown"
+                    reason = f"certificate not fully checked ({unknown}); known residuals <= {tol:.1e}"
+                annotate(row, fields=["cert_res"], worst=cert,
+                         worst_field=None if cert is None else "cert_res", reason=reason)
+                count(unverified_certificates, solver_id)
+            count(kept, solver_id)
             continue
         if row_status not in status.SOLUTION_PRESENT:
             continue
@@ -501,6 +523,7 @@ def kkt_verify(
         "promoted": promoted,
         "missing_residuals": missing,
         "unverified_cones": unverified,
+        "unverified_certificates": unverified_certificates,
         "skipped_lines": skipped,
     }
     if prior:

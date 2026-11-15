@@ -384,11 +384,9 @@ def shifted_geomean(
         if penalize_failures:
             penalties = group["__failure_penalty"].to_numpy(dtype=float)
             if np.any(values[successful] >= penalties[successful]):
-                logger.warning(
-                    "%s: a successful %s is at or above the failure penalty, so failing "
-                    "costs no more than succeeding; choose a larger penalty",
-                    solver_id,
-                    metric,
+                _warn_once(
+                    f"{solver_id}: a successful solve's {metric} is at or above the failure "
+                    "penalty, so failing costs no more than succeeding; choose a larger penalty"
                 )
             values[~successful] = penalties[~successful]
             if len(np.unique(penalties)) == 1:

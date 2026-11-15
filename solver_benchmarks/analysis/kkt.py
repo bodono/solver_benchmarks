@@ -402,22 +402,24 @@ def qp_dual_infeasibility_cert(
     }
 
 
-def certificate_residual(kkt: dict[str, Any]) -> float | None:
-    """Largest residual of a recorded certificate scaled to objective term −1.
+def certificate_check(kkt: dict[str, Any]) -> tuple[float | None, bool]:
+    """``(worst, complete)`` for a recorded certificate scaled to objective term −1.
 
-    Uses ``cert_res`` when the record has it and otherwise rebuilds it from
-    the absolute fields that records written before it carry (QP records
-    of that age have no ``dual_bound_res`` and are checked without it).
-    Returns None when the record holds no certificate, or a needed residual
-    is missing or unknown; a certificate whose objective term is not
-    negative gets ``inf``.
+    ``worst`` is the largest scaled residual the record lets the harness
+    know (``inf`` when the objective term is not negative, or not finite)
+    and ``complete`` says whether every residual of the certificate is
+    known. ``worst`` is None when the record holds no certificate, as for
+    adapters that return no certificate vector. A residual is unknown when
+    it is absent or not a number (results store NaN, the distance to a cone
+    the harness cannot project, as null); QP records written before
+    ``dual_bound_res`` existed are checked without it. The two are reported
+    separately, as for optimality claims, so that a residual known to fail
+    is never hidden by another one being unknown.
+
+    ``cert_res`` is used when the record has a number for it; otherwise the
+    scaled residuals are rebuilt from the absolute fields, which is what
+    records written before ``cert_res`` existed carry.
     """
-    if "cert_res" in kkt:
-        try:
-            number = float(kkt["cert_res"])
-        except (TypeError, ValueError):
-            return None
-        return None if math.isnan(number) else number
     kind = kkt.get("certificate")
     if kind == "primal_infeasible":
         sign_key = "bty" if "bty" in kkt else "support"
@@ -426,18 +428,27 @@ def certificate_residual(kkt: dict[str, Any]) -> float | None:
         sign_key = "qtx"
         residual_keys = ["Px_inf", "primal_cone_res" if "primal_cone_res" in kkt else "Ax_cone_res"]
     else:
-        return None
-    if kkt.get("unsupported_cones"):
-        # Older records reported a clean zero for blocks they could not check.
-        return None
+        residual_keys, sign_key = [], ""
+    unsupported = bool(kkt.get("unsupported_cones"))
+    recorded = _number_or_nan(kkt.get("cert_res"))
+    if math.isnan(recorded) and "cert_res" in kkt and kkt.get("valid") is False:
+        # Stored as null, and only an infinite cert_res comes with valid false.
+        recorded = float("inf")
+    if not math.isnan(recorded):
+        return recorded, not unsupported
+    if not residual_keys or sign_key not in kkt:
+        return None, False
     if "dual_bound_res" in residual_keys and "dual_bound_res" not in kkt:
         residual_keys.remove("dual_bound_res")
-    sign_value = _finite_or_none(kkt.get(sign_key))
-    residuals = [_finite_or_none(kkt.get(key)) for key in residual_keys]
-    if sign_value is None or any(value is None for value in residuals):
-        return None
-    verdict = _certificate_verdict(sign_value, tuple(float(v) for v in residuals if v is not None), CERT_TOL)
-    return float(verdict["cert_res"])
+    sign_value = _number_or_nan(kkt.get(sign_key))
+    if not math.isfinite(sign_value) or sign_value >= 0.0:
+        return float("inf"), True
+    scaled = [_number_or_nan(kkt.get(key)) / -sign_value for key in residual_keys]
+    known = [value for value in scaled if not math.isnan(value)]
+    # Records written before cert_res existed reported a clean zero for the
+    # cone blocks they could not project, so their cone distance covers only
+    # the others: a lower bound, which can fail the check but not pass it.
+    return max(known, default=0.0), len(known) == len(scaled) and not unsupported
 
 
 def _certificate_verdict(sign_value: float, residuals: tuple[float, ...], tol: float) -> dict[str, Any]:
@@ -461,12 +472,13 @@ def _certificate_verdict(sign_value: float, residuals: tuple[float, ...], tol: f
     return {"cert_res": worst, "cert_tol": tol, "valid": True}
 
 
-def _finite_or_none(value) -> float | None:
+def _number_or_nan(value) -> float:
+    if value is None:
+        return float("nan")
     try:
-        number = float(value)
+        return float(value)
     except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
+        return float("nan")
 
 
 def _project_cones(
@@ -693,18 +705,24 @@ def _project_exp_general(v: np.ndarray) -> np.ndarray:
     lower = np.zeros_like(r)
     upper = 0.125 * scale
     # Grow the bracket until the constraint holds at the upper multiplier.
+    # Both loops work only on the rows still moving: this runs in the
+    # worker after the solve, and one slow row must not cost every block of
+    # a large exponential-cone problem the full iteration count.
+    rows = np.arange(v.shape[0])
     for _ in range(200):
-        grow = _exp_constraint(v, upper) > 0
-        if not np.any(grow):
+        rows = rows[_exp_constraint(v[rows], upper[rows]) > 0]
+        if rows.size == 0:
             break
-        lower = np.where(grow, upper, lower)
-        upper = np.where(grow, 2.0 * upper, upper)
+        lower[rows] = upper[rows]
+        upper[rows] *= 2.0
+    rows = np.arange(v.shape[0])
     for _ in range(_EXP_BISECTIONS):
-        mid = 0.5 * (lower + upper)
-        positive = _exp_constraint(v, mid) > 0
-        lower = np.where(positive, mid, lower)
-        upper = np.where(positive, upper, mid)
-        if np.all(upper - lower <= 1e-15 * np.maximum(upper, _EPS)):
+        mid = 0.5 * (lower[rows] + upper[rows])
+        positive = _exp_constraint(v[rows], mid) > 0
+        lower[rows] = np.where(positive, mid, lower[rows])
+        upper[rows] = np.where(positive, upper[rows], mid)
+        rows = rows[upper[rows] - lower[rows] > 1e-15 * np.maximum(upper[rows], _EPS)]
+        if rows.size == 0:
             break
     mu = 0.5 * (lower + upper)
     x2, x3 = _exp_inner(s, t, mu)
@@ -758,18 +776,20 @@ def _exp_inner(s: np.ndarray, t: np.ndarray, mu: np.ndarray) -> tuple[np.ndarray
         hi = np.maximum(np.maximum(0.5 * (-t + np.sqrt(t * t + 4.0 * np.maximum(mu * s, 0.0))), mu), lo)
         u = np.log(hi)
         u_floor = np.log(lo)
-        done = ~has_root
+        # Newton steps only on the rows that have not converged yet.
+        rows = np.flatnonzero(has_root)
         for _ in range(_EXP_NEWTON_STEPS):
-            tau = np.exp(u)
-            g = tau * (tau + t) / mu**2 - s / mu + u - log_mu + 1.0
-            dg = tau * (2.0 * tau + t) / mu**2 + 1.0
-            step = g / dg
-            noise = 1e-14 * (tau * (tau + np.abs(t)) / mu**2 + np.abs(s) / mu + np.abs(u) + np.abs(log_mu) + 1.0)
-            converged = (np.abs(g) <= noise) | (np.abs(step) <= 1e-15 * np.maximum(1.0, np.abs(u))) | ~np.isfinite(step)
-            u = np.where(done | converged, u, np.maximum(u - step, u_floor))
-            done |= converged
-            if np.all(done):
+            if rows.size == 0:
                 break
+            ur, tr, sr, mur, log_mur = u[rows], t[rows], s[rows], mu[rows], log_mu[rows]
+            tau = np.exp(ur)
+            g = tau * (tau + tr) / mur**2 - sr / mur + ur - log_mur + 1.0
+            dg = tau * (2.0 * tau + tr) / mur**2 + 1.0
+            step = g / dg
+            noise = 1e-14 * (tau * (tau + np.abs(tr)) / mur**2 + np.abs(sr) / mur + np.abs(ur) + np.abs(log_mur) + 1.0)
+            converged = (np.abs(g) <= noise) | (np.abs(step) <= 1e-15 * np.maximum(1.0, np.abs(ur))) | ~np.isfinite(step)
+            u[rows] = np.where(converged, ur, np.maximum(ur - step, u_floor[rows]))
+            rows = rows[~converged]
         tau = np.exp(u)
         x3 = np.where(has_root, tau + t, 0.0)
         x2 = np.where(has_root, tau * x3 / mu, 0.0)
