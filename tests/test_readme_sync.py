@@ -37,3 +37,50 @@ def test_list_solvers_sample_output_names_every_solver():
     sample = sample[:sample.index("```", 3)]
     listed = [line.split()[0] for line in sample.splitlines()[1:] if line.strip()]
     assert listed == list(list_solvers())  # the order `bench list solvers` prints
+
+
+def _cli_commands():
+    import click
+
+    from solver_benchmarks.cli import main
+
+    def walk(group, prefix):
+        for name, command in sorted(group.commands.items()):
+            path = f"{prefix} {name}".strip()
+            if isinstance(command, click.Group):
+                yield from walk(command, path)
+            else:
+                yield path, command
+
+    return list(walk(main, ""))
+
+
+def _cli_row(path: str) -> str | None:
+    for line in _section("## CLI Reference").splitlines():
+        if re.match(rf"^\| `bench {re.escape(path)}[ `]", line):
+            return line
+    return None
+
+
+@pytest.mark.parametrize("path, command", _cli_commands(), ids=lambda value: value if isinstance(value, str) else "")
+def test_every_cli_command_and_option_is_in_the_cli_reference(path, command):
+    import click
+
+    row = _cli_row(path)
+    assert row is not None, f"README CLI Reference has no row for `bench {path}`"
+    for param in command.params:
+        if isinstance(param, click.Option) and not param.hidden:
+            for flag in [*param.opts, *param.secondary_opts]:
+                assert flag in row, f"`bench {path}` row does not mention {flag}"
+
+
+def test_every_run_config_field_is_in_the_field_table():
+    import dataclasses
+
+    from solver_benchmarks.core.config import RunConfig
+
+    table = _section("## Configuration Files")
+    for field in dataclasses.fields(RunConfig):
+        if field.name in {"datasets", "solvers"}:
+            continue  # documented as run.dataset / run.datasets and solvers[].*
+        assert f"| `run.{field.name}` |" in table, f"run.{field.name} is missing from the config field table"
