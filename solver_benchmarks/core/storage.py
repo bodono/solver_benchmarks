@@ -18,7 +18,7 @@ from typing import Any
 import pandas as pd
 
 from . import status
-from .config import RunConfig, manifest_solve_signatures, solve_signatures
+from .config import RunConfig, manifest_solve_signatures, slugify, solve_signatures
 from .result import ProblemResult, to_jsonable
 from .system_info import system_metadata
 
@@ -45,7 +45,8 @@ def _datasets_slug(config: RunConfig) -> str:
     return joined
 
 
-def slugify(value: str) -> str:
+def _legacy_slugify(value: str) -> str:
+    """``slugify`` before it kept ``+`` and ``=``; older run directories use it."""
     value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
     return value.strip("-") or "run"
 
@@ -361,8 +362,10 @@ class ResultStore:
                         # count, but their artifact path identifies the attempt.
                         artifacts = Path(record.get("artifact_dir") or "")
                         match = re.fullmatch(r"retry-(\d+)", artifacts.name)
-                        parent_suffix = ("problems", *(slugify(part) for part in key))
-                        is_retry_dir = artifacts.parent.parts[-4:] == parent_suffix
+                        is_retry_dir = artifacts.parent.parts[-4:] in {
+                            ("problems", *(slug(part) for part in key))
+                            for slug in (slugify, _legacy_slugify)
+                        }
                         retries = int(match.group(1)) if match and is_retry_dir else 0
                     if retries >= max_retries:
                         keys.add(key)

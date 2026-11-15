@@ -281,7 +281,7 @@ def test_resume_false_still_adds_other_solvers_to_a_shared_run_directory(
     assert [row["solver_id"] for row in _rows(store.results_jsonl_path)] == ["s", "s", "other", "other"]
 
 
-def test_append_after_a_torn_line_starts_a_new_line(tmp_path: Path):
+def test_append_after_a_torn_line_starts_a_new_line(fake_worker, tmp_path: Path):
     config = _config(tmp_path)
     store = ResultStore.create(config, run_dir=tmp_path / "run")
 

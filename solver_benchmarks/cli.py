@@ -176,7 +176,7 @@ def run_cmd(
     environment_metadata: str | None,
     stream_solver_output: bool,
 ) -> None:
-    config = load_run_config(config_path)
+    config = _load_config(load_run_config, config_path)
     if data_root is not None:
         data_root = data_root.resolve()
         config = replace(
@@ -209,8 +209,8 @@ def run_cmd(
             ),
             source_config_path=config_path,
         )
-    except RuntimeError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (RuntimeError, ValueError, KeyError) as exc:
+        raise click.ClickException(_error_text(exc)) from exc
     click.echo(str(store.run_dir))
 
 
@@ -239,15 +239,18 @@ def env_run_cmd(
     repo_root: Path | None,
     stream_solver_output: bool,
 ) -> None:
-    config = load_environment_run_config(config_path)
-    out = run_environment_matrix(
-        config,
-        run_dir=run_dir,
-        repo_root=repo_root,
-        stream_output=True,
-        stream_solver_output=stream_solver_output,
-        source_config_path=config_path,
-    )
+    config = _load_config(load_environment_run_config, config_path)
+    try:
+        out = run_environment_matrix(
+            config,
+            run_dir=run_dir,
+            repo_root=repo_root,
+            stream_output=True,
+            stream_solver_output=stream_solver_output,
+            source_config_path=config_path,
+        )
+    except (RuntimeError, ValueError, KeyError) as exc:
+        raise click.ClickException(_error_text(exc)) from exc
     click.echo(str(out))
 
 
@@ -457,6 +460,20 @@ def report_cmd(
         return
     for path in paths:
         click.echo(str(path))
+
+
+def _load_config(loader, config_path: Path):
+    try:
+        return loader(config_path)
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(f"{config_path}: {_error_text(exc)}") from exc
+
+
+def _error_text(exc: BaseException) -> str:
+    # str(KeyError) is the repr of its message, quotes included.
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 def _parse_options(options: tuple[str]) -> dict:

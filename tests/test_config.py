@@ -376,7 +376,7 @@ def test_parse_run_config_accepts_datasets_list_of_strings(tmp_path: Path):
     config = parse_run_config(
         {
             "run": {
-                "datasets": ["synthetic_qp", "synthetic_lp"],
+                "datasets": ["synthetic_qp", "synthetic_cone"],
                 "output_dir": str(tmp_path / "runs"),
             },
             "solvers": [{"id": "scs", "solver": "scs", "settings": {}}],
@@ -385,7 +385,7 @@ def test_parse_run_config_accepts_datasets_list_of_strings(tmp_path: Path):
 
     assert [dataset.name for dataset in config.datasets] == [
         "synthetic_qp",
-        "synthetic_lp",
+        "synthetic_cone",
     ]
     assert all(dataset.dataset_options == {} for dataset in config.datasets)
 
@@ -396,7 +396,7 @@ def test_parse_run_config_accepts_datasets_list_of_mappings(tmp_path: Path):
             "run": {
                 "datasets": [
                     {
-                        "name": "netlib_lp",
+                        "name": "netlib",
                         "dataset_options": {"variant": "feasible"},
                         "include": ["afiro"],
                     },
@@ -412,7 +412,7 @@ def test_parse_run_config_accepts_datasets_list_of_mappings(tmp_path: Path):
     )
 
     netlib, synthetic = config.datasets
-    assert netlib.name == "netlib_lp"
+    assert netlib.name == "netlib"
     assert netlib.dataset_options == {"variant": "feasible"}
     assert netlib.include == ["afiro"]
     assert synthetic.exclude == ["one_variable_lp"]
@@ -428,7 +428,7 @@ def test_parse_run_config_rejects_dataset_and_datasets_together(tmp_path: Path):
             {
                 "run": {
                     "dataset": "synthetic_qp",
-                    "datasets": ["synthetic_lp"],
+                    "datasets": ["synthetic_cone"],
                     "output_dir": str(tmp_path / "runs"),
                 },
                 "solvers": [{"id": "scs", "solver": "scs"}],
@@ -453,7 +453,7 @@ def test_run_config_dataset_property_errors_for_multiple(tmp_path: Path):
     config = parse_run_config(
         {
             "run": {
-                "datasets": ["synthetic_qp", "synthetic_lp"],
+                "datasets": ["synthetic_qp", "synthetic_cone"],
                 "output_dir": str(tmp_path / "runs"),
             },
             "solvers": [{"id": "scs", "solver": "scs"}],
@@ -468,7 +468,7 @@ def test_run_config_dataset_level_include_overrides_run_level(tmp_path: Path):
         {
             "run": {
                 "datasets": [
-                    {"name": "netlib_lp", "include": ["afiro"]},
+                    {"name": "netlib", "include": ["afiro"]},
                     {"name": "synthetic_qp"},
                 ],
                 "include": ["one_variable_eq"],
@@ -489,7 +489,7 @@ def test_legacy_dataset_options_apply_as_default_for_datasets_list(tmp_path: Pat
         {
             "run": {
                 "datasets": [
-                    {"name": "netlib_lp"},
+                    {"name": "netlib"},
                     {
                         "name": "maros_meszaros",
                         "dataset_options": {"override": "yes"},
@@ -529,7 +529,7 @@ def test_manifest_dataset_entries_handles_legacy_and_new_shapes():
         {
             "datasets": [
                 {
-                    "name": "netlib_lp",
+                    "name": "netlib",
                     "dataset_options": {},
                     "include": ["afiro"],
                     "exclude": [],
@@ -563,12 +563,12 @@ def test_parse_run_config_allows_same_dataset_twice_with_distinct_ids(tmp_path: 
                 "datasets": [
                     {
                         "id": "netlib_feasible",
-                        "name": "netlib_lp",
+                        "name": "netlib",
                         "dataset_options": {"subset": "feasible"},
                     },
                     {
                         "id": "netlib_infeasible",
-                        "name": "netlib_lp",
+                        "name": "netlib",
                         "dataset_options": {"subset": "infeasible"},
                     },
                 ],
@@ -579,10 +579,10 @@ def test_parse_run_config_allows_same_dataset_twice_with_distinct_ids(tmp_path: 
     )
     feasible, infeasible = config.datasets
     assert feasible.id == "netlib_feasible"
-    assert feasible.name == "netlib_lp"
+    assert feasible.name == "netlib"
     assert feasible.dataset_options == {"subset": "feasible"}
     assert infeasible.id == "netlib_infeasible"
-    assert infeasible.name == "netlib_lp"
+    assert infeasible.name == "netlib"
     assert infeasible.dataset_options == {"subset": "infeasible"}
 
 
@@ -592,7 +592,7 @@ def test_parse_run_config_rejects_duplicate_dataset_ids(tmp_path: Path):
             {
                 "run": {
                     "datasets": [
-                        {"id": "shared", "name": "netlib_lp"},
+                        {"id": "shared", "name": "netlib"},
                         {"id": "shared", "name": "synthetic_qp"},
                     ],
                     "output_dir": str(tmp_path / "runs"),
@@ -617,7 +617,7 @@ def test_manifest_dataset_entries_surfaces_explicit_dataset_id():
             "datasets": [
                 {
                     "id": "netlib_feasible",
-                    "name": "netlib_lp",
+                    "name": "netlib",
                     "dataset_options": {"subset": "feasible"},
                     "include": [],
                     "exclude": [],
@@ -632,7 +632,7 @@ def test_manifest_dataset_entries_surfaces_explicit_dataset_id():
         }
     )
     assert entries[0]["id"] == "netlib_feasible"
-    assert entries[0]["name"] == "netlib_lp"
+    assert entries[0]["name"] == "netlib"
     # Default id == name when no explicit id is given.
     assert entries[1]["id"] == "synthetic_qp"
 

@@ -83,7 +83,7 @@ class Dataset(ABC):
     automatic_download: bool = False
 
     def __init__(self, repo_root: str | Path | None = None, **options: Any):
-        self.repo_root = Path(repo_root).resolve() if repo_root else _default_repo_root()
+        self.repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
         self.options = options
 
     @classmethod
@@ -215,7 +215,12 @@ def problem_spec_size_bytes(problem: ProblemSpec) -> int | None:
         return None
 
 
-def _default_repo_root() -> Path:
+def default_repo_root() -> Path:
+    """The repository holding the benchmark data when none is given.
+
+    The current directory if it has ``problem_classes``, otherwise the
+    checkout this package was installed from.
+    """
     cwd = Path.cwd().resolve()
     if (cwd / "problem_classes").is_dir():
         return cwd

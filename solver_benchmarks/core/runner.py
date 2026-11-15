@@ -25,6 +25,7 @@ from solver_benchmarks.core.config import (
     DatasetConfig,
     RunConfig,
     SolverConfig,
+    resolve_data_roots,
     resolve_output_dir,
     solve_signature,
 )
@@ -41,7 +42,7 @@ from solver_benchmarks.core.storage import (
     atomic_write_text,
 )
 from solver_benchmarks.datasets import get_dataset
-from solver_benchmarks.datasets.base import filter_problem_specs_by_size
+from solver_benchmarks.datasets.base import default_repo_root, filter_problem_specs_by_size
 from solver_benchmarks.solvers import get_solver
 
 # Bounds of the grace added on top of the configured timeout before the
@@ -70,8 +71,11 @@ def run_benchmark(
     prepare_data_command: str | None = None,
     source_config_path: str | Path | None = None,
 ) -> ResultStore:
-    repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
+    repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
     config = resolve_output_dir(config, repo_root)
+    # Workers start in repo_root; a data_root relative to this process's
+    # directory must name the same place there.
+    config = dataclasses.replace(config, datasets=resolve_data_roots(config.datasets, Path.cwd()))
     if stream_solver_output is None:
         stream_solver_output = stream_output
     if run_dir is not None and not config.resume:
