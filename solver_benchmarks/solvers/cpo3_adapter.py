@@ -139,7 +139,12 @@ class Cpo3SolverAdapter(SolverAdapter):
             raise ValueError(f"cpo3.Settings does not accept {unknown}")
         if "linear_solver" in settings:
             settings["linear_solver"] = resolve_linear_solver(settings["linear_solver"], cpo3)
-        cpo3_settings = cpo3.Settings(**settings)
+        try:
+            cpo3_settings = cpo3.Settings(**settings)
+        except (TypeError, OverflowError) as exc:
+            # cpo3 refuses most bad values with a ValueError of its own; a
+            # negative count or a value of the wrong type fails conversion.
+            raise ValueError(f"cpo3 rejected a setting value in {sorted(settings)}: {exc}") from exc
 
         cones: list[Any] = []
         if cone_dict.get("z"):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import numbers
 import time
 from pathlib import Path
 
@@ -65,6 +66,7 @@ class QTQPSolverAdapter(SolverAdapter):
             unknown = sorted(k for k in settings if k not in solve_params)
             if unknown:
                 raise ValueError(f"qtqp.solve() does not accept settings {unknown}; installed qtqp exposes {sorted(solve_params)}")
+        _check_setting_values(settings, translated)
         a, b, z = qp_to_nonnegative_cone(qp)
         p = sp.csc_matrix(qp["P"])
         c = np.asarray(qp["q"], dtype=float)
@@ -80,8 +82,11 @@ class QTQPSolverAdapter(SolverAdapter):
             solution = solver.solve(**solve_kwargs)
         except (ValueError, ArithmeticError, np.linalg.LinAlgError) as exc:
             # qtqp raises ValueError for data it cannot take (non-finite or
-            # non-symmetric P, a non-convex KKT system) and for failed
-            # factorizations: the solver failing on this problem.
+            # non-symmetric P from the constructor; a non-convex P, from the
+            # KKT assembly inside solve()) and for failed factorizations: the
+            # solver failing on this problem. The setting values solve()
+            # would refuse with a ValueError were checked above, so a bad
+            # value still raises as a configuration error.
             error_info = {"raw_status": "error", "error": f"{type(exc).__name__}: {exc}"}
             mark_time_limit_ignored(error_info, time_limit)
             mark_threads_ignored(error_info, threads)
@@ -136,6 +141,58 @@ class QTQPSolverAdapter(SolverAdapter):
             trace=[to_jsonable(row) for row in trace],
             kkt=kkt_dict,
         )
+
+
+def _is_integer(value) -> bool:
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+# The ranges qtqp's solve() enforces, as (description, test) per setting. It
+# checks them with asserts (gone under ``python -O``, and with no message) or
+# with ValueErrors raised from the same call as its numerical failures, so the
+# adapter checks them first and names the setting.
+_SETTING_RANGES = {
+    **{
+        key: (">= 0", lambda v: _is_number(v) and v >= 0)
+        for key in (
+            "tol_feas", "tol_gap_abs", "tol_gap_rel", "tol_infeas_abs", "tol_infeas_rel",
+            "min_static_regularization", "linear_solver_atol", "linear_solver_rtol",
+            "atol", "rtol",
+        )
+    },
+    "certificate_ktratio": (">= 1", lambda v: _is_number(v) and v >= 1),
+    "step_size_scale": ("in (0, 1)", lambda v: _is_number(v) and 0 < v < 1),
+    "max_iter": ("an integer >= 1", lambda v: _is_integer(v) and v >= 1),
+    "max_iterative_refinement_steps": ("an integer >= 1", lambda v: _is_integer(v) and v >= 1),
+    "max_centrality_correctors": ("an integer >= 0", lambda v: _is_integer(v) and v >= 0),
+}
+
+
+def _check_setting_values(settings: dict, translated: dict) -> None:
+    """Raise ValueError naming a setting whose value qtqp would refuse."""
+    checks = dict(_SETTING_RANGES)
+    # gmres_restart is used, and checked, only with GMRES refinement.
+    strategy = settings.get("refinement_strategy")
+    if getattr(strategy, "name", strategy) != "RICHARDSON":
+        checks["gmres_restart"] = ("an integer >= 1", lambda v: _is_integer(v) and v >= 1)
+    # warm_start_threshold is checked only when there is a warm start.
+    if settings.get("warm_start") is not None:
+        checks["warm_start_threshold"] = (
+            "positive and finite",
+            lambda v: _is_number(v) and 0 < v < np.inf,
+        )
+    for key, value in settings.items():
+        if key in checks:
+            description, test = checks[key]
+            if not test(value):
+                source = " (set from eps_abs / eps_rel / eps)" if key in translated else ""
+                raise ValueError(
+                    f"Invalid QTQP setting {key!r}={value!r}{source}: must be {description}"
+                )
 
 
 def _point_objective(x, p, c) -> float | None:

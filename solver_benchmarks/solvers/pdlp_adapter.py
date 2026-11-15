@@ -280,6 +280,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         if not _set_time_limit(request, float(time_limit)):
             time_limit_ignored = True
 
+    given = sorted(settings)
     parameters = _pdlp_parameters_from_settings(settings)
     if settings:
         raise ValueError(f"Unsupported PDLP settings: {sorted(settings)}")
@@ -317,6 +318,15 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         text_format.MessageToString(response)
     )
 
+    invalid_parameter = getattr(
+        solve_log_pb2.TerminationReason, "TERMINATION_REASON_INVALID_PARAMETER", None
+    )
+    if invalid_parameter is not None and solve_log.termination_reason == invalid_parameter:
+        # PDLP validates its parameters only when asked to solve and answers
+        # with a termination reason; a bad value is a configuration error.
+        raise ValueError(
+            f"PDLP rejected a setting value in {given}: {solve_log.termination_string}"
+        )
     mapped_status = _map_status(solve_log)
     x = np.asarray(response.variable_value, dtype=float) if len(response.variable_value) else None
     # OR-Tools returns the dual negated relative to our QP sign convention

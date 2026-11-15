@@ -86,6 +86,29 @@ def test_highs_forwards_time_limit_aliases_as_seconds(tmp_path, monkeypatch):
     assert solver.getOptionValue("time_limit")[1] == 7.0
 
 
+@pytest.mark.parametrize("key", ["presolve", "run_crossover", "parallel"])
+@pytest.mark.parametrize("value, word", [(False, "off"), (True, "on")])
+def test_highs_reads_yaml_booleans_on_its_on_off_options(key, value, word, tmp_path, monkeypatch):
+    # YAML 1.1 reads an unquoted `presolve: off` as False; HiGHS's on/off
+    # options are strings and refuse a bool.
+    highspy = pytest.importorskip("highspy")
+    solver = highspy.Highs()
+    monkeypatch.setattr(highspy, "Highs", lambda: solver)
+    result = _solve("highs", {key: value}, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert solver.getOptionValue(key)[1] == word
+
+
+def test_highs_boolean_for_a_string_option_says_why_it_failed(tmp_path):
+    with pytest.raises(ValueError, match="'solver'='on'.*unquoted on/off"):
+        _solve("highs", {"solver": True}, tmp_path)
+
+
+def test_highs_boolean_for_a_numeric_option_is_still_refused(tmp_path):
+    with pytest.raises(ValueError, match="'random_seed'=True"):
+        _solve("highs", {"random_seed": True}, tmp_path)
+
+
 def test_highs_forwards_threads_and_checks_the_result():
     from solver_benchmarks.solvers.highs_adapter import _configure_highs
 

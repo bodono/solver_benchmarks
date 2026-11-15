@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import numbers
 import re
 import time
 from pathlib import Path
@@ -58,9 +60,10 @@ class ProxQPSolverAdapter(SolverAdapter):
         threads = pop_threads(settings)
         translated = translate_eps_alias(settings)
         settings.setdefault("compute_timings", True)
-        gap_settings = _duality_gap_settings(settings, proxsuite)
         backend = proxsuite.proxqp.dense if use_dense else proxsuite.proxqp.sparse
         _check_settings(settings, backend.solve)
+        _check_setting_values(settings)
+        gap_settings = _duality_gap_settings(settings, proxsuite)
         start = time.perf_counter()
         if use_dense:
             result = proxsuite.proxqp.dense.solve(
@@ -155,6 +158,38 @@ def _duality_gap_settings(settings: dict, proxsuite) -> dict:
         "eps_duality_gap_abs": float(settings["eps_duality_gap_abs"]),
         "eps_duality_gap_rel": float(settings["eps_duality_gap_rel"]),
     }
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _is_integer(value) -> bool:
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+# Value ranges for ProxQP's numeric settings. ProxSuite does not check them: a
+# negative eps_abs or max_iter is accepted and the solve runs to max_iter.
+_SETTING_RANGES = {
+    **{
+        key: ("a finite number >= 0", lambda v: _is_number(v) and 0 <= v < math.inf)
+        for key in ("eps_abs", "eps_rel", "eps_duality_gap_abs", "eps_duality_gap_rel")
+    },
+    **{
+        key: ("a finite number > 0", lambda v: _is_number(v) and 0 < v < math.inf)
+        for key in ("rho", "mu_eq", "mu_in")
+    },
+    "max_iter": ("an integer >= 1", lambda v: _is_integer(v) and v >= 1),
+}
+
+
+def _check_setting_values(settings: dict) -> None:
+    """Raise ValueError naming a setting whose value is out of range (None means unset)."""
+    for key, value in settings.items():
+        if key in _SETTING_RANGES and value is not None:
+            description, test = _SETTING_RANGES[key]
+            if not test(value):
+                raise ValueError(f"Invalid ProxQP setting {key!r}={value!r}: must be {description}")
 
 
 # Positional problem data in ProxQP's ``solve`` signatures, not settings.

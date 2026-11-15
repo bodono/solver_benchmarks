@@ -83,6 +83,14 @@ class PIQPSolverAdapter(SolverAdapter):
             solver.setup(p, q, aeq, b, g, h_l, h_u, None, None)
         raw_status = solver.solve()
         elapsed = time.perf_counter() - start
+        if raw_status == piqp.PIQP_INVALID_SETTINGS:
+            # PIQP checks its settings' ranges (eps_abs > 0, max_iter > 0,
+            # ...) only when solving, and reports a failure as a status
+            # without saying which one; it is a configuration error.
+            raise ValueError(
+                "PIQP rejected a setting value (PIQP_INVALID_SETTINGS); check "
+                f"the values of {sorted(settings)}"
+            )
 
         result = solver.result
         mapped = _map_piqp_status(raw_status, piqp)

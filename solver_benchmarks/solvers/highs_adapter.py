@@ -186,11 +186,30 @@ def _configure_highs(solver, settings: dict) -> None:
 
 
 def _set_option(solver, key: str, value) -> None:
+    hint = ""
+    if isinstance(value, bool) and _is_string_option(solver, key):
+        # YAML 1.1 reads unquoted on/off (and yes/no) as booleans, but
+        # HiGHS's on/off options (presolve, run_crossover, parallel, ranging)
+        # are strings that refuse a bool.
+        value = "on" if value else "off"
+        hint = " (an unquoted on/off in YAML is read as a boolean)"
     if _is_error(solver.setOptionValue(key, value)):
         raise ValueError(
-            f"Invalid HiGHS setting {key!r}={value!r}: unknown option or value "
+            f"Invalid HiGHS setting {key!r}={value!r}{hint}: unknown option or value "
             "rejected by HiGHS (see its log)"
         )
+
+
+def _is_string_option(solver, key: str) -> bool:
+    get_type = getattr(solver, "getOptionType", None)
+    if get_type is None:
+        return False
+    try:
+        result = get_type(key)
+    except Exception:
+        return False
+    option_type = result[-1] if isinstance(result, tuple) else result
+    return getattr(option_type, "name", None) == "kString"
 
 
 def _is_error(result) -> bool:

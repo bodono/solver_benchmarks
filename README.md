@@ -499,8 +499,17 @@ A few setting names mean the same thing for every adapter:
 The QP adapters (OSQP, PIQP, ProxQP, QTQP, HiGHS, PDLP, cpo3, Gurobi, CPLEX,
 cuOpt) refuse a setting they do not know, or a value their solver rejects, with
 a `ValueError` naming it (recorded as a `worker_error`), so a misspelled option
-cannot silently leave a solver on its defaults. Translated aliases are listed
-on the result's `info.settings_translated`.
+cannot silently leave a solver on its defaults and a bad value is not scored
+as a solver failure. PIQP and PDLP report a rejected value as a status
+(`PIQP_INVALID_SETTINGS`, `TERMINATION_REASON_INVALID_PARAMETER`), which the
+adapter turns into that error. QTQP's `solve()` raises the same exception for a
+bad value as for problem data it cannot take, so the adapter checks the ranges
+it enforces first. ProxSuite checks no values, so the ProxQP adapter itself
+refuses a negative or non-finite `eps_*` tolerance, a `rho` / `mu_eq` / `mu_in`
+that is not positive, and a `max_iter` below 1. HiGHS's on/off options
+(`presolve`, `run_crossover`, `parallel`, ...) also accept a YAML boolean,
+since YAML reads an unquoted `off` as `false`. Translated aliases are listed on
+the result's `info.settings_translated`.
 
 In the QP form `l <= A x <= u`, every adapter treats a bound with magnitude
 `>= 1e19` on the open side as infinite (the datasets write `+-1e20`, sometimes
@@ -1548,7 +1557,7 @@ Adapter expectations:
 - Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states. A solve that stopped on its iteration or time limit is `MAX_ITER_REACHED` / `TIME_LIMIT` even when the solver labels its last iterate "solved inaccurate" or "almost solved"; keep the solver's own status in `info["raw_status"]`.
 - Populate `SolverResult.kkt` whenever the solver returned a finite primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) for every status in `status.ANY_FEASIBLE` (optimal, inaccurate, iteration or time limit, solver error), and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate (also an inaccurate one that came with a limit status, as OSQP's `*_infeasible_inaccurate` do). `bench kkt-verify --promote` can then judge every solver's limit-hit point by the same check. The KKT plots, summaries, and accuracy profile all read this field. `cone_residuals` projects onto every cone but complex PSD (zero, nonnegative, box, second-order, PSD, exponential and its dual, power and its dual), and its `primal_res` is the larger of `Ax + s − b` and the distance of `s` to the cone, so an adapter may pass `s = b − Ax`.
 - Report `objective_value` only for `OPTIMAL` and `OPTIMAL_INACCURATE` (`reported_objective` does this); it is `None` for limits, certificates and errors, whose point's objective is still on `kkt.primal_obj`.
-- Return `SOLVER_ERROR` with the message on `info["error"]` (and the elapsed time) when the solver itself fails on a problem by raising, e.g. on a non-convex `P` or crossed bounds; an exception escaping `solve` is recorded as a harness `worker_error` and re-run on resume. Keep raising for configuration errors (unknown settings, a missing backend).
+- Return `SOLVER_ERROR` with the message on `info["error"]` (and the elapsed time) when the solver itself fails on a problem by raising, e.g. on a non-convex `P` or crossed bounds; an exception escaping `solve` is recorded as a harness `worker_error` and re-run on resume. Keep raising for configuration errors (unknown settings, out-of-range values, a missing backend), including a bad value the solver reports as a status or raises from the same call as its failures on the problem.
 - Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
