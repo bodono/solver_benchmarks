@@ -7,7 +7,7 @@ import platform
 import sys
 from importlib import metadata
 
-from .system_info import _detect_cpu_model
+from .system_info import _detect_cpu_model, usable_cpu_count
 
 SOLVER_PACKAGES = {
     "clarabel": ("clarabel",),
@@ -32,8 +32,9 @@ SOLVER_PACKAGES = {
 def runtime_metadata(solver_name: str) -> dict:
     """Per-solve runtime metadata.
 
-    Captures Python / OS / CPU-model fields and the installed version
-    of the solver's backing package(s). System-level snapshots
+    Captures Python / OS / CPU-model fields, the CPUs the solve may use,
+    and the installed versions of the solver's backing package(s) and of
+    NumPy and SciPy. System-level snapshots
     (memory, full CPU detail) are captured *once* per run in the
     manifest's ``system`` block — duplicating them here would bloat
     every results row without adding signal. The CPU model is the
@@ -61,7 +62,14 @@ def runtime_metadata(solver_name: str) -> dict:
         "machine": platform.machine(),
         "processor": platform.processor(),
         "cpu_model": _detect_cpu_model(),
+        "usable_cpu_count": usable_cpu_count(),
         "solver_package_versions": package_versions,
+        # The BLAS/LAPACK behind most solvers ships with these, and in an
+        # environment matrix each environment can have its own builds; the
+        # manifest's system block only describes the driver's.
+        "library_versions": {
+            package: _package_version(package) for package in ("numpy", "scipy")
+        },
     }
 
 

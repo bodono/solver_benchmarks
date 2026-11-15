@@ -116,6 +116,9 @@ def _cpu_metadata() -> dict[str, Any]:
     """CPU info using psutil when available, falling back to stdlib."""
     cpu: dict[str, Any] = {
         "logical_count": os.cpu_count(),
+        # CPUs this process may run on: fewer than logical_count under
+        # taskset, Slurm or a container's cpuset.
+        "usable_count": usable_cpu_count(),
         "physical_count": None,
         "max_frequency_mhz": None,
         "current_frequency_mhz": None,
@@ -141,6 +144,19 @@ def _cpu_metadata() -> dict[str, Any]:
                 pass
     cpu["model"] = _detect_cpu_model()
     return cpu
+
+
+def usable_cpu_count() -> int | None:
+    """CPUs this process may run on (its affinity mask), else ``os.cpu_count()``."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)  # Python 3.13+
+    if process_cpu_count is not None:
+        return process_cpu_count()
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return len(os.sched_getaffinity(0))
+        except OSError:
+            pass
+    return os.cpu_count()
 
 
 def _is_apple_silicon() -> bool:

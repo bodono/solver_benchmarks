@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import json
+import logging
 import math
 import os
 import signal
@@ -11,8 +13,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +25,7 @@ from solver_benchmarks.core.config import (
     DatasetConfig,
     RunConfig,
     SolverConfig,
+    resolve_data_roots,
     resolve_output_dir,
     solve_signature,
 )
@@ -32,16 +36,27 @@ from solver_benchmarks.core.data_prepare import (
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
-from solver_benchmarks.core.storage import ResultStore, atomic_write_text
+from solver_benchmarks.core.storage import (
+    SKIP_SOLVER_UNAVAILABLE,
+    ResultStore,
+    atomic_write_text,
+)
 from solver_benchmarks.datasets import get_dataset
-from solver_benchmarks.datasets.base import filter_problem_specs_by_size
+from solver_benchmarks.datasets.base import default_repo_root, filter_problem_specs_by_size
 from solver_benchmarks.solvers import get_solver
 
-# Grace period added on top of the configured timeout before the subprocess
-# is force-killed. This lets solvers that honor their own internal time
-# limit return a partial result (status, iterations, residuals) instead of
-# being killed mid-return.
+# Bounds of the grace added on top of the configured timeout before the
+# worker is force-killed (see _subprocess_timeout). The grace covers worker
+# start-up and problem loading, and lets solvers that honor their own
+# internal time limit return a partial result (status, iterations,
+# residuals) instead of being killed mid-return.
 SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
+SUBPROCESS_TIMEOUT_MIN_GRACE_SECONDS = 5.0
+# Lines of each worker stream kept in memory; the logs hold everything.
+_OUTPUT_TAIL_LINES = 200
+
+logger = logging.getLogger(__name__)
+_POOL_IDS = itertools.count(1)
 
 
 def run_benchmark(
@@ -56,15 +71,26 @@ def run_benchmark(
     prepare_data_command: str | None = None,
     source_config_path: str | Path | None = None,
 ) -> ResultStore:
-    repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
+    repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
     config = resolve_output_dir(config, repo_root)
+    # Like output_dir, a relative data_root names a directory under repo_root,
+    # where the workers start; made absolute, it names the same place when
+    # this process lists the problems from another directory.
+    config = dataclasses.replace(config, datasets=resolve_data_roots(config.datasets, repo_root))
     if stream_solver_output is None:
         stream_solver_output = stream_output
+    if run_dir is not None and not config.resume:
+        refuse_to_rerun_into(run_dir, config)
     previous_manifest = (
         ResultStore.read_manifest(run_dir)
         if run_dir is not None and config.resume
         else None
     )
+    available_solver_ids = {
+        solver_config.id
+        for solver_config in config.solvers
+        if get_solver(solver_config.solver).is_available()
+    }
     store = ResultStore.create(config, run_dir=run_dir)
     # results.parquet is a success sentinel: it exists iff a run finished
     # all queued tasks without raising. Clear any leftover parquet from
@@ -74,10 +100,21 @@ def run_benchmark(
     if source_config_path is not None:
         store.copy_source_config(source_config_path)
     completed = (
-        store.completed_keys(config=config, previous_manifest=previous_manifest)
+        store.completed_keys(
+            config=config,
+            previous_manifest=previous_manifest,
+            available_solver_ids=available_solver_ids,
+        )
         if config.resume
         else set()
     )
+    retired = store.retire_superseded_rows(completed)
+    if retired:
+        store.append_event(
+            "info",
+            "Moved results solved under other settings to results.superseded.jsonl",
+            superseded_rows=retired,
+        )
 
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
     already_complete = 0
@@ -87,11 +124,7 @@ def run_benchmark(
         dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
         include, exclude = config.effective_filters(dataset_config)
         if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
-            problem_names, all_problems = data_prepare_selection(config, dataset_config)
-            dataset.prepare_data(
-                problem_names=problem_names,
-                all_problems=all_problems,
-            )
+            _prepare_data(dataset, config, dataset_config)
         problems = _filter_problems(dataset.list_problems(), include, exclude)
         problems = filter_problem_specs_by_size(
             problems, dataset_config.dataset_options.get("max_size_mb")
@@ -128,7 +161,7 @@ def run_benchmark(
 
         for solver_config in config.solvers:
             solver_cls = get_solver(solver_config.solver)
-            if not solver_cls.is_available():
+            if solver_config.id not in available_solver_ids:
                 message = (
                     f"Solver {solver_config.solver!r} is unavailable; skipping "
                     f"{solver_config.id!r}"
@@ -152,6 +185,7 @@ def run_benchmark(
                         message,
                         environment_id=environment_id,
                         environment_metadata=environment_metadata,
+                        skip_reason=SKIP_SOLVER_UNAVAILABLE,
                     )
                     skipped_during_planning += 1
                 continue
@@ -204,55 +238,211 @@ def run_benchmark(
         # No work to do (e.g. every problem skipped during planning, or
         # nothing left after resume) still counts as a successful run.
         # Materialize the parquet so its existence reflects completion.
-        store.write_parquet()
+        _retire_replaced_rows(store)
+        _write_parquet(store)
         progress.emit_final()
         return store
 
-    if parallelism == 1:
-        for dataset_config, problem, solver_config in tasks:
-            result = _run_one(
-                store,
-                config,
-                repo_root,
-                dataset_config,
-                problem,
-                solver_config,
-                stream_output=stream_output,
-                stream_solver_output=stream_solver_output,
-                environment_id=environment_id,
-                environment_metadata=environment_metadata,
-            )
-            store.write_result(result)
-            progress.record_result(result)
-    else:
-        with ThreadPoolExecutor(max_workers=parallelism) as executor:
-            futures = [
-                executor.submit(
-                    _run_one,
-                    store,
-                    config,
-                    repo_root,
-                    dataset_config,
-                    problem,
-                    solver_config,
-                    stream_output=stream_output,
-                    stream_solver_output=stream_solver_output,
-                    environment_id=environment_id,
-                    environment_metadata=environment_metadata,
-                )
-                for dataset_config, problem, solver_config in tasks
-            ]
-            for future in as_completed(futures):
-                result = future.result()
+    def run_task(
+        dataset_config: DatasetConfig, problem: ProblemSpec, solver_config: SolverConfig
+    ) -> ProblemResult:
+        return _run_task(
+            store,
+            config,
+            repo_root,
+            dataset_config,
+            problem,
+            solver_config,
+            stream_output=stream_output,
+            stream_solver_output=stream_solver_output,
+            environment_id=environment_id,
+            environment_metadata=environment_metadata,
+        )
+
+    try:
+        if parallelism == 1:
+            for task in tasks:
+                result = run_task(*task)
                 store.write_result(result)
                 progress.record_result(result)
+        else:
+            _run_tasks_in_parallel(tasks, run_task, store, progress, parallelism)
+    finally:
+        # Also after an interruption, so the results written so far stand
+        # alone in results.jsonl.
+        _retire_replaced_rows(store)
     # All queued tasks completed successfully — materialize the parquet
     # exactly once. results.jsonl is the canonical live record during
     # the run; results.parquet is the end-of-run derived artifact whose
     # presence signals "this run completed".
-    store.write_parquet()
+    _write_parquet(store)
     progress.emit_final()
     return store
+
+
+def _retire_replaced_rows(store: ResultStore) -> None:
+    """Move the superseded rows replaced during the run out of results.jsonl.
+
+    A failure is logged, not raised: the rows stay next to their
+    replacements, and the next resume moves them.
+    """
+    try:
+        retired = store.retire_replaced_rows()
+    except Exception as exc:  # noqa: BLE001 - logged; the next resume retries.
+        logger.warning("Could not move superseded rows out of %s: %s",
+                       store.results_jsonl_path, exc)
+        store.append_event(
+            "error",
+            "Could not move superseded rows to results.superseded.jsonl; "
+            "the next resume moves them",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return
+    if retired:
+        store.append_event(
+            "info",
+            "Moved results solved under other settings to results.superseded.jsonl",
+            superseded_rows=retired,
+        )
+
+
+def _write_parquet(store: ResultStore) -> None:
+    """Write results.parquet; a failure is logged, not raised.
+
+    The parquet is derived from results.jsonl, which already holds every
+    result: failing the finished run over it would lose nothing but report
+    the run as failed (and fail an environment matrix's child run).
+    """
+    try:
+        store.write_parquet()
+    except Exception as exc:  # noqa: BLE001 - logged; results.jsonl is the record.
+        logger.warning("Could not write %s: %s", store.results_parquet_path, exc)
+        store.append_event(
+            "error",
+            "Could not write results.parquet; results.jsonl holds every result",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def _prepare_data(dataset: Any, config: RunConfig, dataset_config: DatasetConfig) -> None:
+    """Prepare the requested data that is not present yet.
+
+    Problems already listed locally are not requested again: a dataset's
+    problem names are not always its download names (libsvm_qp lists
+    ``svm_dual_<name>``), so asking for a bundled problem could request a
+    URL that does not exist. A failure is raised as RuntimeError naming the
+    dataset, which ``bench run`` reports without a traceback.
+    """
+    problem_names, all_problems = data_prepare_selection(config, dataset_config)
+    if problem_names and not all_problems:
+        listed = {problem.name for problem in dataset.list_problems()}
+        problem_names = [name for name in problem_names if name not in listed]
+        if not problem_names:
+            return
+    try:
+        dataset.prepare_data(problem_names=problem_names, all_problems=all_problems)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Preparing data for dataset {dataset_config.id!r} failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def _run_tasks_in_parallel(
+    tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]],
+    run_task: Callable[[DatasetConfig, ProblemSpec, SolverConfig], ProblemResult],
+    store: ResultStore,
+    progress: _ProgressReporter,
+    parallelism: int,
+) -> None:
+    """Run ``tasks`` on a thread pool and write each result as it lands.
+
+    On any exception in this thread, KeyboardInterrupt included, solves that
+    have not started are cancelled, results that had already finished are
+    written, and the workers still running are killed (their results are not
+    recorded) before the exception propagates. Workers run in their own
+    sessions, so a terminal Ctrl+C reaches only this process.
+    """
+    prefix = f"bench-pool-{next(_POOL_IDS)}"
+    executor = ThreadPoolExecutor(max_workers=parallelism, thread_name_prefix=prefix)
+    futures = [
+        executor.submit(run_task, dataset_config, problem, solver_config)
+        for dataset_config, problem, solver_config in tasks
+    ]
+    written: set[Future] = set()
+    try:
+        for future in as_completed(futures):
+            result = future.result()
+            written.add(future)
+            store.write_result(result)
+            progress.record_result(result)
+    except BaseException:
+        executor.shutdown(wait=False, cancel_futures=True)
+        for future in futures:
+            if future in written or not future.done() or future.cancelled():
+                continue
+            if future.exception() is not None:
+                continue
+            try:
+                store.write_result(future.result())
+            except Exception:  # noqa: BLE001 - keep the original exception.
+                logger.exception("Could not write a finished result while stopping")
+        _WORKERS.abort(prefix)
+        raise
+    finally:
+        executor.shutdown(wait=True)
+        _WORKERS.release(prefix)
+
+
+def _run_task(
+    store: ResultStore,
+    config: RunConfig,
+    repo_root: Path,
+    dataset_config: DatasetConfig,
+    problem: ProblemSpec,
+    solver_config: SolverConfig,
+    **kwargs: Any,
+) -> ProblemResult:
+    """``_run_one``, with a failure to run the worker recorded as its result.
+
+    An OSError launching one worker (EMFILE, ENOMEM, ENOSPC writing its
+    payload) would otherwise abort the whole run. The row is a worker error,
+    so a later resume retries it.
+    """
+    try:
+        return _run_one(store, config, repo_root, dataset_config, problem, solver_config, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - recorded on the result row.
+        logger.exception(
+            "Could not run %s/%s with %s", dataset_config.id, problem.name, solver_config.id
+        )
+        store.append_event(
+            "error",
+            "Could not run the worker",
+            dataset=dataset_config.id,
+            problem=problem.name,
+            solver_id=solver_config.id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return ProblemResult(
+            run_id=store.run_id,
+            dataset=dataset_config.id,
+            problem=problem.name,
+            problem_kind=problem.kind,
+            solver_id=solver_config.id,
+            solver=solver_config.solver,
+            status=status.WORKER_ERROR,
+            objective_value=None,
+            iterations=None,
+            run_time_seconds=None,
+            error=f"Could not run the worker: {type(exc).__name__}: {exc}",
+            metadata=_metadata_with_environment(
+                problem,
+                solver_config,
+                environment_id=kwargs.get("environment_id"),
+                environment_metadata=kwargs.get("environment_metadata"),
+                resume_signature=solve_signature(config, dataset_config, solver_config),
+            ),
+        )
 
 
 class _ProgressReporter:
@@ -432,10 +622,12 @@ def _run_one(
         configured_timeout = solver_config.timeout_seconds
     else:
         configured_timeout = config.timeout_seconds
-    if configured_timeout is None or configured_timeout <= 0:
-        subprocess_timeout: float | None = None
-    else:
-        subprocess_timeout = float(configured_timeout) + SUBPROCESS_TIMEOUT_GRACE_SECONDS
+    time_limit = (
+        float(configured_timeout)
+        if configured_timeout is not None and configured_timeout > 0
+        else None
+    )
+    subprocess_timeout = _subprocess_timeout(time_limit)
     cmd = [sys.executable, "-m", "solver_benchmarks.worker", "--payload", str(payload_path)]
     _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
     completed = _run_subprocess(
@@ -458,8 +650,14 @@ def _run_one(
             status=status.TIME_LIMIT,
             objective_value=None,
             iterations=None,
-            run_time_seconds=float(subprocess_timeout) if subprocess_timeout else None,
-            error=f"Subprocess exceeded timeout_seconds={subprocess_timeout}",
+            run_time_seconds=time_limit,
+            error=(
+                f"Worker killed after {subprocess_timeout:g} s: timeout_seconds="
+                f"{time_limit:g} plus {subprocess_timeout - time_limit:g} s grace "
+                "for start-up and loading"
+                if subprocess_timeout is not None and time_limit is not None
+                else "Worker killed after the subprocess timeout"
+            ),
             artifact_dir=str(artifacts_dir),
             metadata=_metadata_with_environment(
                 problem,
@@ -483,6 +681,7 @@ def _run_one(
             environment_metadata=environment_metadata,
             resume_signature=resume_signature,
         )
+        _apply_time_limit(result, time_limit)
         _emit_progress(
             stream_output,
             f"finished {problem.name} with {solver_config.id}: {result.status}",
@@ -513,6 +712,53 @@ def _run_one(
             resume_signature=resume_signature,
         ),
     )
+
+
+# Statuses that claim a conclusion. Reached after the time limit, they are
+# recorded as time_limit: the limit is the budget every solver gets.
+_CONCLUSIVE_STATUSES = frozenset(
+    {status.OPTIMAL, status.OPTIMAL_INACCURATE, *status.ANY_INFEASIBLE}
+)
+
+
+def _subprocess_timeout(time_limit: float | None) -> float | None:
+    """Seconds after which the worker's process group is killed.
+
+    The clock starts with the worker process, so it also covers interpreter
+    start, imports and problem loading; a solver honouring its own time
+    limit also needs a moment to return. The grace for that equals the
+    limit, at least SUBPROCESS_TIMEOUT_MIN_GRACE_SECONDS and at most
+    SUBPROCESS_TIMEOUT_GRACE_SECONDS. A fixed 30 s grace let a solve with a
+    1 s limit run for 31 s.
+    """
+    if time_limit is None:
+        return None
+    grace = min(
+        SUBPROCESS_TIMEOUT_GRACE_SECONDS,
+        max(SUBPROCESS_TIMEOUT_MIN_GRACE_SECONDS, time_limit),
+    )
+    return time_limit + grace
+
+
+def _apply_time_limit(result: ProblemResult, time_limit: float | None) -> None:
+    """Record a conclusion reached after ``time_limit`` as time_limit.
+
+    The solver's own status stays in ``info["status_before_timeout"]``.
+    """
+    if (
+        time_limit is None
+        or result.status not in _CONCLUSIVE_STATUSES
+        or result.run_time_seconds is None
+        or not result.run_time_seconds > time_limit
+    ):
+        return
+    result.info = {**(result.info or {}), "status_before_timeout": result.status}
+    result.status = status.TIME_LIMIT
+    if result.error is None:
+        result.error = (
+            f"Solve took {result.run_time_seconds:.3g} s, more than "
+            f"timeout_seconds={time_limit:g}"
+        )
 
 
 def _check_schema_version(record_version: object) -> str | None:
@@ -654,11 +900,57 @@ def _format_short_seconds(seconds: float | None) -> str:
     return _format_duration(seconds)
 
 
-# Time budget after a SIGTERM-equivalent before we escalate to SIGKILL on
-# the whole process group. The first phase gives the worker a chance to
-# flush its pending writes; the second phase guarantees we move on.
+# Time budget after SIGTERM before the whole process group is SIGKILLed.
+# A solver that handles SIGTERM can finish writing its output; the worker's
+# Python output is unbuffered (PYTHONUNBUFFERED), but output a C library
+# still holds in its stdio buffer is lost on SIGTERM.
 _KILL_GRACE_SECONDS = 5.0
 _FINAL_WAIT_SECONDS = 5.0
+
+
+class _WorkerProcesses:
+    """Live worker processes, so an interrupted parallel run can kill them.
+
+    Workers run in their own sessions, so a terminal Ctrl+C reaches only the
+    runner, whose main thread then kills the workers its pool threads
+    started. A pool's threads are recognised by their name prefix; a worker
+    a pool thread starts after its pool was aborted is killed at once.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._live: dict[subprocess.Popen, str] = {}
+        self._aborted: set[str] = set()
+
+    def add(self, process: subprocess.Popen) -> None:
+        name = threading.current_thread().name
+        with self._lock:
+            self._live[process] = name
+            aborted = any(name.startswith(f"{prefix}_") for prefix in self._aborted)
+        if aborted:
+            _kill_process_group(process)
+
+    def discard(self, process: subprocess.Popen) -> None:
+        with self._lock:
+            self._live.pop(process, None)
+
+    def abort(self, prefix: str) -> None:
+        with self._lock:
+            self._aborted.add(prefix)
+            victims = [
+                process
+                for process, name in self._live.items()
+                if name.startswith(f"{prefix}_")
+            ]
+        for process in victims:
+            _kill_process_group(process)
+
+    def release(self, prefix: str) -> None:
+        with self._lock:
+            self._aborted.discard(prefix)
+
+
+_WORKERS = _WorkerProcesses()
 
 
 def _run_subprocess(
@@ -670,13 +962,15 @@ def _run_subprocess(
     stderr_path: Path,
     stream_output: bool,
 ):
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
+    # Only a bounded tail stays in memory: verbose solvers can print hundreds
+    # of MB, and the logs on disk already hold everything.
+    stdout_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
+    stderr_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
     # Line-buffered open so the on-disk log reflects in-progress output if
     # the worker is killed mid-line (prior bufsize=1 referred only to the
     # child pipes).
-    stdout_log = stdout_path.open("w", buffering=1)
-    stderr_log = stderr_path.open("w", buffering=1)
+    stdout_log = stdout_path.open("w", buffering=1, encoding="utf-8")
+    stderr_log = stderr_path.open("w", buffering=1, encoding="utf-8")
     threads: list[threading.Thread] = []
     process: subprocess.Popen | None = None
     try:
@@ -686,8 +980,16 @@ def _run_subprocess(
             "cwd": cwd,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
-            "text": True,
+            # Solver output is not always UTF-8 (a Latin-1 problem name, a C
+            # library's log). A strict decode would kill the log reader and
+            # close the pipe, and the worker would then die of EPIPE.
+            "encoding": "utf-8",
+            "errors": "backslashreplace",
             "bufsize": 1,
+            # Python's stdout is block-buffered on a pipe, and a timeout kill
+            # drops the buffer: the log of a timed-out solve would lose the
+            # iterations that explain the timeout.
+            "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
@@ -696,17 +998,18 @@ def _run_subprocess(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
         process = subprocess.Popen(cmd, **popen_kwargs)
+        _WORKERS.add(process)
         assert process.stdout is not None
         assert process.stderr is not None
         threads = [
             threading.Thread(
                 target=_tee_stream,
-                args=(process.stdout, stdout_log, sys.stdout, stdout_chunks, stream_output),
+                args=(process.stdout, stdout_log, sys.stdout, stdout_tail, stream_output),
                 daemon=True,
             ),
             threading.Thread(
                 target=_tee_stream,
-                args=(process.stderr, stderr_log, sys.stderr, stderr_chunks, stream_output),
+                args=(process.stderr, stderr_log, sys.stderr, stderr_tail, stream_output),
                 daemon=True,
             ),
         ]
@@ -718,7 +1021,19 @@ def _run_subprocess(
         except subprocess.TimeoutExpired:
             timed_out = True
             returncode = _terminate_process(process)
+        else:
+            # Helpers the worker left behind would hold the pipes open, stall
+            # the log readers and compete for CPU with later solves.
+            _kill_process_group(process)
+    except BaseException:
+        # KeyboardInterrupt or any other error once the worker started: it
+        # would otherwise keep solving, unsupervised and with no timeout.
+        if process is not None:
+            _kill_process_group(process)
+        raise
     finally:
+        if process is not None:
+            _WORKERS.discard(process)
         # Always drain pipes (so we don't lose the final partial line)
         # and close the log files. Bound the join so a wedged tee thread
         # doesn't hang the runner.
@@ -734,35 +1049,53 @@ def _run_subprocess(
             pass
     return SimpleNamespace(
         returncode=returncode,
-        stdout="".join(stdout_chunks),
-        stderr="".join(stderr_chunks),
+        stdout="".join(stdout_tail),
+        stderr="".join(stderr_tail),
         timed_out=timed_out,
     )
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    """SIGKILL the worker's process group, leader and helpers alike.
+
+    The group is the worker's own (``start_new_session``), so its id is the
+    worker's pid. Linux does not reuse a pid while it is still the id of a
+    live process group, so this is safe after the worker was reaped; it
+    raises ProcessLookupError once the group is empty.
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        return
+    try:
+        process.kill()
+    except OSError:
+        pass
 
 
 def _terminate_process(process: subprocess.Popen) -> int:
     """Kill the process group and return the exit code.
 
-    Always returns a returncode (using -SIGKILL as a last resort) rather
-    than blocking forever on ``wait()``.
+    SIGTERM first, so a solver that handles it can finish its output, then
+    SIGKILL to the whole group once the worker exits or the grace runs out:
+    a helper that ignores SIGTERM must not outlive the timeout. Always
+    returns a returncode (using -SIGKILL as a last resort) rather than
+    blocking forever on ``wait()``.
     """
     if os.name == "posix":
         try:
-            pgid = os.getpgid(process.pid)
-        except ProcessLookupError:
-            pgid = None
-        if pgid is not None:
-            try:
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-            try:
-                return process.wait(timeout=_KILL_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            returncode = process.wait(timeout=_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            returncode = None
+        _kill_process_group(process)
+        if returncode is not None:
+            return returncode
     process.kill()
     try:
         return process.wait(timeout=_FINAL_WAIT_SECONDS)
@@ -770,18 +1103,33 @@ def _terminate_process(process: subprocess.Popen) -> int:
         return -signal.SIGKILL
 
 
-def _tee_stream(source, log_file, sink, chunks: list[str], stream_output: bool) -> None:
+def _tee_stream(source, log_file, sink, tail: deque[str], stream_output: bool) -> None:
+    """Copy ``source`` to the log (and the terminal) until it closes.
+
+    Keeps draining when the log or the terminal fails: closing the pipe
+    early would kill the worker with EPIPE and lose a result it had
+    already written.
+    """
+    log_ok = True
+    sink_ok = stream_output
     try:
         for line in source:
-            chunks.append(line)
-            try:
-                log_file.write(line)
-            except ValueError:
-                # log_file was closed by the parent during teardown.
-                break
-            if stream_output:
-                sink.write(line)
-                sink.flush()
+            tail.append(line)
+            if log_ok:
+                try:
+                    log_file.write(line)
+                except (OSError, ValueError):
+                    # Disk full, or the log was closed by the parent during
+                    # teardown.
+                    log_ok = False
+            if sink_ok:
+                try:
+                    sink.write(line)
+                    sink.flush()
+                except (OSError, ValueError):
+                    sink_ok = False
+    except (OSError, ValueError):
+        pass
     finally:
         try:
             source.close()
@@ -843,6 +1191,37 @@ def _missing_data_run_message(
     return "\n".join(lines)
 
 
+def refuse_to_rerun_into(run_dir: str | Path, config: RunConfig) -> None:
+    """Raise if ``run_dir`` already holds results for solves ``config`` plans.
+
+    With ``resume: false`` every planned solve runs again, and its rows would
+    be appended next to the earlier ones for the same solves. Rows of other
+    dataset/solver pairs do not conflict: an environment matrix runs each
+    environment's solvers into one shared directory.
+    """
+    results_path = Path(run_dir) / "results.jsonl"
+    if not results_path.exists():
+        return
+    planned = {
+        (str(dataset.id), solver.id) for dataset in config.datasets for solver in config.solvers
+    }
+    with results_path.open() as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if (str(record.get("dataset", "")), str(record.get("solver_id"))) in planned:
+                raise RuntimeError(
+                    f"Run directory {Path(run_dir).resolve()} already has results for "
+                    "this config and run.resume is false, so every solve would run "
+                    "again next to its earlier result. Set `resume: true` to resume "
+                    "the run, or use a new --run-dir."
+                )
+
+
 def _already_done(
     dataset_config: DatasetConfig,
     problem: ProblemSpec,
@@ -862,12 +1241,22 @@ def _write_skip(
     *,
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
+    skip_reason: str | None = None,
 ) -> None:
     # An unavailable solver (or unsupported kind on this host) is not a new
     # solve attempt. Preserve the failed row and its retry budget so another
     # host can still recover it; do not create retry artifacts for a skip.
     if store.has_pending_retry(dataset_config.id, problem.name, solver_config.id):
         return
+    metadata = _metadata_with_environment(
+        problem,
+        solver_config,
+        environment_id=environment_id,
+        environment_metadata=environment_metadata,
+        resume_signature=solve_signature(config, dataset_config, solver_config),
+    )
+    if skip_reason is not None:
+        metadata["skip_reason"] = skip_reason
     artifacts_dir = store.problem_solver_dir(
         dataset_config.id, problem.name, solver_config.id
     )
@@ -885,13 +1274,7 @@ def _write_skip(
             run_time_seconds=None,
             error=message,
             artifact_dir=str(artifacts_dir),
-            metadata=_metadata_with_environment(
-                problem,
-                solver_config,
-                environment_id=environment_id,
-                environment_metadata=environment_metadata,
-                resume_signature=solve_signature(config, dataset_config, solver_config),
-            ),
+            metadata=metadata,
         )
     )
 

@@ -304,9 +304,10 @@ Useful dataset options:
 | Dataset | Option | Meaning |
 |---|---|---|
 | All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
+| All file-backed datasets | `data_root=<path>` | Read the dataset's files under `<path>` instead of `<repo_root>/problem_classes`. In a config file, a relative path is resolved under the repository root, like `run.output_dir`; `bench run --data-root` resolves it against the current directory. |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
 | `sdplib` | `subset=feasible`, `subset=infeasible` or `subset=all` | Select the SDPLIB feasibility subset (default `feasible`). |
-| `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the old rows stay in the directory, so use a new run directory for the declared form. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |
+| `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the merged-form rows move to `results.superseded.jsonl`, so use a new run directory to keep both forms. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |
 | `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
 | `liu_pataki` | `classification=infeas` or `classification=weak` | Select infeasible or weakly infeasible SDP families. |
 | `liu_pataki` | `conditioning=clean` or `conditioning=messy` | Select clean or numerically messier Liu-Pataki instances. |
@@ -439,7 +440,10 @@ solvers:
       time_limit_sec: 120
 ```
 
-Important fields:
+Important fields (a key not listed here is rejected with a suggestion, as are
+unknown solver and dataset names; an empty section such as `run:` with nothing
+under it counts as empty). Numbers such as `1e-6` and `1.0e6` are read as floats,
+as YAML 1.2 and JSON read them:
 
 | Field | Meaning |
 |---|---|
@@ -451,14 +455,14 @@ Important fields:
 | `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. |
 | `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. |
 | `run.parallelism` | Number of concurrent subprocess solves. |
-| `run.resume` | If true, completed `(dataset, problem, solver_id)` triples are not rerun. |
+| `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
-| `run.timeout_seconds` | Default subprocess timeout per solve. |
-| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
-| `solvers[].id` | Unique label for this solver variant. Used in output paths. |
+| `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
+| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. Requested problems that are already present are not requested again, and a failed preparation stops the run with an error naming the dataset. For `cblib`, `mittelmann_sdp` and `libsvm_qp`, a `subset` naming a single problem prepares that problem. |
+| `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
-| `solvers[].timeout_seconds` | Optional per-solver timeout override. |
+| `solvers[].timeout_seconds` | Optional per-solver override of `run.timeout_seconds`. |
 | `solvers[].sweep` | Optional mapping of setting name to a non-empty list of values. Expands to the full Cartesian product. |
 | `solvers[].id_template` | Optional Python format string used to name expanded sweep variants. |
 
@@ -647,9 +651,9 @@ environments:
 ```
 
 Sweep IDs must be unique after expansion, including across all environments in
-an environment matrix. This is intentional: resume uses `(problem, solver_id)`,
-and duplicate IDs would make two distinct configurations look like the same
-completed solve.
+an environment matrix. This is intentional: resume uses
+`(dataset, problem, solver_id)`, and duplicate IDs would make two distinct
+configurations look like the same completed solve.
 
 ## Running Benchmarks
 
@@ -690,13 +694,30 @@ bench run configs/netlib_feasible_example.yaml --run-dir results/<run_id>
 ```
 
 If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
-`results.jsonl` are skipped. Rows with `worker_error` are retried automatically
+`results.jsonl` are skipped when their solve settings match the current config:
+the solver, its settings, the effective timeout and the dataset options, except
+`data_root` and `max_size_mb`, which only say where the files are and which
+problems are listed. Rows written by earlier releases, which also hashed those
+two options, still count when everything else matches, also after either option
+changes: the first resume in such a directory works out, from the manifest the
+earlier release left, which current signature those rows' signatures stand for,
+and records it in the manifest for later resumes. A row solved under other settings is superseded: the
+triple is solved again, and at the end of the run the old rows whose
+replacements were written move from `results.jsonl` to
+`results.superseded.jsonl` in one rewrite, so reports only see results for the
+current settings. Until then, and after a crash that skips that step, both rows
+are in `results.jsonl`; the next resume moves the old one out. The superseded
+attempt's logs stay where its row points; the new attempt writes into a
+`rerun-N` subdirectory. Rows with `worker_error` are retried automatically
 when their solve settings match the current config, up to
 `run.max_worker_error_retries` times (default 2). This bounds both crashed workers
 and deterministic exceptions reported as `worker_error`. The latest error stays
 visible when the limit is reached; increase the limit after fixing the cause.
 Resuming on a host without the solver leaves pending errors and retry budgets
-unchanged. A retry atomically replaces
+unchanged. Problems skipped because the solver was not installed (their rows
+carry `metadata.skip_reason: solver_unavailable`) are solved on the first resume
+where it is; skips the adapter reports for an unsupported problem stay final. A
+retry atomically replaces
 the compatible error rows, so reports count one result for that solve. Previous
 logs and solver artifacts remain intact; new artifacts go into a `retry-N`
 subdirectory containing a `previous_results.jsonl` snapshot of the replaced
@@ -727,9 +748,14 @@ bench run configs/my_run.yaml --run-dir results/<run_id>
 ```
 
 The resume key is exactly `(dataset, problem, solver_id)`. If you change solver
-settings but keep the same `id`, the old rows are treated as complete and will
-not be rerun. Use a new `id` whenever settings change, such as `clarabel_tight`
-instead of reusing `clarabel_default`.
+settings but keep the same `id`, the old rows are superseded: every problem is
+solved again with the new settings and the old rows move to
+`results.superseded.jsonl`. To compare the two settings, give the new variant a
+new `id`, such as `clarabel_tight` instead of reusing `clarabel_default`.
+
+With `resume: false`, `bench run --run-dir` refuses a directory that already has
+results for the config's datasets and solvers instead of appending a second set
+of rows; start a new run directory instead.
 
 Run only specific problems by editing `include`, or list problems first:
 
@@ -754,6 +780,8 @@ Every result row records metadata under `metadata.runtime`:
 | `metadata.runtime.python_version` | Python version. |
 | `metadata.runtime.platform` | OS/platform string. |
 | `metadata.runtime.solver_package_versions` | Installed package versions relevant to the solver adapter, such as `{"osqp": "1.1.1"}`. |
+| `metadata.runtime.library_versions` | Installed numpy and scipy versions, which ship the BLAS/LAPACK most solvers use. |
+| `metadata.runtime.usable_cpu_count` | CPUs the solve subprocess may run on (its CPU affinity). |
 | `metadata.environment_id` | Optional user-supplied environment label. |
 | `metadata.environment_metadata` | Optional user-supplied metadata, usually pinned solver versions or environment notes. |
 
@@ -780,7 +808,7 @@ bench report results/osqp_version_compare
 ```
 
 The solver IDs should encode the version, because resume uses
-`(problem, solver_id)`:
+`(dataset, problem, solver_id)`:
 
 ```yaml
 solvers:
@@ -941,7 +969,7 @@ Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` (default: the current directory if it has `problem_classes`, else the checkout the package was installed from, as for the other commands), `--data-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. `--data-root` sets `data_root` for every dataset in the config. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
 | `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
@@ -1006,11 +1034,12 @@ Files:
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | Run metadata, normalized config, config hash, creation time. |
+| `manifest.json` | Run metadata, normalized config, config hash, creation time, and a map from the resume signatures that rows from earlier releases carry to the current ones (`legacy_resume_signatures`). |
 | `run_config.yaml` / `run_config.json` | Exact source config file passed to `bench run`, copied into the run directory before solving. |
 | `events.jsonl` | Structured warnings/events, including unavailable solvers and unsupported combinations. |
 | `results.jsonl` | One JSON record per completed or skipped solve. Human-readable and append-friendly. |
-| `results.parquet` | Flattened results table for pandas/Arrow analysis. Rewritten after each result. |
+| `results.superseded.jsonl` | Rows a resume replaced because they were solved under other settings (see [Running Benchmarks](#running-benchmarks)). Only present after such a resume; analysis ignores it. |
+| `results.parquet` | Flattened results table for pandas/Arrow analysis, written when a run finishes; its presence marks a completed run. Columns whose values mix types across adapters (e.g. `info.raw_status`, an integer for Gurobi and CPLEX, a string elsewhere) are stored as text. If it cannot be written, the error is logged to `events.jsonl` and `results.jsonl` remains the complete record. |
 | `payload.json` | Exact payload passed to the subprocess worker. |
 | `stdout.log` | Everything emitted to subprocess stdout during a solve. |
 | `stderr.log` | Everything emitted to subprocess stderr during a solve. |
@@ -1023,7 +1052,7 @@ Files:
 Each solve runs in a subprocess. This gives:
 
 - Native solver crashes do not kill the main runner.
-- Timeouts are enforced per solve.
+- Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C, or a SIGTERM to `bench run` / `bench env run` (Slurm's `scancel`, `kill`, a CI job timeout), kills the running workers too, and a parallel run keeps the results that had already finished; a SIGTERM exits with status 143.
 - Solver stdout/stderr are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.
@@ -1050,13 +1079,15 @@ Solver-specific traces:
   OR-Tools is installed and a solve is attempted.
 
 System info: each run's `manifest.json` carries a `system` block captured once
-at run start, recording the CPU model / logical and physical core count / max
-frequency, total and available memory, OS / kernel version, Python version,
+at run start, recording the CPU model / logical and physical core count / the
+number of CPUs the process may use (`cpu.usable_count`, smaller than the logical
+count under `taskset`, Slurm or a container cpuset) / max frequency, total and available memory, OS / kernel version, Python version,
 and the installed numpy / scipy / pandas / pyarrow and registered solver-package
 versions under `system.library_versions` (uninstalled optional packages are
 recorded as `null`). This describes the parent environment at run start;
-`metadata.runtime.solver_package_versions` on each result remains the source
-for versions actually used by workers, including isolated `bench env` runs.
+`metadata.runtime.solver_package_versions` and `metadata.runtime.library_versions`
+(numpy and scipy) on each result remain the source for versions actually used
+by workers, including isolated `bench env` runs.
 The block is
 preserved across manifest rewrites so a re-run on the same run directory
 cannot silently overwrite the original provenance. Install the optional

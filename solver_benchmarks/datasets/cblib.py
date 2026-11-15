@@ -38,6 +38,7 @@ class CBLIBDataset(Dataset):
     data_patterns = ("*.cbf", "*.cbf.gz")
     prepare_command = "python scripts/prepare_cblib.py"
     automatic_download = True
+    subset_lists_problems = True
 
     @property
     def folder(self) -> Path:

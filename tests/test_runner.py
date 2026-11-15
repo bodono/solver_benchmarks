@@ -180,7 +180,7 @@ def test_resume_reuses_legacy_rows_when_solve_signature_is_compatible(
     assert new_row["metadata"]["resume_signature"]
 
 
-def test_resume_recomputes_legacy_rows_when_solver_settings_change(
+def test_resume_supersedes_legacy_rows_when_solver_settings_change(
     monkeypatch, tmp_path: Path, repo_root: Path
 ):
     class ResumeDataset:
@@ -275,8 +275,15 @@ def test_resume_recomputes_legacy_rows_when_solver_settings_change(
     ]
     assert [call["id"] for call in calls] == ["existing"]
     assert calls[0]["settings"] == {"alpha": 2}
-    assert [row["solver_id"] for row in rows] == ["existing", "existing"]
-    assert rows[1]["metadata"]["resume_signature"]
+    # The row solved with alpha=1 no longer describes "existing": the new
+    # result replaces it, and it is kept aside in results.superseded.jsonl.
+    assert [row["solver_id"] for row in rows] == ["existing"]
+    assert rows[0]["metadata"]["resume_signature"]
+    superseded = [
+        json.loads(line)
+        for line in (store.run_dir / "results.superseded.jsonl").read_text().splitlines()
+    ]
+    assert len(superseded) == 1 and "resume_signature" not in superseded[0]["metadata"]
 
 
 @pytest.mark.parametrize("parallelism", [1, 2])

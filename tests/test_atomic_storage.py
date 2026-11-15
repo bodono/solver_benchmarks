@@ -83,7 +83,9 @@ def test_completed_keys_skips_torn_jsonl_lines(tmp_path: Path):
     assert keys == {("synthetic_qp", "p1", "scs")}
 
 
-def test_retry_replaces_only_signature_compatible_worker_errors(tmp_path: Path):
+def test_retry_replaces_compatible_worker_errors_and_supersedes_incompatible_rows(
+    tmp_path: Path,
+):
     store = _make_store(tmp_path)
     config = parse_run_config(
         {"run": {"dataset": "synthetic_qp"}, "solvers": [{"id": "scs", "solver": "scs"}]}
@@ -112,10 +114,13 @@ def test_retry_replaces_only_signature_compatible_worker_errors(tmp_path: Path):
     store.write_result(replace(failed, status="optimal", run_time_seconds=0.1))
 
     rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
-    assert len(rows) == 4
-    assert rows[:3] == [incompatible.to_record(), other_dataset.to_record(), time_limited.to_record()]
-    assert rows[3]["status"] == "optimal"
-    assert rows[3]["metadata"]["resume_signature"] == signature
+    assert len(rows) == 3
+    # A dataset the config does not plan keeps its rows untouched.
+    assert rows[:2] == [other_dataset.to_record(), time_limited.to_record()]
+    assert rows[2]["status"] == "optimal"
+    assert rows[2]["metadata"]["resume_signature"] == signature
+    superseded = store.superseded_jsonl_path.read_text().splitlines()
+    assert [json.loads(line) for line in superseded] == [incompatible.to_record()]
 
 
 def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, monkeypatch):
@@ -309,3 +314,95 @@ def test_completed_keys_skips_record_missing_required_keys(tmp_path: Path):
 
     keys = store.completed_keys()
     assert keys == {("d", "p2", "s")}
+
+
+def test_write_parquet_handles_columns_mixing_python_types(tmp_path: Path):
+    """Gurobi and CPLEX report an integer raw_status; most adapters a string."""
+    import pandas as pd
+
+    store = _make_store(tmp_path)
+    infos = [
+        {"raw_status": 2, "nested": {"a": 1}},
+        {"raw_status": "Solved", "nested": [1, 2]},
+        {"raw_status": None, "nested": "text"},
+    ]
+    for index, info in enumerate(infos):
+        store.write_result(
+            ProblemResult(
+                run_id=store.run_id, dataset="synthetic_qp", problem=f"p{index}",
+                problem_kind=QP, solver_id="scs", solver="scs", status="optimal",
+                objective_value=1.0, iterations=index, run_time_seconds=0.1, info=info,
+            )
+        )
+    store.write_parquet()
+    df = pd.read_parquet(store.results_parquet_path)
+    assert list(df["info.raw_status"].iloc[:2]) == ["2", "Solved"]
+    assert pd.isna(df["info.raw_status"].iloc[2])
+    assert list(df["iterations"]) == [0, 1, 2]
+    assert list(df["info.nested"].iloc[1:]) == ["[1, 2]", "text"]
+
+
+def test_run_completes_when_parquet_cannot_be_written(tmp_path: Path, monkeypatch, repo_root):
+    from types import SimpleNamespace
+
+    from solver_benchmarks.core.runner import run_benchmark
+
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id="scs", solver="scs",
+            status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.01,
+            artifact_dir=payload["artifacts_dir"],
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, timed_out=False)
+
+    def broken_parquet(self):
+        raise TypeError("Conversion failed for column info.raw_status")
+
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake)
+    monkeypatch.setattr(ResultStore, "write_parquet", broken_parquet)
+    config = parse_run_config(
+        {"run": {"dataset": "synthetic_qp"}, "solvers": [{"id": "scs", "solver": "scs"}]}
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert len(store.results_jsonl_path.read_text().splitlines()) == 2
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    failure = next(event for event in events if event["level"] == "error")
+    assert "results.parquet" in failure["message"] and "raw_status" in failure["error"]
+    assert events[-1]["message"] == "benchmark_complete"
+
+
+@pytest.mark.parametrize("writer", ["text", "bytes"])
+def test_atomic_writes_honour_the_umask_and_keep_an_existing_mode(tmp_path: Path, writer):
+    import os
+    import stat
+
+    from solver_benchmarks.datasets.base import atomic_write_bytes
+
+    def write(path):
+        if writer == "text":
+            atomic_write_text(path, "content")
+        else:
+            atomic_write_bytes(path, b"content")
+
+    previous = os.umask(0o022)
+    try:
+        fresh = tmp_path / "fresh.json"
+        write(fresh)
+        assert stat.S_IMODE(fresh.stat().st_mode) == 0o644
+        os.umask(0o027)
+        write(tmp_path / "group.json")
+        assert stat.S_IMODE((tmp_path / "group.json").stat().st_mode) == 0o640
+        existing = tmp_path / "existing.json"
+        existing.write_text("old")
+        existing.chmod(0o664)
+        write(existing)
+        assert stat.S_IMODE(existing.stat().st_mode) == 0o664
+        assert existing.read_text() == "content"
+    finally:
+        os.umask(previous)
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "existing.json", "fresh.json", "group.json"
+    ]

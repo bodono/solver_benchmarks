@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import hashlib
 import json
 import math
@@ -18,6 +19,37 @@ from typing import Any
 # `=` is allowed because the default sweep id template formats values
 # as ``key=value`` (e.g. ``scs__alpha=1e-6``).
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_.+=-]+$")
+
+# Keys each config section accepts. Anything else is a typo, which would
+# otherwise be dropped silently (a misspelled ``timeout`` ran with no limit).
+_RUN_KEYS = frozenset(
+    {
+        "name",
+        "dataset",
+        "datasets",
+        "dataset_options",
+        "output_dir",
+        "include",
+        "exclude",
+        "parallelism",
+        "resume",
+        "max_worker_error_retries",
+        "worker_memory_limit_mb",
+        "timeout_seconds",
+        "fail_on_unsupported",
+        "auto_prepare_data",
+    }
+)
+# Run keys may also sit at the top level, as in a manifest's config, which
+# environment matrices hand to each child run (config_hash included).
+_TOP_LEVEL_KEYS = _RUN_KEYS | {"run", "solvers", "config_hash"}
+_DATASET_ENTRY_KEYS = frozenset(
+    {"name", "dataset", "id", "dataset_options", "include", "exclude"}
+)
+_SOLVER_ENTRY_KEYS = frozenset(
+    {"id", "solver", "settings", "timeout_seconds", "sweep", "id_template"}
+)
+_ENVIRONMENT_KEYS = frozenset({"id", "python", "install", "solvers", "metadata"})
 
 
 @dataclass(frozen=True)
@@ -178,20 +210,39 @@ class EnvironmentRunConfig:
 def load_run_config(path: str | Path) -> RunConfig:
     path = Path(path)
     raw = _with_default_run_name(_load_mapping(path), path.stem)
-    return parse_run_config(raw, base_dir=path.parent)
+    return parse_run_config(raw)
 
 
 def load_environment_run_config(path: str | Path) -> EnvironmentRunConfig:
     path = Path(path)
     raw = _with_default_run_name(_load_mapping(path), path.stem)
-    return parse_environment_run_config(raw, base_dir=path.parent)
+    return parse_environment_run_config(raw)
 
 
-def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunConfig:
-    run = raw.get("run", {})
+def parse_run_config(raw: dict[str, Any]) -> RunConfig:
+    """Parse and validate a run config mapping.
+
+    Unknown keys, unregistered solver or dataset names and ids that would
+    share an artifact directory raise ValueError. Empty (null) sections
+    count as empty. Relative paths stay relative: the runner resolves
+    ``output_dir`` and ``data_root`` against the repository root.
+    """
+    raw = _mapping(raw, "config")
+    _check_keys(
+        raw,
+        _TOP_LEVEL_KEYS,
+        "top-level",
+        hint=(
+            " Environment matrix configs run with `bench env run`."
+            if "environments" in raw
+            else ""
+        ),
+    )
+    run = _mapping(raw.get("run"), "run")
+    _check_keys(run, _RUN_KEYS, "run")
     datasets = _parse_datasets(raw, run)
 
-    solvers = _parse_solver_entries(raw.get("solvers", []), context="solver")
+    solvers = _parse_solver_entries(raw.get("solvers"), context="solver")
     if not solvers:
         raise ValueError("Config must define at least one solver")
 
@@ -232,6 +283,31 @@ def parse_run_config(raw: dict[str, Any], base_dir: Path | None = None) -> RunCo
     )
 
 
+def resolve_data_roots(
+    datasets: list[DatasetConfig], base_dir: str | Path
+) -> list[DatasetConfig]:
+    """Make each relative ``data_root`` dataset option absolute under ``base_dir``.
+
+    The runner passes the repository root, as for ``output_dir``. It lists
+    problems in its own working directory but starts each worker in the
+    repository root, so a relative path would name two different
+    directories.
+    """
+    resolved = []
+    for dataset in datasets:
+        data_root = dataset.dataset_options.get("data_root")
+        if data_root and not Path(data_root).is_absolute():
+            dataset = replace(
+                dataset,
+                dataset_options={
+                    **dataset.dataset_options,
+                    "data_root": str((Path(base_dir) / data_root).resolve()),
+                },
+            )
+        resolved.append(dataset)
+    return resolved
+
+
 def resolve_output_dir(config: RunConfig, root: str | Path) -> RunConfig:
     """Resolve a relative run output directory under the benchmark repo root."""
     if config.output_dir.is_absolute():
@@ -242,21 +318,25 @@ def resolve_output_dir(config: RunConfig, root: str | Path) -> RunConfig:
     )
 
 
-def parse_environment_run_config(
-    raw: dict[str, Any],
-    base_dir: Path | None = None,
-) -> EnvironmentRunConfig:
-    environments_raw = raw.get("environments")
+def parse_environment_run_config(raw: dict[str, Any]) -> EnvironmentRunConfig:
+    raw = _mapping(raw, "config")
+    environments_raw = _entries(raw.get("environments"), "environments")
     if not environments_raw:
         raise ValueError("Environment config must define environments")
     environments = []
     all_solver_ids: set[str] = set()
+    solver_slugs: dict[str, str] = {}
     for item in environments_raw:
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Every environment entry must be a mapping, got {type(item).__name__}"
+            )
         env_id = item.get("id")
         if not env_id:
             raise ValueError("Every environment entry must define id")
+        _check_keys(item, _ENVIRONMENT_KEYS, f"environment {env_id!r}")
         solvers = _parse_solver_entries(
-            item.get("solvers", []),
+            item.get("solvers"),
             context=f"environment {env_id!r} solver",
         )
         if not solvers:
@@ -267,13 +347,14 @@ def parse_environment_run_config(
                     f"Duplicate solver id across environments: {solver.id!r}"
                 )
             all_solver_ids.add(solver.id)
+            _check_slug_unique(solver.id, solver_slugs, "solver")
         environments.append(
             EnvironmentConfig(
                 id=str(env_id),
-                python=str(item.get("python", "python")),
-                install=[str(command) for command in item.get("install", [])],
+                python=str(item.get("python") or "python"),
+                install=[str(command) for command in _entries(item.get("install"), "install")],
                 solvers=solvers,
-                metadata=dict(item.get("metadata", {})),
+                metadata=dict(_mapping(item.get("metadata"), "metadata")),
             )
         )
     child_raw = dict(raw)
@@ -288,7 +369,7 @@ def parse_environment_run_config(
         for solver in environments[0].solvers
     ]
     return EnvironmentRunConfig(
-        run=parse_run_config(child_raw, base_dir=base_dir),
+        run=parse_run_config(child_raw),
         environments=environments,
     )
 
@@ -311,8 +392,9 @@ def _parse_datasets(raw: dict[str, Any], run: dict[str, Any]) -> list[DatasetCon
         raise ValueError("Config must define `dataset` or `datasets`")
 
     dataset_options = _canonicalize(
-        dict(run.get("dataset_options", raw.get("dataset_options", {})))
+        dict(_mapping(run.get("dataset_options", raw.get("dataset_options")), "dataset_options"))
     )
+    _check_registered_dataset(str(single_name))
     return [
         DatasetConfig(
             name=str(single_name),
@@ -335,11 +417,17 @@ def _parse_dataset_entries(
     # hash successfully but later crash ``ResultStore.create()`` with
     # ``TypeError: Object of type PosixPath is not JSON serializable``.
     default_options = _canonicalize(
-        dict(defaults.get("dataset_options", root.get("dataset_options", {})))
+        dict(
+            _mapping(
+                defaults.get("dataset_options", root.get("dataset_options")),
+                "dataset_options",
+            )
+        )
     )
     parsed: list[DatasetConfig] = []
     seen_ids: set[str] = set()
     seen_names_no_id: set[str] = set()
+    seen_slugs: dict[str, str] = {}
     for entry in items:
         explicit_id: str | None = None
         if isinstance(entry, str):
@@ -353,9 +441,12 @@ def _parse_dataset_entries(
                 raise ValueError(
                     "Every dataset entry must define `name` (or legacy `dataset`)"
                 )
+            _check_keys(entry, _DATASET_ENTRY_KEYS, f"dataset entry {name!r}")
             raw_id = entry.get("id")
             explicit_id = str(raw_id) if raw_id is not None else None
-            entry_options = _canonicalize(dict(entry.get("dataset_options", {})))
+            entry_options = _canonicalize(
+                dict(_mapping(entry.get("dataset_options"), f"dataset {name!r} dataset_options"))
+            )
             dataset_options = {
                 **default_options,
                 **entry_options,
@@ -367,6 +458,7 @@ def _parse_dataset_entries(
                 f"Dataset entry must be a string or mapping, got {type(entry).__name__}"
             )
         name = str(name)
+        _check_registered_dataset(name)
         entry_id = explicit_id if explicit_id is not None else name
         if entry_id in seen_ids:
             if explicit_id is None:
@@ -385,6 +477,7 @@ def _parse_dataset_entries(
                 "told apart."
             )
         seen_ids.add(entry_id)
+        _check_slug_unique(entry_id, seen_slugs, "dataset")
         if explicit_id is None:
             seen_names_no_id.add(name)
         parsed.append(
@@ -399,21 +492,30 @@ def _parse_dataset_entries(
     return parsed
 
 
-def _parse_solver_entries(items: list[dict[str, Any]], *, context: str) -> list[SolverConfig]:
+def _parse_solver_entries(items: Any, *, context: str) -> list[SolverConfig]:
     solvers = []
     seen_ids: set[str] = set()
-    for item in items:
+    seen_slugs: dict[str, str] = {}
+    for item in _entries(items, "solvers"):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Every {context} entry must be a mapping with id and solver, "
+                f"got {type(item).__name__}: {item!r}"
+            )
         solver_name = item.get("solver")
         solver_id = item.get("id")
         if not solver_name or not solver_id:
             raise ValueError(f"Every {context} entry must define id and solver")
+        _check_keys(item, _SOLVER_ENTRY_KEYS, f"{context} {solver_id!r}")
         _validate_identifier(str(solver_id), context=f"{context} id")
+        _check_registered_solver(str(solver_name))
         expanded = _expand_solver_entry(item, context=context)
         for solver in expanded:
             _validate_identifier(solver.id, context=f"{context} id")
             if solver.id in seen_ids:
                 raise ValueError(f"Duplicate solver id after sweep expansion: {solver.id!r}")
             seen_ids.add(solver.id)
+            _check_slug_unique(solver.id, seen_slugs, "solver")
             solvers.append(solver)
     return solvers
 
@@ -423,7 +525,7 @@ def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverCo
     base_id = str(item["id"])
     # Deep-copy nested settings so two SolverConfigs produced from the same
     # entry (e.g. via sweep expansion) do not share mutable nested dicts.
-    base_settings_raw = copy.deepcopy(item.get("settings", {}))
+    base_settings_raw = copy.deepcopy(item.get("settings") or {})
     if not isinstance(base_settings_raw, dict):
         raise ValueError(f"{context} {base_id!r} settings must be a mapping")
     # Canonicalize settings (Path -> str, set -> sorted list, etc.) at
@@ -552,15 +654,53 @@ def _format_sweep_value(value: Any) -> str:
 def _load_mapping(path: Path) -> dict[str, Any]:
     text = path.read_text()
     if path.suffix.lower() == ".json":
-        return json.loads(text)
-    try:
-        import yaml  # type: ignore
-    except ModuleNotFoundError:
-        return json.loads(text)
-    data = yaml.safe_load(text)
+        data = json.loads(text)
+    else:
+        try:
+            import yaml  # type: ignore
+        except ModuleNotFoundError:
+            data = json.loads(text)
+        else:
+            try:
+                data = yaml.load(text, Loader=_config_loader())
+            except yaml.YAMLError as exc:
+                raise ValueError(f"Could not parse config {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"Config {path} did not parse to a mapping")
     return data
+
+
+_YAML_LOADER: Any = None
+
+
+def _config_loader() -> Any:
+    """A SafeLoader that reads floats the YAML 1.2 way.
+
+    PyYAML follows YAML 1.1, where a float needs a dot and a signed
+    exponent: ``1e-6`` and ``1.0e6`` load as strings and reach the solver
+    as such, failing every solve. YAML 1.2 (and JSON) read them as floats.
+    """
+    global _YAML_LOADER
+    if _YAML_LOADER is None:
+        import yaml  # type: ignore
+
+        class ConfigLoader(yaml.SafeLoader):
+            pass
+
+        ConfigLoader.add_implicit_resolver(
+            "tag:yaml.org,2002:float",
+            re.compile(
+                r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+]?[0-9]+)?
+                |[-+]?(?:[0-9][0-9_]*)(?:[eE][-+]?[0-9]+)
+                |\.[0-9_]+(?:[eE][-+]?[0-9]+)?
+                |[-+]?\.(?:inf|Inf|INF)
+                |\.(?:nan|NaN|NAN))$""",
+                re.X,
+            ),
+            list("-+0123456789."),
+        )
+        _YAML_LOADER = ConfigLoader
+    return _YAML_LOADER
 
 
 def _with_default_run_name(raw: dict[str, Any], default_name: str) -> dict[str, Any]:
@@ -583,6 +723,94 @@ def _optional_string(value: Any) -> str | None:
     return text or None
 
 
+def _mapping(value: Any, context: str) -> dict[str, Any]:
+    """A config section that must be a mapping; null (an empty section) is ``{}``."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"`{context}` must be a mapping, got {type(value).__name__}: {value!r}"
+        )
+    return value
+
+
+def _entries(value: Any, context: str) -> list[Any]:
+    """A config section that must be a list; null (an empty section) is ``[]``."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(
+            f"`{context}` must be a list of entries, got {type(value).__name__}: {value!r}"
+        )
+    return value
+
+
+def _check_keys(
+    mapping: dict[str, Any], allowed: frozenset[str], context: str, *, hint: str = ""
+) -> None:
+    unknown = sorted(str(key) for key in mapping if str(key) not in allowed)
+    if not unknown:
+        return
+    described = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, sorted(allowed), n=1)
+        described.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+    raise ValueError(
+        f"Unknown {context} key{'s' if len(unknown) > 1 else ''}: "
+        f"{', '.join(described)}. Known keys: {', '.join(sorted(allowed))}.{hint}"
+    )
+
+
+def _check_registered_solver(name: str) -> None:
+    # Imported here: the solver adapters import this package's core modules.
+    from solver_benchmarks.solvers.registry import SOLVERS
+
+    if name.lower() not in SOLVERS:
+        raise ValueError(_unknown_name_message("solver", name, SOLVERS))
+
+
+def _check_registered_dataset(name: str) -> None:
+    from solver_benchmarks.datasets.registry import DATASETS
+
+    if name not in DATASETS:
+        raise ValueError(_unknown_name_message("dataset", name, DATASETS))
+
+
+def _unknown_name_message(kind: str, name: str, known: dict[str, Any]) -> str:
+    close = difflib.get_close_matches(name.lower(), sorted(known), n=1)
+    suggestion = f" Did you mean {close[0]!r}?" if close else ""
+    return (
+        f"Unknown {kind} {name!r}.{suggestion} Available: {', '.join(sorted(known))} "
+        f"(see `bench list {kind}s`)."
+    )
+
+
+def slugify(value: str) -> str:
+    """The directory name for a run, dataset, problem or solver id.
+
+    Ids may use ``+`` and ``=`` (sweep ids such as ``scs__scale=1e+06``),
+    and both are safe in file names, so they are kept: mapping them to ``-``
+    made ``scale=1e-06`` and ``scale=1e+06`` share one directory.
+    """
+    value = re.sub(r"[^A-Za-z0-9_.+=-]+", "-", value.strip())
+    return value.strip("-") or "run"
+
+
+def _check_slug_unique(entry_id: str, seen: dict[str, str], kind: str) -> None:
+    """Reject ids whose artifact directories would coincide.
+
+    Compared case-insensitively, since macOS and Windows file systems are.
+    """
+    slug = slugify(entry_id).lower()
+    other = seen.get(slug)
+    if other is not None and other != entry_id:
+        raise ValueError(
+            f"{kind.capitalize()} ids {other!r} and {entry_id!r} would share the "
+            f"artifact directory {slugify(entry_id)!r}; rename one of them."
+        )
+    seen[slug] = entry_id
+
+
 def _listify(value: Any) -> list[str]:
     if value is None:
         return []
@@ -598,7 +826,7 @@ def _listify(value: Any) -> list[str]:
 def _validate_identifier(value: str, *, context: str) -> None:
     if not _IDENTIFIER_PATTERN.fullmatch(value):
         raise ValueError(
-            f"{context} {value!r} contains characters outside [A-Za-z0-9_.+-]; "
+            f"{context} {value!r} contains characters outside [A-Za-z0-9_.+=-]; "
             "use only those characters so the id round-trips through "
             "filesystem paths and CSV column names."
         )
@@ -752,48 +980,61 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+# Dataset options that only say where a dataset's files are or which of its
+# problems are listed. They never change a problem that is solved, so they
+# stay out of the resume signature: pointing --data-root at a copy of the data
+# or raising a size cap does not invalidate results already recorded.
+_LOCATION_OPTIONS = frozenset({"data_root", "max_size_mb"})
+
+
 def solve_signature(
     config: RunConfig,
     dataset: DatasetConfig,
     solver: SolverConfig,
+    *,
+    legacy: bool = False,
 ) -> str:
     """Return the resume identity for one dataset/solver solve family.
 
     The signature intentionally ignores run bookkeeping fields such as
-    name, output_dir, parallelism, resume, and reporting flags. It covers
-    the pieces that can change the actual mathematical problem or solver
-    behavior for an already-planned ``(dataset, problem, solver_id)`` row.
+    name, output_dir, parallelism, resume, and reporting flags, and the
+    dataset options in ``_LOCATION_OPTIONS``. It covers the pieces that can
+    change the actual mathematical problem or solver behavior for an
+    already-planned ``(dataset, problem, solver_id)`` row.
+
+    ``legacy=True`` returns the signature as earlier releases computed it,
+    with the location options hashed too. Rows those releases wrote carry
+    it, so resume accepts either form.
     """
-    return _stable_digest(
-        {
-            "dataset": {
-                "id": dataset.id,
-                "name": dataset.name,
-                "dataset_options": _signature_dataset_options(
-                    dataset.name, dataset.dataset_options
-                ),
-            },
-            "solver": {
-                "id": solver.id,
-                "solver": solver.solver,
-                "settings": solver.settings,
-                "effective_timeout_seconds": _effective_timeout(config, solver),
-            },
-        },
-        length=24,
+    return _solve_signature(
+        dataset_id=str(dataset.id),
+        dataset_name=dataset.name,
+        dataset_options=dataset.dataset_options,
+        solver_id=solver.id,
+        solver_name=solver.solver,
+        settings=solver.settings,
+        effective_timeout=_effective_timeout(config, solver),
+        legacy=legacy,
     )
 
 
-def solve_signatures(config: RunConfig) -> dict[tuple[str, str], str]:
+def solve_signatures(
+    config: RunConfig, *, legacy: bool = False
+) -> dict[tuple[str, str], str]:
     return {
-        (str(dataset.id), solver.id): solve_signature(config, dataset, solver)
+        (str(dataset.id), solver.id): solve_signature(config, dataset, solver, legacy=legacy)
         for dataset in config.datasets
         for solver in config.solvers
     }
 
 
-def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], str]:
-    """Return solve signatures for a manifest ``config`` payload."""
+def manifest_solve_signatures(
+    config: dict[str, Any], *, legacy: bool = False
+) -> dict[tuple[str, str], str]:
+    """Return solve signatures for a manifest ``config`` payload.
+
+    The same signatures ``solve_signatures`` gives for the parsed config.
+    """
     run_timeout = config.get("timeout_seconds")
     signatures: dict[tuple[str, str], str] = {}
     for dataset in manifest_dataset_entries(config):
@@ -801,43 +1042,71 @@ def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], s
         for solver in config.get("solvers", []) or []:
             solver_id = str(solver["id"])
             solver_timeout = solver.get("timeout_seconds")
-            effective_timeout = (
-                solver_timeout if solver_timeout is not None else run_timeout
-            )
-            signatures[(dataset_id, solver_id)] = _stable_digest(
-                {
-                    "dataset": {
-                        "id": dataset_id,
-                        "name": str(dataset["name"]),
-                        "dataset_options": _signature_dataset_options(
-                            str(dataset["name"]), dict(dataset.get("dataset_options") or {})
-                        ),
-                    },
-                    "solver": {
-                        "id": solver_id,
-                        "solver": str(solver["solver"]),
-                        "settings": dict(solver.get("settings") or {}),
-                        "effective_timeout_seconds": effective_timeout,
-                    },
-                },
-                length=24,
+            signatures[(dataset_id, solver_id)] = _solve_signature(
+                dataset_id=dataset_id,
+                dataset_name=str(dataset["name"]),
+                dataset_options=dict(dataset.get("dataset_options") or {}),
+                solver_id=solver_id,
+                solver_name=str(solver["solver"]),
+                settings=dict(solver.get("settings") or {}),
+                effective_timeout=(
+                    solver_timeout if solver_timeout is not None else run_timeout
+                ),
+                legacy=legacy,
             )
     return signatures
 
 
-def _signature_dataset_options(name: str, options: dict[str, Any]) -> dict[str, Any]:
+def _solve_signature(
+    *,
+    dataset_id: str,
+    dataset_name: str,
+    dataset_options: dict[str, Any],
+    solver_id: str,
+    solver_name: str,
+    settings: dict[str, Any],
+    effective_timeout: Any,
+    legacy: bool,
+) -> str:
+    return _stable_digest(
+        {
+            "dataset": {
+                "id": dataset_id,
+                "name": dataset_name,
+                "dataset_options": _signature_dataset_options(
+                    dataset_name, dataset_options, legacy=legacy
+                ),
+            },
+            "solver": {
+                "id": solver_id,
+                "solver": solver_name,
+                "settings": settings,
+                "effective_timeout_seconds": effective_timeout,
+            },
+        },
+        length=24,
+    )
+
+
+def _signature_dataset_options(
+    name: str, options: dict[str, Any], *, legacy: bool = False
+) -> dict[str, Any]:
     """Dataset options as the dataset wants them hashed (see Dataset.signature_options)."""
     # Imported here: the dataset adapters import this package's core modules.
     from solver_benchmarks.datasets.registry import get_dataset
 
+    hashed = dict(options)
+    if not legacy:
+        for key in _LOCATION_OPTIONS:
+            hashed.pop(key, None)
     try:
         dataset_cls = get_dataset(name)
     except KeyError:
-        return dict(options)
+        return hashed
     # Registered adapters need not derive from Dataset; one without the hook
     # hashes its options as given.
     hook = getattr(dataset_cls, "signature_options", None)
-    return dict(options) if hook is None else hook(dict(options))
+    return hashed if hook is None else hook(hashed)
 
 
 def _effective_timeout(config: RunConfig, solver: SolverConfig) -> float | None:

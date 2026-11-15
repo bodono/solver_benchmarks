@@ -12,9 +12,12 @@ from pathlib import Path
 from solver_benchmarks.core.config import (
     EnvironmentConfig,
     EnvironmentRunConfig,
+    resolve_data_roots,
     resolve_output_dir,
 )
+from solver_benchmarks.core.runner import refuse_to_rerun_into
 from solver_benchmarks.core.storage import ResultStore, make_run_id
+from solver_benchmarks.datasets.base import default_repo_root
 
 
 def run_environment_matrix(
@@ -26,7 +29,7 @@ def run_environment_matrix(
     stream_solver_output: bool | None = None,
     source_config_path: Path | None = None,
 ) -> Path:
-    repo_root = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
+    repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
     if stream_solver_output is None:
         stream_solver_output = stream_output
     combined_config = replace(
@@ -38,6 +41,9 @@ def run_environment_matrix(
         ],
     )
     combined_config = resolve_output_dir(combined_config, repo_root)
+    combined_config = replace(
+        combined_config, datasets=resolve_data_roots(combined_config.datasets, repo_root)
+    )
     if run_dir is None:
         env_name = (
             f"{combined_config.name}_env"
@@ -47,6 +53,8 @@ def run_environment_matrix(
         named_config = replace(combined_config, name=env_name)
         run_dir = combined_config.output_dir / make_run_id(named_config)
     run_dir = Path(run_dir).resolve()
+    if not combined_config.resume:
+        refuse_to_rerun_into(run_dir, combined_config)
     run_dir.mkdir(parents=True, exist_ok=True)
     store = ResultStore.create(combined_config, run_dir=run_dir)
     if source_config_path is not None:
@@ -60,16 +68,17 @@ def run_environment_matrix(
                 repo_root=repo_root,
                 stream_output=stream_output,
             )
-        except subprocess.CalledProcessError as exc:
-            message = (
-                f"environment {environment.id} install failed: "
-                f"{' '.join(map(str, exc.cmd))} -> exit {exc.returncode}"
-            )
+        except (subprocess.CalledProcessError, OSError, KeyError, IndexError, ValueError) as exc:
+            # OSError: the python or installer does not exist or cannot run.
+            # KeyError/IndexError/ValueError: the command has stray braces.
+            error = _describe_failure(exc)
+            message = f"environment {environment.id} install failed: {error}"
             store.append_event(
                 "error",
                 "environment_install_failed",
                 environment_id=environment.id,
-                returncode=exc.returncode,
+                returncode=getattr(exc, "returncode", None),
+                error=error,
             )
             print(f"[bench env] {message}", file=sys.stderr)
             failures.append((environment.id, "install"))
@@ -99,16 +108,17 @@ def run_environment_matrix(
         if stream_output:
             print(f"[bench env] running {environment.id}: {' '.join(cmd)}", file=sys.stderr)
         try:
-            subprocess.run(cmd, cwd=repo_root, check=True)
-        except subprocess.CalledProcessError as exc:
-            message = (
-                f"environment {environment.id} run failed: exit {exc.returncode}"
-            )
+            _run_child(cmd, cwd=repo_root)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            # OSError: a mistyped `python:` or a venv that does not exist yet.
+            error = _describe_failure(exc)
+            message = f"environment {environment.id} run failed: {error}"
             store.append_event(
                 "error",
                 "environment_run_failed",
                 environment_id=environment.id,
-                returncode=exc.returncode,
+                returncode=getattr(exc, "returncode", None),
+                error=error,
             )
             print(f"[bench env] {message}", file=sys.stderr)
             failures.append((environment.id, "run"))
@@ -121,6 +131,43 @@ def run_environment_matrix(
         labels = ", ".join(f"{env_id} ({phase})" for env_id, phase in failures)
         raise RuntimeError(f"environment matrix had failures: {labels}")
     return run_dir
+
+
+# How long a child `bench run` gets to kill its workers after a SIGTERM
+# before it is killed itself.
+_CHILD_SHUTDOWN_SECONDS = 10.0
+
+
+def _run_child(cmd: list[str], *, cwd: Path) -> None:
+    """Run one environment's ``bench run`` like ``subprocess.run(check=True)``.
+
+    If this process is interrupted (Ctrl+C, or the SIGTERM handler's
+    SystemExit) while the child runs, the child is asked to stop with
+    SIGTERM and given time to kill its workers, which run in their own
+    sessions; ``subprocess.run`` would SIGKILL it at once and leave them
+    solving with no time limit. It is killed only if it does not exit in
+    time.
+    """
+    process = subprocess.Popen(cmd, cwd=cwd)
+    try:
+        returncode = process.wait()
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=_CHILD_SHUTDOWN_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, cmd)
+
+
+def _describe_failure(exc: BaseException) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        return f"{' '.join(map(str, exc.cmd))} -> exit {exc.returncode}"
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _install_environment(

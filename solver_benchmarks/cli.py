@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import signal
+import threading
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -136,8 +140,9 @@ def data_prepare_cmd(
     dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
     try:
         dataset_obj.prepare_data(list(problems) or None, all_problems=all_problems)
-    except RuntimeError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except (RuntimeError, OSError, ValueError) as exc:
+        # OSError covers failed downloads (urllib's HTTPError and URLError).
+        raise click.ClickException(f"Preparing {dataset} failed: {exc}") from exc
     status = dataset_obj.data_status()
     marker = "available" if status.available else "missing"
     click.echo(f"{status.dataset}\t{marker}\t{status.problem_count}\t{status.message}")
@@ -176,7 +181,7 @@ def run_cmd(
     environment_metadata: str | None,
     stream_solver_output: bool,
 ) -> None:
-    config = load_run_config(config_path)
+    config = _load_config(load_run_config, config_path)
     if data_root is not None:
         data_root = data_root.resolve()
         config = replace(
@@ -193,24 +198,25 @@ def run_cmd(
         config = replace(config, auto_prepare_data=True)
     env_metadata = _parse_json_option(environment_metadata)
     try:
-        store = run_benchmark(
-            config,
-            run_dir=run_dir,
-            repo_root=repo_root,
-            stream_output=True,
-            stream_solver_output=stream_solver_output,
-            environment_id=environment_id,
-            environment_metadata=env_metadata,
-            prepare_data_command=run_with_prepare_command(
-                config_path,
+        with terminate_like_interrupt():
+            store = run_benchmark(
+                config,
                 run_dir=run_dir,
                 repo_root=repo_root,
-                data_root=data_root,
-            ),
-            source_config_path=config_path,
-        )
-    except RuntimeError as exc:
-        raise click.ClickException(str(exc)) from exc
+                stream_output=True,
+                stream_solver_output=stream_solver_output,
+                environment_id=environment_id,
+                environment_metadata=env_metadata,
+                prepare_data_command=run_with_prepare_command(
+                    config_path,
+                    run_dir=run_dir,
+                    repo_root=repo_root,
+                    data_root=data_root,
+                ),
+                source_config_path=config_path,
+            )
+    except (RuntimeError, ValueError, KeyError) as exc:
+        raise click.ClickException(_error_text(exc)) from exc
     click.echo(str(store.run_dir))
 
 
@@ -239,15 +245,19 @@ def env_run_cmd(
     repo_root: Path | None,
     stream_solver_output: bool,
 ) -> None:
-    config = load_environment_run_config(config_path)
-    out = run_environment_matrix(
-        config,
-        run_dir=run_dir,
-        repo_root=repo_root,
-        stream_output=True,
-        stream_solver_output=stream_solver_output,
-        source_config_path=config_path,
-    )
+    config = _load_config(load_environment_run_config, config_path)
+    try:
+        with terminate_like_interrupt():
+            out = run_environment_matrix(
+                config,
+                run_dir=run_dir,
+                repo_root=repo_root,
+                stream_output=True,
+                stream_solver_output=stream_solver_output,
+                source_config_path=config_path,
+            )
+    except (RuntimeError, ValueError, KeyError) as exc:
+        raise click.ClickException(_error_text(exc)) from exc
     click.echo(str(out))
 
 
@@ -457,6 +467,56 @@ def report_cmd(
         return
     for path in paths:
         click.echo(str(path))
+
+
+@contextlib.contextmanager
+def terminate_like_interrupt() -> Iterator[None]:
+    """Make SIGTERM unwind the run the way Ctrl+C does, once.
+
+    Workers run in their own sessions, so a SIGTERM to the runner (Slurm's
+    scancel, ``kill``, a CI job timeout) reaches only the runner, which died
+    without killing them: they kept solving with no time limit. Raising
+    ``SystemExit(128 + SIGTERM)`` from the handler sends the signal through
+    the runner's ``except BaseException`` paths, which kill the workers and
+    keep the results that had finished, and exits with the usual status.
+
+    Only the first SIGINT or SIGTERM unwinds the run; later ones are ignored
+    so they cannot cut that cleanup short. A terminal's Ctrl+C reaches a
+    matrix child directly and the matrix runner then forwards a SIGTERM to
+    it, so a child sees both. A cleanup that hangs is still ended by SIGKILL.
+    Only the main thread can install handlers; elsewhere this does nothing.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _stop(signum, frame):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    previous = {sig: signal.signal(sig, _stop) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _load_config(loader, config_path: Path):
+    try:
+        return loader(config_path)
+    except (ValueError, KeyError) as exc:
+        raise click.ClickException(f"{config_path}: {_error_text(exc)}") from exc
+
+
+def _error_text(exc: BaseException) -> str:
+    # str(KeyError) is the repr of its message, quotes included.
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 def _parse_options(options: tuple[str]) -> dict:
