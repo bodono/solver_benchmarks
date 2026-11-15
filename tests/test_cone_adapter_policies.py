@@ -96,6 +96,7 @@ def _assert_finite_solution_kkt(result) -> None:
 ITERATION_CAPS = {
     "scs": {"max_iters": 3},
     "clarabel": {"max_iter": 1, "presolve_enable": False},
+    "ecos": {"max_iters": 1},
 }
 
 
@@ -109,7 +110,7 @@ def test_iteration_limit_is_max_iter_with_kkt_and_no_objective(solver_name, tmp_
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
 def test_qp_iteration_limit_is_max_iter_with_kkt(solver_name, tmp_path):
     result = _solve(solver_name, QP, _feasible_qp(), ITERATION_CAPS[solver_name], tmp_path)
     assert result.status == status.MAX_ITER_REACHED, (result.status, result.info)
@@ -128,21 +129,21 @@ def test_time_limit_is_time_limit_with_kkt_and_no_objective(solver_name, tmp_pat
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
 def test_infeasible_cone_result_has_no_reported_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _infeasible_cone_lp(), {}, tmp_path)
     assert result.status in status.ANY_INFEASIBLE, (result.status, result.info)
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
 def test_infeasible_qp_result_has_no_reported_objective(solver_name, tmp_path):
     result = _solve(solver_name, QP, _infeasible_qp_form_lp(), {}, tmp_path)
     assert result.status in status.ANY_INFEASIBLE, (result.status, result.info)
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
 def test_optimal_cone_result_reports_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _feasible_cone_lp(n=10, m=20), {}, tmp_path)
     assert result.status == status.OPTIMAL, (result.status, result.info)
@@ -472,3 +473,115 @@ def test_clarabel_psd_conversion_is_exact_on_sdplib_control1(tmp_path, repo_root
     assert result.kkt["primal_res_rel"] < 1e-6
     assert result.kkt["dual_res_rel"] < 1e-6
     assert result.kkt["primal_cone_res"] < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# ECOS
+# ---------------------------------------------------------------------------
+
+
+def _box_qp(p: sp.spmatrix, seed: int = 0) -> dict:
+    n = p.shape[0]
+    rng = np.random.default_rng(seed)
+    return {
+        "P": sp.csc_matrix(p),
+        "q": rng.standard_normal(n),
+        "A": sp.eye(n, format="csc"),
+        "l": -np.ones(n),
+        "u": np.ones(n),
+    }
+
+
+def test_ecos_large_diagonal_p_stays_sparse(tmp_path, monkeypatch):
+    """A diagonal P gives R = diag(sqrt(p_ii)) without densifying P: the SOC
+    block has one entry per variable however large n is."""
+    import scipy.linalg
+
+    from solver_benchmarks.solvers.ecos_adapter import _qp_to_ecos_via_socp
+
+    def no_dense_factorization(*args, **kwargs):
+        raise AssertionError("a diagonal P must not be factored densely")
+
+    n = 6000
+    qp = _box_qp(sp.diags(np.linspace(0.0, 2.0, n)))
+    with monkeypatch.context() as patch:
+        patch.setattr(scipy.linalg, "cholesky", no_dense_factorization)
+        patch.setattr(scipy.linalg, "eigh", no_dense_factorization)
+        data, dims, _, state = _qp_to_ecos_via_socp(qp)
+    assert dims["q"] == [n - 1 + 2]  # one zero diagonal entry dropped
+    soc_rows = data["G"][-(n - 1 + 2):, :]
+    assert soc_rows.nnz == 2 + (n - 1)  # (u, v) rows on t plus one entry per kept x_i
+    result = _solve("ecos", QP, qp, {}, tmp_path)
+    reference = _solve("clarabel", QP, qp, {}, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-6)
+
+
+def test_ecos_factors_only_the_block_of_p_with_entries(tmp_path):
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    n = 5000
+    block = np.array([[2.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 2.0]])
+    p = sp.lil_matrix((n, n))
+    idx = [10, 2000, 4999]
+    for a, i in enumerate(idx):
+        for b, j in enumerate(idx):
+            p[i, j] = block[a, b]
+    r = _psd_square_root(sp.csc_matrix(p))
+    assert r.shape == (3, n)
+    assert set(np.unique(r.nonzero()[1])) <= set(idx)
+    assert np.allclose((r.T @ r).toarray()[np.ix_(idx, idx)], block)
+    result = _solve("ecos", QP, _box_qp(p), {}, tmp_path)
+    reference = _solve("clarabel", QP, _box_qp(p), {}, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-6)
+
+
+def test_ecos_refuses_a_large_dense_factor_up_front(tmp_path):
+    """A non-diagonal P above ECOS_DENSE_FACTOR_MAX_DIM is skipped with a
+    reason instead of densified (path-graph Laplacian, n = 2500)."""
+    from solver_benchmarks.solvers.ecos_adapter import ECOS_DENSE_FACTOR_MAX_DIM
+
+    n = ECOS_DENSE_FACTOR_MAX_DIM + 500
+    lap = sp.diags([-np.ones(n - 1), 2.0 * np.ones(n), -np.ones(n - 1)], [-1, 0, 1])
+    result = _solve("ecos", QP, _box_qp(lap), {}, tmp_path)
+    assert result.status == status.SKIPPED_UNSUPPORTED
+    assert str(ECOS_DENSE_FACTOR_MAX_DIM) in result.info["reason"]
+
+
+def test_ecos_times_the_socp_reformulation(tmp_path):
+    result = _solve("ecos", QP, _feasible_qp(), {}, tmp_path)
+    assert result.status == status.OPTIMAL
+    reformulation = result.info["socp_reformulation_seconds"]
+    assert reformulation > 0.0
+    assert result.run_time_seconds >= reformulation
+
+
+def test_ecos_translates_shared_aliases(tmp_path):
+    result = _solve(
+        "ecos", CONE, _feasible_cone_lp(), {"max_iter": 2, "eps_abs": 1e-6, "eps_rel": 1e-5},
+        tmp_path,
+    )
+    assert result.status == status.MAX_ITER_REACHED
+    assert result.iterations == 2
+    assert result.info["settings_translated"] == {
+        "max_iters": 2,
+        "feastol": 1e-6,
+        "abstol": 1e-6,
+        "reltol": 1e-5,
+    }
+    assert result.info["raw_status"] == "Maximum number of iterations reached"
+
+
+def test_ecos_native_settings_win_over_aliases():
+    from solver_benchmarks.solvers.ecos_adapter import translate_settings
+
+    settings = {"eps": 1e-4, "abstol": 1e-9, "max_iter": 5, "max_iters": 50}
+    translated = translate_settings(settings)
+    assert settings == {"abstol": 1e-9, "max_iters": 50, "feastol": 1e-4, "reltol": 1e-4}
+    assert translated == {"feastol": 1e-4, "reltol": 1e-4}
+
+
+def test_ecos_rejects_unknown_settings_by_name(tmp_path):
+    with pytest.raises(TypeError, match="feastoll"):
+        _solve("ecos", CONE, _feasible_cone_lp(), {"feastoll": 1e-6}, tmp_path)

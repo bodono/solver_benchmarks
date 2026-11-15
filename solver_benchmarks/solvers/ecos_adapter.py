@@ -16,7 +16,16 @@ rank-deficient ``P``):
     SOCP: minimize  t + q'x  subject to  l ≤ Ax ≤ u
                                           (u, v, Rx) in std SOC of dim k+2
 
-where ``u = t/√2 + 1/√2``, ``v = t/√2 - 1/√2``. The std SOC means
+where ``u = t/√2 + 1/√2``, ``v = t/√2 - 1/√2``. ``R`` is built from the
+part of ``P`` that has nonzeros: a diagonal ``P`` gives ``R = diag(√p_ii)``
+directly (any size), otherwise the rows and columns of ``P`` that carry
+entries are factored densely. That dense factor is refused above
+``ECOS_DENSE_FACTOR_MAX_DIM`` (2000) rows/columns: the problem is skipped as
+unsupported rather than allocating an ``n × n`` matrix and handing ECOS an
+almost dense SOC block (which runs out of memory or measures a far larger
+artificial problem). The reformulation is part of ``run_time_seconds``
+(it is work a QP solver does in its own factorization) and is also recorded
+as ``info["socp_reformulation_seconds"]``. The std SOC means
 ``u² ≥ v² + ‖Rx‖²``, which after the substitution reduces to
 ``2t ≥ ‖Rx‖² = x'Px`` — exactly the QP epigraph constraint
 ``t ≥ ½ x'Px``. At the optimum ``t = ½ x'Px``, so we report the
@@ -32,6 +41,13 @@ ECOS' native data form is::
                h - G x in K      (K = R^{l}_+ × Q^{q_1} × ... × Exp × ...)
 
 with ``dims = {"l": l, "q": [q_1, ..., q_p], "e": e}``.
+
+Settings are ECOS's own keyword arguments (``feastol``, ``abstol``,
+``reltol``, ``max_iters``, ...); ECOS rejects unknown names with a
+``TypeError`` naming them. The harness aliases ``max_iter`` (-> ``max_iters``),
+``eps`` / ``eps_abs`` (-> ``feastol`` and ``abstol``) and ``eps_rel``
+(-> ``reltol``) are translated, recorded in ``info["settings_translated"]``.
+ECOS has no time limit or thread count; those are recorded as ignored.
 """
 
 from __future__ import annotations
@@ -52,10 +68,15 @@ from .base import (
     SolverAdapter,
     SolverUnavailable,
     mark_threads_ignored,
+    mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
     settings_with_defaults,
 )
+
+# Largest dense block of P (rows/columns carrying entries) the QP -> SOCP
+# reformulation factors. A diagonal P never needs one.
+ECOS_DENSE_FACTOR_MAX_DIM = 2000
 
 
 class ECOSSolverAdapter(SolverAdapter):
@@ -83,14 +104,19 @@ class ECOSSolverAdapter(SolverAdapter):
         # matches the rest of the adapters.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        translated = translate_settings(settings)
 
         # QP-as-SOCP marker: when set, ``socp_state`` carries the
         # data needed to recover the original-x and report the actual
         # ½ x'Px + q'x objective rather than the surrogate t + q'x.
         socp_state: dict | None = None
+        reformulation_seconds = 0.0
         if problem.kind == QP:
             qp = problem.qp
             if _qp_has_nonzero_p(qp):
+                # Factoring P stands in for the factorization a QP solver
+                # does itself, so it is timed with the solve.
+                reformulation_start = time.perf_counter()
                 try:
                     data, dims, cone_dict, socp_state = _qp_to_ecos_via_socp(qp)
                 except _SOCPReformulationError as exc:
@@ -98,6 +124,7 @@ class ECOSSolverAdapter(SolverAdapter):
                         status=status.SKIPPED_UNSUPPORTED,
                         info={"reason": str(exc)},
                     )
+                reformulation_seconds = time.perf_counter() - reformulation_start
             else:
                 data, dims, cone_dict = _qp_lp_to_ecos(qp)
         else:
@@ -114,7 +141,7 @@ class ECOSSolverAdapter(SolverAdapter):
         raw = ecos.solve(
             data["c"], data["G"], data["h"], dims, A=data["A"], b=data["b"], **kwargs
         )
-        elapsed = time.perf_counter() - start
+        elapsed = time.perf_counter() - start + reformulation_seconds
         ineq_perm = data.get("ineq_perm")
         if ineq_perm is not None:
             # Inequality duals and slacks back to the canonical cone order.
@@ -124,9 +151,12 @@ class ECOSSolverAdapter(SolverAdapter):
                     raw[key] = np.asarray(raw[key], dtype=float)[ineq_perm]
 
         info = dict(raw.get("info", {}))
-        mark_time_limit_ignored = _mark_time_limit_ignored
+        if "infostring" in info:
+            info["raw_status"] = info["infostring"]
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
+        if translated:
+            info["settings_translated"] = translated
 
         mapped = _map_ecos_status(info)
         # ECOS reports ``pcost`` (primal objective). For infeasibility-
@@ -144,6 +174,7 @@ class ECOSSolverAdapter(SolverAdapter):
             # ``raw['x'][n_x]`` here.
             socp_state["raw_full"] = raw
             info["socp_reformulation"] = True
+            info["socp_reformulation_seconds"] = reformulation_seconds
             full_x = raw.get("x")
             full_x_arr = (
                 np.asarray(full_x, dtype=float) if full_x is not None else None
@@ -191,9 +222,9 @@ def _qp_has_nonzero_p(qp: dict) -> bool:
 
 class _SOCPReformulationError(ValueError):
     """Raised when a QP cannot be cleanly reformulated as an SOCP for
-    ECOS — typically because ``P`` is not symmetric / PSD within
-    numerical tolerance, or the dimension is too large for the dense
-    eigendecomposition path."""
+    ECOS — because ``P`` is not symmetric / PSD within numerical
+    tolerance, or its non-diagonal part has more than
+    ``ECOS_DENSE_FACTOR_MAX_DIM`` rows/columns to factor densely."""
 
 
 def _qp_to_ecos_via_socp(qp: dict):
@@ -300,37 +331,88 @@ def _qp_to_ecos_via_socp(qp: dict):
     )
 
 
-def _psd_square_root(p: sp.csc_matrix) -> np.ndarray | None:
-    """Return ``R`` such that ``P = R'R``. ``R`` is square (rank=n) for
-    positive-definite ``P`` and tall (rows = rank ≤ n) when ``P`` is
-    rank-deficient. Returns ``None`` if ``P`` is not symmetric PSD
-    within numerical tolerance — including the **indefinite** case
-    (any eigenvalue meaningfully below zero) so a nonconvex QP is
-    rejected up-front rather than silently solved as if its negative
-    curvature didn't exist.
+def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
+    """Return a sparse ``R`` such that ``P = R'R``. ``R`` is square (rank=n)
+    for positive-definite ``P`` and has ``rank(P)`` rows when ``P`` is
+    rank-deficient. Returns ``None`` if ``P`` is not symmetric PSD within
+    numerical tolerance — including the **indefinite** case (any
+    eigenvalue meaningfully below zero) so a nonconvex QP is rejected
+    up-front rather than silently solved as if its negative curvature
+    didn't exist.
 
-    Tries Cholesky first (cheap, only works for SPD); falls back to
-    a symmetric eigendecomposition that drops near-zero eigenvalues
-    but rejects any ``< -threshold`` curvature.
+    ``P`` is never densified as a whole. A diagonal ``P`` gives
+    ``R = diag(√p_ii)`` (zero entries dropped). Otherwise only the rows and
+    columns that carry entries are factored densely — Cholesky first
+    (cheap, only works for SPD), then a symmetric eigendecomposition that
+    drops near-zero eigenvalues but rejects any ``< -threshold``
+    curvature — and that block is limited to ``ECOS_DENSE_FACTOR_MAX_DIM``
+    (``_SOCPReformulationError`` above it).
     """
-    p_dense = p.toarray() if hasattr(p, "toarray") else np.asarray(p, dtype=float)
-    if p_dense.ndim != 2 or p_dense.shape[0] != p_dense.shape[1]:
+    p = sp.csc_matrix(p, dtype=float)
+    if p.ndim != 2 or p.shape[0] != p.shape[1]:
         return None
-    # Symmetrize to absorb tiny numerical asymmetry.
-    p_sym = 0.5 * (p_dense + p_dense.T)
-    if not np.allclose(p_dense, p_sym, atol=1e-8 * max(1.0, np.abs(p_dense).max())):
+    n = p.shape[0]
+    p.eliminate_zeros()
+    # Symmetrize to absorb tiny numerical asymmetry; anything larger than
+    # np.allclose(P, P_sym, atol=1e-8 * max(1, |P|_max)) would accept is
+    # refused, as when P was densified.
+    p_sym = sp.csc_matrix(0.5 * (p + p.T))
+    p_sym.eliminate_zeros()
+    if not _close_to_symmetric(p, p_sym):
         return None
-    try:
-        import scipy.linalg as la
+    if p_sym.nnz == 0:
+        return sp.csc_matrix((0, n))
 
+    diagonal = p_sym.diagonal()
+    if p_sym.nnz == np.count_nonzero(diagonal):
+        threshold = max(1e-12, float(diagonal.max()) * 1e-12)
+        if float(diagonal.min()) < -threshold:
+            return None
+        keep = np.flatnonzero(diagonal > threshold)
+        return sp.csc_matrix(
+            (np.sqrt(diagonal[keep]), (np.arange(keep.size), keep)), shape=(keep.size, n)
+        )
+
+    support = np.unique(p_sym.nonzero()[0])
+    if support.size > ECOS_DENSE_FACTOR_MAX_DIM:
+        raise _SOCPReformulationError(
+            f"QP P matrix has a {support.size} x {support.size} non-diagonal block to "
+            f"factor; the ECOS SOCP reformulation factors at most "
+            f"{ECOS_DENSE_FACTOR_MAX_DIM} rows/columns densely, and its SOC block "
+            "would be nearly dense."
+        )
+    block = p_sym[support, :][:, support].toarray()
+    r_block = _dense_psd_square_root(block)
+    if r_block is None:
+        return None
+    rows, cols = np.nonzero(r_block)
+    return sp.csc_matrix(
+        (r_block[rows, cols], (rows, support[cols])), shape=(r_block.shape[0], n)
+    )
+
+
+def _close_to_symmetric(p: sp.csc_matrix, p_sym: sp.csc_matrix) -> bool:
+    atol = 1e-8 * max(1.0, float(abs(p).max()) if p.nnz else 0.0)
+    diff = sp.csr_matrix(abs(p - p_sym))
+    diff.eliminate_zeros()
+    if not diff.nnz:
+        return True
+    pattern = diff.copy()
+    pattern.data[:] = 1.0
+    excess = diff - 1e-5 * sp.csr_matrix(abs(p_sym)).multiply(pattern)
+    return not (excess.nnz and float(excess.max()) > atol)
+
+
+def _dense_psd_square_root(p_sym: np.ndarray) -> np.ndarray | None:
+    import scipy.linalg as la
+
+    try:
         return la.cholesky(p_sym, lower=False)
     except (np.linalg.LinAlgError, ValueError):
         # P is rank-deficient PSD or indefinite; fall through to
         # eigendecomposition to disambiguate.
         pass
     try:
-        import scipy.linalg as la
-
         eigvals, eigvecs = la.eigh(p_sym)
     except (np.linalg.LinAlgError, ValueError):
         return None
@@ -526,13 +608,30 @@ def _ecos_exp_row_perm(n_ineq: int, e_count: int) -> np.ndarray | None:
     return perm
 
 
-def _mark_time_limit_ignored(info, time_limit):
-    # Inlined so the import surface in this file stays small; keeps the
-    # adapter import section visually identical to mark_threads_ignored
-    # without pulling in a one-shot helper from base.
-    if time_limit is not None:
-        info["time_limit_ignored"] = True
-        info["time_limit_seconds"] = float(time_limit)
+def translate_settings(settings: dict) -> dict:
+    """Map the harness aliases onto ECOS's keyword arguments, in place.
+
+    ``max_iter`` becomes ``max_iters``; ``eps_abs`` (or ``eps``) supplies
+    ``feastol`` and ``abstol`` and ``eps_rel`` (or ``eps``) supplies
+    ``reltol``. An explicit native value always wins, and only settings
+    actually inserted are reported.
+    """
+    translated: dict = {}
+
+    def put(key: str, value) -> None:
+        if value is not None and key not in settings:
+            settings[key] = value
+            translated[key] = value
+
+    max_iter = settings.pop("max_iter", None)
+    put("max_iters", None if max_iter is None else int(max_iter))
+    eps = settings.pop("eps", None)
+    eps_abs = settings.pop("eps_abs", eps)
+    eps_rel = settings.pop("eps_rel", eps)
+    put("feastol", None if eps_abs is None else float(eps_abs))
+    put("abstol", None if eps_abs is None else float(eps_abs))
+    put("reltol", None if eps_rel is None else float(eps_rel))
+    return translated
 
 
 _ECOS_EXIT_FLAG_MAP = {
@@ -594,7 +693,10 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
     if problem.kind == QP:
         qp = problem.qp
         n_eq = int(cone_dict.get("z", 0))
-        if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        # Every status that may carry a usable point (including max-iter)
+        # gets solution residuals, so kkt-verify --promote treats ECOS like
+        # every other solver.
+        if mapped_status in status.ANY_FEASIBLE:
             # Stack equality and inequality duals back into the original
             # row order produced by qp_to_nonnegative_cone: [eq, finite_u, finite_l].
             y_full = _qp_dual_in_native_order(qp, y_dual, z_dual, n_eq)
@@ -637,7 +739,7 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
     if p is None:
         p = sp.csc_matrix((sp.csc_matrix(cone_problem["A"]).shape[1],) * 2)
     if (
-        mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
+        mapped_status in status.ANY_FEASIBLE
         and z_dual is not None
         and s_slack is not None
         and y_dual is not None

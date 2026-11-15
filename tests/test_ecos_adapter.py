@@ -319,7 +319,8 @@ def test_ecos_psd_square_root_returns_cholesky_for_pd():
     p = sp.csc_matrix(np.array([[4.0, 1.0], [1.0, 3.0]]))
     r = _psd_square_root(p)
     assert r.shape == (2, 2)
-    reconstructed = r.T @ r
+    assert sp.issparse(r)
+    reconstructed = (r.T @ r).toarray()
     assert np.allclose(reconstructed, p.toarray())
 
 
@@ -331,7 +332,7 @@ def test_ecos_psd_square_root_drops_zero_eigenvalues():
     p = sp.csc_matrix(np.diag([4.0, 0.0, 1.0]))
     r = _psd_square_root(p)
     assert r.shape == (2, 3)  # rank 2, 3 columns
-    reconstructed = r.T @ r
+    reconstructed = (r.T @ r).toarray()
     assert np.allclose(reconstructed, p.toarray())
 
 
