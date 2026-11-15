@@ -80,6 +80,7 @@ Example output:
 clarabel  available               cone,qp
 cplex     missing optional extra  qp
 cpo3      available               cone,qp
+cuopt     missing optional extra  qp
 cvxopt    available               cone,qp
 ecos      available               cone,qp
 gurobi    missing optional extra  qp
@@ -90,8 +91,8 @@ pdlp      available               cone,qp
 piqp      available               qp
 proxqp    available               qp
 qtqp      available               qp
-sdpa      available               cone
 scs       available               cone,qp
+sdpa      available               cone
 ```
 
 ## Supported Datasets
@@ -413,6 +414,7 @@ Current maintained adapters:
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. When presolve can only say "infeasible or unbounded", the adapter re-solves with `DualReductions=0` (Gurobi's documented remedy) so the row gets a definite status; `info.inf_or_unbd_resolved` marks it. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. A license failure raised by the solve (missing, expired or exhausted license) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as MOSEK failing the problem. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
+| cuOpt | `cuopt` | QP | NVIDIA's GPU solver (PDLP for LPs, barrier for QPs). Not a package extra: install `cuopt-cu12` from NVIDIA's pip index on a CUDA machine. The QP maps onto cuOpt's objective with `Q = P / 2`. `eps` sets all of cuOpt's optimality tolerances and `eps_abs` / `eps_rel` its absolute and relative primal, dual and gap tolerances; `max_iter` sets `iteration_limit`, `time_limit` and `threads` are forwarded, and any other setting goes to `set_parameter` (a value cuOpt rejects is a `ValueError` naming it). cuOpt reports duals with the opposite sign to the harness, so the KKT residuals use `dual_sign: -1` by default. These conventions were checked by hand on a GPU with `probe_cuopt` in `tools/bench_modal.py`, and CI tests them only against a fake cuOpt; rerun the probe after upgrading. |
 
 Comparing with run directories written before the conic adapters adopted the
 shared result policy: SCS stops on `max_iters` / `time_limit_secs` are now
