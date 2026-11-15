@@ -97,6 +97,7 @@ ITERATION_CAPS = {
     "scs": {"max_iters": 3},
     "clarabel": {"max_iter": 1, "presolve_enable": False},
     "ecos": {"max_iters": 1},
+    "cvxopt": {"maxiters": 1},
 }
 
 
@@ -110,7 +111,7 @@ def test_iteration_limit_is_max_iter_with_kkt_and_no_objective(solver_name, tmp_
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt"])
 def test_qp_iteration_limit_is_max_iter_with_kkt(solver_name, tmp_path):
     result = _solve(solver_name, QP, _feasible_qp(), ITERATION_CAPS[solver_name], tmp_path)
     assert result.status == status.MAX_ITER_REACHED, (result.status, result.info)
@@ -129,21 +130,21 @@ def test_time_limit_is_time_limit_with_kkt_and_no_objective(solver_name, tmp_pat
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt"])
 def test_infeasible_cone_result_has_no_reported_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _infeasible_cone_lp(), {}, tmp_path)
     assert result.status in status.ANY_INFEASIBLE, (result.status, result.info)
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt"])
 def test_infeasible_qp_result_has_no_reported_objective(solver_name, tmp_path):
     result = _solve(solver_name, QP, _infeasible_qp_form_lp(), {}, tmp_path)
     assert result.status in status.ANY_INFEASIBLE, (result.status, result.info)
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt"])
 def test_optimal_cone_result_reports_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _feasible_cone_lp(n=10, m=20), {}, tmp_path)
     assert result.status == status.OPTIMAL, (result.status, result.info)
@@ -585,3 +586,149 @@ def test_ecos_native_settings_win_over_aliases():
 def test_ecos_rejects_unknown_settings_by_name(tmp_path):
     with pytest.raises(TypeError, match="feastoll"):
         _solve("ecos", CONE, _feasible_cone_lp(), {"feastoll": 1e-6}, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# CVXOPT
+# ---------------------------------------------------------------------------
+
+
+def _unbounded_cone_lp() -> dict:
+    # min -x s.t. x >= 0.
+    return {
+        "P": None,
+        "A": sp.csc_matrix([[-1.0]]),
+        "b": np.array([0.0]),
+        "q": np.array([-1.0]),
+        "r": 0.0,
+        "cone": {"l": 1},
+    }
+
+
+def _infeasible_sdp() -> dict:
+    # X in S^2_+ with X00 = -1: x = (X00, sqrt2 X10, X11), -x + s = 0.
+    return {
+        "P": None,
+        "A": sp.csc_matrix(np.vstack([[1.0, 0.0, 0.0], -np.eye(3)])),
+        "b": np.array([-1.0, 0.0, 0.0, 0.0]),
+        "q": np.array([1.0, 0.0, 1.0]),
+        "r": 0.0,
+        "cone": {"z": 1, "s": [2]},
+    }
+
+
+def _hs52() -> dict:
+    """Maros-Meszaros HS52: equality constraints only, singular P."""
+    p = np.array(
+        [
+            [32.0, -8.0, 0.0, 0.0, 0.0],
+            [-8.0, 4.0, 2.0, 0.0, 0.0],
+            [0.0, 2.0, 2.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 2.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 2.0],
+        ]
+    )
+    a = np.array(
+        [[1.0, 3.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0, -2.0], [0.0, 1.0, 0.0, 0.0, -1.0]]
+    )
+    return {
+        "P": sp.csc_matrix(p),
+        "q": np.array([0.0, -4.0, -4.0, -2.0, -2.0]),
+        "A": sp.csc_matrix(np.vstack([a, np.eye(5)])),
+        "l": np.concatenate([np.zeros(3), -np.inf * np.ones(5)]),
+        "u": np.concatenate([np.zeros(3), np.inf * np.ones(5)]),
+    }
+
+
+@pytest.mark.parametrize(
+    "kind, data",
+    [(CONE, _infeasible_cone_lp()), (QP, _infeasible_qp_form_lp()), (CONE, _infeasible_sdp())],
+    ids=["cone-lp", "qp-form-lp", "sdp"],
+)
+def test_cvxopt_certifies_primal_infeasibility(kind, data, tmp_path):
+    """Linear-objective problems go through conelp, which certifies
+    infeasibility; coneqp raised 'domain error' (solver_error) or ran to the
+    iteration cap on these."""
+    result = _solve("cvxopt", kind, data, {}, tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE, (result.status, result.info)
+    assert result.info["entry_point"] == "conelp"
+    assert result.kkt["certificate"] == "primal_infeasible"
+    assert result.kkt["valid"] is True
+
+
+@pytest.mark.parametrize(
+    "kind, data",
+    [(CONE, _unbounded_cone_lp()),
+     (QP, {"P": sp.csc_matrix((1, 1)), "q": np.array([-1.0]), "A": sp.csc_matrix([[1.0]]),
+           "l": np.array([0.0]), "u": np.array([np.inf])})],
+    ids=["cone", "qp-form"],
+)
+def test_cvxopt_certifies_dual_infeasibility(kind, data, tmp_path):
+    result = _solve("cvxopt", kind, data, {}, tmp_path)
+    assert result.status == status.DUAL_INFEASIBLE, (result.status, result.info)
+    assert result.kkt["certificate"] == "dual_infeasible"
+    assert result.kkt["qtx"] < 0
+
+
+def test_cvxopt_quadratic_objective_still_uses_coneqp(tmp_path):
+    result = _solve("cvxopt", QP, _feasible_qp(), {}, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.info["entry_point"] == "coneqp"
+
+
+def test_cvxopt_equality_only_qp_is_solved_correctly(tmp_path):
+    """No cone rows: coneqp solves the KKT system once and always says
+    'optimal'. With CVXOPT's default chol2 factorization and a singular P
+    that point violates Ax = b (objective 2.62 instead of 5.33 for HS52)."""
+    result = _solve("cvxopt", QP, _hs52(), {}, tmp_path)
+    reference = _solve("clarabel", QP, _hs52(), {}, tmp_path)
+    assert reference.status == status.OPTIMAL
+    assert result.status == status.OPTIMAL, result.info
+    assert result.info["kktsolver"] == "ldl"
+    assert result.objective_value == pytest.approx(reference.objective_value, abs=1e-6)
+    assert result.kkt["primal_res_rel"] < 1e-9
+    assert result.kkt["dual_res_rel"] < 1e-9
+
+
+def test_cvxopt_rejects_unknown_settings_by_name(tmp_path):
+    with pytest.raises(ValueError, match="tolerance"):
+        _solve("cvxopt", CONE, _feasible_cone_lp(), {"tolerance": 1.0}, tmp_path)
+
+
+def test_cvxopt_translates_shared_aliases(tmp_path):
+    result = _solve(
+        "cvxopt", CONE, _feasible_cone_lp(n=10, m=20),
+        {"eps_abs": 1e-6, "eps_rel": 1e-5, "max_iter": 50},
+        tmp_path,
+    )
+    assert result.status == status.OPTIMAL
+    assert result.info["settings_translated"] == {
+        "maxiters": 50,
+        "abstol": 1e-6,
+        "feastol": 1e-6,
+        "reltol": 1e-5,
+    }
+
+
+def test_cvxopt_native_options_win_over_aliases():
+    from solver_benchmarks.solvers.cvxopt_adapter import _resolve_options
+
+    options, translated = _resolve_options({"eps": 1e-4, "feastol": 1e-9, "max_iter": 7})
+    assert options == {"feastol": 1e-9, "maxiters": 7, "abstol": 1e-4, "reltol": 1e-4}
+    assert translated == {"maxiters": 7, "abstol": 1e-4, "reltol": 1e-4}
+
+
+def test_cvxopt_forwards_kktsolver_to_the_solver_call(tmp_path, monkeypatch):
+    cs = pytest.importorskip("cvxopt.solvers")
+    seen = {}
+    real_conelp = cs.conelp
+
+    def spy(*args, **kwargs):
+        seen["kktsolver"] = kwargs.get("kktsolver")
+        return real_conelp(*args, **kwargs)
+
+    monkeypatch.setattr(cs, "conelp", spy)
+    result = _solve("cvxopt", CONE, _feasible_cone_lp(n=10, m=20), {"kktsolver": "ldl"}, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert seen["kktsolver"] == "ldl"
+

@@ -21,7 +21,7 @@ SOLVER_SETTINGS = {
     "clarabel": {"verbose": False},
     "qtqp": {"verbose": False},
     "cpo3": {"verbose": False},
-    "cvxopt": {"verbose": False, "abstol": 1e-9, "reltol": 1e-9, "feastol": 1e-9},
+    "cvxopt": {"verbose": False, "abstol": 1e-8, "reltol": 1e-8, "feastol": 1e-8},
     "ecos": {"verbose": False, "feastol": 1e-9, "abstol": 1e-9, "reltol": 1e-9},
     "pdlp": {"time_limit_sec": 10.0, "use_glop": False},
     "sdpa": {"verbose": False, "max_iter": 50, "optimality_tolerance": 1e-5},

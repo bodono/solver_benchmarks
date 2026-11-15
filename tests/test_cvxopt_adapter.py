@@ -163,8 +163,9 @@ def test_cvxopt_solve_raises_solver_unavailable_when_module_missing(
         ("optimal", status.OPTIMAL),
         ("primal infeasible", status.PRIMAL_INFEASIBLE),
         ("dual infeasible", status.DUAL_INFEASIBLE),
-        # Unknown status without bound info → MAX_ITER_REACHED.
-        ("unknown", status.MAX_ITER_REACHED),
+        # Unknown status with no sign of the iteration cap or of a
+        # near-solution: an early (numerical) stop.
+        ("unknown", status.SOLVER_ERROR),
         # An unrecognized status string falls through to SOLVER_ERROR.
         ("garbage_value", status.SOLVER_ERROR),
         ("", status.SOLVER_ERROR),
@@ -177,16 +178,33 @@ def test_cvxopt_status_mapping(raw_status, expected):
     assert _map_cvxopt_status(raw) == expected
 
 
+def test_cvxopt_unknown_at_the_iteration_cap_is_max_iter_whatever_the_residuals():
+    """Reaching maxiters is an iteration limit, not an inaccurate solution
+    or an infeasibility guess, however good or bad the last iterate."""
+    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
+
+    for residual in (1e-8, 100.0):
+        raw = {
+            "status": "unknown",
+            "iterations": 40,
+            "relative gap": 1e-5,
+            "primal infeasibility": residual,
+            "dual infeasibility": residual,
+        }
+        assert _map_cvxopt_status(raw, max_iters=40) == status.MAX_ITER_REACHED
+
+
 def test_cvxopt_unknown_with_small_relgap_and_low_infeas_maps_to_optimal_inaccurate():
-    """CVXOPT's "unknown" with a tight relative gap *and* small
-    infeasibility metrics is the practical "I gave up but the answer
-    looks fine" case. We require all three signals because pre-fix
-    the small-gap-alone gate would happily promote results with
-    primal infeasibility = 100 to OPTIMAL_INACCURATE."""
+    """CVXOPT's "unknown" before the iteration cap with a tight relative
+    gap *and* small infeasibility metrics is the practical "I stopped on a
+    numerical difficulty but the answer looks fine" case. We require all
+    three signals because pre-fix the small-gap-alone gate would happily
+    promote results with primal infeasibility = 100 to OPTIMAL_INACCURATE."""
     from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
 
     raw = {
         "status": "unknown",
+        "iterations": 15,
         "relative gap": 1e-5,
         "primal infeasibility": 1e-8,
         "dual infeasibility": 1e-8,
@@ -194,62 +212,38 @@ def test_cvxopt_unknown_with_small_relgap_and_low_infeas_maps_to_optimal_inaccur
     assert _map_cvxopt_status(raw) == status.OPTIMAL_INACCURATE
 
 
-def test_cvxopt_unknown_with_small_relgap_but_high_primal_infeas_is_not_optimal():
-    """Regression: pre-fix the adapter promoted any small-relative-gap
-    "unknown" to OPTIMAL_INACCURATE, even if the primal infeasibility
-    metric was huge. The combined gate catches this."""
+@pytest.mark.parametrize(
+    "primal, dual",
+    [(100.0, 1e-8), (1e-8, 50.0), (float("nan"), float("inf"))],
+)
+def test_cvxopt_early_unknown_without_a_near_solution_is_solver_error(primal, dual):
+    """An early stop whose iterate is far from feasible (or has no finite
+    metrics) is a solver failure. Pre-fix a large residual was read as an
+    infeasibility certificate of the matching kind, which picked the wrong
+    side on many NETLIB / SDPLIB infeasible problems."""
     from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
 
     raw = {
         "status": "unknown",
+        "iterations": 15,
         "relative gap": 1e-5,
-        "primal infeasibility": 100.0,
-        "dual infeasibility": 1e-8,
+        "primal infeasibility": primal,
+        "dual infeasibility": dual,
     }
-    # Should NOT be OPTIMAL_INACCURATE; large primal infeasibility
-    # routes us to the corresponding inaccurate certificate status.
-    assert _map_cvxopt_status(raw) == status.PRIMAL_INFEASIBLE_INACCURATE
+    assert _map_cvxopt_status(raw) == status.SOLVER_ERROR
 
 
-def test_cvxopt_unknown_with_small_relgap_but_high_dual_infeas_is_not_optimal():
+@pytest.mark.parametrize(
+    "primal, expected",
+    [(1e-9, status.OPTIMAL), (1e-5, status.OPTIMAL_INACCURATE), (0.45, status.SOLVER_ERROR)],
+)
+def test_cvxopt_optimal_is_checked_against_feastol(primal, expected):
+    """coneqp's one-shot KKT solve (no cone rows) returns 'optimal'
+    unconditionally, with its residuals alongside."""
     from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
 
-    raw = {
-        "status": "unknown",
-        "relative gap": 1e-5,
-        "primal infeasibility": 1e-8,
-        "dual infeasibility": 50.0,
-    }
-    assert _map_cvxopt_status(raw) == status.DUAL_INFEASIBLE_INACCURATE
-
-
-def test_cvxopt_unknown_with_nan_metrics_falls_through_to_max_iter():
-    """NaN / inf infeasibility metrics offer no signal; the mapping
-    must not silently treat them as 'small enough' for the
-    OPTIMAL_INACCURATE gate."""
-    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
-
-    raw = {
-        "status": "unknown",
-        "relative gap": 1e-5,
-        "primal infeasibility": float("nan"),
-        "dual infeasibility": float("inf"),
-    }
-    assert _map_cvxopt_status(raw) == status.MAX_ITER_REACHED
-
-
-def test_cvxopt_unknown_with_large_primal_infeas_maps_to_pinf_inaccurate():
-    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
-
-    raw = {"status": "unknown", "primal infeasibility": 100.0}
-    assert _map_cvxopt_status(raw) == status.PRIMAL_INFEASIBLE_INACCURATE
-
-
-def test_cvxopt_unknown_with_large_dual_infeas_maps_to_dinf_inaccurate():
-    from solver_benchmarks.solvers.cvxopt_adapter import _map_cvxopt_status
-
-    raw = {"status": "unknown", "dual infeasibility": 100.0}
-    assert _map_cvxopt_status(raw) == status.DUAL_INFEASIBLE_INACCURATE
+    raw = {"status": "optimal", "primal infeasibility": primal, "dual infeasibility": 0.0}
+    assert _map_cvxopt_status(raw, feastol=1e-7) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +271,13 @@ def test_cvxopt_solves_lp_in_qp_form(tmp_path):
     pytest.importorskip("cvxopt")
     from solver_benchmarks.solvers.cvxopt_adapter import CVXOPTSolverAdapter
 
-    adapter = CVXOPTSolverAdapter(
-        {"verbose": False, "abstol": 1e-9, "reltol": 1e-9, "feastol": 1e-9}
-    )
+    # LPs go through conelp; at 1e-9 tolerances its default chol2 KKT
+    # solver stops on this degenerate LP one step short (singular KKT
+    # matrix, gap 1.8e-9), which is reported as optimal_inaccurate.
+    adapter = CVXOPTSolverAdapter({"verbose": False})
     result = adapter.solve(_make_qp_problem(_small_lp_in_qp_form()), tmp_path)
     assert result.status == status.OPTIMAL
+    assert result.info["entry_point"] == "conelp"
     assert result.objective_value == pytest.approx(-1.0, abs=1e-4)
     assert result.kkt is not None
     assert result.kkt["primal_res_rel"] < 1e-4
