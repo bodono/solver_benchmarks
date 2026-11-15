@@ -58,6 +58,7 @@ class ProxQPSolverAdapter(SolverAdapter):
         threads = pop_threads(settings)
         translated = translate_eps_alias(settings)
         settings.setdefault("compute_timings", True)
+        gap_settings = _duality_gap_settings(settings, proxsuite)
         backend = proxsuite.proxqp.dense if use_dense else proxsuite.proxqp.sparse
         _check_settings(settings, backend.solve)
         start = time.perf_counter()
@@ -107,6 +108,7 @@ class ProxQPSolverAdapter(SolverAdapter):
         info = _info_dict(result.info)
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
+        info.update(gap_settings)
         if translated:
             info["settings_translated"] = translated
         return SolverResult(
@@ -119,6 +121,36 @@ class ProxQPSolverAdapter(SolverAdapter):
             info=info,
             kkt=kkt_dict,
         )
+
+
+def _duality_gap_settings(settings: dict, proxsuite) -> dict:
+    """Turn on ProxQP's duality-gap stopping test unless the config says not to.
+
+    ProxSuite's default convergence test checks only the primal and dual
+    residuals (``check_duality_gap=False``), so it stops at points that are
+    feasible and stationary but not complementary and calls them solved
+    (min x s.t. 1 <= x <= 2 came back at x = 1.1; Maros-Meszaros QPTEST 28%
+    off). The adapter enables the check and, unless given, sets its
+    tolerances to the run's ``eps_abs`` / ``eps_rel`` (ProxQP's own defaults,
+    1e-5 and 0, when those are not set), so a ProxQP "solved" means the gap
+    is closed to the same accuracy as the residuals. Returns what was used,
+    for ``info``.
+    """
+    check = bool(settings.setdefault("check_duality_gap", True))
+    if not check:
+        return {"check_duality_gap": False}
+    defaults = proxsuite.proxqp.Settings()
+    settings.setdefault(
+        "eps_duality_gap_abs", float(settings.get("eps_abs", defaults.eps_abs))
+    )
+    settings.setdefault(
+        "eps_duality_gap_rel", float(settings.get("eps_rel", defaults.eps_rel))
+    )
+    return {
+        "check_duality_gap": True,
+        "eps_duality_gap_abs": float(settings["eps_duality_gap_abs"]),
+        "eps_duality_gap_rel": float(settings["eps_duality_gap_rel"]),
+    }
 
 
 # Positional problem data in ProxQP's ``solve`` signatures, not settings.

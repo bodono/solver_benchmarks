@@ -154,3 +154,46 @@ def test_pdlp_forwards_threads_to_num_threads(tmp_path):
     result = _solve("pdlp", {"threads": 2}, tmp_path, _small_lp())
     assert result.status == status.OPTIMAL
     assert "threads_ignored" not in result.info
+
+
+# --- ProxQP duality gap -------------------------------------------------------
+
+
+def _one_variable_lp():
+    # min x s.t. 1 <= x <= 2: optimum 1.
+    return {
+        "P": sp.csc_matrix((1, 1)),
+        "q": np.array([1.0]),
+        "A": sp.csc_matrix([[1.0]]),
+        "l": np.array([1.0]),
+        "u": np.array([2.0]),
+    }
+
+
+def test_proxqp_checks_the_duality_gap_by_default(tmp_path):
+    # ProxSuite's own default tests only the primal and dual residuals, and
+    # stopped here at x = 1.1 (10% off) calling it solved; Maros-Meszaros
+    # QPTEST came back "optimal" 28% off.
+    result = _solve("proxqp", {}, tmp_path, _one_variable_lp())
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(1.0, abs=1e-4)
+    assert result.info["check_duality_gap"] is True
+    # Derived from ProxQP's own eps_abs / eps_rel defaults.
+    assert result.info["eps_duality_gap_abs"] == pytest.approx(1e-5)
+    assert result.info["eps_duality_gap_rel"] == 0.0
+
+
+def test_proxqp_duality_gap_tolerances_follow_eps(tmp_path):
+    result = _solve("proxqp", {"eps_abs": 1e-7, "eps_rel": 1e-6}, tmp_path, _one_variable_lp())
+    assert result.info["eps_duality_gap_abs"] == 1e-7
+    assert result.info["eps_duality_gap_rel"] == 1e-6
+    result = _solve("proxqp", {"eps": 1e-8, "eps_duality_gap_rel": 1e-3}, tmp_path, _one_variable_lp())
+    assert result.info["eps_duality_gap_abs"] == 1e-8
+    assert result.info["eps_duality_gap_rel"] == 1e-3
+
+
+def test_proxqp_duality_gap_check_can_be_turned_off(tmp_path):
+    result = _solve("proxqp", {"check_duality_gap": False}, tmp_path, _one_variable_lp())
+    assert result.status == status.OPTIMAL
+    assert result.info["check_duality_gap"] is False
+    assert "eps_duality_gap_abs" not in result.info
