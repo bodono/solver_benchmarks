@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -30,15 +29,13 @@ OPEN_SOURCE_SOLVERS = {
     },
     "pdlp": {"time_limit_sec": 10.0},
     "piqp": {"verbose": False, "eps_abs": 1.0e-8, "eps_rel": 1.0e-8, "max_iter": 10000},
-}
-
-if sys.version_info < (3, 14):
-    OPEN_SOURCE_SOLVERS["proxqp"] = {
+    "proxqp": {
         "verbose": False,
         "eps_abs": 1.0e-8,
         "eps_rel": 1.0e-8,
         "max_iter": 10000,
-    }
+    },
+}
 
 OPEN_SOURCE_CONE_SOLVERS = {
     "scs": {
@@ -49,14 +46,12 @@ OPEN_SOURCE_CONE_SOLVERS = {
     },
     "clarabel": {"verbose": False},
     "cpo3": {"verbose": False},
-}
-
-if sys.version_info < (3, 14):
-    OPEN_SOURCE_CONE_SOLVERS["sdpa"] = {
+    "sdpa": {
         "verbose": False,
         "max_iter": 50,
         "optimality_tolerance": 1.0e-5,
-    }
+    },
+}
 
 
 def _require_solver(solver_name: str) -> None:

@@ -160,10 +160,12 @@ def _read_uncompressed_mps_problem(filename: str, source_name: str | None = None
     n = c.size
     x_low = _sanitize_lower(np.asarray(lp.col_lower_, dtype=float))
     x_upper = _sanitize_upper(np.asarray(lp.col_upper_, dtype=float))
-    if read_status == warning_status:
-        x_low = _free_lower_bounds_below_negative_upper(
-            filename, lp, x_low, x_upper, source_name or Path(filename).name
-        )
+    # Not gated on HiGHS' read status: some highspy versions warn about the
+    # inconsistent bounds, others (1.16) return kOk. The check returns at
+    # once when no column has lower bound 0 and a negative upper bound.
+    x_low = _free_lower_bounds_below_negative_upper(
+        filename, lp, x_low, x_upper, source_name or Path(filename).name
+    )
     c_low = _sanitize_lower(np.asarray(lp.row_lower_, dtype=float))
     c_upper = _sanitize_upper(np.asarray(lp.row_upper_, dtype=float))
 
@@ -224,10 +226,10 @@ def _free_lower_bounds_below_negative_upper(
 
     A column with an ``UP`` bound below zero and no lower bound of its own
     is free below in CPLEX, Gurobi and lp_solve. HiGHS keeps the default
-    lower bound 0 and only warns about the inconsistent bounds, which
-    would pose an infeasible problem. Columns that show this (lower bound
-    0, upper bound negative, after a HiGHS warning) are checked against the
-    BOUNDS section of the file, streamed: those with no lower bound stated
+    lower bound 0 and only reports the inconsistent bounds, which would
+    pose an infeasible problem. Columns that show this (lower bound 0,
+    upper bound negative) are checked against the BOUNDS section of the
+    file, streamed: those with no lower bound stated
     get -infinity. A lower bound the file does state is kept, and the
     problem stays infeasible, as written.
     """

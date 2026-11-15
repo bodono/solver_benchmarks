@@ -5,14 +5,16 @@ tests load the scripts by path. They pin the parts that must agree with the
 harness: the figures score outcomes exactly as ``solver_benchmarks.analysis``
 does, the "largest quartile" is sized from problem metadata rather than from
 whichever rows happen to carry it, and every campaign config the generator
-writes is one the harness can load. ``tools/bench_modal.py`` imports Modal, so
-it is only compiled.
+writes is one the harness can load. ``tools/bench_modal.py`` imports Modal,
+which is not installed here, so it is loaded with a stand-in for ``modal``.
 """
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -71,8 +73,7 @@ def test_profile_scores_known_infeasible_problems_like_the_harness(make_figures)
     fractions = _final_fractions(make_figures.full_denominator_profile(df))
 
     assert fractions == {"osqp_1e-4": 0.0, "scs_cpu_1e-4": 1.0}
-    bars = shifted_geomean(make_figures.with_missing_as_failures(df), metric="run_time_seconds",
-                           max_value=make_figures.failure_penalty("infeas"))
+    bars = shifted_geomean(df, metric="run_time_seconds", max_value=make_figures.failure_penalty("infeas"))
     solved = dict(zip(bars["solver_id"], bars["success_count"]))
     assert {sid: fractions[sid] * 2 for sid in fractions} == solved
 
@@ -226,6 +227,102 @@ def test_bench_modal_compiles():
     compile(path.read_text(), str(path), "exec")
 
 
+@pytest.fixture
+def bench_modal(monkeypatch):
+    """bench_modal with a stand-in for the ``modal`` package (images,
+    volumes and decorators become mocks; plain functions stay real)."""
+    from unittest import mock
+
+    monkeypatch.setitem(sys.modules, "modal", mock.MagicMock(name="modal"))
+    return _load_tool("bench_modal")
+
+
+def _dockerignored(path: str, patterns: list[str]) -> bool:
+    # Modal's ignore patterns follow .dockerignore: a pattern matches a path
+    # or any of its parent directories; ``**`` matches any number of parts.
+    from fnmatch import fnmatchcase
+
+    parts = path.split("/")
+    for pattern in patterns:
+        pattern_parts = pattern.split("/")
+        if pattern_parts[0] == "**":
+            tail = pattern_parts[1:]
+            windows = [parts[i:i + len(tail)] for i in range(len(parts) - len(tail) + 1)]
+            if any(all(fnmatchcase(p, q) for p, q in zip(w, tail)) for w in windows):
+                return True
+            continue
+        head = parts[:len(pattern_parts)]
+        if len(head) == len(pattern_parts) and all(fnmatchcase(p, q) for p, q in zip(head, pattern_parts)):
+            return True
+    return False
+
+
+def test_bench_modal_images_carry_the_reader_code_but_not_the_data(bench_modal):
+    # The readers (problem_classes/*.py) must come from the checkout baked
+    # into the image, not from whatever copy sits on the data volume.
+    repo = TOOLS.parent
+    for module in sorted((repo / "problem_classes").glob("*.py")):
+        assert not _dockerignored(f"problem_classes/{module.name}", bench_modal.REPO_IGNORE), module.name
+    folders = [path for path in (repo / "problem_classes").iterdir() if path.is_dir() and path.name != "__pycache__"]
+    assert folders
+    for folder in folders:
+        for path in [folder, *sorted(folder.rglob("*"))[:5]]:
+            relative = path.relative_to(repo).as_posix()
+            assert _dockerignored(relative, bench_modal.REPO_IGNORE), relative
+
+
+def test_bench_modal_runs_from_the_image_checkout_with_data_from_the_volume(bench_modal, tmp_path, monkeypatch):
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            self.waits = 0
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise bench_modal.subprocess.TimeoutExpired("bench", timeout)
+            return 0
+
+        def poll(self):
+            self.waits += 1
+            return None if self.waits == 1 else 0
+
+    monkeypatch.setattr(bench_modal.subprocess, "Popen", FakeProcess)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(bench_modal, "Path", lambda p: tmp_path / str(p).lstrip("/"))
+    commits = []
+    monkeypatch.setattr(bench_modal.results_vol, "commit", lambda: commits.append(1))
+    sleeps = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+
+    result = bench_modal._run("camp", "lp_netlib_scs_cpu_1e-4", "run: {}\n")
+
+    (cmd, kwargs), = calls
+    options = dict(zip(cmd, cmd[1:]))
+    assert options.get("--repo-root") == "/root/repo"
+    assert options.get("--data-root") == "/data/problem_classes"
+    assert kwargs["cwd"] == "/root/repo"
+    assert "/data" not in kwargs["env"].get("PYTHONPATH", "").split(os.pathsep)
+    # One commit while the shard ran, one at the end, and no fixed sleep.
+    assert len(commits) == 2
+    assert sleeps == []
+    assert result["exit"] == 0
+
+
+def test_bench_modal_installs_the_highspy_the_pdlp_extra_allows(bench_modal):
+    import tomllib
+
+    extras = tomllib.loads((TOOLS.parent / "pyproject.toml").read_text())["project"]["optional-dependencies"]
+    (pdlp_highspy,) = [req for req in extras["pdlp"] if req.startswith("highspy")]
+    assert bench_modal.HIGHSPY == pdlp_highspy
+    source = (TOOLS / "bench_modal.py").read_text()
+    assert source.count('"highspy') == 1, "every image should use HIGHSPY"
+
+
 def test_make_figures_main_survives_a_family_with_no_sized_problem(make_figures, tmp_path, monkeypatch):
     run_dir = tmp_path / "qp_run"
     run_dir.mkdir()
@@ -277,3 +374,211 @@ def test_make_figures_no_size_lookup_leaves_unsized_problems_out(make_figures, t
     else:
         assert looked_up == [("lp", "huge1")]
         assert "lp 1e-4: 5 problems, largest quartile 2" in captured.out  # huge1 and small4
+
+
+def _load_test_module(name: str):
+    spec = importlib.util.spec_from_file_location(f"_tests_{name}", Path(__file__).with_name(f"{name}.py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _importable(module: str) -> bool:
+    try:
+        importlib.import_module(module)
+    except ImportError:
+        return False
+    return True
+
+
+# Modules behind the campaign's platform-specific linear-solver backends.
+PLATFORM_BACKEND_MODULES = {("qtqp", "pardiso"): "pymklpardiso"}
+
+
+def _write_run(run_dir: Path, rows: list[dict]) -> Path:
+    run_dir.mkdir(parents=True)
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in rows:
+            handle.write(json.dumps(record) + "\n")
+    return run_dir
+
+
+def _sized(row: dict) -> dict:
+    return {"metadata.nnz_a": 10, "metadata.nnz_p": 0, **row}
+
+
+def test_make_campaign_families_are_the_families_make_figures_plots(make_campaign, make_figures):
+    assert set(make_campaign.FAMILIES) == set(make_figures.FAMILY_LIMIT)
+    # The lp family's figures leave out the Mittelmann set (it is lpbig's),
+    # so the lp family must not spend shards on it.
+    for family, dropped in make_figures.FAMILY_DROP_DATASETS.items():
+        ids = {dataset["id"] for dataset in make_campaign.FAMILIES[family]}
+        assert not ids & dropped, family
+    infeas = make_campaign.FAMILIES["infeas"]
+    assert [dataset["dataset_options"] for dataset in infeas] == [{"subset": "infeasible"}]
+
+
+def test_make_campaign_limits_match_the_figures_limits(make_campaign, make_figures, tmp_path, monkeypatch):
+    out_dir = tmp_path / "campaign"
+    families = ",".join(make_campaign.FAMILIES)
+    monkeypatch.setattr(sys, "argv", ["make_campaign.py", str(out_dir), "--families", families, "--tols", "1e-4"])
+
+    make_campaign.main()
+
+    for shard in json.loads((out_dir / "campaign.json").read_text()):
+        config = load_run_config(shard["config"])
+        assert config.timeout_seconds - 60.0 == make_figures.FAMILY_LIMIT[shard["family"]], shard["name"]
+
+
+@pytest.mark.parametrize("tol", [1e-4, 1e-6, 5e-5, 1.5e-5])
+def test_make_figures_reads_the_tolerance_tag_of_every_campaign_solver_id(make_campaign, make_figures, tol):
+    for family in make_campaign.FAMILIES:
+        for variant in make_campaign.solver_variants(family, tol, 300.0):
+            tag = make_figures.solver_tol(variant["id"])
+            assert tag is not None and float(tag) == tol, variant["id"]
+            base = make_figures.base_solver(variant["id"])
+            assert base in make_figures.SOLVER_LABELS, variant["id"]
+
+
+def test_make_figures_fails_loudly_on_rows_without_a_tolerance_tag(make_figures, tmp_path, monkeypatch, capsys):
+    bad = _write_run(tmp_path / "bad", [
+        _sized({"dataset": "lp", "problem": "a", "solver_id": "clarabel", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0}),
+    ])
+    good = _write_run(tmp_path / "good", [
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0}),
+    ])
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"lp={bad}", f"qp={good}",
+                                      "--no-size-lookup"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        make_figures.main()
+
+    assert excinfo.value.code not in (0, None)
+    assert "tolerance tag" in str(excinfo.value.code) and "clarabel" in str(excinfo.value.code)
+    # The families that could be plotted are still written.
+    summary = pd.read_csv(out_dir / "geomean_summary.csv")
+    assert set(summary["family"]) == {"qp"}
+
+
+def test_make_figures_names_untagged_solver_ids_it_leaves_out(make_figures, tmp_path, monkeypatch, capsys):
+    run_dir = _write_run(tmp_path / "run", [
+        _sized({"dataset": "lp", "problem": "a", "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0}),
+        _sized({"dataset": "lp", "problem": "a", "solver_id": "scs_default", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0}),
+    ])
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"lp={run_dir}", "--no-size-lookup"])
+
+    make_figures.main()
+
+    assert "scs_default" in capsys.readouterr().err
+    summary = pd.read_csv(out_dir / "geomean_summary.csv")
+    assert set(summary["solver_id"]) == {"clarabel_1e-4"}
+
+
+def test_make_figures_skips_a_family_whose_rows_are_all_filtered_out(make_figures, tmp_path, monkeypatch, capsys):
+    # An old lp-family archive that holds only the Mittelmann shard, which
+    # the lp family's figures drop.
+    run_dir = _write_run(tmp_path / "run", [
+        _sized({"dataset": "mittelmann", "problem": "qap15", "solver_id": "clarabel_1e-4",
+                "status": status.OPTIMAL, "run_time_seconds": 1.0}),
+    ])
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"lp={run_dir}", "--no-size-lookup"])
+
+    make_figures.main()
+
+    assert "skipped" in capsys.readouterr().out
+    assert not (out_dir / "geomean_summary.csv").exists()
+
+
+def test_make_figures_counts_a_solve_past_the_nominal_limit_as_a_failure(make_figures, tmp_path, monkeypatch):
+    # PIQP ignores its time limit and runs until the harness kills it at the
+    # limit + 60 s; Clarabel stops itself at the limit. A PIQP solve that ends
+    # 30 s past the limit must not be scored as a success.
+    limit = make_figures.FAMILY_LIMIT["qp"]
+    run_dir = _write_run(tmp_path / "run", [
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "piqp_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": limit + 30.0}),
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "clarabel_1e-4", "status": status.TIME_LIMIT,
+                "run_time_seconds": limit}),
+        _sized({"dataset": "qp", "problem": "b", "solver_id": "piqp_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0}),
+        _sized({"dataset": "qp", "problem": "b", "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0}),
+    ])
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"qp={run_dir}", "--no-size-lookup"])
+
+    make_figures.main()
+
+    summary = pd.read_csv(out_dir / "geomean_summary.csv")
+    solved = summary[summary["subset"] == "all"].set_index("solver_id")["success_count"].to_dict()
+    assert solved == {"piqp_1e-4": 1, "clarabel_1e-4": 1}
+
+
+def test_make_figures_use_run_marks_the_substituted_run(make_figures, tmp_path, monkeypatch):
+    rows = []
+    for problem in ("a", "b"):
+        rows += [
+            _sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
+                    "run_time_seconds": 10.0}),
+            _sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-6", "status": status.OPTIMAL,
+                    "run_time_seconds": 1.0}),
+            _sized({"dataset": "lp", "problem": problem, "solver_id": "highs_1e-4", "status": status.OPTIMAL,
+                    "run_time_seconds": 2.0}),
+        ]
+    run_dir = _write_run(tmp_path / "run", rows)
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"lp={run_dir}", "--tol-tag", "1e-4",
+                                      "--use-run", "clarabel=1e-6", "--no-size-lookup"])
+
+    make_figures.main()
+
+    summary = pd.read_csv(out_dir / "geomean_summary.csv", dtype={"source_run": str})
+    rows = summary[summary["subset"] == "all"].set_index("solver_id")
+    assert rows.loc["clarabel_1e-4", "label"] == "Clarabel (1e-6)"
+    assert rows.loc["clarabel_1e-4", "source_run"] == "1e-6"
+    assert rows.loc["clarabel_1e-4", "run_time_seconds"] == pytest.approx(1.0)
+    assert rows.loc["highs_1e-4", "label"] == "HiGHS"
+    assert rows.loc["highs_1e-4", "source_run"] == "1e-4"
+
+
+@pytest.mark.parametrize("family", ["qp", "lp", "sdp", "lpbig", "infeas"])
+def test_campaign_solver_settings_are_accepted_by_the_installed_adapters(make_campaign, repo_root, tmp_path,
+                                                                          family):
+    # load_run_config only parses the YAML; this runs each campaign variant
+    # (CPU ones, on solvers installed here) so the adapters accept its settings.
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers import get_solver
+
+    if family == "sdp":
+        problem = get_dataset("synthetic_cone")(repo_root=repo_root).load_problem("one_variable_cone_lp")
+    else:
+        name = "one_variable_eq" if family == "qp" else "one_variable_lp"
+        problem = get_dataset("synthetic_qp")(repo_root=repo_root).load_problem(name)
+    portable = _load_test_module("test_bundled_configs").PORTABLE_BACKENDS
+    ran = []
+    for variant in make_campaign.solver_variants(family, 1e-4, 300.0):
+        solver_cls = get_solver(variant["solver"])
+        if variant["gpu"] or not solver_cls.is_available():
+            continue
+        backend = variant["settings"].get("linear_solver")
+        if backend not in portable.get(variant["solver"], {backend}):
+            # A backend the extras install on some platforms only (QTQP's
+            # pardiso through py-mkl-pardiso): run it where it is installed.
+            module = PLATFORM_BACKEND_MODULES.get((variant["solver"], backend))
+            if module is None or not _importable(module):
+                continue
+        out = tmp_path / variant["id"]
+        out.mkdir()
+        result = solver_cls(dict(variant["settings"])).solve(problem, out)
+        assert result.status == status.OPTIMAL, (variant["id"], result.status, result.info)
+        ran.append(variant["id"])
+    if not ran:
+        pytest.skip(f"no CPU solver of the {family} campaign is installed")

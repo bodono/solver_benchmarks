@@ -6,6 +6,18 @@ an scs-python built against cuDSS.
 
 Results land on the ``scs-bench-results`` volume under NAME/<shard>/ and
 are fetched with ``modal volume get scs-bench-results NAME results/NAME``.
+
+Code and data are kept apart. Every image carries the checkout, harness and
+reader modules (``problem_classes/*.py``) included, and each shard runs from
+it (``--repo-root /root/repo``), so the results' commit is the code that ran.
+The ``scs-bench-data`` volume holds data only: it is mounted at ``/data`` and
+passed as ``--data-root /data/problem_classes``, so it must hold each dataset
+folder the campaign reads under ``problem_classes/``, laid out as in the
+repository (``netlib_data/feasible``, ``netlib_data/infeasible`` for the
+infeas family, ``kennington``, ``miplib_data``,
+``mittelmann``, ``maros_meszaros_data``, ``qplib_data``, ``sdplib_data``,
+``mittelmann_sdp_data``, ...). Python files left on the volume by an older
+upload are never imported.
 """
 
 from __future__ import annotations
@@ -23,9 +35,17 @@ REPO = Path(__file__).resolve().parents[1]
 data_vol = modal.Volume.from_name("scs-bench-data", create_if_missing=True)
 results_vol = modal.Volume.from_name("scs-bench-results", create_if_missing=True)
 
-REPO_IGNORE = ["results", "problem_classes", "campaign", ".venv*", ".git", "**/__pycache__", "reports", "*.log"]
+# The dataset folders under problem_classes/ stay out of the images (they live
+# on the data volume); the reader modules next to them are shipped.
+REPO_IGNORE = [
+    "results", "problem_classes/*_data", "problem_classes/kennington", "problem_classes/mittelmann",
+    "campaign", ".venv*", ".git", "**/__pycache__", "reports", "*.log",
+]
+# Same constraint as the pdlp and all extras in pyproject.toml: highspy 1.15.x
+# cannot share a process with OR-Tools 9.15.
+HIGHSPY = "highspy>=1.0,!=1.15.*"
 SOLVER_PKGS = [
-    "osqp", "clarabel", "piqp", "proxsuite", "highspy<1.16", "ortools", "cvxopt", "sdpa-python", "ecos",
+    "osqp", "clarabel", "piqp", "proxsuite", HIGHSPY, "ortools", "cvxopt", "sdpa-python", "ecos",
 ]
 HARNESS_PKGS = ["click", "h5py", "matplotlib>=3.9", "numpy", "pandas", "pyarrow", "PyYAML", "scipy", "psutil"]
 
@@ -81,18 +101,19 @@ gpu_image = (
 cuopt_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .pip_install(*HARNESS_PKGS, "scs", HIGHSPY, "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
 # OR-Tools 9.15 and highspy 1.15 cannot be loaded in one Linux process, and
-# the harness's MPS reader needs highspy, so the PDLP image pins highspy 1.11,
-# which was verified to coexist with OR-Tools 9.15 (tools/pair probe).
+# the harness's MPS reader needs highspy, so the PDLP image takes the same
+# highspy constraint as the pdlp extra (tests/test_pdlp_compatibility.py loads
+# both in one process and solves an MPS file with PDLP).
 pdlp_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "ortools==9.15.6755", "highspy==1.11.0", "scs")
+    .pip_install(*HARNESS_PKGS, "ortools==9.15.6755", HIGHSPY, "scs")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -121,7 +142,7 @@ qtqp_gpu_image = (
     _with_qtqp(
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-        .pip_install(*HARNESS_PKGS, "scs", "highspy<1.16", "nvidia-cudss-cu12", "nvmath-python[cu12]", "cupy-cuda12x")
+        .pip_install(*HARNESS_PKGS, "scs", HIGHSPY, "nvidia-cudss-cu12", "nvmath-python[cu12]", "cupy-cuda12x")
     )
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
@@ -160,19 +181,26 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
     run_dir.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, PYTHONPATH="/data", OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
+    env = dict(os.environ, OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
     t0 = time.time()
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
+        # The repository root is the image's checkout: the runner starts each
+        # worker there, and `python -m` puts the working directory first on
+        # sys.path, so problem_classes resolves to the shipped reader modules.
+        # Only the data comes from the volume.
         proc = subprocess.Popen(
             [sys.executable, "-m", "solver_benchmarks.cli", "run", str(cfg), "--run-dir", str(run_dir),
-             "--repo-root", "/data", "--no-stream-output"],
+             "--repo-root", "/root/repo", "--data-root", "/data/problem_classes", "--no-stream-output"],
             cwd="/root/repo", env=env, stdout=out, stderr=err, text=True,
         )
         # Commit the volume every two minutes so that a shard cancelled by the
         # budget guard (or a container limit) resumes from its last result.
-        while proc.poll() is None:
-            time.sleep(120)
-            results_vol.commit()
+        while True:
+            try:
+                proc.wait(timeout=120)
+                break
+            except subprocess.TimeoutExpired:
+                results_vol.commit()
     results_vol.commit()
     rows = 0
     if (run_dir / "results.jsonl").exists():

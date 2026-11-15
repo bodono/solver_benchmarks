@@ -10,6 +10,6 @@ These are authored regression problems, not downloaded benchmark data.
 - `checksums.emps`: 143 rows and one column, crossing two 71-record checksum
   boundaries and using a multi-character row index.
 
-Both fixtures and the Python output were independently checked against David
+The fixtures and the Python output were independently checked against David
 M. Gay's NETLIB `emps.c` decoder. No upstream source or benchmark data is
 included in these fixtures.

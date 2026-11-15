@@ -285,6 +285,26 @@ def test_negative_upper_bound_alone_frees_the_lower_bound(tmp_path: Path):
     assert u.tolist() == [np.inf, -2.0, np.inf]
 
 
+def test_negative_upper_bound_is_freed_when_highs_reads_it_without_a_warning(tmp_path: Path, monkeypatch):
+    """highspy 1.16 returns kOk for a lone negative UP bound (it only logs
+    the inconsistent bounds), so the fix must not depend on kWarning."""
+    highspy = pytest.importorskip("highspy")
+    real_read = highspy.Highs.readModel
+
+    def read_model_ok(self, *args, **kwargs):
+        real_read(self, *args, **kwargs)
+        return highspy.HighsStatus.kOk
+
+    monkeypatch.setattr(highspy.Highs, "readModel", read_model_ok)
+    path = _write(tmp_path / "negub.mps", _NEGATIVE_UP.format(bounds=" UP BND       X         -2.0\n"))
+
+    with pytest.warns(UserWarning, match="negative upper bound"):
+        _, _, l, u = qpsreader.readMpsLp(str(path))
+
+    assert l.tolist() == [-10.0, -np.inf, 0.0]
+    assert u.tolist() == [np.inf, -2.0, np.inf]
+
+
 def test_negative_upper_bound_with_a_stated_lower_bound_is_kept(tmp_path: Path):
     # The file states 0 <= x <= -2: infeasible as written, and posed so.
     pytest.importorskip("highspy")

@@ -44,8 +44,9 @@ from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
                  "sdp": "SDPLIB and Mittelmann SDPs", "lpbig": "Mittelmann LP benchmark set", "infeas": "Netlib infeasible LPs"}
-# The LP family's copy of the Mittelmann set only ever held qap15; the set is
-# its own family (lpbig), so drop it here to keep the title honest.
+# The Mittelmann LP set is its own family (lpbig); LP-family runs made when
+# make_campaign still gave that family a Mittelmann shard carry its rows, so
+# drop them here to keep the title honest.
 FAMILY_DROP_DATASETS = {"lp": {"mittelmann"}, "qp": {"mpc"}}
 # Instances staged from an older MIPLIB listing that are not in the 240-instance
 # MIPLIB 2017 benchmark set; dropped so the LP family is exactly that set.
@@ -56,11 +57,15 @@ FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
                         # "infeasible" subset now); the plots measure time to a verified
                         # optimum, and every solver reports these infeasible.
                         "sdp": {("sdplib", n) for n in SDPLIB_INFEASIBLE}}
-# Nominal time limit per family and the grace the harness allowed before
-# killing a worker; a solve that finishes later counts as a failure for every
-# solver, whatever status it reported.
+# Nominal time limit per family (make_campaign gives it to every solver that
+# takes one). It applies to run_time_seconds, the wall time of the whole solve
+# including setup, although some solvers' own limits (SCS's) cover only their
+# iterations. A solve that takes longer counts as a failure for every solver,
+# whatever status it reported: solvers that ignore their time limit (PIQP,
+# ProxQP, SDPA) or have none (QTQP, CVXOPT) run on until the harness kills
+# them at the limit plus make_campaign's 60 s margin, and must not be scored
+# on time the self-limiting solvers were not given.
 FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0, "infeas": 300.0}
-LIMIT_GRACE = 60.0
 # Failures are charged this multiple of the family's time limit in the shifted
 # geometric mean, so a failure always costs more than any admitted success.
 FAILURE_PENALTY_FACTOR = 3.0
@@ -113,12 +118,17 @@ SOLVER_COLORS = {"scs_cpu": "#1f77b4", "scs_cudss": "#d62728", "clarabel": "#7f7
 NEUTRAL_COLORS = SOLVER_COLORS
 
 
+# The tolerance tag that ends a campaign solver id (make_campaign's
+# tolerance_tag): clarabel_1e-4, clarabel_5e-5, clarabel_1.5e-5.
+TOL_TAG = r"\d(?:\.\d+)?e-\d+"
+
+
 def base_solver(solver_id: str) -> str:
-    return re.sub(r"_1e-\d+$", "", solver_id)
+    return re.sub(rf"_{TOL_TAG}$", "", solver_id)
 
 
 def solver_tol(solver_id: str) -> str | None:
-    m = re.search(r"_(1e-\d+)$", solver_id)
+    m = re.search(rf"_({TOL_TAG})$", solver_id)
     return m.group(1) if m else None
 
 
@@ -277,33 +287,16 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     plt.close(fig)
 
 
-def with_missing_as_failures(df: pd.DataFrame) -> pd.DataFrame:
-    """Add a failed row for every (dataset, problem) a solver has no row for.
-
-    Instances a solver could not attempt (Clarabel's large PSD blocks, for
-    example) are excluded from its shard rather than recorded, and the
-    shifted geometric mean only sees the rows that exist. Without this the
-    exclusions would not be charged as failures in the bars, although the
-    profiles already treat them that way.
-    """
-    keys = ["dataset", "problem"]
-    problems = df[keys].drop_duplicates()
-    solvers = df["solver_id"].unique()
-    full = problems.merge(pd.DataFrame({"solver_id": solvers}), how="cross")
-    present = df[keys + ["solver_id"]].drop_duplicates()
-    missing = full.merge(present, how="left", indicator=True).query("_merge == 'left_only'").drop(columns="_merge")
-    if missing.empty:
-        return df
-    missing = missing.assign(status="not_attempted", run_time_seconds=float("nan"))
-    return pd.concat([df, missing], ignore_index=True)
-
-
 def failure_penalty(family: str | None) -> float:
     return FAILURE_PENALTY_FACTOR * FAMILY_LIMIT.get(family or "", 300.0)
 
 
 def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False, family: str | None = None) -> pd.DataFrame:
-    gm = shifted_geomean(with_missing_as_failures(df), metric="run_time_seconds", max_value=failure_penalty(family))
+    # Instances a solver could not attempt (Clarabel's large PSD blocks, for
+    # example) are excluded from its shard rather than recorded;
+    # shifted_geomean charges every (problem, solver) pair without a row as a
+    # failure, as the profiles do.
+    gm = shifted_geomean(df, metric="run_time_seconds", max_value=failure_penalty(family))
     if gm.empty:
         return gm
     value_col = "run_time_seconds"  # shifted_geomean names its value column after the metric
@@ -402,8 +395,9 @@ def main() -> None:
     ap.add_argument("--grid", type=Path, default=None,
                     help="also write a 3x2 landing-page grid (QP largest, LP largest, Mittelmann) to this path")
     ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
-                    help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend says so "
-                         "when TAG differs from the plot's tolerance")
+                    help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend and "
+                         "bar labels say so (\"Clarabel (1e-6)\") when TAG differs from the plot's tolerance, "
+                         "and geomean_summary.csv records the run used in its source_run column")
     ap.add_argument("--repo-root", type=Path, default=None,
                     help="repository whose data directories hold the problems, for sizing problems no "
                          "result row recorded dimensions for (default: this checkout)")
@@ -416,6 +410,7 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = []
     frames: dict = {}
+    failures: list[str] = []
     for pair in args.runs:
         family, run_dir = pair.split("=", 1)
         df = load_results(run_dir)
@@ -430,13 +425,26 @@ def main() -> None:
         drop_p = FAMILY_DROP_PROBLEMS.get(family)
         if drop_p:
             df = df[~pd.Series(list(zip(df["dataset"], df["problem"])), index=df.index).isin(drop_p)]
+        if df.empty:
+            print(f"{family}: no results left in {run_dir} after the family's dataset, problem and solver "
+                  "filters; skipped")
+            continue
+        solver_ids = sorted(df["solver_id"].astype(str).unique())
+        untagged = [s for s in solver_ids if solver_tol(s) is None]
+        if len(untagged) == len(solver_ids):
+            failures.append(f"{family}: no solver id in {run_dir} ends in a tolerance tag such as _1e-4 "
+                            f"(solver ids: {', '.join(solver_ids)}); make_figures groups the figures by that tag")
+            continue
+        if untagged:
+            print(f"warning: {family}: left out solver ids without a tolerance tag: {', '.join(untagged)}",
+                  file=sys.stderr)
         # Sized once per family, over every tolerance's rows, so the quartile
         # is the same set of problems in each tolerance's figures.
         lookup = None if args.no_size_lookup else registry_size_lookup(run_dir, repo_root=args.repo_root)
         sizes = problem_sizes(df, size_lookup=lookup)
         limit = FAMILY_LIMIT.get(family)
         if limit:
-            late = df["run_time_seconds"] > limit + LIMIT_GRACE
+            late = df["run_time_seconds"] > limit
             df = df.copy()
             df.loc[late, "status"] = "time_limit"
         use_run = dict(kv.split("=", 1) for kv in args.use_run)
@@ -446,6 +454,7 @@ def main() -> None:
         for tag in tags:
             sub = df[df["solver_id"].str.endswith(f"_{tag}")]
             LABEL_OVERRIDE.clear()
+            source_run: dict[str, str] = {}
             for key, run_tag in use_run.items():
                 # "solver=tag" applies everywhere, "family:solver=tag" to one family only
                 if ":" in key:
@@ -469,7 +478,8 @@ def main() -> None:
                     continue
                 sub = pd.concat([sub[sub["solver_id"] != f"{solver}_{tag}"], alt.assign(solver_id=f"{solver}_{tag}")],
                                 ignore_index=True)
-                # The substituted run is documented in the methodology text rather than in the legend.
+                LABEL_OVERRIDE[solver] = f"{SOLVER_LABELS.get(solver, solver)} ({run_tag})"
+                source_run[solver] = run_tag
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{sets_title(family, sub)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
@@ -491,6 +501,7 @@ def main() -> None:
                     t.insert(0, "tol", tag)
                     t.insert(0, "family", family)
                     t["label"] = [solver_label(s) for s in t["solver_id"]]
+                    t["source_run"] = [source_run.get(base_solver(s), tag) for s in t["solver_id"]]
                     summary.append(t)
             print(f"{family} {tag}: {n_all} problems, largest quartile {n_big}")
     if args.grid:
@@ -499,6 +510,8 @@ def main() -> None:
     if summary:
         pd.concat(summary).to_csv(args.out_dir / "geomean_summary.csv", index=False)
         print(args.out_dir / "geomean_summary.csv")
+    if failures:
+        sys.exit("\n".join(failures))
 
 
 if __name__ == "__main__":

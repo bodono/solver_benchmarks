@@ -65,3 +65,64 @@ def test_slow_tests_carry_a_longer_timeout():
 def test_lint_covers_tools():
     ruff = [run for run in _runs("lint") if "ruff check" in run]
     assert ruff and all("tools" in run.split() for run in ruff)
+
+
+def _extra(name: str) -> list:
+    from packaging.requirements import Requirement
+
+    extras = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["optional-dependencies"]
+    return [Requirement(text) for text in extras[name]]
+
+
+def test_pdlp_extras_exclude_only_the_highspy_releases_that_clash_with_ortools():
+    # highspy 1.15.x ships a separate libhighs whose symbols clash with
+    # OR-Tools 9.15 in one process; 1.14 and 1.16 do not.
+    from packaging.version import Version
+
+    for extra in ("pdlp", "all"):
+        (highspy,) = [req for req in _extra(extra) if req.name == "highspy"]
+        allowed = {v: highspy.specifier.contains(Version(v)) for v in ("1.14.0", "1.15.0", "1.15.1", "1.16.0")}
+        assert allowed == {"1.14.0": True, "1.15.0": False, "1.15.1": False, "1.16.0": True}, extra
+
+
+def test_proxqp_and_sdpa_install_on_python_314():
+    # Both publish cp314 wheels (proxsuite >= 0.8.0 none for Windows,
+    # sdpa-python >= 0.2.3).
+    for extra, package in (("proxqp", "proxsuite"), ("sdpa", "sdpa-python"), ("all", "proxsuite"),
+                           ("all", "sdpa-python")):
+        for python in ("3.11", "3.14"):
+            env = {"python_version": python, "sys_platform": "linux"}
+            selected = [req for req in _extra(extra) if req.name == package
+                        and (req.marker is None or req.marker.evaluate(env))]
+            assert len(selected) == 1, (extra, package, python)
+
+
+def test_all_extra_repeats_the_solver_extras_constraints():
+    all_extra = {str(req) for req in _extra("all")}
+    for extra in ("scs", "proxqp", "sdpa", "pdlp", "piqp", "cpo3", "qtqp"):
+        missing = {str(req) for req in _extra(extra)} - all_extra
+        assert not missing, (extra, missing)
+
+
+def test_type_check_runs_on_the_oldest_and_newest_supported_python():
+    # numpy and scipy drop old Pythons, so the stubs mypy sees depend on the
+    # Python it runs on: check both ends of the supported range.
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    tested = WORKFLOW["jobs"]["tests"]["strategy"]["matrix"]["python-version"]
+    type_check = WORKFLOW["jobs"]["type-check"]
+    cells = type_check["strategy"]["matrix"]["include"]
+    versions = [cell["python-version"] for cell in cells]
+    assert versions == [pyproject["tool"]["mypy"]["python_version"], max(tested, key=lambda v: tuple(map(int, v.split("."))))]
+    # Branch protection may require the check by its original name.
+    assert type_check["name"] == "${{ matrix.check-name }}"
+    assert [cell["check-name"] for cell in cells] == ["Type check", f"Type check - Python {versions[1]}"]
+    setup = [step for step in type_check["steps"] if step.get("uses", "").startswith("actions/setup-python")]
+    assert setup[0]["with"]["python-version"] == "${{ matrix.python-version }}"
+
+
+def test_only_pull_request_runs_cancel_each_other():
+    # A push to master must not cancel the weekly scheduled run (which alone
+    # runs the dataset-download smoke), nor the other way round.
+    concurrency = WORKFLOW["concurrency"]
+    assert "github.event_name" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"

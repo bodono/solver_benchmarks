@@ -84,3 +84,15 @@ def test_every_run_config_field_is_in_the_field_table():
         if field.name in {"datasets", "solvers"}:
             continue  # documented as run.dataset / run.datasets and solvers[].*
         assert f"| `run.{field.name}` |" in table, f"run.{field.name} is missing from the config field table"
+
+
+def test_readme_states_the_default_solver_verbosity():
+    # A user diagnosing a failed solve looks in stdout.log; with quiet
+    # solvers it is empty unless the config says verbose: true.
+    from solver_benchmarks.solvers.base import DEFAULT_VERBOSE
+
+    match = re.search(r"Solvers run (quietly|verbosely) by default \(`verbose: (true|false)`\)", README)
+    assert match, "the README should state the default solver verbosity"
+    assert match.group(2) == str(DEFAULT_VERBOSE).lower()
+    assert (match.group(1) == "verbosely") == DEFAULT_VERBOSE
+    assert "verbose by default" not in README

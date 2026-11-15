@@ -22,12 +22,18 @@ from solver_benchmarks.datasets.tsplib_sdp import TSPLIBSDPDataset
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    # Default: the repository bench uses (the working directory if it has
+    # problem_classes/, else the checkout this package is installed from).
+    parser.add_argument("--repo-root", type=Path, default=None)
+    parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--problem", action="append", default=[])
     parser.add_argument("--all", action="store_true", dest="all_problems")
     args = parser.parse_args()
 
-    dataset = TSPLIBSDPDataset(repo_root=args.repo_root)
+    options = {}
+    if args.data_root is not None:
+        options["data_root"] = str(args.data_root)
+    dataset = TSPLIBSDPDataset(repo_root=args.repo_root, **options)
     dataset.prepare_data(args.problem or None, all_problems=args.all_problems)
     print(f"tsplib_sdp: data prepared in {dataset.data_dir}")
     return 0

@@ -41,13 +41,22 @@ qtqp = [
 cpo3 = ["cpo3>=0.0.1"]
 gurobi = ["gurobipy>=11.0"]
 mosek = ["Mosek>=10.0"]
-# highspy 1.15.x clashes with OR-Tools 9.15's native HiGHS symbols on
-# Linux/macOS. 1.14 has wheels through Python 3.14. Restrict the pair
-# only when installing PDLP; keep the all extra aligned below.
-pdlp = ["ortools>=9.3.0", "highspy<1.15"]
-proxqp = ["proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'"]
+# highspy 1.15.x ships a separate libhighs that clashes with OR-Tools
+# 9.15's native HiGHS symbols on Linux/macOS; 1.14 and 1.16 link HiGHS
+# into their own module and load next to OR-Tools. Exclude 1.15.x only
+# when installing PDLP; keep the all extra aligned below.
+pdlp = ["ortools>=9.3.0", "highspy>=1.0,!=1.15.*"]
+# On Python 3.14: proxsuite >= 0.8.0 (3.14 wheels exist from 0.7.3, none for
+# Windows) and sdpa-python >= 0.2.3, its first release with 3.14 wheels.
+proxqp = [
+    "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
+    "proxsuite>=0.8.0; python_version >= '3.14' and sys_platform != 'win32'",
+]
 piqp = ["piqp>=0.6.0"]
-sdpa = ["sdpa-python>=0.2.2; python_version < '3.14'"]
+sdpa = [
+    "sdpa-python>=0.2.2; python_version < '3.14'",
+    "sdpa-python>=0.2.3; python_version >= '3.14'",
+]
 cplex = ["cplex>=22.1"]
 test = ["pytest>=7.0", "pytest-timeout>=2.1"]
 # Optional: psutil enriches the system_info captured into manifests
@@ -66,10 +75,13 @@ all = [
     "cpo3>=0.0.1",
     "ortools>=9.3.0",
     # Same native-library compatibility constraint as the `pdlp` extra.
-    "highspy<1.15",
+    "highspy>=1.0,!=1.15.*",
     "piqp>=0.6.0",
+    # Same Python 3.14 markers as the `proxqp` and `sdpa` extras.
     "proxsuite>=0.7.0,!=0.7.2.post1; python_version < '3.14'",
+    "proxsuite>=0.8.0; python_version >= '3.14' and sys_platform != 'win32'",
     "sdpa-python>=0.2.2; python_version < '3.14'",
+    "sdpa-python>=0.2.3; python_version >= '3.14'",
     "pytest>=7.0",
     "pytest-timeout>=2.1",
 ]
