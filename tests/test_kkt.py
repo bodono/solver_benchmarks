@@ -691,3 +691,40 @@ def test_complementarity_has_a_scale_free_variant():
         qp = kkt.qp_residuals(sp.csc_matrix((1, 1)), np.array([-scale]), A, np.array([-np.inf]), np.array([1.0]),
                               np.array([1.0 - 1e-9]), y)
         assert qp["comp_slack_rel"] < 1e-9
+
+
+def test_power_cones_are_projected_per_exponent_not_per_cone(monkeypatch):
+    """Many power cones project in one vectorized call per distinct exponent,
+    with the same result as projecting each cone on its own (negative
+    exponents stand for dual cones; unsupported exponents are copied)."""
+    rng = np.random.default_rng(3)
+    powers = [0.3, -0.3, 0.7, 0.3, 1.5, -0.7, 0.3, 0.0]
+    s = rng.normal(size=3 * len(powers))
+    y = rng.normal(size=3 * len(powers))
+    expected_s, expected_y = [], []
+    for i, a in enumerate(powers):
+        si, yi = s[3 * i:3 * i + 3], y[3 * i:3 * i + 3]
+        if not 0.0 < abs(a) < 1.0:
+            expected_s.append(si)
+            expected_y.append(yi)
+        elif a > 0:
+            expected_s.append(kkt._project_pow(si, a).ravel())
+            expected_y.append(kkt._project_pow_dual(yi, a).ravel())
+        else:
+            expected_s.append(kkt._project_pow_dual(si, -a).ravel())
+            expected_y.append(kkt._project_pow(yi, -a).ravel())
+    calls = []
+    real = kkt._project_pow
+
+    def counting(v, a):
+        calls.append(a)
+        return real(v, a)
+
+    monkeypatch.setattr(kkt, "_project_pow", counting)
+    s_proj, y_proj, unsupported = kkt._project_cones({"p": powers}, s, y)
+    np.testing.assert_allclose(s_proj, np.concatenate(expected_s), rtol=0, atol=1e-12)
+    np.testing.assert_allclose(y_proj, np.concatenate(expected_y), rtol=0, atol=1e-12)
+    assert unsupported == ["p", "p"]
+    # distinct supported exponents: |a| in {0.3, 0.7}, signed {0.3, -0.3, 0.7, -0.7};
+    # each projection (primal and dual) calls _project_pow at most once per signed exponent
+    assert len(calls) <= 2 * 4

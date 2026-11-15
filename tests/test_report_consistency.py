@@ -326,3 +326,27 @@ def test_report_text_matches_the_scoring_rules(tmp_path, repo_root):
     assert "median runtime" not in markdown
     scaling = pd.read_csv(tmp_path / "report" / "difficulty_scaling_iterations.csv")
     assert "median_iterations" in scaling.columns and "median_time" not in scaling.columns
+
+
+def test_summary_and_failures_commands_count_unattempted_solves(tmp_path, repo_root, monkeypatch):
+    """`bench summary` and `bench failures` agree with the report: a planned
+    solve with no row is a not_attempted failure, not left out."""
+    from click.testing import CliRunner
+
+    import solver_benchmarks.cli as cli
+
+    problems = ["p1", "p2", "p3", "p4"]
+    rows = [_row(p, "a") for p in problems] + [_row(p, "b") for p in problems[:2]]
+    run = _write_run(tmp_path, rows, include=problems)
+    expected = pd.DataFrame([{"dataset": "d", "problem": p, "solver_id": s} for p in problems for s in "ab"])
+    monkeypatch.setattr(cli, "expected_results", lambda *args, **kwargs: expected)
+    runner = CliRunner()
+    failures = runner.invoke(cli.main, ["failures", str(run), "--repo-root", str(repo_root)])
+    assert failures.exit_code == 0, failures.output
+    line_b = next(line for line in failures.output.splitlines() if line.split() and line.split()[0] == "b")
+    assert "0.5" in line_b.split()
+    summary = runner.invoke(cli.main, ["summary", str(run), "--repo-root", str(repo_root)])
+    assert summary.exit_code == 0, summary.output
+    metrics_block = summary.output.split("Status counts:")[0]
+    line_b = next(line for line in metrics_block.splitlines() if line.split() and line.split()[0] == "b")
+    assert "0.5" in line_b.split()

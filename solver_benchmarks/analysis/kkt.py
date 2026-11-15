@@ -567,16 +567,14 @@ def _project_cones(
             _add(dim, _rowwise(primal), _rowwise(dual))
             row += dim
         elif name == "p":
-            for power in _as_list(value):
-                a = float(power)
-                if not 0.0 < abs(a) < 1.0:
-                    unsupported.append("p")
-                    _add(3, np.copy, np.copy)
-                elif a > 0:
-                    _add(3, _rowwise(_project_pow, a), _rowwise(_project_pow_dual, a))
-                else:
-                    _add(3, _rowwise(_project_pow_dual, -a), _rowwise(_project_pow, -a))
-                row += 3
+            powers = np.array([float(power) for power in _as_list(value)], dtype=float)
+            unsupported.extend("p" for a in powers if not 0.0 < abs(a) < 1.0)
+            _add(
+                3 * powers.size,
+                functools.partial(_project_power_block, powers=powers, dual=False),
+                functools.partial(_project_power_block, powers=powers, dual=True),
+            )
+            row += 3 * powers.size
         else:
             unsupported.append(name)
             # Unknown dimension — stop advancing to avoid misaligned reads.
@@ -863,6 +861,27 @@ def _pow_coordinate(r, value, r0, weight):
 def _project_pow_dual(v: np.ndarray, a: float) -> np.ndarray:
     v = np.asarray(v, dtype=float).reshape(-1, 3)
     return v + _project_pow(-v, a)
+
+
+def _project_power_block(v: np.ndarray, *, powers: np.ndarray, dual: bool) -> np.ndarray:
+    """Project consecutive power cones (one row of three per exponent in
+    ``powers``) onto the cones, or onto their duals when ``dual``.
+
+    A negative exponent ``a`` stands for the dual of ``K_{-a}``, as in SCS.
+    Rows are projected once per distinct exponent, since the projections are
+    vectorized over rows (one call per cone cost about 1.7 ms each). Rows
+    whose exponent is not in (-1, 0) or (0, 1) are copied; the caller
+    reports them as unsupported.
+    """
+    rows = np.asarray(v, dtype=float).reshape(-1, 3)
+    out = rows.copy()
+    for a in np.unique(powers):
+        if not 0.0 < abs(a) < 1.0:
+            continue
+        chosen = powers == a
+        project = _project_pow if (a > 0) != dual else _project_pow_dual
+        out[chosen] = project(rows[chosen], abs(float(a)))
+    return out.ravel()
 
 
 # Box cone K = cl{(t, s): t >= 0, t lo <= s <= t hi} (SCS); an infinite

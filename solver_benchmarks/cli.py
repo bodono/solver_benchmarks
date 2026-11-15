@@ -270,7 +270,7 @@ def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
     if summary.empty:
         click.echo("No results found.")
         return
-    metrics = solver_metrics(df)
+    metrics = solver_metrics(df, expected=expected_results(run_dir, repo_root=repo_root))
     if not metrics.empty:
         click.echo("Solver metrics:")
         click.echo(metrics.to_string(index=False))
@@ -285,9 +285,10 @@ def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
 
 @main.command("failures")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
-def failures_cmd(run_dir: Path) -> None:
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def failures_cmd(run_dir: Path, repo_root: Path | None) -> None:
     df = load_results(run_dir)
-    failures = failure_rates(df)
+    failures = failure_rates(df, expected=expected_results(run_dir, repo_root=repo_root))
     if failures.empty:
         click.echo("No results found.")
         return
