@@ -1696,8 +1696,20 @@ Run the test suite:
 
 ```bash
 pip install -e ".[test,all]"
-pytest
+pytest -m "not network"
 ```
+
+`-m "not network"` leaves out the tests marked `network`. They download from
+external dataset hosts and fail offline or behind a proxy, so CI runs them only
+on the weekly schedule (`pytest -m network tests/test_dataset_downloads.py`).
+The two tests marked `slow` read every member of the SDPLIB archive and take
+minutes each. For a quick run, use `pytest -m "not network and not slow"`, as the
+CI matrix jobs do; the coverage job runs the slow tests on every pull request.
+
+The solver integration tests run once per solver and skip a solver that is not
+installed. Set `BENCH_REQUIRE_ALL_SOLVERS=1` to make a missing solver fail
+instead. CI sets it in the jobs that install every extra, because there a
+missing solver means a packaging or import regression.
 
 Current tests cover:
 

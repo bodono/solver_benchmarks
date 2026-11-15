@@ -270,7 +270,9 @@ def _recorded_blocks(archive: Path, scratch: Path) -> dict[str, tuple[int, ...] 
     return recorded
 
 
+# Minutes on its own, and two to three times that under coverage tracing.
 @pytest.mark.slow
+@pytest.mark.timeout(900)
 def test_every_bundled_problem_records_its_blocks_and_splits(repo_root: Path, tmp_path: Path):
     # Reads the record of every archive member and compares it with what the
     # original SDPLIB files declare on their third line (the fixture holds

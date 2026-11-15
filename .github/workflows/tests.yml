@@ -69,6 +69,11 @@ jobs:
   tests:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    env:
+      # Every open-source extra is installed here, so a solver that is not
+      # available is a packaging or import regression: fail its integration
+      # test instead of skipping it.
+      BENCH_REQUIRE_ALL_SOLVERS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -93,8 +98,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,all]"
 
+      # Tests marked slow (minutes each) run once, in the coverage job.
       - name: Run tests
-        run: python -m pytest -m "not network"
+        run: python -m pytest -m "not network and not slow"
 
       - name: Smoke-test CLI
         run: python -m solver_benchmarks.cli list solvers
@@ -102,6 +108,8 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    env:
+      BENCH_REQUIRE_ALL_SOLVERS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -117,6 +125,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,all]" "pytest-cov>=4.0"
 
+      # The one job that also runs the tests marked slow.
       - name: Run tests with coverage
         run: |
           python -m pytest -m "not network" \
