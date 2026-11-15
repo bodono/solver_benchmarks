@@ -773,6 +773,38 @@ def test_cvxopt_certifies_dual_infeasibility(kind, data, tmp_path):
     assert result.kkt["qtx"] < 0
 
 
+@pytest.mark.parametrize("settings", [{}, {"kktsolver": "qr"}], ids=["default", "qr"])
+def test_cvxopt_discards_an_infeasibility_claim_at_the_starting_point(settings, tmp_path):
+    """min -1e8 x s.t. 0 <= x <= 1: conelp's starting point x = 0.5 has
+    objective -5e7, so its test (residual / -q'x <= feastol) calls the problem
+    dual infeasible at iteration 0 (as for NETLIB agg / grow7). The adapter
+    discards that claim and solves with coneqp (which has no 'qr' KKT
+    solver, so a conelp-only choice falls back to coneqp's default)."""
+    lp = {
+        "P": None,
+        "A": sp.csc_matrix([[-1.0], [1.0]]),
+        "b": np.array([0.0, 1.0]),
+        "q": np.array([-1e8]),
+        "r": 0.0,
+        "cone": {"l": 2},
+    }
+    result = _solve("cvxopt", CONE, lp, settings, tmp_path)
+    assert result.info["conelp_discarded_claim"] == {
+        "status": "dual infeasible",
+        "iterations": 0,
+    }
+    assert result.info["entry_point"] == "coneqp"
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(-1e8, rel=1e-7)
+
+
+def test_cvxopt_keeps_infeasibility_claims_after_the_starting_point(tmp_path):
+    result = _solve("cvxopt", CONE, _infeasible_cone_lp(), {}, tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.iterations > 0
+    assert "conelp_discarded_claim" not in result.info
+
+
 def test_cvxopt_quadratic_objective_still_uses_coneqp(tmp_path):
     result = _solve("cvxopt", QP, _feasible_qp(), {}, tmp_path)
     assert result.status == status.OPTIMAL
@@ -791,6 +823,71 @@ def test_cvxopt_equality_only_qp_is_solved_correctly(tmp_path):
     assert result.objective_value == pytest.approx(reference.objective_value, abs=1e-6)
     assert result.kkt["primal_res_rel"] < 1e-9
     assert result.kkt["dual_res_rel"] < 1e-9
+
+
+def _spy_on_coneqp(monkeypatch) -> dict:
+    cs = pytest.importorskip("cvxopt.solvers")
+    seen: dict = {}
+    real_coneqp = cs.coneqp
+
+    def spy(*args, **kwargs):
+        seen["kktsolver"] = kwargs.get("kktsolver")
+        return real_coneqp(*args, **kwargs)
+
+    monkeypatch.setattr(cs, "coneqp", spy)
+    return seen
+
+
+def test_cvxopt_large_equality_only_qp_keeps_the_sparse_kkt_solver(tmp_path, monkeypatch):
+    """ldl factors the KKT matrix [[P, A'], [A, 0]] densely (7.3 GB for
+    Maros-Meszaros AUG2DC, n + p = 30200), so above CVXOPT_DENSE_LDL_MAX_DIM
+    the adapter leaves CVXOPT's sparse default chol2 in place."""
+    from solver_benchmarks.solvers.cvxopt_adapter import CVXOPT_DENSE_LDL_MAX_DIM
+
+    n, m = 1800, 400
+    assert n + m > CVXOPT_DENSE_LDL_MAX_DIM
+    rng = np.random.default_rng(0)
+    a = sp.random(m, n, density=0.01, random_state=1, format="csc") + sp.eye(m, n)
+    b = a @ rng.standard_normal(n)
+    qp = {
+        "P": sp.diags(np.linspace(1.0, 2.0, n), format="csc"),
+        "q": rng.standard_normal(n),
+        "A": sp.csc_matrix(a),
+        "l": b,
+        "u": b,
+    }
+    seen = _spy_on_coneqp(monkeypatch)
+    result = _solve("cvxopt", QP, qp, {}, tmp_path)
+    assert seen["kktsolver"] is None
+    assert "kktsolver" not in result.info
+    reference = _solve("clarabel", QP, qp, {}, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-7)
+
+
+def test_cvxopt_equality_only_qp_at_the_limit_uses_ldl(tmp_path, monkeypatch):
+    import solver_benchmarks.solvers.cvxopt_adapter as cvxopt_adapter
+
+    seen = _spy_on_coneqp(monkeypatch)
+    monkeypatch.setattr(cvxopt_adapter, "CVXOPT_DENSE_LDL_MAX_DIM", 8)  # HS52: n + p = 5 + 3
+    result = _solve("cvxopt", QP, _hs52(), {}, tmp_path)
+    assert seen["kktsolver"] == "ldl"
+    assert result.status == status.OPTIMAL
+
+
+def test_cvxopt_wrong_chol2_point_on_equality_only_qp_is_a_solver_error(tmp_path, monkeypatch):
+    """Above the ldl limit a singular-P equality-only problem keeps chol2,
+    whose 'optimal' point violates Ax = b; the residual check reports it as
+    solver_error instead of optimal."""
+    import solver_benchmarks.solvers.cvxopt_adapter as cvxopt_adapter
+
+    seen = _spy_on_coneqp(monkeypatch)
+    monkeypatch.setattr(cvxopt_adapter, "CVXOPT_DENSE_LDL_MAX_DIM", 7)  # HS52: n + p = 8
+    result = _solve("cvxopt", QP, _hs52(), {}, tmp_path)
+    assert seen["kktsolver"] is None
+    assert result.info["raw_status"] == "optimal"
+    assert result.status == status.SOLVER_ERROR, result.info
+    assert result.objective_value is None
 
 
 def test_cvxopt_rejects_unknown_settings_by_name(tmp_path):

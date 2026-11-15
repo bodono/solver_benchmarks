@@ -10,14 +10,33 @@ nonzeros: LPs, SOCPs, SDPs) go through ``cvxopt.solvers.conelp``::
                 A x = b
 
 which returns ``primal infeasible`` / ``dual infeasible`` with normalized
-certificates (``h'z + b'y = -1`` or ``q'x = -1``). Problems with a
-quadratic objective go through ``cvxopt.solvers.coneqp`` (the same form
-plus ``(1/2) x' P x``), which only ever reports ``optimal`` or ``unknown``
-and cannot certify infeasibility. A problem with no cone rows at all
+certificates (``h'z + b'y = -1`` or ``q'x = -1``). Its infeasibility test
+divides a residual by minus the current objective, so at the starting point
+(iteration 0, a least-squares point) it only compares that point's objective
+with ``1 / feastol``: NETLIB agg, agg2, agg3 and grow7 (optima of 1e7 to
+5e7 in magnitude) were "dual infeasible" at iteration 0. Such a claim is
+not evidence, so the adapter discards it and solves the problem with
+``coneqp`` (recorded in ``info["conelp_discarded_claim"]``; the time of
+both calls is reported). Later claims are kept; CVXOPT can still certify
+infeasibility falsely on badly scaled problems (NETLIB scagr25 at iteration
+4, nesm at 17), and those rows count as failures. For SOC / PSD cones
+``conelp`` defaults to the ``qr`` KKT solver where ``coneqp`` used
+``chol``: up to about 2x slower on SDPLIB, and no more robust overall
+(better on control / truss, worse on several hinf and qap problems);
+``kktsolver: chol`` selects the latter.
+
+Problems with a quadratic objective go through ``cvxopt.solvers.coneqp``
+(the same form plus ``(1/2) x' P x``), which only ever reports ``optimal``
+or ``unknown`` and cannot certify infeasibility. A problem with no cone rows at all
 (only equalities) also goes to ``coneqp``, which then solves the KKT
-system once; the adapter uses the ``ldl`` KKT solver for that case, as
-CVXOPT's default ``chol2`` returns a wrong point with status ``optimal``
-when ``P`` is singular (Maros-Meszaros HS52, GENHS28).
+system ``[[P, A'], [A, 0]]`` once and reports ``optimal`` whatever the
+residual. CVXOPT's default ``chol2`` KKT solver returns a wrong point there
+when ``P`` is singular (Maros-Meszaros HS52, GENHS28), so the adapter uses
+the ``ldl`` KKT solver when ``n + p`` is at most
+``CVXOPT_DENSE_LDL_MAX_DIM`` (2000). ``ldl`` factors that KKT matrix as a
+dense ``(n + p) x (n + p)`` array, which would need 7.3 GB for AUG2DC
+(``n + p = 30200``), so larger systems keep ``chol2``; a wrong point from it
+is caught by the residual check below (``solver_error``).
 
 CVXOPT's ``unknown`` status covers both reaching ``maxiters`` and stopping
 early on a numerical failure (e.g. a singular KKT matrix). It maps to
@@ -72,6 +91,11 @@ from .base import (
     settings_with_defaults,
 )
 
+# Largest equality-only KKT system (n + p rows) the adapter hands to CVXOPT's
+# ``ldl`` KKT solver, which factors it as a dense matrix (32 MB at this size).
+# Larger systems keep CVXOPT's default sparse ``chol2``.
+CVXOPT_DENSE_LDL_MAX_DIM = 2000
+
 
 class CVXOPTSolverAdapter(SolverAdapter):
     solver_name = "cvxopt"
@@ -117,14 +141,40 @@ class CVXOPTSolverAdapter(SolverAdapter):
         entry_point = "conelp" if has_cone_rows and not _has_nonzeros(data["P"]) else "coneqp"
         if kktsolver is None and not has_cone_rows:
             # coneqp solves the equality-constrained KKT system once; the
-            # default chol2 factorization gets it wrong for singular P.
-            kktsolver = "ldl"
+            # default chol2 factorization gets it wrong for singular P, and
+            # ldl factors it densely, so only small systems switch.
+            kkt_dim = int(data["P"].size[0]) + int(data["A"].size[0])
+            if kkt_dim <= CVXOPT_DENSE_LDL_MAX_DIM:
+                kktsolver = "ldl"
+
+        def call(entry: str, kkt) -> dict:
+            if entry == "conelp":
+                return cs.conelp(
+                    data["q"],
+                    data["G"],
+                    data["h"],
+                    dims,
+                    A=data["A"],
+                    b=data["b"],
+                    kktsolver=kkt,
+                )
+            return cs.coneqp(
+                data["P"],
+                data["q"],
+                G=data["G"],
+                h=data["h"],
+                dims=dims,
+                A=data["A"],
+                b=data["b"],
+                kktsolver=kkt,
+            )
 
         # Save and restore global CVXOPT options so the adapter does
         # not leak settings across concurrent solves. ``options`` is a
         # plain dict; copying it before / restoring after is safe.
         raw: dict = {}
         solver_error: str | None = None
+        discarded_claim: dict | None = None
         with _cvxopt_options(cs, options, verbose=verbose):
             max_iters = int(cs.options.get("maxiters", 100))
             feastol = float(cs.options.get("feastol", 1e-7))
@@ -136,27 +186,19 @@ class CVXOPTSolverAdapter(SolverAdapter):
             # rather than letting the exception escape — matches how the
             # other adapters handle native solver crashes.
             try:
-                if entry_point == "conelp":
-                    raw = cs.conelp(
-                        data["q"],
-                        data["G"],
-                        data["h"],
-                        dims,
-                        A=data["A"],
-                        b=data["b"],
-                        kktsolver=kktsolver,
-                    )
-                else:
-                    raw = cs.coneqp(
-                        data["P"],
-                        data["q"],
-                        G=data["G"],
-                        h=data["h"],
-                        dims=dims,
-                        A=data["A"],
-                        b=data["b"],
-                        kktsolver=kktsolver,
-                    )
+                raw = call(entry_point, kktsolver)
+                if entry_point == "conelp" and _is_starting_point_claim(raw):
+                    # conelp's infeasibility test at iteration 0 only says
+                    # the least-squares starting point has an objective
+                    # beyond 1/feastol in magnitude; solve with coneqp
+                    # (which has no 'qr' KKT solver).
+                    discarded_claim = {
+                        "status": raw.get("status"),
+                        "iterations": _maybe_int(raw.get("iterations")),
+                    }
+                    entry_point = "coneqp"
+                    raw = {}
+                    raw = call(entry_point, None if kktsolver == "qr" else kktsolver)
             except (ArithmeticError, ValueError) as exc:
                 solver_error = f"cvxopt.{entry_point} raised {type(exc).__name__}: {exc}"
             elapsed = time.perf_counter() - start
@@ -164,6 +206,8 @@ class CVXOPTSolverAdapter(SolverAdapter):
         info = _flatten_info(raw)
         info["raw_status"] = raw.get("status")
         info["entry_point"] = entry_point
+        if discarded_claim is not None:
+            info["conelp_discarded_claim"] = discarded_claim
         if kktsolver is not None:
             info["kktsolver"] = kktsolver if isinstance(kktsolver, str) else repr(kktsolver)
         if translated:
@@ -212,6 +256,20 @@ class CVXOPTSolverAdapter(SolverAdapter):
             info=info,
             kkt=kkt_dict,
         )
+
+
+def _is_starting_point_claim(raw: dict) -> bool:
+    """Whether ``conelp`` claimed infeasibility at its starting point.
+
+    At iteration 0 the certificate residual is about ``1 / |objective|`` of
+    the least-squares starting point (``max(|Ax|/|b|, |Gx + s|/|h|) / -q'x``
+    with ``Ax = b``), so the claim reflects the objective's scale, not the
+    problem's feasibility.
+    """
+    return (
+        str(raw.get("status", "")) in {"primal infeasible", "dual infeasible"}
+        and _maybe_int(raw.get("iterations")) == 0
+    )
 
 
 def _has_nonzeros(matrix) -> bool:
