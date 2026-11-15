@@ -59,7 +59,7 @@ class _LinExpr:
         self.coeffs = [float(c) for c in coeffs]
         self.indices = [v.index for v in variables]
 
-    def __eq__(self, rhs):  # noqa: D105 - mirrors gurobipy's TempConstr
+    def __eq__(self, rhs):  # mirrors gurobipy's TempConstr
         return ("==", self, float(rhs))
 
     def __le__(self, rhs):

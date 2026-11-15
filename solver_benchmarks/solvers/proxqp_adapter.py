@@ -123,6 +123,11 @@ class ProxQPSolverAdapter(SolverAdapter):
         )
 
 
+# ProxSuite's documented defaults, used if its Settings class is unavailable.
+_PROXQP_DEFAULT_EPS_ABS = 1e-5
+_PROXQP_DEFAULT_EPS_REL = 0.0
+
+
 def _duality_gap_settings(settings: dict, proxsuite) -> dict:
     """Turn on ProxQP's duality-gap stopping test unless the config says not to.
 
@@ -139,13 +144,12 @@ def _duality_gap_settings(settings: dict, proxsuite) -> dict:
     check = bool(settings.setdefault("check_duality_gap", True))
     if not check:
         return {"check_duality_gap": False}
-    defaults = proxsuite.proxqp.Settings()
-    settings.setdefault(
-        "eps_duality_gap_abs", float(settings.get("eps_abs", defaults.eps_abs))
-    )
-    settings.setdefault(
-        "eps_duality_gap_rel", float(settings.get("eps_rel", defaults.eps_rel))
-    )
+    settings_class = getattr(proxsuite.proxqp, "Settings", None)
+    defaults = settings_class() if settings_class is not None else None
+    default_abs = getattr(defaults, "eps_abs", _PROXQP_DEFAULT_EPS_ABS)
+    default_rel = getattr(defaults, "eps_rel", _PROXQP_DEFAULT_EPS_REL)
+    settings.setdefault("eps_duality_gap_abs", float(settings.get("eps_abs", default_abs)))
+    settings.setdefault("eps_duality_gap_rel", float(settings.get("eps_rel", default_rel)))
     return {
         "check_duality_gap": True,
         "eps_duality_gap_abs": float(settings["eps_duality_gap_abs"]),

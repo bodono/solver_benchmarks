@@ -154,6 +154,9 @@ def _osqp_exception(osqp):
     """The exception type osqp raises for solver errors (if this build has one)."""
     exc = getattr(osqp, "OSQPException", None)
     return exc if isinstance(exc, type) and issubclass(exc, Exception) else ()
+
+
+# OSQP labels a limit-hit iterate that passes its looser check with these.
 _INACCURATE_AT_LIMIT = (
     "OSQP_SOLVED_INACCURATE",
     "OSQP_PRIMAL_INFEASIBLE_INACCURATE",
