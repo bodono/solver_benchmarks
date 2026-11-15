@@ -698,12 +698,17 @@ If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
 the solver, its settings, the effective timeout and the dataset options, except
 `data_root` and `max_size_mb`, which only say where the files are and which
 problems are listed. Rows written by earlier releases, which also hashed those
-two options, still count when everything else matches. A row solved under other
-settings is superseded: the triple is solved again, and once the new result is
-written the old row moves from `results.jsonl` to `results.superseded.jsonl`,
-so reports only see results for the current settings. The superseded attempt's
-logs stay where its row points; the new attempt writes into a `rerun-N`
-subdirectory. Rows with `worker_error` are retried automatically
+two options, still count when everything else matches, also after either option
+changes: the first resume in such a directory works out, from the manifest the
+earlier release left, which current signature those rows' signatures stand for,
+and records it in the manifest for later resumes. A row solved under other settings is superseded: the
+triple is solved again, and at the end of the run the old rows whose
+replacements were written move from `results.jsonl` to
+`results.superseded.jsonl` in one rewrite, so reports only see results for the
+current settings. Until then, and after a crash that skips that step, both rows
+are in `results.jsonl`; the next resume moves the old one out. The superseded
+attempt's logs stay where its row points; the new attempt writes into a
+`rerun-N` subdirectory. Rows with `worker_error` are retried automatically
 when their solve settings match the current config, up to
 `run.max_worker_error_retries` times (default 2). This bounds both crashed workers
 and deterministic exceptions reported as `worker_error`. The latest error stays
@@ -1029,7 +1034,7 @@ Files:
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | Run metadata, normalized config, config hash, creation time. |
+| `manifest.json` | Run metadata, normalized config, config hash, creation time, and a map from the resume signatures that rows from earlier releases carry to the current ones (`legacy_resume_signatures`). |
 | `run_config.yaml` / `run_config.json` | Exact source config file passed to `bench run`, copied into the run directory before solving. |
 | `events.jsonl` | Structured warnings/events, including unavailable solvers and unsupported combinations. |
 | `results.jsonl` | One JSON record per completed or skipped solve. Human-readable and append-friendly. |

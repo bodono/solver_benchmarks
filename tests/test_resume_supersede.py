@@ -2,8 +2,9 @@
 
 A row whose resume signature no longer matches the config is superseded:
 it stays until the new result is durable, then moves to
-``results.superseded.jsonl``. Rows written by older releases, whose
-signatures still hashed the dataset's location options, keep counting.
+``results.superseded.jsonl`` at the end of the run. Rows written by older
+releases, whose signatures still hashed the dataset's location options,
+keep counting, also after those options change.
 """
 
 from __future__ import annotations
@@ -15,11 +16,12 @@ from types import SimpleNamespace
 import pytest
 
 from solver_benchmarks.analysis.load import load_results
+from solver_benchmarks.core import runner as runner_module
 from solver_benchmarks.core.config import parse_run_config, solve_signature
 from solver_benchmarks.core.problem import QP, ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.runner import run_benchmark
-from solver_benchmarks.core.storage import ResultStore
+from solver_benchmarks.core.storage import LEGACY_SIGNATURES_KEY, ResultStore
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.datasets.base import Dataset
 from solver_benchmarks.solvers import registry as solver_registry
@@ -201,6 +203,109 @@ def test_rows_with_signatures_from_older_releases_stay_complete(
     assert fake_worker.calls == []
     assert len(_rows(store.results_jsonl_path)) == 2
     assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+
+def _older_release_run(tmp_path: Path, dataset_options: dict) -> tuple[ResultStore, str]:
+    """A run directory as earlier releases left it: rows carrying the legacy
+    signature and a manifest without the signature mapping."""
+    config = _config(tmp_path, dataset_options=dataset_options)
+    legacy = solve_signature(config, config.datasets[0], config.solvers[0], legacy=True)
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = json.loads(store.manifest_path.read_text())
+    del manifest[LEGACY_SIGNATURES_KEY]
+    store.manifest_path.write_text(json.dumps(manifest))
+    for problem in ("p1", "p2"):
+        store.write_result(
+            ProblemResult(
+                run_id=store.run_id, dataset="resume_fixture", problem=problem, problem_kind=QP,
+                solver_id="s", solver="toggle", status="optimal", objective_value=0.0,
+                iterations=1, run_time_seconds=0.01, metadata={"resume_signature": legacy},
+            )
+        )
+    return store, legacy
+
+
+def test_rows_from_older_releases_survive_later_location_changes(
+    fake_worker, tmp_path: Path, repo_root: Path
+):
+    """Raising max_size_mb to add problems, or pointing data_root elsewhere,
+    keeps those rows, however many resumes later. The relative data_root
+    those releases stored is now made absolute, which also changes the
+    legacy signature."""
+    store, legacy = _older_release_run(tmp_path, {"data_root": "mydata", "max_size_mb": 5.0})
+    original = _rows(store.results_jsonl_path)
+
+    for options in (
+        {"data_root": "mydata", "max_size_mb": 100.0},
+        {"data_root": "mydata", "max_size_mb": 200.0},
+        {"data_root": str(tmp_path / "copy")},
+    ):
+        run_benchmark(_config(tmp_path, dataset_options=options), run_dir=store.run_dir,
+                      repo_root=repo_root)
+        assert fake_worker.calls == []
+        assert _rows(store.results_jsonl_path) == original
+        assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+    config = _config(tmp_path)
+    current = solve_signature(config, config.datasets[0], config.solvers[0])
+    manifest = json.loads(store.manifest_path.read_text())
+    assert manifest[LEGACY_SIGNATURES_KEY] == {legacy: current}
+
+    # The mapping covers only the settings those rows were solved with.
+    run_benchmark(_config(tmp_path, settings={"eps": 1e-8}), run_dir=store.run_dir,
+                  repo_root=repo_root)
+    assert len(fake_worker.calls) == 2
+    assert _rows(store.run_dir / "results.superseded.jsonl") == original
+
+
+def test_superseded_rows_move_out_in_one_rewrite_at_the_end_of_the_run(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path
+):
+    store = run_benchmark(_config(tmp_path, settings={"eps": 1e-4}), run_dir=tmp_path / "run",
+                          repo_root=repo_root)
+    old_rows = _rows(store.results_jsonl_path)
+    rewrites = []
+    original_replace = ResultStore._replace_rows
+
+    def counting_replace(self, rows, *, superseded, line):
+        rewrites.append(len(rows))
+        return original_replace(self, rows, superseded=superseded, line=line)
+
+    monkeypatch.setattr(ResultStore, "_replace_rows", counting_replace)
+    run_benchmark(_config(tmp_path, settings={"eps": 1e-8}), run_dir=store.run_dir,
+                  repo_root=repo_root)
+    assert rewrites == [2]
+    assert len(_rows(store.results_jsonl_path)) == 2
+    assert _rows(store.run_dir / "results.superseded.jsonl") == old_rows
+
+
+def test_an_interrupted_run_still_moves_the_rows_it_replaced(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path
+):
+    store = run_benchmark(_config(tmp_path, settings={"eps": 1e-4}), run_dir=tmp_path / "run",
+                          repo_root=repo_root)
+    old_rows = {row["problem"]: row for row in _rows(store.results_jsonl_path)}
+    solve = runner_module._run_subprocess
+
+    def interrupt_second(cmd, **kwargs):
+        if len(fake_worker.calls) == 3:
+            raise KeyboardInterrupt
+        return solve(cmd, **kwargs)
+
+    monkeypatch.setattr(runner_module, "_run_subprocess", interrupt_second)
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(_config(tmp_path, settings={"eps": 1e-8}), run_dir=store.run_dir,
+                      repo_root=repo_root)
+    rows = _rows(store.results_jsonl_path)
+    assert [row["problem"] for row in rows] == ["p2", "p1"]
+    assert rows[0] == old_rows["p2"]
+    assert _rows(store.run_dir / "results.superseded.jsonl") == [old_rows["p1"]]
+
+    monkeypatch.setattr(runner_module, "_run_subprocess", solve)
+    run_benchmark(_config(tmp_path, settings={"eps": 1e-8}), run_dir=store.run_dir,
+                  repo_root=repo_root)
+    assert sorted(row["problem"] for row in _rows(store.results_jsonl_path)) == ["p1", "p2"]
+    assert _rows(store.run_dir / "results.superseded.jsonl") == [old_rows["p1"], old_rows["p2"]]
 
 
 def test_unavailable_solver_skips_are_solved_once_the_solver_is_installed(

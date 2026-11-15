@@ -59,6 +59,37 @@ SKIP_SOLVER_UNAVAILABLE = "solver_unavailable"
 _LEGACY_UNAVAILABLE_SKIP = re.compile(r"Solver .+ is unavailable; skipping ")
 
 
+# Manifest key mapping each resume signature in the form earlier releases
+# computed (``solve_signature(..., legacy=True)``, which also hashed data_root
+# and max_size_mb) to the current signature of the same solve. Rows those
+# releases wrote carry the legacy form, and the only record of the location
+# options behind it is the manifest they left, which the next run overwrites.
+# So the first run of this release in such a directory derives the mapping
+# from that manifest's config, and every later manifest carries it forward:
+# the old rows keep counting after data_root or max_size_mb changes.
+LEGACY_SIGNATURES_KEY = "legacy_resume_signatures"
+
+
+def legacy_signature_aliases(manifest: dict[str, Any] | None) -> dict[str, str]:
+    """Return ``{legacy signature: current signature}`` for a run's manifest."""
+    if not manifest:
+        return {}
+    recorded = manifest.get(LEGACY_SIGNATURES_KEY)
+    if isinstance(recorded, dict):
+        return {str(legacy): str(current) for legacy, current in recorded.items()}
+    # Written by an earlier release: its rows carry its config's legacy form.
+    config = manifest.get("config")
+    if not isinstance(config, dict):
+        return {}
+    try:
+        legacy = manifest_solve_signatures(config, legacy=True)
+        current = manifest_solve_signatures(config)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        logger.warning("Could not derive resume signatures from the manifest config: %s", exc)
+        return {}
+    return {legacy[key]: current[key] for key in current}
+
+
 def _previous_solve_signatures(
     previous_manifest: dict[str, Any] | None,
 ) -> dict[tuple[str, str], str]:
@@ -73,15 +104,20 @@ def _previous_solve_signatures(
 def _is_resume_compatible(
     record: dict[str, Any],
     *,
-    accepted_signatures: frozenset[str],
     current_signature: str,
+    legacy_signature: str,
+    legacy_aliases: dict[str, str],
     previous_signature: str | None,
 ) -> bool:
     metadata = record.get("metadata")
     if isinstance(metadata, dict):
         recorded_signature = metadata.get("resume_signature")
         if recorded_signature is not None:
-            return str(recorded_signature) in accepted_signatures
+            recorded_signature = str(recorded_signature)
+            return (
+                recorded_signature in (current_signature, legacy_signature)
+                or legacy_aliases.get(recorded_signature) == current_signature
+            )
     return previous_signature == current_signature
 
 
@@ -132,6 +168,12 @@ class ResultStore:
     )
     _unavailable_rows: dict[tuple[str, str, str], set[str]] = field(
         default_factory=dict, init=False, repr=False, compare=False
+    )
+    # Superseded rows whose replacement is already in results.jsonl. Moving
+    # them out rewrites the file, so it happens once, in
+    # ``retire_replaced_rows`` at the end of the run, not once per result.
+    _replaced_rows: set[str] = field(
+        default_factory=set, init=False, repr=False, compare=False
     )
 
     @classmethod
@@ -213,6 +255,9 @@ class ResultStore:
             existing_system = existing.get("system")
             if existing_system:
                 manifest["system"] = existing_system
+            manifest[LEGACY_SIGNATURES_KEY] = legacy_signature_aliases(existing)
+        else:
+            manifest[LEGACY_SIGNATURES_KEY] = {}
         atomic_write_text(self.manifest_path, json.dumps(to_jsonable(manifest), indent=2))
 
     def copy_source_config(self, config_path: str | Path, *, name: str = "run_config") -> Path:
@@ -276,13 +321,16 @@ class ResultStore:
         When ``config`` is supplied, only rows whose solve signature is
         compatible with the current dataset/solver definition are treated
         as complete. A recorded signature is compatible when it equals the
-        current one or the one earlier releases computed for the same
-        config (``solve_signature(..., legacy=True)``). Legacy rows without
-        an embedded signature are checked against ``previous_manifest``
-        when available. An incompatible row of a dataset/solver pair the
-        config still plans is superseded: it is replaced by the next result
-        for its key, or moved out by ``retire_superseded_rows`` when its key
-        already has a compatible result.
+        current one, the one earlier releases computed for the same config
+        (``solve_signature(..., legacy=True)``), or a legacy signature that
+        ``previous_manifest`` maps to the current one (see
+        ``legacy_signature_aliases``). Legacy rows without an embedded
+        signature are checked against ``previous_manifest`` when available.
+        An incompatible row of a dataset/solver pair the config still plans
+        is superseded: it moves to results.superseded.jsonl once the next
+        result for its key is written (``retire_replaced_rows``), or through
+        ``retire_superseded_rows`` when its key already has a compatible
+        result.
 
         Worker failures are retried up to ``max_worker_error_retries`` times
         (default two). This also bounds repeated deterministic exceptions
@@ -295,12 +343,14 @@ class ResultStore:
         self._retry_counts.clear()
         self._superseded_rows.clear()
         self._unavailable_rows.clear()
+        self._replaced_rows.clear()
         max_retries = config.max_worker_error_retries if config is not None else 2
         if not self.results_jsonl_path.exists():
             return set()
         current_signatures = solve_signatures(config) if config is not None else None
         legacy_signatures = solve_signatures(config, legacy=True) if config is not None else {}
         previous_signatures = _previous_solve_signatures(previous_manifest)
+        legacy_aliases = legacy_signature_aliases(previous_manifest)
         keys: set[tuple[str, str, str]] = set()
         with self.results_jsonl_path.open() as handle:
             for lineno, line in enumerate(handle, start=1):
@@ -337,10 +387,9 @@ class ResultStore:
                     previous_signature = previous_signatures.get(signature_key)
                     if not _is_resume_compatible(
                         record,
-                        accepted_signatures=frozenset(
-                            {current_signature, legacy_signatures[signature_key]}
-                        ),
                         current_signature=current_signature,
+                        legacy_signature=legacy_signatures[signature_key],
+                        legacy_aliases=legacy_aliases,
                         previous_signature=previous_signature,
                     ):
                         self._superseded_rows.setdefault(key, set()).add(line.strip())
@@ -404,8 +453,9 @@ class ResultStore:
         """Move superseded rows of already-complete ``keys`` out of results.jsonl.
 
         Releases before superseded rows were replaced appended the new
-        result and kept the stale one beside it. Returns the number of rows
-        moved to results.superseded.jsonl.
+        result and kept the stale one beside it, as does a run that stops
+        before ``retire_replaced_rows``. Returns the number of rows moved to
+        results.superseded.jsonl.
         """
         with self._write_lock:
             rows: set[str] = set()
@@ -443,18 +493,36 @@ class ResultStore:
         line = json.dumps(record, sort_keys=True) + "\n"
         with self._write_lock:
             superseded = self._superseded_rows.get(key, set())
-            previous_rows = (
-                self._retry_rows.get(key, set())
-                | superseded
-                | self._unavailable_rows.get(key, set())
+            previous_rows = self._retry_rows.get(key, set()) | self._unavailable_rows.get(
+                key, set()
             )
             if previous_rows:
-                self._replace_rows(previous_rows, superseded=superseded, line=line)
-                for pending in (self._retry_rows, self._superseded_rows, self._unavailable_rows):
-                    pending.pop(key, None)
-                self._retry_counts.pop(key, None)
+                # A retry or a recovered skip replaces its row at once: if the
+                # run stopped before the end, the next resume could not tell
+                # the stale row from a result.
+                self._replace_rows(previous_rows | superseded, superseded=superseded, line=line)
             else:
+                # A superseded row is recognised again on the next resume, so
+                # its move can wait for retire_replaced_rows.
                 _append_line(self.results_jsonl_path, line)
+                self._replaced_rows |= superseded
+            for pending in (self._retry_rows, self._superseded_rows, self._unavailable_rows):
+                pending.pop(key, None)
+            self._retry_counts.pop(key, None)
+
+    def retire_replaced_rows(self) -> int:
+        """Move superseded rows replaced during this run to results.superseded.jsonl.
+
+        One rewrite of results.jsonl for the whole run. A run that stops
+        before calling this leaves both rows of such a key in results.jsonl;
+        the next resume moves the superseded one out. Returns the number of
+        rows moved.
+        """
+        with self._write_lock:
+            rows, self._replaced_rows = self._replaced_rows, set()
+            if rows:
+                self._replace_rows(rows, superseded=rows, line="")
+        return len(rows)
 
     def _replace_rows(self, rows: set[str], *, superseded: set[str], line: str) -> None:
         """Atomically drop ``rows`` from results.jsonl and append ``line``.

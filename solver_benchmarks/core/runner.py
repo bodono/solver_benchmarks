@@ -238,6 +238,7 @@ def run_benchmark(
         # No work to do (e.g. every problem skipped during planning, or
         # nothing left after resume) still counts as a successful run.
         # Materialize the parquet so its existence reflects completion.
+        _retire_replaced_rows(store)
         _write_parquet(store)
         progress.emit_final()
         return store
@@ -258,13 +259,18 @@ def run_benchmark(
             environment_metadata=environment_metadata,
         )
 
-    if parallelism == 1:
-        for task in tasks:
-            result = run_task(*task)
-            store.write_result(result)
-            progress.record_result(result)
-    else:
-        _run_tasks_in_parallel(tasks, run_task, store, progress, parallelism)
+    try:
+        if parallelism == 1:
+            for task in tasks:
+                result = run_task(*task)
+                store.write_result(result)
+                progress.record_result(result)
+        else:
+            _run_tasks_in_parallel(tasks, run_task, store, progress, parallelism)
+    finally:
+        # Also after an interruption, so the results written so far stand
+        # alone in results.jsonl.
+        _retire_replaced_rows(store)
     # All queued tasks completed successfully — materialize the parquet
     # exactly once. results.jsonl is the canonical live record during
     # the run; results.parquet is the end-of-run derived artifact whose
@@ -272,6 +278,32 @@ def run_benchmark(
     _write_parquet(store)
     progress.emit_final()
     return store
+
+
+def _retire_replaced_rows(store: ResultStore) -> None:
+    """Move the superseded rows replaced during the run out of results.jsonl.
+
+    A failure is logged, not raised: the rows stay next to their
+    replacements, and the next resume moves them.
+    """
+    try:
+        retired = store.retire_replaced_rows()
+    except Exception as exc:  # noqa: BLE001 - logged; the next resume retries.
+        logger.warning("Could not move superseded rows out of %s: %s",
+                       store.results_jsonl_path, exc)
+        store.append_event(
+            "error",
+            "Could not move superseded rows to results.superseded.jsonl; "
+            "the next resume moves them",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return
+    if retired:
+        store.append_event(
+            "info",
+            "Moved results solved under other settings to results.superseded.jsonl",
+            superseded_rows=retired,
+        )
 
 
 def _write_parquet(store: ResultStore) -> None:
