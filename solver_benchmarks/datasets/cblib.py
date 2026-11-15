@@ -80,8 +80,11 @@ class CBLIBDataset(Dataset):
                 specs.append(spec)
         return specs
 
-    def _spec_for(self, name: str, path: Path) -> ProblemSpec | None:
+    def _spec_for(self, name: str, path: Path, *, skip_unreadable: bool = True) -> ProblemSpec | None:
         """The spec of one file, or None when the dataset options leave it out.
+
+        A file that cannot be read is left out with a warning, or with
+        ``skip_unreadable=False`` raises.
 
         ``subset_kind`` filters by cone shape rather than by name. Accepted
         values: ``expcone`` (instances using EXP / EXP* cones), ``socp``
@@ -100,6 +103,8 @@ class CBLIBDataset(Dataset):
                 return None
             metadata = {"supported": False}
         except (OSError, EOFError, ValueError) as exc:
+            if not skip_unreadable:
+                raise
             warnings.warn(f"Skipping unreadable CBLIB file {path.name}: {exc}", stacklevel=3)
             return None
         if subset_kind is not None and not _matches_kind(metadata, subset_kind):
@@ -117,7 +122,7 @@ class CBLIBDataset(Dataset):
         # every file, and each worker loads one problem.
         candidates = [self.folder / f"{name}.cbf", self.folder / f"{name}.cbf.gz"]
         path = next((path for path in candidates if path.is_file()), None)
-        spec = self._spec_for(name, path) if path is not None else None
+        spec = self._spec_for(name, path, skip_unreadable=False) if path is not None else None
         visible = filter_problem_specs_by_size(
             [spec] if spec is not None else [], self.options.get("max_size_mb")
         )

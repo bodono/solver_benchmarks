@@ -340,3 +340,11 @@ def test_plain_and_gzipped_copies_are_one_problem(tmp_path: Path):
         ("tiny", "tiny.cbf"),
         ("zipped", "zipped.cbf.gz"),
     ]
+
+
+def test_loading_an_unreadable_file_reports_why(tmp_path: Path):
+    folder = _cblib_folder(tmp_path)
+    (folder / "broken.cbf.gz").write_bytes(gzip.compress(_TINY_CBF.encode())[:12])
+
+    with pytest.raises(EOFError):
+        _dataset(tmp_path).load_problem("broken")

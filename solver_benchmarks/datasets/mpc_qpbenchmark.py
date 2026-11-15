@@ -271,7 +271,10 @@ def _load_npz_arrays(path: Path) -> dict[str, np.ndarray]:
             try:
                 arrays[key] = data[key]
             except ValueError:
-                if _read_object_array(path, key) is not None:
+                placeholder = _is_none_placeholder(path, key)
+                if placeholder is None:  # not an object array: a damaged file
+                    raise
+                if not placeholder:
                     raise ValueError(
                         f"{path.name}: {key!r} is an object array; only numeric arrays "
                         "(a sparse matrix stored dense) and None placeholders are read"
@@ -279,28 +282,25 @@ def _load_npz_arrays(path: Path) -> dict[str, np.ndarray]:
     return arrays
 
 
-def _read_object_array(path: Path, key: str):
-    """The item of the 0-d object array ``key`` if it is None, else a marker object."""
-    try:
-        with zipfile.ZipFile(path) as archive, archive.open(f"{key}.npy") as handle:
-            version = np.lib.format.read_magic(handle)
-            if version == (1, 0):
-                shape, _, dtype = np.lib.format.read_array_header_1_0(handle)
-            elif version == (2, 0):
-                shape, _, dtype = np.lib.format.read_array_header_2_0(handle)
-            else:
-                return _NOT_NONE
-            if shape != () or not dtype.hasobject:
-                return _NOT_NONE
+def _is_none_placeholder(path: Path, key: str) -> bool | None:
+    """Whether the object array ``key`` is a 0-d array holding None; None if it is no object array."""
+    with zipfile.ZipFile(path) as archive, archive.open(f"{key}.npy") as handle:
+        version = np.lib.format.read_magic(handle)
+        if version == (1, 0):
+            shape, _, dtype = np.lib.format.read_array_header_1_0(handle)
+        elif version == (2, 0):
+            shape, _, dtype = np.lib.format.read_array_header_2_0(handle)
+        else:
+            return None
+        if not dtype.hasobject:
+            return None
+        if shape != ():
+            return False
+        try:
             value = _ArrayOnlyUnpickler(handle).load()
-    except (pickle.UnpicklingError, KeyError, ValueError, EOFError, OSError):
-        return _NOT_NONE
-    if isinstance(value, np.ndarray) and value.shape == () and value.item() is None:
-        return None
-    return _NOT_NONE
-
-
-_NOT_NONE = object()
+        except (pickle.UnpicklingError, ValueError, EOFError, TypeError, AttributeError):
+            return False
+    return isinstance(value, np.ndarray) and value.shape == () and value.item() is None
 
 
 class _ArrayOnlyUnpickler(pickle.Unpickler):
