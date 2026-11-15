@@ -1583,6 +1583,7 @@ Adapter expectations:
 - Report `objective_value` only for `OPTIMAL` and `OPTIMAL_INACCURATE` (`reported_objective` does this); it is `None` for limits, certificates and errors, whose point's objective is still on `kkt.primal_obj`.
 - Return `SOLVER_ERROR` with the message on `info["error"]` (and the elapsed time) when the solver itself fails on a problem by raising, e.g. on a non-convex `P` or crossed bounds; an exception escaping `solve` is recorded as a harness `worker_error` and re-run on resume. Keep raising for configuration errors (unknown settings, out-of-range values, a missing backend), including a bad value the solver reports as a status or raises from the same call as its failures on the problem.
 - Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
+- Reject unknown setting names with a `ValueError` naming them, and translate the shared aliases (`eps` / `eps_abs` / `eps_rel`, `max_iter`, `time_limit*`, `threads`) where the solver has an equivalent, recording what was inserted in `info["settings_translated"]`, or mark them ignored.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.
