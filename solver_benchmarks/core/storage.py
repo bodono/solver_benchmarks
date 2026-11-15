@@ -50,6 +50,14 @@ def slugify(value: str) -> str:
     return value.strip("-") or "run"
 
 
+# ``metadata.skip_reason`` of the rows written when a solver is not installed.
+# Unavailability belongs to the host, not the problem: once the solver is
+# available, resume solves those problems instead of keeping the skips.
+SKIP_SOLVER_UNAVAILABLE = "solver_unavailable"
+# Releases before the tag wrote this message, and nothing else, on such rows.
+_LEGACY_UNAVAILABLE_SKIP = re.compile(r"Solver .+ is unavailable; skipping ")
+
+
 def _previous_solve_signatures(
     previous_manifest: dict[str, Any] | None,
 ) -> dict[tuple[str, str], str]:
@@ -64,6 +72,7 @@ def _previous_solve_signatures(
 def _is_resume_compatible(
     record: dict[str, Any],
     *,
+    accepted_signatures: frozenset[str],
     current_signature: str,
     previous_signature: str | None,
 ) -> bool:
@@ -71,8 +80,32 @@ def _is_resume_compatible(
     if isinstance(metadata, dict):
         recorded_signature = metadata.get("resume_signature")
         if recorded_signature is not None:
-            return str(recorded_signature) == current_signature
+            return str(recorded_signature) in accepted_signatures
     return previous_signature == current_signature
+
+
+def _is_unavailable_skip(record: dict[str, Any]) -> bool:
+    if record.get("status") != status.SKIPPED_UNSUPPORTED:
+        return False
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("skip_reason") == SKIP_SOLVER_UNAVAILABLE:
+        return True
+    return bool(_LEGACY_UNAVAILABLE_SKIP.match(str(record.get("error") or "")))
+
+
+def _append_line(path: Path, line: str) -> None:
+    """Append ``line`` to ``path``, starting a new line after a torn one.
+
+    A process killed mid-write leaves a partial last line with no newline.
+    Appending straight after it would merge the next record into the
+    fragment, and readers would skip both as one unparseable line.
+    """
+    with path.open("a+b") as handle:
+        if handle.seek(0, os.SEEK_END) > 0:
+            handle.seek(-1, os.SEEK_END)
+            if handle.read(1) != b"\n":
+                line = "\n" + line
+        handle.write(line.encode("utf-8"))
 
 
 @dataclass
@@ -82,12 +115,21 @@ class ResultStore:
     # Per-store lock for the write paths. Using `field` with a default
     # factory keeps `cls(root, run_id)` calls compatible.
     _write_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
-    # Exact failed rows selected by resume planning. Retain them until a
-    # replacement result is durable, and never replace incompatible attempts.
+    # Exact rows selected by resume planning for replacement, by key. Each is
+    # retained until its replacement result is durable. Retry rows are
+    # compatible worker errors; superseded rows were solved under another
+    # resume signature and move to results.superseded.jsonl; unavailable
+    # rows are skips written while the solver, now available, was missing.
     _retry_rows: dict[tuple[str, str, str], set[str]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
     _retry_counts: dict[tuple[str, str, str], int] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _superseded_rows: dict[tuple[str, str, str], set[str]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _unavailable_rows: dict[tuple[str, str, str], set[str]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
 
@@ -133,6 +175,10 @@ class ResultStore:
     @property
     def results_parquet_path(self) -> Path:
         return self.run_dir / "results.parquet"
+
+    @property
+    def superseded_jsonl_path(self) -> Path:
+        return self.run_dir / "results.superseded.jsonl"
 
     @staticmethod
     def read_manifest(run_dir: str | Path) -> dict[str, Any] | None:
@@ -189,22 +235,27 @@ class ResultStore:
             / slugify(solver_id)
         )
         path.mkdir(parents=True, exist_ok=True)
-        previous_rows = self._retry_rows.get((dataset, problem, solver_id))
-        if previous_rows:
-            # Keep prior stdout/stderr and raw solver output intact. A failed
-            # or interrupted retry must not overwrite the previous attempt.
+        key = (dataset, problem, solver_id)
+        # Keep prior stdout/stderr and raw solver output intact. A failed or
+        # interrupted retry must not overwrite the previous attempt, and a
+        # superseded result keeps the artifacts its row points to.
+        for prefix, pending in (("retry", self._retry_rows), ("rerun", self._superseded_rows)):
+            previous_rows = pending.get(key)
+            if not previous_rows:
+                continue
             attempt = 1
             while True:
-                retry_dir = path / f"retry-{attempt}"
+                attempt_dir = path / f"{prefix}-{attempt}"
                 try:
-                    retry_dir.mkdir()
+                    attempt_dir.mkdir()
                     break
                 except FileExistsError:
                     attempt += 1
             atomic_write_text(
-                retry_dir / "previous_results.jsonl", "\n".join(sorted(previous_rows)) + "\n"
+                attempt_dir / "previous_results.jsonl",
+                "\n".join(sorted(previous_rows)) + "\n",
             )
-            return retry_dir
+            return attempt_dir
         return path
 
     def completed_keys(
@@ -212,6 +263,7 @@ class ResultStore:
         *,
         config: RunConfig | None = None,
         previous_manifest: dict[str, Any] | None = None,
+        available_solver_ids: set[str] | None = None,
     ) -> set[tuple[str, str, str]]:
         """Resume keys are ``(dataset, problem, solver_id)`` tuples.
 
@@ -222,20 +274,31 @@ class ResultStore:
 
         When ``config`` is supplied, only rows whose solve signature is
         compatible with the current dataset/solver definition are treated
-        as complete. Legacy rows without an embedded signature are checked
-        against ``previous_manifest`` when available.
+        as complete. A recorded signature is compatible when it equals the
+        current one or the one earlier releases computed for the same
+        config (``solve_signature(..., legacy=True)``). Legacy rows without
+        an embedded signature are checked against ``previous_manifest``
+        when available. An incompatible row of a dataset/solver pair the
+        config still plans is superseded: it is replaced by the next result
+        for its key, or moved out by ``retire_superseded_rows`` when its key
+        already has a compatible result.
 
         Worker failures are retried up to ``max_worker_error_retries`` times
         (default two). This also bounds repeated deterministic exceptions
-        reported as ``worker_error``. Rows remain until atomically replaced;
-        ``problem_solver_dir`` preserves the previous attempt's artifacts.
+        reported as ``worker_error``. Skips written because a solver was not
+        installed are not complete for a solver in ``available_solver_ids``.
+        Rows remain until atomically replaced; ``problem_solver_dir``
+        preserves the previous attempt's artifacts.
         """
         self._retry_rows.clear()
         self._retry_counts.clear()
+        self._superseded_rows.clear()
+        self._unavailable_rows.clear()
         max_retries = config.max_worker_error_retries if config is not None else 2
         if not self.results_jsonl_path.exists():
             return set()
         current_signatures = solve_signatures(config) if config is not None else None
+        legacy_signatures = solve_signatures(config, legacy=True) if config is not None else {}
         previous_signatures = _previous_solve_signatures(previous_manifest)
         keys: set[tuple[str, str, str]] = set()
         with self.results_jsonl_path.open() as handle:
@@ -273,10 +336,21 @@ class ResultStore:
                     previous_signature = previous_signatures.get(signature_key)
                     if not _is_resume_compatible(
                         record,
+                        accepted_signatures=frozenset(
+                            {current_signature, legacy_signatures[signature_key]}
+                        ),
                         current_signature=current_signature,
                         previous_signature=previous_signature,
                     ):
+                        self._superseded_rows.setdefault(key, set()).add(line.strip())
                         continue
+                if (
+                    available_solver_ids is not None
+                    and key[2] in available_solver_ids
+                    and _is_unavailable_skip(record)
+                ):
+                    self._unavailable_rows.setdefault(key, set()).add(line.strip())
+                    continue
                 if record.get("status") == status.WORKER_ERROR:
                     metadata = record.get("metadata")
                     if not isinstance(metadata, dict):
@@ -316,11 +390,27 @@ class ResultStore:
         for key in keys:
             self._retry_rows.pop(key, None)
             self._retry_counts.pop(key, None)
+            self._unavailable_rows.pop(key, None)
         return keys
 
     def has_pending_retry(self, dataset: str, problem: str, solver_id: str) -> bool:
         """Whether resume selected a failed attempt that must stay retryable."""
         return (dataset, problem, solver_id) in self._retry_rows
+
+    def retire_superseded_rows(self, keys: set[tuple[str, str, str]]) -> int:
+        """Move superseded rows of already-complete ``keys`` out of results.jsonl.
+
+        Releases before superseded rows were replaced appended the new
+        result and kept the stale one beside it. Returns the number of rows
+        moved to results.superseded.jsonl.
+        """
+        with self._write_lock:
+            rows: set[str] = set()
+            for key in keys:
+                rows |= self._superseded_rows.pop(key, set())
+            if rows:
+                self._replace_rows(rows, superseded=rows, line="")
+        return len(rows)
 
     def append_event(self, level: str, message: str, **fields: Any) -> None:
         record = {
@@ -332,8 +422,8 @@ class ResultStore:
         line = json.dumps(to_jsonable(record), sort_keys=True) + "\n"
         # Lock the append so concurrent emitters can't interleave bytes
         # mid-line beyond the OS PIPE_BUF guarantee.
-        with self._write_lock, self.events_path.open("a") as handle:
-            handle.write(line)
+        with self._write_lock:
+            _append_line(self.events_path, line)
 
     def write_result(self, result: ProblemResult) -> None:
         key = (result.dataset, result.problem, result.solver_id)
@@ -349,20 +439,37 @@ class ResultStore:
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
         line = json.dumps(record, sort_keys=True) + "\n"
         with self._write_lock:
-            previous_rows = self._retry_rows.get(key)
+            superseded = self._superseded_rows.get(key, set())
+            previous_rows = (
+                self._retry_rows.get(key, set())
+                | superseded
+                | self._unavailable_rows.get(key, set())
+            )
             if previous_rows:
-                with self.results_jsonl_path.open() as handle:
-                    retained = "".join(
-                        existing for existing in handle if existing.strip() not in previous_rows
-                    )
-                if retained and not retained.endswith("\n"):
-                    retained += "\n"
-                atomic_write_text(self.results_jsonl_path, retained + line)
-                self._retry_rows.pop(key)
+                self._replace_rows(previous_rows, superseded=superseded, line=line)
+                for pending in (self._retry_rows, self._superseded_rows, self._unavailable_rows):
+                    pending.pop(key, None)
                 self._retry_counts.pop(key, None)
             else:
-                with self.results_jsonl_path.open("a") as handle:
-                    handle.write(line)
+                _append_line(self.results_jsonl_path, line)
+
+    def _replace_rows(self, rows: set[str], *, superseded: set[str], line: str) -> None:
+        """Atomically drop ``rows`` from results.jsonl and append ``line``.
+
+        ``superseded`` rows are first appended to results.superseded.jsonl,
+        so an interruption can at worst leave a row in both files, never in
+        neither. Callers hold the write lock.
+        """
+        if superseded:
+            _append_line(
+                self.superseded_jsonl_path,
+                "".join(row + "\n" for row in sorted(superseded)),
+            )
+        with self.results_jsonl_path.open() as handle:
+            retained = "".join(existing for existing in handle if existing.strip() not in rows)
+        if retained and not retained.endswith("\n"):
+            retained += "\n"
+        atomic_write_text(self.results_jsonl_path, retained + line)
 
     def write_parquet(self) -> None:
         """Materialize results.parquet from results.jsonl.

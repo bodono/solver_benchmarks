@@ -32,7 +32,11 @@ from solver_benchmarks.core.data_prepare import (
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
-from solver_benchmarks.core.storage import ResultStore, atomic_write_text
+from solver_benchmarks.core.storage import (
+    SKIP_SOLVER_UNAVAILABLE,
+    ResultStore,
+    atomic_write_text,
+)
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.datasets.base import filter_problem_specs_by_size
 from solver_benchmarks.solvers import get_solver
@@ -60,11 +64,18 @@ def run_benchmark(
     config = resolve_output_dir(config, repo_root)
     if stream_solver_output is None:
         stream_solver_output = stream_output
+    if run_dir is not None and not config.resume:
+        refuse_to_rerun_into(run_dir, config)
     previous_manifest = (
         ResultStore.read_manifest(run_dir)
         if run_dir is not None and config.resume
         else None
     )
+    available_solver_ids = {
+        solver_config.id
+        for solver_config in config.solvers
+        if get_solver(solver_config.solver).is_available()
+    }
     store = ResultStore.create(config, run_dir=run_dir)
     # results.parquet is a success sentinel: it exists iff a run finished
     # all queued tasks without raising. Clear any leftover parquet from
@@ -74,10 +85,21 @@ def run_benchmark(
     if source_config_path is not None:
         store.copy_source_config(source_config_path)
     completed = (
-        store.completed_keys(config=config, previous_manifest=previous_manifest)
+        store.completed_keys(
+            config=config,
+            previous_manifest=previous_manifest,
+            available_solver_ids=available_solver_ids,
+        )
         if config.resume
         else set()
     )
+    retired = store.retire_superseded_rows(completed)
+    if retired:
+        store.append_event(
+            "info",
+            "Moved results solved under other settings to results.superseded.jsonl",
+            superseded_rows=retired,
+        )
 
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
     already_complete = 0
@@ -128,7 +150,7 @@ def run_benchmark(
 
         for solver_config in config.solvers:
             solver_cls = get_solver(solver_config.solver)
-            if not solver_cls.is_available():
+            if solver_config.id not in available_solver_ids:
                 message = (
                     f"Solver {solver_config.solver!r} is unavailable; skipping "
                     f"{solver_config.id!r}"
@@ -152,6 +174,7 @@ def run_benchmark(
                         message,
                         environment_id=environment_id,
                         environment_metadata=environment_metadata,
+                        skip_reason=SKIP_SOLVER_UNAVAILABLE,
                     )
                     skipped_during_planning += 1
                 continue
@@ -843,6 +866,37 @@ def _missing_data_run_message(
     return "\n".join(lines)
 
 
+def refuse_to_rerun_into(run_dir: str | Path, config: RunConfig) -> None:
+    """Raise if ``run_dir`` already holds results for solves ``config`` plans.
+
+    With ``resume: false`` every planned solve runs again, and its rows would
+    be appended next to the earlier ones for the same solves. Rows of other
+    dataset/solver pairs do not conflict: an environment matrix runs each
+    environment's solvers into one shared directory.
+    """
+    results_path = Path(run_dir) / "results.jsonl"
+    if not results_path.exists():
+        return
+    planned = {
+        (str(dataset.id), solver.id) for dataset in config.datasets for solver in config.solvers
+    }
+    with results_path.open() as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if (str(record.get("dataset", "")), str(record.get("solver_id"))) in planned:
+                raise RuntimeError(
+                    f"Run directory {Path(run_dir).resolve()} already has results for "
+                    "this config and run.resume is false, so every solve would run "
+                    "again next to its earlier result. Set `resume: true` to resume "
+                    "the run, or use a new --run-dir."
+                )
+
+
 def _already_done(
     dataset_config: DatasetConfig,
     problem: ProblemSpec,
@@ -862,12 +916,22 @@ def _write_skip(
     *,
     environment_id: str | None = None,
     environment_metadata: dict | None = None,
+    skip_reason: str | None = None,
 ) -> None:
     # An unavailable solver (or unsupported kind on this host) is not a new
     # solve attempt. Preserve the failed row and its retry budget so another
     # host can still recover it; do not create retry artifacts for a skip.
     if store.has_pending_retry(dataset_config.id, problem.name, solver_config.id):
         return
+    metadata = _metadata_with_environment(
+        problem,
+        solver_config,
+        environment_id=environment_id,
+        environment_metadata=environment_metadata,
+        resume_signature=solve_signature(config, dataset_config, solver_config),
+    )
+    if skip_reason is not None:
+        metadata["skip_reason"] = skip_reason
     artifacts_dir = store.problem_solver_dir(
         dataset_config.id, problem.name, solver_config.id
     )
@@ -885,13 +949,7 @@ def _write_skip(
             run_time_seconds=None,
             error=message,
             artifact_dir=str(artifacts_dir),
-            metadata=_metadata_with_environment(
-                problem,
-                solver_config,
-                environment_id=environment_id,
-                environment_metadata=environment_metadata,
-                resume_signature=solve_signature(config, dataset_config, solver_config),
-            ),
+            metadata=metadata,
         )
     )
 

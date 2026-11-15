@@ -83,7 +83,9 @@ def test_completed_keys_skips_torn_jsonl_lines(tmp_path: Path):
     assert keys == {("synthetic_qp", "p1", "scs")}
 
 
-def test_retry_replaces_only_signature_compatible_worker_errors(tmp_path: Path):
+def test_retry_replaces_compatible_worker_errors_and_supersedes_incompatible_rows(
+    tmp_path: Path,
+):
     store = _make_store(tmp_path)
     config = parse_run_config(
         {"run": {"dataset": "synthetic_qp"}, "solvers": [{"id": "scs", "solver": "scs"}]}
@@ -112,10 +114,13 @@ def test_retry_replaces_only_signature_compatible_worker_errors(tmp_path: Path):
     store.write_result(replace(failed, status="optimal", run_time_seconds=0.1))
 
     rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
-    assert len(rows) == 4
-    assert rows[:3] == [incompatible.to_record(), other_dataset.to_record(), time_limited.to_record()]
-    assert rows[3]["status"] == "optimal"
-    assert rows[3]["metadata"]["resume_signature"] == signature
+    assert len(rows) == 3
+    # A dataset the config does not plan keeps its rows untouched.
+    assert rows[:2] == [other_dataset.to_record(), time_limited.to_record()]
+    assert rows[2]["status"] == "optimal"
+    assert rows[2]["metadata"]["resume_signature"] == signature
+    superseded = store.superseded_jsonl_path.read_text().splitlines()
+    assert [json.loads(line) for line in superseded] == [incompatible.to_record()]
 
 
 def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, monkeypatch):

@@ -752,48 +752,61 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+# Dataset options that only say where a dataset's files are or which of its
+# problems are listed. They never change a problem that is solved, so they
+# stay out of the resume signature: pointing --data-root at a copy of the data
+# or raising a size cap does not invalidate results already recorded.
+_LOCATION_OPTIONS = frozenset({"data_root", "max_size_mb"})
+
+
 def solve_signature(
     config: RunConfig,
     dataset: DatasetConfig,
     solver: SolverConfig,
+    *,
+    legacy: bool = False,
 ) -> str:
     """Return the resume identity for one dataset/solver solve family.
 
     The signature intentionally ignores run bookkeeping fields such as
-    name, output_dir, parallelism, resume, and reporting flags. It covers
-    the pieces that can change the actual mathematical problem or solver
-    behavior for an already-planned ``(dataset, problem, solver_id)`` row.
+    name, output_dir, parallelism, resume, and reporting flags, and the
+    dataset options in ``_LOCATION_OPTIONS``. It covers the pieces that can
+    change the actual mathematical problem or solver behavior for an
+    already-planned ``(dataset, problem, solver_id)`` row.
+
+    ``legacy=True`` returns the signature as earlier releases computed it,
+    with the location options hashed too. Rows those releases wrote carry
+    it, so resume accepts either form.
     """
-    return _stable_digest(
-        {
-            "dataset": {
-                "id": dataset.id,
-                "name": dataset.name,
-                "dataset_options": _signature_dataset_options(
-                    dataset.name, dataset.dataset_options
-                ),
-            },
-            "solver": {
-                "id": solver.id,
-                "solver": solver.solver,
-                "settings": solver.settings,
-                "effective_timeout_seconds": _effective_timeout(config, solver),
-            },
-        },
-        length=24,
+    return _solve_signature(
+        dataset_id=str(dataset.id),
+        dataset_name=dataset.name,
+        dataset_options=dataset.dataset_options,
+        solver_id=solver.id,
+        solver_name=solver.solver,
+        settings=solver.settings,
+        effective_timeout=_effective_timeout(config, solver),
+        legacy=legacy,
     )
 
 
-def solve_signatures(config: RunConfig) -> dict[tuple[str, str], str]:
+def solve_signatures(
+    config: RunConfig, *, legacy: bool = False
+) -> dict[tuple[str, str], str]:
     return {
-        (str(dataset.id), solver.id): solve_signature(config, dataset, solver)
+        (str(dataset.id), solver.id): solve_signature(config, dataset, solver, legacy=legacy)
         for dataset in config.datasets
         for solver in config.solvers
     }
 
 
-def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], str]:
-    """Return solve signatures for a manifest ``config`` payload."""
+def manifest_solve_signatures(
+    config: dict[str, Any], *, legacy: bool = False
+) -> dict[tuple[str, str], str]:
+    """Return solve signatures for a manifest ``config`` payload.
+
+    The same signatures ``solve_signatures`` gives for the parsed config.
+    """
     run_timeout = config.get("timeout_seconds")
     signatures: dict[tuple[str, str], str] = {}
     for dataset in manifest_dataset_entries(config):
@@ -801,43 +814,71 @@ def manifest_solve_signatures(config: dict[str, Any]) -> dict[tuple[str, str], s
         for solver in config.get("solvers", []) or []:
             solver_id = str(solver["id"])
             solver_timeout = solver.get("timeout_seconds")
-            effective_timeout = (
-                solver_timeout if solver_timeout is not None else run_timeout
-            )
-            signatures[(dataset_id, solver_id)] = _stable_digest(
-                {
-                    "dataset": {
-                        "id": dataset_id,
-                        "name": str(dataset["name"]),
-                        "dataset_options": _signature_dataset_options(
-                            str(dataset["name"]), dict(dataset.get("dataset_options") or {})
-                        ),
-                    },
-                    "solver": {
-                        "id": solver_id,
-                        "solver": str(solver["solver"]),
-                        "settings": dict(solver.get("settings") or {}),
-                        "effective_timeout_seconds": effective_timeout,
-                    },
-                },
-                length=24,
+            signatures[(dataset_id, solver_id)] = _solve_signature(
+                dataset_id=dataset_id,
+                dataset_name=str(dataset["name"]),
+                dataset_options=dict(dataset.get("dataset_options") or {}),
+                solver_id=solver_id,
+                solver_name=str(solver["solver"]),
+                settings=dict(solver.get("settings") or {}),
+                effective_timeout=(
+                    solver_timeout if solver_timeout is not None else run_timeout
+                ),
+                legacy=legacy,
             )
     return signatures
 
 
-def _signature_dataset_options(name: str, options: dict[str, Any]) -> dict[str, Any]:
+def _solve_signature(
+    *,
+    dataset_id: str,
+    dataset_name: str,
+    dataset_options: dict[str, Any],
+    solver_id: str,
+    solver_name: str,
+    settings: dict[str, Any],
+    effective_timeout: Any,
+    legacy: bool,
+) -> str:
+    return _stable_digest(
+        {
+            "dataset": {
+                "id": dataset_id,
+                "name": dataset_name,
+                "dataset_options": _signature_dataset_options(
+                    dataset_name, dataset_options, legacy=legacy
+                ),
+            },
+            "solver": {
+                "id": solver_id,
+                "solver": solver_name,
+                "settings": settings,
+                "effective_timeout_seconds": effective_timeout,
+            },
+        },
+        length=24,
+    )
+
+
+def _signature_dataset_options(
+    name: str, options: dict[str, Any], *, legacy: bool = False
+) -> dict[str, Any]:
     """Dataset options as the dataset wants them hashed (see Dataset.signature_options)."""
     # Imported here: the dataset adapters import this package's core modules.
     from solver_benchmarks.datasets.registry import get_dataset
 
+    hashed = dict(options)
+    if not legacy:
+        for key in _LOCATION_OPTIONS:
+            hashed.pop(key, None)
     try:
         dataset_cls = get_dataset(name)
     except KeyError:
-        return dict(options)
+        return hashed
     # Registered adapters need not derive from Dataset; one without the hook
     # hashes its options as given.
     hook = getattr(dataset_cls, "signature_options", None)
-    return dict(options) if hook is None else hook(dict(options))
+    return hashed if hook is None else hook(hashed)
 
 
 def _effective_timeout(config: RunConfig, solver: SolverConfig) -> float | None:

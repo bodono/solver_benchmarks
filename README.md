@@ -306,7 +306,7 @@ Useful dataset options:
 | All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
 | `sdplib` | `subset=feasible`, `subset=infeasible` or `subset=all` | Select the SDPLIB feasibility subset (default `feasible`). |
-| `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the old rows stay in the directory, so use a new run directory for the declared form. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |
+| `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the merged-form rows move to `results.superseded.jsonl`, so use a new run directory to keep both forms. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |
 | `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
 | `liu_pataki` | `classification=infeas` or `classification=weak` | Select infeasible or weakly infeasible SDP families. |
 | `liu_pataki` | `conditioning=clean` or `conditioning=messy` | Select clean or numerically messier Liu-Pataki instances. |
@@ -451,7 +451,7 @@ Important fields:
 | `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. |
 | `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. |
 | `run.parallelism` | Number of concurrent subprocess solves. |
-| `run.resume` | If true, completed `(dataset, problem, solver_id)` triples are not rerun. |
+| `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
 | `run.timeout_seconds` | Default subprocess timeout per solve. |
 | `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
@@ -647,9 +647,9 @@ environments:
 ```
 
 Sweep IDs must be unique after expansion, including across all environments in
-an environment matrix. This is intentional: resume uses `(problem, solver_id)`,
-and duplicate IDs would make two distinct configurations look like the same
-completed solve.
+an environment matrix. This is intentional: resume uses
+`(dataset, problem, solver_id)`, and duplicate IDs would make two distinct
+configurations look like the same completed solve.
 
 ## Running Benchmarks
 
@@ -690,13 +690,25 @@ bench run configs/netlib_feasible_example.yaml --run-dir results/<run_id>
 ```
 
 If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
-`results.jsonl` are skipped. Rows with `worker_error` are retried automatically
+`results.jsonl` are skipped when their solve settings match the current config:
+the solver, its settings, the effective timeout and the dataset options, except
+`data_root` and `max_size_mb`, which only say where the files are and which
+problems are listed. Rows written by earlier releases, which also hashed those
+two options, still count when everything else matches. A row solved under other
+settings is superseded: the triple is solved again, and once the new result is
+written the old row moves from `results.jsonl` to `results.superseded.jsonl`,
+so reports only see results for the current settings. The superseded attempt's
+logs stay where its row points; the new attempt writes into a `rerun-N`
+subdirectory. Rows with `worker_error` are retried automatically
 when their solve settings match the current config, up to
 `run.max_worker_error_retries` times (default 2). This bounds both crashed workers
 and deterministic exceptions reported as `worker_error`. The latest error stays
 visible when the limit is reached; increase the limit after fixing the cause.
 Resuming on a host without the solver leaves pending errors and retry budgets
-unchanged. A retry atomically replaces
+unchanged. Problems skipped because the solver was not installed (their rows
+carry `metadata.skip_reason: solver_unavailable`) are solved on the first resume
+where it is; skips the adapter reports for an unsupported problem stay final. A
+retry atomically replaces
 the compatible error rows, so reports count one result for that solve. Previous
 logs and solver artifacts remain intact; new artifacts go into a `retry-N`
 subdirectory containing a `previous_results.jsonl` snapshot of the replaced
@@ -727,9 +739,14 @@ bench run configs/my_run.yaml --run-dir results/<run_id>
 ```
 
 The resume key is exactly `(dataset, problem, solver_id)`. If you change solver
-settings but keep the same `id`, the old rows are treated as complete and will
-not be rerun. Use a new `id` whenever settings change, such as `clarabel_tight`
-instead of reusing `clarabel_default`.
+settings but keep the same `id`, the old rows are superseded: every problem is
+solved again with the new settings and the old rows move to
+`results.superseded.jsonl`. To compare the two settings, give the new variant a
+new `id`, such as `clarabel_tight` instead of reusing `clarabel_default`.
+
+With `resume: false`, `bench run --run-dir` refuses a directory that already has
+results for the config's datasets and solvers instead of appending a second set
+of rows; start a new run directory instead.
 
 Run only specific problems by editing `include`, or list problems first:
 
@@ -780,7 +797,7 @@ bench report results/osqp_version_compare
 ```
 
 The solver IDs should encode the version, because resume uses
-`(problem, solver_id)`:
+`(dataset, problem, solver_id)`:
 
 ```yaml
 solvers:
@@ -1010,6 +1027,7 @@ Files:
 | `run_config.yaml` / `run_config.json` | Exact source config file passed to `bench run`, copied into the run directory before solving. |
 | `events.jsonl` | Structured warnings/events, including unavailable solvers and unsupported combinations. |
 | `results.jsonl` | One JSON record per completed or skipped solve. Human-readable and append-friendly. |
+| `results.superseded.jsonl` | Rows a resume replaced because they were solved under other settings (see [Running Benchmarks](#running-benchmarks)). Only present after such a resume; analysis ignores it. |
 | `results.parquet` | Flattened results table for pandas/Arrow analysis. Rewritten after each result. |
 | `payload.json` | Exact payload passed to the subprocess worker. |
 | `stdout.log` | Everything emitted to subprocess stdout during a solve. |
