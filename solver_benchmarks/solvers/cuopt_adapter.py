@@ -1,17 +1,21 @@
-"""NVIDIA cuOpt adapter (GPU PDLP for LP and QP).
+"""NVIDIA cuOpt adapter (GPU solver: PDLP for LPs, barrier for QPs).
 
 cuOpt solves ``min c'x + (1/2) x'(Q + Q')x`` subject to
 ``cl <= A x <= cu`` and ``vl <= x <= vu`` on the GPU. The harness QP form
 ``min (1/2) x'P x + q'x, l <= A x <= u`` maps onto it with ``Q = P / 2``
 and free variables, so the objective is identical.
 
-Neither the dual sign nor the termination statuses are probed at run time.
-cuOpt's duals have the opposite sign to the harness convention (checked
-numerically on an active-bound LP); the ``dual_sign`` setting overrides it if
-a release flips it, which would otherwise show up as large ``dual_res_rel``
-on every solve. Termination names are matched against a static table across
-spellings (``_STATUS_MAP``); a name it does not know becomes ``solver_error``
-and the name itself is kept on ``info["termination"]``.
+Nothing is checked at run time. cuOpt's duals have the opposite sign to the
+harness convention (checked numerically on an active-bound LP), hence the
+default ``dual_sign: -1``; the setting overrides it if a release flips it,
+which would otherwise show up as large ``dual_res_rel`` on every solve. The
+``Q = P / 2`` objective mapping and the termination-status names were checked
+by hand on a GPU with ``probe_cuopt`` in ``tools/bench_modal.py`` and are
+pinned against a fake cuOpt in ``tests/test_cuopt_adapter.py``. Termination
+names are matched against a static table across spellings (``_STATUS_MAP``);
+a name it does not know becomes ``solver_error`` and the name itself is kept
+on ``info["termination"]``. The Python API has changed across releases, so
+rerun the probe after upgrading cuOpt.
 """
 
 from __future__ import annotations

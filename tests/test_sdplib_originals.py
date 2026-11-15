@@ -155,7 +155,9 @@ def test_damaged_member_is_read_from_its_original(repo_root: Path, tmp_path: Pat
         assert np.count_nonzero(problem.cone["q"]) == 6910
 
 
+# Minutes on its own, and two to three times that under coverage tracing.
 @pytest.mark.slow
+@pytest.mark.timeout(900)
 def test_every_archive_member_without_an_original_can_be_read(repo_root: Path, tmp_path: Path):
     # One pass over the archive: each member is copied to a scratch file in
     # pieces, read and removed. The three members that have a bundled

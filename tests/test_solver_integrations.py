@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -58,79 +59,61 @@ if sys.version_info < (3, 14):
     }
 
 
-def test_all_open_source_solvers_solve_synthetic_lp(tmp_path: Path, repo_root: Path):
-    missing = [
-        solver_name
-        for solver_name in OPEN_SOURCE_SOLVERS
-        if not get_solver(solver_name).is_available()
-    ]
-    if missing:
-        pytest.skip(f"Missing solver extras: {', '.join(missing)}")
+def _require_solver(solver_name: str) -> None:
+    """Skip this solver's case when it is not installed.
 
+    Each solver skips on its own, so one missing or broken extra cannot hide
+    the end-to-end coverage of the others. CI installs every extra and sets
+    BENCH_REQUIRE_ALL_SOLVERS, which turns a missing solver into a failure:
+    there an unavailable solver is a packaging or import regression.
+    """
+    if get_solver(solver_name).is_available():
+        return
+    message = f"{solver_name} is not installed (or does not import)"
+    if os.environ.get("BENCH_REQUIRE_ALL_SOLVERS"):
+        pytest.fail(f"{message}, and BENCH_REQUIRE_ALL_SOLVERS is set")
+    pytest.skip(message)
+
+
+def _solve_one(tmp_path: Path, repo_root: Path, dataset: str, problem: str, solver_name: str,
+               settings: dict) -> dict:
     config = parse_run_config(
         {
             "run": {
-                "dataset": "synthetic_qp",
+                "dataset": dataset,
                 "output_dir": str(tmp_path / "runs"),
-                "include": ["one_variable_lp"],
+                "include": [problem],
                 "parallelism": 1,
                 "timeout_seconds": 30,
             },
-            "solvers": [
-                {
-                    "id": solver_name,
-                    "solver": solver_name,
-                    "settings": settings,
-                }
-                for solver_name, settings in OPEN_SOURCE_SOLVERS.items()
-            ],
+            "solvers": [{"id": solver_name, "solver": solver_name, "settings": settings}],
         }
     )
-
     store = run_benchmark(config, repo_root=repo_root)
-    df = load_results(store.run_dir)
-
-    assert set(df["solver_id"]) == set(OPEN_SOURCE_SOLVERS)
-    assert set(df["problem"]) == {"one_variable_lp"}
-    for record in df.to_dict("records"):
-        assert record["status"] == status.OPTIMAL, record
-        assert record["objective_value"] == pytest.approx(1.0, abs=1.0e-4)
+    records = load_results(store.run_dir).to_dict("records")
+    assert len(records) == 1, records
+    assert records[0]["solver_id"] == solver_name
+    assert records[0]["problem"] == problem
+    return records[0]
 
 
-def test_open_source_cone_solvers_solve_synthetic_cone_lp(tmp_path: Path, repo_root: Path):
-    missing = [
-        solver_name
-        for solver_name in OPEN_SOURCE_CONE_SOLVERS
-        if not get_solver(solver_name).is_available()
-    ]
-    if missing:
-        pytest.skip(f"Missing solver extras: {', '.join(missing)}")
+@pytest.mark.parametrize("solver_name", sorted(OPEN_SOURCE_SOLVERS))
+def test_open_source_solver_solves_synthetic_lp(solver_name: str, tmp_path: Path, repo_root: Path):
+    _require_solver(solver_name)
 
-    config = parse_run_config(
-        {
-            "run": {
-                "dataset": "synthetic_cone",
-                "output_dir": str(tmp_path / "runs"),
-                "include": ["one_variable_cone_lp"],
-                "parallelism": 1,
-                "timeout_seconds": 30,
-            },
-            "solvers": [
-                {
-                    "id": solver_name,
-                    "solver": solver_name,
-                    "settings": settings,
-                }
-                for solver_name, settings in OPEN_SOURCE_CONE_SOLVERS.items()
-            ],
-        }
-    )
+    record = _solve_one(tmp_path, repo_root, "synthetic_qp", "one_variable_lp",
+                        solver_name, OPEN_SOURCE_SOLVERS[solver_name])
 
-    store = run_benchmark(config, repo_root=repo_root)
-    df = load_results(store.run_dir)
+    assert record["status"] == status.OPTIMAL, record
+    assert record["objective_value"] == pytest.approx(1.0, abs=1.0e-4)
 
-    assert set(df["solver_id"]) == set(OPEN_SOURCE_CONE_SOLVERS)
-    assert set(df["problem"]) == {"one_variable_cone_lp"}
-    for record in df.to_dict("records"):
-        assert record["status"] == status.OPTIMAL, record
-        assert record["objective_value"] == pytest.approx(1.0, abs=1.0e-4)
+
+@pytest.mark.parametrize("solver_name", sorted(OPEN_SOURCE_CONE_SOLVERS))
+def test_open_source_cone_solver_solves_synthetic_cone_lp(solver_name: str, tmp_path: Path, repo_root: Path):
+    _require_solver(solver_name)
+
+    record = _solve_one(tmp_path, repo_root, "synthetic_cone", "one_variable_cone_lp",
+                        solver_name, OPEN_SOURCE_CONE_SOLVERS[solver_name])
+
+    assert record["status"] == status.OPTIMAL, record
+    assert record["objective_value"] == pytest.approx(1.0, abs=1.0e-4)

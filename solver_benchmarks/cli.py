@@ -82,7 +82,11 @@ def list_problems_cmd(
     dataset_cls = get_dataset(dataset)
     dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
     if prepare:
-        dataset_obj.prepare_data()
+        try:
+            dataset_obj.prepare_data()
+        except (RuntimeError, OSError, ValueError) as exc:
+            # Same failures, and the same message, as `bench data prepare`.
+            raise click.ClickException(f"Preparing {dataset} failed: {exc}") from exc
     for spec in dataset_obj.visible_problems():
         click.echo(f"{spec.name}\t{spec.kind}\t{spec.path or ''}")
 

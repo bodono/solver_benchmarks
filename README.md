@@ -80,6 +80,7 @@ Example output:
 clarabel  available               cone,qp
 cplex     missing optional extra  qp
 cpo3      available               cone,qp
+cuopt     missing optional extra  qp
 cvxopt    available               cone,qp
 ecos      available               cone,qp
 gurobi    missing optional extra  qp
@@ -90,8 +91,8 @@ pdlp      available               cone,qp
 piqp      available               qp
 proxqp    available               qp
 qtqp      available               qp
-sdpa      available               cone
 scs       available               cone,qp
+sdpa      available               cone
 ```
 
 ## Supported Datasets
@@ -274,6 +275,10 @@ python scripts/prepare_dimacs.py
 python scripts/prepare_cutest_qp.py
 ```
 
+`scripts/research/` holds one-off scripts and SCS patches from the Anderson
+acceleration experiments. They need a patched SCS build and local results that
+are not in the repository, and they are not maintained; see its `README.md`.
+
 The `--all` flag is deliberately never implicit. For example, CBLIB `--all`
 follows the full CBLIB directory index and may download mixed-integer or
 currently unsupported CBF files; the `cblib` adapter lists continuous
@@ -409,6 +414,7 @@ Current maintained adapters:
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. When presolve can only say "infeasible or unbounded", the adapter re-solves with `DualReductions=0` (Gurobi's documented remedy) so the row gets a definite status; `info.inf_or_unbd_resolved` marks it. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. A license failure raised by the solve (missing, expired or exhausted license) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as MOSEK failing the problem. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
+| cuOpt | `cuopt` | QP | NVIDIA's GPU solver (PDLP for LPs, barrier for QPs). Not a package extra: install `cuopt-cu12` from NVIDIA's pip index on a CUDA machine. The QP maps onto cuOpt's objective with `Q = P / 2`. `eps` sets all of cuOpt's optimality tolerances and `eps_abs` / `eps_rel` its absolute and relative primal, dual and gap tolerances; `max_iter` sets `iteration_limit`, `time_limit` and `threads` are forwarded, and any other setting goes to `set_parameter` (a value cuOpt rejects is a `ValueError` naming it). cuOpt reports duals with the opposite sign to the harness, so the KKT residuals use `dual_sign: -1` by default. These conventions were checked by hand on a GPU with `probe_cuopt` in `tools/bench_modal.py`, and CI tests them only against a fake cuOpt; rerun the probe after upgrading. |
 
 Comparing with run directories written before the conic adapters adopted the
 shared result policy: SCS stops on `max_iters` / `time_limit_secs` are now
@@ -496,6 +502,8 @@ as YAML 1.2 and JSON read them:
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
 | `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
 | `run.auto_prepare_data` | If true, prepare the missing requested data before listing and solving: the problems `include` names, else those `dataset_options.subset` names (for the datasets whose subset takes problem names), else the dataset's small default subset. Problems already present are not requested again, and a failed preparation stops the run with an error naming the dataset. The details are under [Supported Datasets](#supported-datasets). |
+| `run.fail_on_unsupported` | If true, an unsupported solver/problem combination fails the run instead of being recorded as `skipped_unsupported` (see [Supported Solvers](#supported-solvers)). Default false. |
+| `run.worker_memory_limit_mb` | Optional cap, in MiB, on the data segment of each solve's worker process (`RLIMIT_DATA`, set in the worker before it loads the problem). On Linux this covers heap and anonymous `mmap` allocations, and the libraries a solver loads count against it too. macOS largely ignores the limit, and on Windows, which has no `resource` module, every solve fails when it is set. A solve that exceeds the limit is normally recorded as `worker_error` (a solver that catches the failed allocation itself may report its own error status instead), so set the limit well above the largest problem's needs. Integer >= 1; unset or null means no limit. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
@@ -756,13 +764,19 @@ Bundled benchmark configs:
 |---|---|
 | `configs/synthetic_smoke.json` | Tiny one-problem smoke run. |
 | `configs/netlib_feasible_example.yaml` | NETLIB feasible subset example. |
-| `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example. |
+| `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example: QTQP with its default backend and with `linear_solver: scipy`, SCS, and Clarabel. |
 | `configs/maros_meszaros_qp_solvers.yaml` | Maros-Meszaros QP run comparing OSQP, SCS, Clarabel, QTQP, and cpo3. |
 | `configs/multi_dataset_example.yaml` | Example of one run spanning several datasets. |
 | `configs/scs_anderson_sweep.yaml` | SCS Anderson acceleration sweep over NETLIB feasible, MIPLIB instances up to 5 MB, Maros-Meszaros, and SDPLIB instances up to 1 MB. Includes `scs_aa_disabled` with `acceleration_lookback: 0`, plus the cross-product `acceleration_lookback: [5, 10, 20]` and `acceleration_interval: [1, 5, 10]`. |
-| `configs/qtqp_refinement_regularization_sweep.yaml` | QTQP sweep over NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Uses `linear_solver: qdldl` and sweeps `max_iterative_refinement_steps: [1, 3, 5, 10, 20]` by `min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]`. |
-| `configs/scs_linear_solver_backend_sweep.yaml` | SCS comparison of `linear_solver: qdldl` versus `linear_solver: accelerate` on the same datasets as the Anderson sweep. |
-| `configs/qtqp_linear_solver_backend_sweep.yaml` | QTQP comparison of `linear_solver: qdldl` versus `linear_solver: accelerate` on NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. |
+| `configs/qtqp_refinement_regularization_sweep.yaml` | QTQP sweep over NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Uses QTQP's default backend (MKL Pardiso on x86-64 Linux and Windows, Apple Accelerate on arm64 macOS) and sweeps `max_iterative_refinement_steps: [1, 3, 5, 10, 20]` by `min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]`. |
+| `configs/scs_linear_solver_backend_sweep.yaml` | SCS comparison of `linear_solver: qdldl` versus `linear_solver: cpu_indirect` (both bundled in every SCS wheel) on the same datasets as the Anderson sweep. `mkl` (x86-64 Linux and Windows wheels) and `accelerate` (macOS wheels) can be added as arms where the installed wheel has them. |
+| `configs/qtqp_linear_solver_backend_sweep.yaml` | QTQP comparison of its default backend (MKL Pardiso on x86-64 Linux and Windows, Apple Accelerate on arm64 macOS) versus `linear_solver: scipy` on NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Other backends such as `qdldl` need their own package (`pip install qdldl`); the `qtqp` extra does not install them. |
+
+These run with the released solvers that `pip install -e ".[all]"` installs. Most
+other files in `configs/` are research sweeps that need development builds of SCS
+or QTQP. Each of those starts with an `# EXPERIMENTAL:` header that names what it
+needs, and with the released packages their solves fail as `worker_error`. See
+[`configs/README.md`](configs/README.md).
 
 The command prints the run directory:
 
@@ -1052,17 +1066,17 @@ Run and analysis commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` (default: the current directory if it has `problem_classes`, else the checkout the package was installed from, as for the other commands), `--data-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. `--data-root` sets `data_root` for every dataset in the config. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
+| `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` (default: the current directory if it has `problem_classes`, else the checkout the package was installed from, as for the other commands), `--data-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. `--data-root` sets the `data_root` dataset option of every dataset in the config: the directory used in place of `problem_classes/`, holding each dataset's `*_data` folder. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
 | `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. Solver metrics count each `(dataset, problem, solver)` once (a duplicated solve counts as its successful attempt); run time and iteration totals cover every solve, means, medians and maxima the successful ones. |
 | `bench failures RUN_DIR` | `--repo-root PATH` | Print success/failure rates by solver, one count per solve. Planned solves with no recorded row count as `not_attempted` failures, as in the report (`bench summary` counts them the same way). Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
-| `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
+| `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--repo-root PATH` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. Solves the manifest planned but the run did not record count as failures; `--repo-root` locates the dataset directories used to list them. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
-| `bench merge OUT_DIR RUN_DIR...` | `--overwrite` | Concatenate sharded runs into a new run directory; duplicated `(dataset, problem, solver)` rows are reported, not resolved. |
-| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH`, `--allow-missing`, `--promote`, `--overwrite` | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, PIQP, ProxQP, SDPA and the commercial adapters do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. At a strict `--tol` this favours adapters that record no certificate in infeasibility-heavy comparisons: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. |
+| `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are. Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection, so `summary`, `missing` and `report` treat the merged directory like one run. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. |
+| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH` default `RUN_DIR_kkt<tol>` next to `RUN_DIR`, `--allow-missing` default false, `--promote` default false, `--overwrite` default false | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, PIQP, ProxQP, SDPA and the commercial adapters do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. At a strict `--tol` this favours adapters that record no certificate in infeasibility-heavy comparisons: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1684,8 +1698,20 @@ Run the test suite:
 
 ```bash
 pip install -e ".[test,all]"
-pytest
+pytest -m "not network"
 ```
+
+`-m "not network"` leaves out the tests marked `network`. They download from
+external dataset hosts and fail offline or behind a proxy, so CI runs them only
+on the weekly schedule (`pytest -m network tests/test_dataset_downloads.py`).
+The two tests marked `slow` read every member of the SDPLIB archive and take
+minutes each. For a quick run, use `pytest -m "not network and not slow"`, as the
+CI matrix jobs do; the coverage job runs the slow tests on every pull request.
+
+The solver integration tests run once per solver and skip a solver that is not
+installed. Set `BENCH_REQUIRE_ALL_SOLVERS=1` to make a missing solver fail
+instead. CI sets it in the jobs that install every extra, because there a
+missing solver means a packaging or import regression.
 
 Current tests cover:
 
@@ -1723,6 +1749,14 @@ Current tests cover:
 - CLI `summary`, `profile`, and `geomean` commands.
 - PDLP registration and clean skip behavior when unavailable or given non-LP data.
 - PDLP linear-cone handling for both `z` and `f` zero-cone keys.
+- cuOpt adapter conventions (objective mapping, dual sign, status names, option
+  forwarding) against a fake cuOpt, since CI has no GPU.
+- The campaign tools `tools/make_figures.py` and `tools/make_campaign.py`
+  against the analysis API they use.
+- Every solver variant of the maintained configs in `configs/` against the
+  installed solvers, `configs/README.md`'s list of maintained configs against
+  the configs without the `# EXPERIMENTAL:` header, and the README's CLI,
+  config-field and solver tables against the code.
 
 GitHub Actions runs additional matrix workflows that install each open-source
 solver in isolation and exercise its adapter via `scripts/ci_solver_smoke.py`,
@@ -1757,8 +1791,6 @@ path.
 High-value next steps:
 
 - More direct SDPLIB/DIMACS validation tests with small fixtures.
-- Richer plotting commands that write PDFs/PNGs, not only CSV profile data.
 - Cross-run comparison commands.
-- Solver environment metadata capture: versions, git SHA, platform, CPU info.
 - Optional exact-solution/reference-objective checking where datasets provide it.
 - Parallel result-write batching for very large runs.

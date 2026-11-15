@@ -1,3 +1,6 @@
+# EXPERIMENTAL: needs an unreleased SCS build that accepts adaptive_diag_scale
+# values above 1. With only the released solvers from the package extras, the
+# solves that need them fail as worker_error. See configs/README.md.
 run:
   dataset: netlib
   output_dir: results

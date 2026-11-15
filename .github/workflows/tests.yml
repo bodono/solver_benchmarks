@@ -36,7 +36,13 @@ jobs:
         run: python -m pip install --upgrade pip "ruff>=0.5"
 
       - name: Run ruff
-        run: python -m ruff check solver_benchmarks tests problem_classes scripts
+        run: python -m ruff check solver_benchmarks tests problem_classes scripts tools
+
+      # tools/ and scripts/ are run by hand, not imported by the package, so
+      # make sure every file still compiles (tests/test_tools.py imports and
+      # exercises the campaign tools; bench_modal.py needs Modal to import).
+      - name: Compile tools and scripts
+        run: python -m compileall -q tools scripts
 
   type-check:
     name: Type check
@@ -63,6 +69,11 @@ jobs:
   tests:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    env:
+      # Every open-source extra is installed here, so a solver that is not
+      # available is a packaging or import regression: fail its integration
+      # test instead of skipping it.
+      BENCH_REQUIRE_ALL_SOLVERS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -87,8 +98,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,all]"
 
+      # Tests marked slow (minutes each) run once, in the coverage job.
       - name: Run tests
-        run: python -m pytest -m "not network"
+        run: python -m pytest -m "not network and not slow"
 
       - name: Smoke-test CLI
         run: python -m solver_benchmarks.cli list solvers
@@ -96,6 +108,8 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    env:
+      BENCH_REQUIRE_ALL_SOLVERS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -111,6 +125,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,all]" "pytest-cov>=4.0"
 
+      # The one job that also runs the tests marked slow.
       - name: Run tests with coverage
         run: |
           python -m pytest -m "not network" \

@@ -1,3 +1,7 @@
+# EXPERIMENTAL: needs an unreleased QTQP build that accepts init_strategy; and
+# the qdldl Python package (pip install qdldl), which the qtqp extra does not
+# install. With only the released solvers from the package extras, the solves
+# that need them fail as worker_error. See configs/README.md.
 run:
   name: qtqp_init
   output_dir: results

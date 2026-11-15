@@ -69,7 +69,7 @@ gpu_image = (
         "-Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true . 2>&1 | tail -5",
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
     )
-    # NVIDIA cuOpt: GPU PDLP for LP and QP, the like-for-like GPU comparator.
+    # NVIDIA cuOpt: GPU PDLP for LP, GPU barrier for QP; the like-for-like GPU comparator.
     .pip_install("cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")

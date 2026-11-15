@@ -1,3 +1,8 @@
+# EXPERIMENTAL: needs an unreleased SCS build that accepts adaptive_diag_scale
+# values above 1 and num_l2_passes. With only the released solvers from the
+# package extras, the solves that need them fail as worker_error. See
+# configs/README.md.
+#
 # l2-pass ablation addendum (sweep v3 follow-up): l2-off structurally
 # rescued dfl001 (11.6k iters, verified, unsolved all campaign) and
 # LISWET9, but broke stair. Test generality on all three datasets and
