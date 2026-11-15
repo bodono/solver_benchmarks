@@ -98,6 +98,7 @@ ITERATION_CAPS = {
     "clarabel": {"max_iter": 1, "presolve_enable": False},
     "ecos": {"max_iters": 1},
     "cvxopt": {"maxiters": 1},
+    "sdpa": {"maxIteration": 1},
 }
 
 
@@ -130,7 +131,7 @@ def test_time_limit_is_time_limit_with_kkt_and_no_objective(solver_name, tmp_pat
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt", "sdpa"])
 def test_infeasible_cone_result_has_no_reported_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _infeasible_cone_lp(), {}, tmp_path)
     assert result.status in status.ANY_INFEASIBLE, (result.status, result.info)
@@ -144,7 +145,7 @@ def test_infeasible_qp_result_has_no_reported_objective(solver_name, tmp_path):
     assert result.objective_value is None
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt", "sdpa"])
 def test_optimal_cone_result_reports_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _feasible_cone_lp(n=10, m=20), {}, tmp_path)
     assert result.status == status.OPTIMAL, (result.status, result.info)
@@ -732,3 +733,118 @@ def test_cvxopt_forwards_kktsolver_to_the_solver_call(tmp_path, monkeypatch):
     assert result.status == status.OPTIMAL
     assert seen["kktsolver"] == "ldl"
 
+
+# ---------------------------------------------------------------------------
+# SDPA
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "data, certificate",
+    [(_infeasible_cone_lp(), "primal_infeasible"), (_infeasible_sdp(), "primal_infeasible"),
+     (_unbounded_cone_lp(), "dual_infeasible")],
+    ids=["lp", "sdp", "unbounded-lp"],
+)
+def test_sdpa_records_certificate_checks(data, certificate, tmp_path):
+    """SDPA's infeasibility claims were recorded with kkt=None, so they were
+    never checked; the y / x it returns are checked like SCS's and
+    Clarabel's certificates."""
+    result = _solve("sdpa", CONE, data, {}, tmp_path)
+    assert result.status in status.ANY_INFEASIBLE, (result.status, result.info)
+    assert result.kkt is not None
+    assert result.kkt["certificate"] == certificate
+    assert result.kkt["valid"] is True
+
+
+def _sdpa_map(phase, *, primal=0.0, dual=0.0, gap=0.0, iteration=10, options=None, tol=1e-6):
+    from solver_benchmarks.solvers.sdpa_adapter import _map_sdpa_status
+
+    info = {"phasevalue": phase, "primalError": primal, "dualError": dual, "dualityGap": gap}
+    return _map_sdpa_status(info, {"iteration": iteration}, options or {"maxIteration": 100}, tol)
+
+
+def test_sdpa_missing_errors_are_unknown_not_failures():
+    """sdpa-python sets primalError/dualError to None when its ARPACK check
+    does not converge (PSD blocks of order ~40 and up): a converged pdOPT
+    solve must not become optimal_inaccurate because of it."""
+    assert _sdpa_map("pdOPT", primal=None, dual=None, gap=3.9e-8) == status.OPTIMAL
+    assert _sdpa_map("pdOPT", primal=None, dual=1e-3, gap=3.9e-8) == status.OPTIMAL_INACCURATE
+    assert _sdpa_map("pdOPT", primal=None, dual=None, gap=1e-2) == status.OPTIMAL_INACCURATE
+
+
+def test_sdpa_default_tolerance_follows_requested_accuracy():
+    from solver_benchmarks.solvers.sdpa_adapter import _default_optimality_tolerance
+
+    assert _default_optimality_tolerance({}) == 1e-6
+    assert _default_optimality_tolerance({"epsilonStar": 1e-8, "epsilonDash": 1e-8}) == 1e-6
+    tol = _default_optimality_tolerance({"epsilonStar": 1e-4, "epsilonDash": 1e-4})
+    assert tol == 1e-4
+    assert _sdpa_map("pdOPT", gap=8.6e-6, tol=tol) == status.OPTIMAL
+
+
+def test_sdpa_feasible_but_unconverged_at_the_cap_is_max_iter():
+    assert _sdpa_map("pdFEAS", gap=1e-3, iteration=100) == status.MAX_ITER_REACHED
+    assert _sdpa_map("pdFEAS", gap=1e-9, iteration=40) == status.OPTIMAL
+    assert _sdpa_map("noINFO", iteration=100) == status.MAX_ITER_REACHED
+    assert _sdpa_map("noINFO", iteration=40) == status.SOLVER_ERROR
+
+
+def test_sdpa_options_defaults_and_translation(tmp_path):
+    from solver_benchmarks.solvers.sdpa_adapter import (
+        SDPA_LOWER_BOUND,
+        SDPA_UPPER_BOUND,
+        _sdpa_options,
+    )
+
+    info: dict = {}
+    options = _sdpa_options({"threads": 2, "eps": 1e-5, "max_iter": 30}, tmp_path, info=info)
+    assert options["numThreads"] == 2
+    assert options["lowerBound"] == SDPA_LOWER_BOUND == -1e30
+    assert options["upperBound"] == SDPA_UPPER_BOUND == 1e30
+    assert options["epsilonStar"] == options["epsilonDash"] == 1e-5
+    assert options["maxIteration"] == 30
+    assert info["settings_translated"] == {
+        "maxIteration": 30,
+        "epsilonStar": 1e-5,
+        "epsilonDash": 1e-5,
+        "numThreads": 2,
+    }
+    assert "threads_ignored" not in info
+
+
+def test_sdpa_defaults_to_one_thread_and_native_settings_win(tmp_path):
+    from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
+
+    options = _sdpa_options({}, tmp_path)
+    assert options["numThreads"] == 1
+    # sdpa-python resets an int-valued float parameter to its default,
+    # so the adapter coerces it.
+    options = _sdpa_options(
+        {"threads": 4, "numThreads": 2, "lowerBound": -1000, "eps_abs": 1e-3,
+         "epsilonStar": 1e-9},
+        tmp_path,
+    )
+    assert options["numThreads"] == 2
+    assert options["lowerBound"] == -1000.0 and isinstance(options["lowerBound"], float)
+    assert options["epsilonStar"] == 1e-9
+
+
+def test_sdpa_rejects_unknown_settings_by_name(tmp_path):
+    with pytest.raises(ValueError, match="epsilonStarr"):
+        _solve("sdpa", CONE, _feasible_cone_lp(n=10, m=20), {"epsilonStarr": 1e-3}, tmp_path)
+
+
+def test_sdpa_solves_a_feasible_problem_with_a_large_objective(tmp_path, repo_root):
+    """DIMACS hamming_7_5_6 (optimum 42.67) with q scaled by 1e4: with
+    sdpa-python's default objective bounds (+-1e5) SDPA stopped with dUNBD
+    and the adapter reported primal_infeasible."""
+    if not (repo_root / "problem_classes" / "dimacs_data" / "hamming_7_5_6.mat.gz").exists():
+        pytest.skip("DIMACS hamming_7_5_6 not present")
+    from solver_benchmarks.datasets import get_dataset
+
+    base = get_dataset("dimacs")().load_problem("hamming_7_5_6")
+    data = dict(base.cone)
+    data["q"] = np.asarray(data["q"]) * 1e4
+    result = _solve("sdpa", CONE, data, {}, tmp_path)
+    assert result.status == status.OPTIMAL, (result.status, result.info["phasevalue"])
+    assert result.objective_value == pytest.approx(426666.67, rel=1e-6)
