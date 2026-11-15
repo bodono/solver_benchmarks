@@ -25,9 +25,22 @@ def data_prepare_selection(
             return None, True
         if "," in normalized:
             return [item.strip() for item in normalized.split(",") if item.strip()], False
+        if normalized and normalized.lower() != "default" and _subset_lists_problems(
+            dataset_config.name
+        ):
+            return [normalized], False
     if isinstance(subset, (list, tuple, set)):
         return [str(item) for item in subset], False
     return None, False
+
+
+def _subset_lists_problems(dataset_name: str) -> bool:
+    from solver_benchmarks.datasets import get_dataset
+
+    try:
+        return bool(getattr(get_dataset(dataset_name), "subset_lists_problems", False))
+    except KeyError:
+        return False
 
 
 def data_prepare_command(

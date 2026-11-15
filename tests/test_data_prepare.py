@@ -152,3 +152,100 @@ def test_shell_join_round_trips_simple_command(ascii_quote_safe):
     """For ASCII-only no-special-char inputs shell_join is a no-op."""
     parts = ascii_quote_safe.split()
     assert shell_join(parts) == ascii_quote_safe
+
+
+def test_data_prepare_selection_treats_a_single_name_subset_as_a_problem():
+    """cblib, mittelmann_sdp and libsvm_qp read `subset` as a list of names."""
+    for dataset, name in (("cblib", "nb_L1"), ("mittelmann_sdp", "hamming_7_5_6"),
+                          ("libsvm_qp", "australian")):
+        config = parse_run_config(
+            {"run": {"dataset": dataset, "dataset_options": {"subset": name}},
+             "solvers": [{"id": "scs", "solver": "scs"}]}
+        )
+        assert data_prepare_selection(config, config.datasets[0]) == ([name], False)
+    # Reserved values and named subsets keep their meaning.
+    for dataset, subset, expected in (
+        ("cblib", "default", (None, False)),
+        ("cblib", "all", (None, True)),
+        ("netlib", "feasible", (None, False)),
+    ):
+        config = parse_run_config(
+            {"run": {"dataset": dataset, "dataset_options": {"subset": subset}},
+             "solvers": [{"id": "scs", "solver": "scs"}]}
+        )
+        assert data_prepare_selection(config, config.datasets[0]) == expected
+
+
+def _prepare_fixture(monkeypatch, tmp_path, *, listed, include, fail=None):
+    from solver_benchmarks.core.problem import QP, ProblemSpec
+    from solver_benchmarks.datasets import registry as dataset_registry
+
+    calls = []
+
+    class LocalDataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def prepare_data(self, problem_names=None, all_problems=False):
+            calls.append(problem_names)
+            if fail is not None:
+                raise fail
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="local", name=name, kind=QP) for name in listed]
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "local_fixture", LocalDataset)
+    config = parse_run_config(
+        {"run": {"dataset": "local_fixture", "include": include, "auto_prepare_data": True,
+                 "output_dir": str(tmp_path / "runs")},
+         "solvers": [{"id": "scs", "solver": "scs"}]}
+    )
+    return config, calls
+
+
+def test_auto_prepare_skips_problems_already_present(monkeypatch, tmp_path, repo_root):
+    """libsvm_qp problems are named svm_dual_<name>, which is not a download
+    name: asking to prepare a bundled one requested a URL that does not exist."""
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _no_worker)
+    config, calls = _prepare_fixture(
+        monkeypatch, tmp_path, listed=["svm_dual_australian"], include=["svm_dual_australian"]
+    )
+    runner.run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert calls == []
+
+    config, calls = _prepare_fixture(
+        monkeypatch, tmp_path, listed=["a"], include=["a", "b"]
+    )
+    runner.run_benchmark(config, run_dir=tmp_path / "run2", repo_root=repo_root)
+    assert calls == [["b"]]
+
+
+def test_auto_prepare_failure_is_a_clear_error(monkeypatch, tmp_path, repo_root):
+    from solver_benchmarks.core import runner
+
+    config, _ = _prepare_fixture(
+        monkeypatch, tmp_path, listed=[], include=["remote"],
+        fail=OSError("HTTP Error 404: Not Found"),
+    )
+    with pytest.raises(RuntimeError, match="local_fixture.*HTTP Error 404"):
+        runner.run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+
+
+def _no_worker(cmd, **kwargs):
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from solver_benchmarks.core.result import ProblemResult
+
+    payload = json.loads(Path(cmd[-1]).read_text())
+    record = ProblemResult(
+        run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+        problem_kind=payload["problem_kind"], solver_id="scs", solver="scs", status="optimal",
+        objective_value=0.0, iterations=1, run_time_seconds=0.01,
+        artifact_dir=payload["artifacts_dir"],
+    ).to_record()
+    (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+    return SimpleNamespace(returncode=0, timed_out=False)

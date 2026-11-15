@@ -530,3 +530,30 @@ def test_provenance_block_renders_system_section_when_manifest_has_it(tmp_path: 
     assert "### System" in rendered
     assert "M1" in rendered
     assert "16.0 GiB" in rendered
+
+
+def test_cpu_metadata_records_the_cpus_this_process_may_use(monkeypatch):
+    import os
+
+    from solver_benchmarks.core.system_info import system_metadata
+
+    if hasattr(os, "sched_getaffinity"):
+        monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {0})
+    if hasattr(os, "process_cpu_count"):
+        monkeypatch.setattr(os, "process_cpu_count", lambda: 1)
+    cpu = system_metadata()["cpu"]
+    assert cpu["usable_count"] == 1
+    assert cpu["logical_count"] == os.cpu_count()
+
+
+def test_runtime_metadata_records_numerical_library_versions_and_usable_cpus():
+    from importlib import metadata
+
+    from solver_benchmarks.core.environment import runtime_metadata
+
+    runtime = runtime_metadata("scs")
+    assert runtime["library_versions"] == {
+        "numpy": metadata.version("numpy"),
+        "scipy": metadata.version("scipy"),
+    }
+    assert runtime["usable_cpu_count"] >= 1

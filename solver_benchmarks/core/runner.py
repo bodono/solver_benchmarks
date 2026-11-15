@@ -123,11 +123,7 @@ def run_benchmark(
         dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
         include, exclude = config.effective_filters(dataset_config)
         if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
-            problem_names, all_problems = data_prepare_selection(config, dataset_config)
-            dataset.prepare_data(
-                problem_names=problem_names,
-                all_problems=all_problems,
-            )
+            _prepare_data(dataset, config, dataset_config)
         problems = _filter_problems(dataset.list_problems(), include, exclude)
         problems = filter_problem_specs_by_size(
             problems, dataset_config.dataset_options.get("max_size_mb")
@@ -241,7 +237,7 @@ def run_benchmark(
         # No work to do (e.g. every problem skipped during planning, or
         # nothing left after resume) still counts as a successful run.
         # Materialize the parquet so its existence reflects completion.
-        store.write_parquet()
+        _write_parquet(store)
         progress.emit_final()
         return store
 
@@ -272,9 +268,51 @@ def run_benchmark(
     # exactly once. results.jsonl is the canonical live record during
     # the run; results.parquet is the end-of-run derived artifact whose
     # presence signals "this run completed".
-    store.write_parquet()
+    _write_parquet(store)
     progress.emit_final()
     return store
+
+
+def _write_parquet(store: ResultStore) -> None:
+    """Write results.parquet; a failure is logged, not raised.
+
+    The parquet is derived from results.jsonl, which already holds every
+    result: failing the finished run over it would lose nothing but report
+    the run as failed (and fail an environment matrix's child run).
+    """
+    try:
+        store.write_parquet()
+    except Exception as exc:  # noqa: BLE001 - logged; results.jsonl is the record.
+        logger.warning("Could not write %s: %s", store.results_parquet_path, exc)
+        store.append_event(
+            "error",
+            "Could not write results.parquet; results.jsonl holds every result",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def _prepare_data(dataset: Any, config: RunConfig, dataset_config: DatasetConfig) -> None:
+    """Prepare the requested data that is not present yet.
+
+    Problems already listed locally are not requested again: a dataset's
+    problem names are not always its download names (libsvm_qp lists
+    ``svm_dual_<name>``), so asking for a bundled problem could request a
+    URL that does not exist. A failure is raised as RuntimeError naming the
+    dataset, which ``bench run`` reports without a traceback.
+    """
+    problem_names, all_problems = data_prepare_selection(config, dataset_config)
+    if problem_names and not all_problems:
+        listed = {problem.name for problem in dataset.list_problems()}
+        problem_names = [name for name in problem_names if name not in listed]
+        if not problem_names:
+            return
+    try:
+        dataset.prepare_data(problem_names=problem_names, all_problems=all_problems)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Preparing data for dataset {dataset_config.id!r} failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def _run_tasks_in_parallel(

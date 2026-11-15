@@ -76,6 +76,7 @@ class MittelmannSDPDataset(Dataset):
     data_patterns = ("*.dat-s", "*.dat-s.gz")
     prepare_command = "python scripts/prepare_mittelmann_sdp.py"
     automatic_download = True
+    subset_lists_problems = True
 
     @property
     def folder(self) -> Path:

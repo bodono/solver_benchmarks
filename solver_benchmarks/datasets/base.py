@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import gzip
 import io
-import os
-import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Re-exported: the download helpers write their files with it.
+from solver_benchmarks.core.atomic import atomic_write_bytes as atomic_write_bytes
 from solver_benchmarks.core.problem import ProblemData, ProblemSpec
 
 
@@ -32,37 +32,6 @@ def validate_gzip_payload(compressed: bytes) -> None:
             pass
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Write ``data`` to ``path`` atomically.
-
-    Used by the download helpers so a partial network read cannot leave
-    a corrupt file at the cache target. Subsequent runs would otherwise
-    see ``target.exists()`` and skip re-download, baking the corruption
-    in.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "wb", dir=path.parent, delete=False
-        ) as handle:
-            handle.write(data)
-            handle.flush()
-            try:
-                os.fsync(handle.fileno())
-            except OSError:
-                pass
-            tmp_name = handle.name
-        os.replace(tmp_name, path)
-        tmp_name = None
-    finally:
-        if tmp_name is not None:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-
-
 @dataclass(frozen=True)
 class DatasetDataStatus:
     dataset: str
@@ -81,6 +50,10 @@ class Dataset(ABC):
     data_patterns: tuple[str, ...] = ()
     prepare_command: str | None = None
     automatic_download: bool = False
+    # True when the ``subset`` option names problems (a comma-separated
+    # string or a list), apart from the reserved values "all" and "default";
+    # a single name then selects that one problem for preparation.
+    subset_lists_problems: bool = False
 
     def __init__(self, repo_root: str | Path | None = None, **options: Any):
         self.repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()

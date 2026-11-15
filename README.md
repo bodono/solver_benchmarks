@@ -458,7 +458,7 @@ as YAML 1.2 and JSON read them:
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
 | `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
-| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. |
+| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. Requested problems that are already present are not requested again, and a failed preparation stops the run with an error naming the dataset. For `cblib`, `mittelmann_sdp` and `libsvm_qp`, a `subset` naming a single problem prepares that problem. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
@@ -775,6 +775,8 @@ Every result row records metadata under `metadata.runtime`:
 | `metadata.runtime.python_version` | Python version. |
 | `metadata.runtime.platform` | OS/platform string. |
 | `metadata.runtime.solver_package_versions` | Installed package versions relevant to the solver adapter, such as `{"osqp": "1.1.1"}`. |
+| `metadata.runtime.library_versions` | Installed numpy and scipy versions, which ship the BLAS/LAPACK most solvers use. |
+| `metadata.runtime.usable_cpu_count` | CPUs the solve subprocess may run on (its CPU affinity). |
 | `metadata.environment_id` | Optional user-supplied environment label. |
 | `metadata.environment_metadata` | Optional user-supplied metadata, usually pinned solver versions or environment notes. |
 
@@ -1032,7 +1034,7 @@ Files:
 | `events.jsonl` | Structured warnings/events, including unavailable solvers and unsupported combinations. |
 | `results.jsonl` | One JSON record per completed or skipped solve. Human-readable and append-friendly. |
 | `results.superseded.jsonl` | Rows a resume replaced because they were solved under other settings (see [Running Benchmarks](#running-benchmarks)). Only present after such a resume; analysis ignores it. |
-| `results.parquet` | Flattened results table for pandas/Arrow analysis. Rewritten after each result. |
+| `results.parquet` | Flattened results table for pandas/Arrow analysis, written when a run finishes; its presence marks a completed run. Columns whose values mix types across adapters (e.g. `info.raw_status`, an integer for Gurobi and CPLEX, a string elsewhere) are stored as text. If it cannot be written, the error is logged to `events.jsonl` and `results.jsonl` remains the complete record. |
 | `payload.json` | Exact payload passed to the subprocess worker. |
 | `stdout.log` | Everything emitted to subprocess stdout during a solve. |
 | `stderr.log` | Everything emitted to subprocess stderr during a solve. |
@@ -1072,13 +1074,15 @@ Solver-specific traces:
   OR-Tools is installed and a solve is attempted.
 
 System info: each run's `manifest.json` carries a `system` block captured once
-at run start, recording the CPU model / logical and physical core count / max
-frequency, total and available memory, OS / kernel version, Python version,
+at run start, recording the CPU model / logical and physical core count / the
+number of CPUs the process may use (`cpu.usable_count`, smaller than the logical
+count under `taskset`, Slurm or a container cpuset) / max frequency, total and available memory, OS / kernel version, Python version,
 and the installed numpy / scipy / pandas / pyarrow and registered solver-package
 versions under `system.library_versions` (uninstalled optional packages are
 recorded as `null`). This describes the parent environment at run start;
-`metadata.runtime.solver_package_versions` on each result remains the source
-for versions actually used by workers, including isolated `bench env` runs.
+`metadata.runtime.solver_package_versions` and `metadata.runtime.library_versions`
+(numpy and scipy) on each result remain the source for versions actually used
+by workers, including isolated `bench env` runs.
 The block is
 preserved across manifest rewrites so a re-run on the same run directory
 cannot silently overwrite the original provenance. Install the optional

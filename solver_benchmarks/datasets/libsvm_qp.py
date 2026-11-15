@@ -96,6 +96,7 @@ class LibsvmQPDataset(Dataset):
     data_patterns = ("*.libsvm", "*.libsvm.gz")
     prepare_command = "python scripts/prepare_libsvm_qp.py"
     automatic_download = True
+    subset_lists_problems = True
 
     @property
     def folder(self) -> Path:

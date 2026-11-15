@@ -8,7 +8,6 @@ import math
 import os
 import re
 import shutil
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,6 +17,7 @@ from typing import Any
 import pandas as pd
 
 from . import status
+from .atomic import atomic_write_text
 from .config import RunConfig, manifest_solve_signatures, slugify, solve_signatures
 from .result import ProblemResult, to_jsonable
 from .system_info import system_metadata
@@ -549,6 +549,16 @@ _NONFINITE_STRINGS = {
 
 def normalize_table_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
+    # Adapters disagree on value types for shared keys (Gurobi and CPLEX
+    # report an integer info.raw_status, the others a string), and Arrow
+    # rejects a column that mixes them. Store such columns as text, with
+    # lists and dicts as JSON.
+    for column in normalized.columns:
+        if column in _NUMERIC_COLUMNS or normalized[column].dtype != object:
+            continue
+        values = normalized[column]
+        if len({_type_family(value) for value in values if not _is_missing(value)}) > 1:
+            normalized[column] = values.map(_as_text)
     # Restrict the string-NaN scrub to numeric columns so a problem named
     # "nan" or a free-text error message containing "inf" is not silently
     # nulled out.
@@ -563,6 +573,25 @@ def normalize_table_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
+def _is_missing(value: Any) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+def _type_family(value: Any) -> type:
+    # Arrow stores ints and floats together as floats; bool stays apart.
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float
+    return type(value)
+
+
+def _as_text(value: Any) -> str | None:
+    if _is_missing(value):
+        return None
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, default=str)
+    return str(value)
+
+
 def _finite_or_none(value):
     if pd.isna(value):
         return None
@@ -570,29 +599,3 @@ def _finite_or_none(value):
     if not math.isfinite(value):
         return None
     return value
-
-
-def atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", dir=path.parent, delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(text)
-            handle.flush()
-            # Force the data to disk before the rename so a power loss
-            # cannot leave the rename visible with a zero-length payload.
-            try:
-                os.fsync(handle.fileno())
-            except OSError:
-                pass
-            tmp_name = handle.name
-        os.replace(tmp_name, path)
-        tmp_name = None
-    finally:
-        if tmp_name is not None:
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
