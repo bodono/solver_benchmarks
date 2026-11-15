@@ -37,8 +37,9 @@ def one_row_per_solve(
     """The rows a comparison counts: one per ``(dataset, problem, solver)``.
 
     Duplicated attempts (merged shards, a resume after a settings change)
-    resolve as in profiles and geomeans: a success beats a failure, then
-    the best ``metric``, then file order. With ``expected``, solves that
+    resolve as in profiles and geomeans: a success beats a failure, then a
+    usable ``metric`` beats a missing one, then the best ``metric``, then
+    file order (see ``deduplicate_for_pivot``). The rows stay in file order. With ``expected``, solves that
     were planned but never recorded are added as ``not_attempted`` rows,
     as the geomean and profile charge them (see ``complete_results``).
     """
@@ -46,7 +47,11 @@ def one_row_per_solve(
         results = complete_results(results, expected=expected)
     if results.empty or "problem" not in results or "solver_id" not in results:
         return results
-    return deduplicate_for_pivot(results, _problem_keys(results), metric, success_statuses=success_statuses)
+    resolved = deduplicate_for_pivot(
+        results.assign(__position=np.arange(len(results))), _problem_keys(results), metric,
+        success_statuses=success_statuses,
+    )
+    return resolved.sort_values("__position", kind="stable").drop(columns="__position")
 
 
 def solver_metrics(
@@ -54,10 +59,12 @@ def solver_metrics(
     *,
     success_statuses: set[str] | None = None,
     expected: pd.DataFrame | None = None,
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
     """Per-solver counts, rates and run time / iteration statistics.
 
-    Counts are per solve (see :func:`one_row_per_solve`); ``completed`` is
+    Counts are per solve (see :func:`one_row_per_solve`, which resolves a
+    duplicated solve by ``metric`` as the profile does); ``completed`` is
     the number of solves with a recorded result, and the rates are over
     every solve compared, including planned ones never attempted when
     ``expected`` is given. Totals cover every recorded solve; means,
@@ -82,7 +89,7 @@ def solver_metrics(
         "iterations_median",
         "iterations_max",
     ]
-    results = one_row_per_solve(results, success_statuses=success_statuses, expected=expected)
+    results = one_row_per_solve(results, success_statuses=success_statuses, metric=metric, expected=expected)
     if results.empty:
         return pd.DataFrame(columns=columns)
 
@@ -121,10 +128,12 @@ def kkt_summary(
     results: pd.DataFrame,
     *,
     success_statuses: set[str] | None = None,
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
     """Per-solver summary of KKT residuals on successful optimality claims.
 
-    Certificates on problems known to be infeasible or unbounded are
+    One row per solve, a duplicated solve resolved by ``metric`` (see
+    :func:`one_row_per_solve`). Certificates on problems known to be infeasible or unbounded are
     successes too, but they carry certificate residuals, not these
     (see ``kkt_certificate_summary``), so they are not counted here.
     """
@@ -149,7 +158,7 @@ def kkt_summary(
     if results.empty:
         return pd.DataFrame(columns=columns)
 
-    successful = optimality_successes(results, success_statuses)
+    successful = optimality_successes(results, success_statuses, metric=metric)
     if successful.empty:
         return pd.DataFrame(columns=columns)
 
@@ -190,12 +199,13 @@ def claimed_optimal_kkt_thresholds(
         "kkt.dual_cone_res_rel",
     ),
     thresholds: tuple[float, ...] = (1.0e-10, 1.0e-8, 1.0e-6, 1.0e-4, 1.0e-2),
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
     """Bucket claimed-optimal solves by their worst relative KKT residual.
 
     For each solver, computes the per-row maximum of the listed relative
     residual columns on rows whose status indicates a solution is present
-    (one row per solve), then counts how many of those fall at or below
+    (one row per solve, a duplicated solve resolved by ``metric``), then counts how many of those fall at or below
     each threshold. The default fields are the ones ``bench kkt-verify``
     checks, so the buckets show what a verification at each threshold
     would keep. The
@@ -221,7 +231,7 @@ def claimed_optimal_kkt_thresholds(
     available_fields = [field for field in residual_fields if field in results]
     if not available_fields:
         return pd.DataFrame(columns=columns)
-    results = one_row_per_solve(results, success_statuses=success_statuses)
+    results = one_row_per_solve(results, success_statuses=success_statuses, metric=metric)
     claimed = results[results["status"].isin(success_statuses)].copy()
     if claimed.empty:
         return pd.DataFrame(columns=columns)
@@ -273,11 +283,17 @@ def difficulty_scaling(
 ) -> pd.DataFrame:
     """Median ``metric`` per solver across problems binned by size.
 
-    Bins are equal-population quantile buckets of ``size_field`` over the
-    set of problems with finite sizes. Each row reports, for one
-    ``(solver, bin)`` pair, the bin's size range, the number of solves,
-    the number of successes, and the median / p95 of ``metric`` across
-    successful solves (columns ``median_<metric>`` and ``p95_<metric>``).
+    Each problem is sized once, from any of its rows that recorded
+    ``size_field``: the rows of solves killed at the time limit or lost to
+    a worker crash carry no dimensions, since the worker records them only
+    once it has loaded the problem. Bins are equal-population quantile
+    buckets of the sized problems. Each row reports, for one
+    ``(solver, bin)`` pair, the bin's size range (over all its problems,
+    the same for every solver), the number of solves
+    (``problem_count``), the number of successes, and the median / p95 of
+    ``metric`` across successful solves (columns ``median_<metric>`` and
+    ``p95_<metric>``). Solves of problems no row sized are counted in a row
+    per solver with an empty ``size_bin`` and size range.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
@@ -295,33 +311,36 @@ def difficulty_scaling(
     if results.empty or size_field not in results or metric not in results:
         return pd.DataFrame(columns=columns)
 
-    frame = one_row_per_solve(results, success_statuses=success_statuses, metric=metric).copy()
-    frame[size_field] = pd.to_numeric(frame[size_field], errors="coerce")
-    frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
-    sized = frame[np.isfinite(frame[size_field])]
-    if sized.empty:
-        return pd.DataFrame(columns=columns)
-    unique_sizes = sized[size_field].nunique()
+    keys = _problem_keys(results)
+    raw_sizes = pd.to_numeric(results[size_field], errors="coerce").astype(float)
+    raw_sizes = raw_sizes.where(np.isfinite(raw_sizes))
+    sizes = raw_sizes.groupby([results[key] for key in keys], observed=True).first().dropna()
+    unique_sizes = sizes.nunique()
     if unique_sizes < 2:
         return pd.DataFrame(columns=columns)
     bins = min(int(bin_count), int(unique_sizes))
-    bin_index = pd.qcut(
-        sized[size_field].astype(float), q=bins, duplicates="drop", labels=False
+    problem_bins = pd.Series(
+        pd.qcut(sizes, q=bins, duplicates="drop", labels=False), index=sizes.index
     )
-    sized = sized.assign(__bin__=bin_index).dropna(subset=["__bin__"])
-    sized["__bin__"] = sized["__bin__"].astype(int)
+    by_problem = pd.DataFrame({"__size__": sizes, "__bin__": problem_bins})
+    bin_ranges = by_problem.groupby("__bin__")["__size__"].agg(["min", "max"])
+
+    frame = one_row_per_solve(results, success_statuses=success_statuses, metric=metric).copy()
+    frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
+    frame = frame.join(by_problem, on=keys)
+    frame["__bin__"] = frame["__bin__"].fillna(-1).astype(int)
 
     rows = []
-    for (solver_id, bin_id), group in sized.groupby(["solver_id", "__bin__"], observed=True):
-        sizes_in_bin = group[size_field].astype(float)
+    for (solver_id, bin_id), group in frame.groupby(["solver_id", "__bin__"], observed=True):
         successful = group[solved_mask(group, success_statuses)]
         success_metric = pd.to_numeric(successful[metric], errors="coerce").dropna()
+        unknown = bin_id < 0
         rows.append(
             {
                 "solver_id": solver_id,
-                "size_bin": int(bin_id),
-                "size_min": float(sizes_in_bin.min()),
-                "size_max": float(sizes_in_bin.max()),
+                "size_bin": pd.NA if unknown else int(bin_id),
+                "size_min": np.nan if unknown else float(bin_ranges.loc[bin_id, "min"]),
+                "size_max": np.nan if unknown else float(bin_ranges.loc[bin_id, "max"]),
                 "problem_count": int(len(group)),
                 "success_count": int(len(successful)),
                 median_column: float(success_metric.median())
@@ -332,7 +351,9 @@ def difficulty_scaling(
                 else None,
             }
         )
-    return pd.DataFrame(rows, columns=columns).sort_values(["solver_id", "size_bin"])
+    table = pd.DataFrame(rows, columns=columns)
+    table["size_bin"] = table["size_bin"].astype("Int64")
+    return table.sort_values(["solver_id", "size_bin"], na_position="last").reset_index(drop=True)
 
 
 def setup_solve_breakdown(
@@ -421,10 +442,12 @@ def kkt_certificate_summary(
     results: pd.DataFrame,
     *,
     infeasible_statuses: set[str] | None = None,
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
     """Per-solver validity counts for infeasibility certificates.
 
-    ``cert_count`` counts the claims that recorded a certificate, split into
+    Counts are per solve: a duplicated solve is the attempt
+    :func:`one_row_per_solve` keeps with ``metric``. ``cert_count`` counts the claims that recorded a certificate, split into
     ``cert_valid``, ``cert_invalid`` and ``cert_unknown`` (a certificate the
     harness could not check, such as one on a complex PSD cone). Claims from
     adapters that record no certificate are in ``infeasible_count`` only.
@@ -448,6 +471,7 @@ def kkt_certificate_summary(
     ]
     if results.empty:
         return pd.DataFrame(columns=columns)
+    results = one_row_per_solve(results, metric=metric)
     infeasible = results[results["status"].isin(infeasible_statuses)]
     if infeasible.empty:
         return pd.DataFrame(columns=columns)
@@ -482,10 +506,12 @@ def failure_rates(
     *,
     success_statuses: set[str] | None = None,
     expected: pd.DataFrame | None = None,
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
     """Per-solver success and failure rates, one count per solve.
 
-    With ``expected``, planned solves that were never recorded count as
+    A duplicated solve counts as the attempt :func:`one_row_per_solve`
+    keeps with ``metric``. With ``expected``, planned solves that were never recorded count as
     failures under the status ``not_attempted``, as in the geomean.
     """
     if success_statuses is None:
@@ -499,7 +525,7 @@ def failure_rates(
         "failure_rate",
         "statuses",
     ]
-    results = one_row_per_solve(results, success_statuses=success_statuses, expected=expected)
+    results = one_row_per_solve(results, success_statuses=success_statuses, metric=metric, expected=expected)
     if results.empty:
         return pd.DataFrame(columns=columns)
 
@@ -839,7 +865,13 @@ def objective_spreads(
     results: pd.DataFrame,
     *,
     success_statuses: set[str] | None = None,
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
+    """Spread of the objective values solvers reached on each problem.
+
+    A duplicated solve contributes the objective of the attempt
+    :func:`one_row_per_solve` keeps with ``metric``, as in every other view.
+    """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     has_dataset = not results.empty and "dataset" in results.columns
@@ -857,6 +889,7 @@ def objective_spreads(
     if results.empty or "objective_value" not in results:
         return pd.DataFrame(columns=columns)
 
+    results = one_row_per_solve(results, success_statuses=success_statuses, metric=metric)
     successful = results[solved_mask(results, success_statuses)].copy()
     successful["objective_value"] = pd.to_numeric(
         successful["objective_value"], errors="coerce"
@@ -864,7 +897,6 @@ def objective_spreads(
     successful = successful[np.isfinite(successful["objective_value"])]
     keys = _problem_keys(successful)
     index = keys[0] if len(keys) == 1 else keys
-    successful = deduplicate_for_pivot(successful, keys, "objective_value")
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -994,14 +1026,13 @@ def _problem_keys(results: pd.DataFrame) -> list[str]:
     return ["problem"]
 
 
-def status_matrix(results: pd.DataFrame) -> pd.DataFrame:
+def status_matrix(results: pd.DataFrame, *, metric: str = "run_time_seconds") -> pd.DataFrame:
     if results.empty:
         return pd.DataFrame()
     keys = _problem_keys(results)
     index = keys[0] if len(keys) == 1 else keys
-    # One row per solve, resolved as everywhere else: a success beats a
-    # failure, then file order.
-    deduped = deduplicate_for_pivot(results, keys)
+    # One row per solve, resolved as everywhere else (see deduplicate_for_pivot).
+    deduped = deduplicate_for_pivot(results, keys, metric)
     return deduped.pivot_table(
         index=index,
         columns="solver_id",
@@ -1021,16 +1052,22 @@ def problem_solver_comparison(
         "objective_value",
     ),
     metric: str = "run_time_seconds",
+    dimensions: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """One row per problem with each solver's fields side by side.
 
     A duplicated solve shows the row profiles and geomeans count: the
-    success, then the best ``metric``.
+    success, then the best ``metric``. ``dimensions`` (as from
+    :func:`problem_dimensions`) defaults to the dimensions of ``results``;
+    a caller whose frame is already resolved passes those of the raw rows,
+    so a size recorded only by a discarded duplicate is kept.
     """
     if results.empty:
         return pd.DataFrame()
 
     keys = _problem_keys(results)
+    if dimensions is None:
+        dimensions = problem_dimensions(results)
     results = deduplicate_for_pivot(results, keys, metric)
     output = (
         results[keys]
@@ -1039,7 +1076,6 @@ def problem_solver_comparison(
         .sort_values(keys)
         .reset_index(drop=True)
     )
-    dimensions = problem_dimensions(results)
     if not dimensions.empty:
         output = output.merge(dimensions, on=keys, how="left")
 
@@ -1076,10 +1112,18 @@ def problem_solver_comparison(
     return output
 
 
-def solver_problem_tables(results: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def solver_problem_tables(
+    results: pd.DataFrame, *, dimensions: pd.DataFrame | None = None
+) -> dict[str, pd.DataFrame]:
+    """One table per solver of its rows, with each problem's dimensions.
+
+    ``dimensions`` (as from :func:`problem_dimensions`) defaults to the
+    dimensions of ``results``.
+    """
     if results.empty:
         return {}
-    dimensions = problem_dimensions(results)
+    if dimensions is None:
+        dimensions = problem_dimensions(results)
     keys = _problem_keys(results)
     tables = {}
     base_columns = [
@@ -1146,11 +1190,14 @@ def problem_dimensions(results: pd.DataFrame) -> pd.DataFrame:
             .reset_index(drop=True)
         )
         return unique
+    # Rows of killed or crashed solves carry no dimensions (the worker
+    # records them once it has loaded the problem), so take each column's
+    # first recorded value over all rows of the problem.
     dimensions = (
         results[[*keys, *dimension_columns]]
-        .drop_duplicates(subset=keys)
-        .sort_values(keys)
-        .reset_index(drop=True)
+        .groupby(keys, sort=True, observed=True)
+        .first()
+        .reset_index()
     )
     return dimensions.rename(
         columns={
@@ -1208,9 +1255,14 @@ def successful_metric_values(
     return deduplicate_for_pivot(successful, _problem_keys(successful), metric, success_statuses=success_statuses)
 
 
-def optimality_successes(results: pd.DataFrame, success_statuses: set[str]) -> pd.DataFrame:
-    """Successful solves that claim optimality (not certificates), one per solve."""
-    results = one_row_per_solve(results, success_statuses=success_statuses)
+def optimality_successes(
+    results: pd.DataFrame, success_statuses: set[str], *, metric: str = "run_time_seconds"
+) -> pd.DataFrame:
+    """Successful solves that claim optimality (not certificates), one per solve.
+
+    A duplicated solve is the attempt :func:`one_row_per_solve` keeps with ``metric``.
+    """
+    results = one_row_per_solve(results, success_statuses=success_statuses, metric=metric)
     if results.empty:
         return results
     return results[solved_mask(results, success_statuses) & results["status"].isin(success_statuses)]

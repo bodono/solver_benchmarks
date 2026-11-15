@@ -12,6 +12,7 @@ import pandas as pd
 from solver_benchmarks import __version__ as BENCHMARK_VERSION
 from solver_benchmarks.analysis.load import load_results, status_counts
 from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
+from solver_benchmarks.analysis.outcomes import with_expected_outcomes
 from solver_benchmarks.analysis.plots import (
     geomean_kwargs,
     penalized_geomean_options,
@@ -32,6 +33,7 @@ from solver_benchmarks.analysis.tables import (
     one_row_per_solve,
     pairwise_speedups,
     performance_ratio_matrix,
+    problem_dimensions,
     problem_solver_comparison,
     safe_filename,
     setup_solve_breakdown,
@@ -67,32 +69,42 @@ def write_run_report(
     # out (with a note); every other table and plot is still written.
     geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
     outputs: list[Path] = []
-    # Every per-solve table resolves duplicated attempts the same way (the
-    # success, then the best metric); status counts and completion report
-    # the rows as recorded.
+    # Duplicated attempts of a solve are resolved once (see
+    # deduplicate_for_pivot) and every per-solve table and plot gets that
+    # resolution (the plots and difficulty_scaling redo it themselves), so they
+    # all describe the same attempt. Status counts, completion and the
+    # slowest solves report the rows as recorded. Each row's expected outcome
+    # is attached once (with_expected_outcomes) so the many success checks
+    # below do not derive it again.
+    scored = with_expected_outcomes(results)
+    solves = one_row_per_solve(scored, metric=metric)
+    # Problems are sized from every recorded row: a size recorded only by a
+    # discarded duplicate still counts.
+    dimensions = problem_dimensions(results)
     tables = {
-        **_solver_summary_tables(results, metric=metric, expected=expected, geomean_options=geomean_options),
+        **_solver_summary_tables(solves, metric=metric, expected=expected, geomean_options=geomean_options),
         "status_counts.csv": status_counts(results),
         "completion.csv": completion_summary(run_dir, results, repo_root=repo_root),
         "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root),
-        f"performance_profile_{metric}.csv": performance_profile(results, metric=metric, expected=expected),
-        f"pairwise_speedups_{metric}.csv": pairwise_speedups(results, metric=metric),
+        f"performance_profile_{metric}.csv": performance_profile(solves, metric=metric, expected=expected),
+        f"pairwise_speedups_{metric}.csv": pairwise_speedups(solves, metric=metric),
         f"performance_ratios_{metric}.csv": performance_ratio_matrix(
-            results,
+            solves,
             metric=metric,
         ),
-        "problem_solver_comparison.csv": problem_solver_comparison(results, metric=metric),
-        "objective_spreads.csv": objective_spreads(results),
+        "problem_solver_comparison.csv": problem_solver_comparison(solves, metric=metric, dimensions=dimensions),
+        "objective_spreads.csv": objective_spreads(solves, metric=metric),
         f"slowest_solves_{metric}.csv": slowest_solves(results, metric=metric),
         f"failures_with_successful_alternatives_{metric}.csv": (
-            failures_with_successful_alternatives(results, metric=metric)
+            failures_with_successful_alternatives(solves, metric=metric)
         ),
-        "status_matrix.csv": status_matrix(results),
-        "kkt_summary.csv": kkt_summary(results),
-        "claimed_optimal_kkt_thresholds.csv": claimed_optimal_kkt_thresholds(results),
-        "kkt_certificate_summary.csv": kkt_certificate_summary(results),
-        f"difficulty_scaling_{metric}.csv": difficulty_scaling(results, metric=metric),
-        "setup_solve_breakdown.csv": setup_solve_breakdown(results),
+        "status_matrix.csv": status_matrix(solves, metric=metric),
+        "kkt_summary.csv": kkt_summary(solves, metric=metric),
+        "claimed_optimal_kkt_thresholds.csv": claimed_optimal_kkt_thresholds(solves, metric=metric),
+        "kkt_certificate_summary.csv": kkt_certificate_summary(solves, metric=metric),
+        # Resolves duplicates itself, as solves were, after sizing from every row.
+        f"difficulty_scaling_{metric}.csv": difficulty_scaling(scored, metric=metric),
+        "setup_solve_breakdown.csv": setup_solve_breakdown(solves),
     }
     tables["failure_penalties.csv"] = _failure_penalty_table(tables, metric)
     tables = {
@@ -107,7 +119,7 @@ def write_run_report(
     config = manifest.get("config", {})
     dataset_entries = manifest_dataset_entries(config)
     dataset_label = _dataset_label(dataset_entries)
-    for name, table in _derived_report_tables(
+    derived_tables = _derived_report_tables(
         run_dir=run_dir,
         manifest=manifest,
         config=config,
@@ -115,26 +127,32 @@ def write_run_report(
         dataset_label=dataset_label,
         metric=metric,
         results=results,
+        solves=solves,
         tables=tables,
         expected=expected,
         geomean_options=geomean_options,
-    ).items():
+    )
+    for name, table in derived_tables.items():
         path = _write_table(output_dir / name, table)
         if path is not None:
             outputs.append(path)
     solver_tables_dir = output_dir / "solver_problem_tables"
-    for solver_id, table in solver_problem_tables(results).items():
+    solver_tables = solver_problem_tables(solves, dimensions=dimensions)
+    for solver_id, table in solver_tables.items():
         table = _sort_solver_problem_table(table)
         path = _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", table)
         if path is not None:
             outputs.append(path)
+    # A configured solver with no rows now has no table; remove an earlier one.
+    for solver_id in set(_solver_name_by_id(config)) - set(solver_tables):
+        _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", pd.DataFrame())
     plot_outputs = write_analysis_plots(
         run_dir,
         metric=metric,
         output_dir=output_dir,
         repo_root=repo_root,
         max_value=max_value,
-        results=results,
+        results=scored,
         expected=expected,
         geomean_options=geomean_options,
     )
@@ -145,9 +163,9 @@ def write_run_report(
         metric=metric,
         results=results,
         tables=tables,
+        derived_tables=derived_tables,
         plot_outputs=plot_outputs,
         artifact_outputs=outputs,
-        expected=expected,
         geomean_options=geomean_options,
     )
     # Write the rendered markdown once as both index.md (default
@@ -171,7 +189,13 @@ def write_run_report(
 
 
 def _write_table(path: Path, table: pd.DataFrame) -> Path | None:
+    """Write ``table`` as CSV at ``path``; an empty table removes the file.
+
+    The report owns its file names: a table that is empty now must not
+    leave the CSV of an earlier report of the run under its name.
+    """
     if table.empty:
+        path.unlink(missing_ok=True)
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(path, index=_has_meaningful_index(table))
@@ -193,10 +217,17 @@ def _derived_report_tables(
     dataset_label: str,
     metric: str,
     results: pd.DataFrame,
+    solves: pd.DataFrame,
     tables: dict[str, pd.DataFrame],
     expected: pd.DataFrame | None = None,
     geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
+    """Tables built from other tables, the manifest, and per-dataset slices.
+
+    ``results`` are the rows as recorded, ``solves`` one row per solve.
+    Every name the report can write here is a key, with an empty table when
+    there is nothing to write, so an earlier file of that name is removed.
+    """
     derived = {
         "run_scope.csv": _run_scope_table(
             run_dir=run_dir,
@@ -208,23 +239,23 @@ def _derived_report_tables(
             tables=tables,
         ),
         "headline_solver_metrics.csv": _headline_solver_metrics(
-            results=results,
+            results=solves,
             tables=tables,
             config=config,
             metric=metric,
         ),
         "software_and_runtime.csv": _software_versions_table(results, config),
+        "configured_solver_variants.csv": _configured_solvers_table(config),
+        "runtime_environments.csv": _runtime_environments_table(results),
     }
-    configured_solvers = _configured_solvers_table(config)
-    if not configured_solvers.empty:
-        derived["configured_solver_variants.csv"] = configured_solvers
-    runtime_environments = _runtime_environments_table(results)
-    if not runtime_environments.empty:
-        derived["runtime_environments.csv"] = runtime_environments
+    for entry in dataset_entries:
+        prefix = _per_dataset_artifact_prefix(entry)
+        for name in _PER_DATASET_TABLES:
+            derived[f"{prefix}/{name}"] = pd.DataFrame()
     if len(dataset_entries) > 1 and "dataset" in results.columns:
         derived.update(
             _per_dataset_report_tables(
-                results,
+                solves,
                 dataset_entries,
                 config=config,
                 metric=metric,
@@ -242,9 +273,9 @@ def _render_markdown_report(
     metric: str,
     results: pd.DataFrame,
     tables: dict[str, pd.DataFrame],
+    derived_tables: dict[str, pd.DataFrame],
     plot_outputs: list[Path],
     artifact_outputs: list[Path],
-    expected: pd.DataFrame | None = None,
     geomean_options: dict | None = None,
 ) -> str:
     """Compose the per-section render helpers.
@@ -259,7 +290,7 @@ def _render_markdown_report(
     dataset_label = _dataset_label(dataset_entries)
 
     lines: list[str] = []
-    lines.extend(_render_summary_block(dataset_entries, results, tables, metric))
+    lines.extend(_render_summary_block(dataset_entries, results, tables, metric, manifest=manifest))
     lines.extend(
         _render_scope_block(
             run_dir=run_dir,
@@ -280,16 +311,7 @@ def _render_markdown_report(
     lines.extend(_render_problem_level_block(tables, output_dir, plot_outputs, metric))
     lines.extend(_render_kkt_diagnostics_block(tables, output_dir, plot_outputs))
     if len(dataset_entries) > 1 and "dataset" in results.columns:
-        lines.extend(
-            _per_dataset_breakdown(
-                results,
-                dataset_entries,
-                config=config,
-                metric=metric,
-                expected=expected,
-                geomean_options=geomean_options,
-            )
-        )
+        lines.extend(_per_dataset_breakdown(dataset_entries, derived_tables))
     lines.extend(_render_provenance_block(run_dir, manifest, results, config=config))
     lines.extend(_render_artifact_index_block(output_dir, artifact_outputs))
     return "\n".join(lines)
@@ -300,6 +322,8 @@ def _render_summary_block(
     results: pd.DataFrame,
     tables: dict[str, pd.DataFrame],
     metric: str,
+    *,
+    manifest: dict | None = None,
 ) -> list[str]:
     return [
         "# Benchmark Report",
@@ -315,6 +339,7 @@ def _render_summary_block(
             results=results,
             tables=tables,
             metric=metric,
+            manifest=manifest,
         ),
         "",
     ]
@@ -519,9 +544,12 @@ def _render_difficulty_scaling_block(
             source_link=f"difficulty_scaling_{metric}.csv",
             intro=(
                 "Problems are bucketed into equal-population quantile bins of "
-                f"`metadata.n`. Each row reports a solver's median `{metric}` on "
-                "successful solves within that bucket; failures are not "
-                "averaged in."
+                "`metadata.n`, each sized from any of its rows that recorded it. "
+                f"Each row reports a solver's solves and successes in that bucket "
+                f"and its median `{metric}` on the successful ones; failures are "
+                "not averaged in. Solves of problems no row sized (every solver "
+                "was killed or crashed on them) are in a row with an empty "
+                "`size_bin`."
             ),
         )
     )
@@ -665,6 +693,7 @@ def _render_provenance_block(
     if config is None:
         config = manifest.get("config", {})
     lines: list[str] = ["## Provenance", ""]
+    lines.extend(_derived_run_lines(manifest))
     lines.extend(_system_summary_lines(manifest))
     software_versions = _software_versions_table(results, config)
     lines.extend(
@@ -728,16 +757,13 @@ def _render_artifact_index_block(
 
 
 def _per_dataset_breakdown(
-    results: pd.DataFrame,
     dataset_entries: list[dict],
-    *,
-    config: dict,
-    metric: str,
-    expected: pd.DataFrame | None = None,
-    geomean_options: dict | None = None,
+    derived_tables: dict[str, pd.DataFrame],
 ) -> list[str]:
     """Emit headline solver metrics per dataset so a multi-dataset run
     can be read both as an aggregate and as dataset-level slices.
+
+    The tables are the ones :func:`_per_dataset_report_tables` built.
     """
     lines = [
         "## By Dataset",
@@ -748,24 +774,12 @@ def _per_dataset_breakdown(
     ]
     for entry in dataset_entries:
         label = _dataset_display_label(entry)
-        subset = results[results["dataset"] == entry["id"]]
-        subset_expected = expected[expected["dataset"] == entry["id"]] if expected is not None else None
-        if subset.empty and (subset_expected is None or subset_expected.empty):
+        artifact_prefix = _per_dataset_artifact_prefix(entry)
+        headline_table = derived_tables.get(f"{artifact_prefix}/headline_solver_metrics.csv", pd.DataFrame())
+        kkt_summary_table = derived_tables.get(f"{artifact_prefix}/kkt_summary.csv", pd.DataFrame())
+        if headline_table.empty and kkt_summary_table.empty:
             lines.extend([f"### {label}", "", "No rows for this dataset.", ""])
             continue
-        artifact_prefix = _per_dataset_artifact_prefix(entry)
-        subset_tables = _subset_solver_summary_tables(subset, metric=metric, expected=subset_expected, geomean_options=geomean_options)
-        headline_table = _headline_solver_metrics(
-            results=subset,
-            tables=subset_tables,
-            config=config,
-            metric=metric,
-        )
-        kkt_summary_table = _sort_report_table(
-            "kkt_summary.csv",
-            kkt_summary(subset),
-            metric=metric,
-        )
         lines.extend([f"### {label}", ""])
         lines.extend(
             _section_table(
@@ -786,6 +800,10 @@ def _per_dataset_breakdown(
                 )
             )
     return lines
+
+
+# The tables written per dataset under by_dataset/<id>/.
+_PER_DATASET_TABLES = ("failure_penalties.csv", "headline_solver_metrics.csv", "kkt_summary.csv")
 
 
 def _per_dataset_report_tables(
@@ -814,7 +832,7 @@ def _per_dataset_report_tables(
         )
         tables[f"{artifact_prefix}/kkt_summary.csv"] = _sort_report_table(
             "kkt_summary.csv",
-            kkt_summary(subset),
+            kkt_summary(subset, metric=metric),
             metric=metric,
         )
     return tables
@@ -846,8 +864,10 @@ def _solver_summary_tables(
     geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
     tables = {
-        "solver_metrics.csv": solver_metrics(results, expected=expected),
-        "failure_rates.csv": failure_rates(results, expected=expected),
+        "solver_metrics.csv": solver_metrics(results, expected=expected, metric=metric),
+        "failure_rates.csv": failure_rates(results, expected=expected, metric=metric),
+        # Empty when the penalty is unavailable, so an earlier file is removed.
+        f"shifted_geomean_{metric}.csv": pd.DataFrame(),
     }
     if (geomean_options or {}).get("available", True):
         tables[f"shifted_geomean_{metric}.csv"] = shifted_geomean(
@@ -859,6 +879,9 @@ def _solver_summary_tables(
         expected=expected,
         penalize_failures=False,
     )
+    if metric != "iterations":
+        tables["shifted_geomean_iterations.csv"] = pd.DataFrame()
+        tables["shifted_geomean_iterations_success_only.csv"] = pd.DataFrame()
     if metric != "iterations" and "iterations" in results:
         tables["shifted_geomean_iterations.csv"] = shifted_geomean(
             results,
@@ -1184,6 +1207,7 @@ def _executive_summary_text(
     results: pd.DataFrame,
     tables: dict[str, pd.DataFrame],
     metric: str,
+    manifest: dict | None = None,
 ) -> str:
     solver_count = results["solver_id"].nunique() if "solver_id" in results else 0
     problem_count = _problem_count(results)
@@ -1195,6 +1219,9 @@ def _executive_summary_text(
         f"{'' if dataset_count == 1 else 's'}, producing {len(results)} result row"
         f"{'' if len(results) == 1 else 's'}. The primary metric is `{metric}`."
     )
+    derived_sentence = _derived_run_sentence((manifest or {}).get("derived"))
+    if derived_sentence:
+        summary += f" {derived_sentence}"
     geomean = tables.get(f"shifted_geomean_{metric}.csv", pd.DataFrame())
     if not geomean.empty and metric in geomean:
         ranked = geomean.sort_values(metric, na_position="last")
@@ -1558,6 +1585,19 @@ def _format_bytes(num_bytes: int) -> str:
 def _source_config_section(run_dir: Path, manifest: dict) -> list[str]:
     lines = ["### Exact Source Config", ""]
     paths = _source_config_paths(run_dir)
+    merge = _first_merge_step(manifest.get("derived"))
+    if paths and merge is not None:
+        # bench merge copies the config files of its first input only.
+        sources = merge.get("sources") or []
+        first = sources[0].get("run_dir") if sources and isinstance(sources[0], dict) else None
+        lines.extend(
+            [
+                "This run is a merge: the files below are the source config of the first merged run"
+                + (f" (`{first}`)" if first else "")
+                + ", not of every merged run. See Derived Run above for all of them.",
+                "",
+            ]
+        )
     if paths:
         for path in paths:
             lines.extend(
@@ -1584,6 +1624,141 @@ def _source_config_section(run_dir: Path, manifest: dict) -> list[str]:
             "",
         ]
     )
+    return lines
+
+
+def _derived_steps(derived: dict | None) -> list[dict]:
+    """The derivation steps of a run, newest first (a verification of a merge
+    is ``[kkt_verify, merge]``)."""
+    steps = []
+    while isinstance(derived, dict) and derived:
+        steps.append(derived)
+        derived = derived.get("source_derived")
+    return steps
+
+
+def _first_merge_step(derived: dict | None) -> dict | None:
+    return next((step for step in _derived_steps(derived) if step.get("kind") == "merge"), None)
+
+
+def _is_count_table(value) -> bool:
+    """A ``{solver_id: count}`` mapping, as kkt-verify records its tallies."""
+    return isinstance(value, dict) and all(
+        isinstance(count, int) and not isinstance(count, bool) for count in value.values()
+    )
+
+
+def _derived_step_text(step: dict) -> str:
+    """Short description of one derivation step (a merge names how many of
+    its inputs were derived themselves, and how)."""
+    kind = step.get("kind")
+    if kind == "kkt_verify":
+        text = f"`bench kkt-verify` at tolerance `{_format_cell(step.get('tol'))}`"
+        text += " with `--promote`" if step.get("promote") else " without `--promote`"
+        totals = [
+            f"{sum(step[key].values())} {key}"
+            for key in ("demoted", "promoted")
+            if _is_count_table(step.get(key))
+        ]
+        if totals:
+            text += f" ({', '.join(totals)})"
+        return text
+    if kind == "merge":
+        text = f"a merge of {len(step.get('sources') or [])} runs (`bench merge`)"
+        inputs = [_derivation_text(source.get("derived")) for source in _merge_input_manifests(step)]
+        inputs = [description for description in inputs if description]
+        if inputs:
+            text += f", {len(inputs)} of them derived themselves ({'; '.join(inputs)})"
+        return text
+    return f"`{kind}`"
+
+
+def _merge_input_manifests(step: dict) -> list[dict]:
+    """The manifests of a merge's inputs, in the order of ``sources``."""
+    return [source for source in step.get("source_manifests") or [] if isinstance(source, dict)]
+
+
+def _derivation_text(derived: dict | None) -> str:
+    """How a run was derived, newest step first ("" for a plain run)."""
+    return ", applied to ".join(_derived_step_text(step) for step in _derived_steps(derived))
+
+
+def _derived_run_sentence(derived: dict | None) -> str:
+    """One sentence for the executive summary saying how the run was derived."""
+    text = _derivation_text(derived)
+    if not text:
+        return ""
+    return f"This run is derived: {text}. See Derived Run under Provenance."
+
+
+def _derived_run_lines(manifest: dict) -> list[str]:
+    """Provenance of a run written by ``bench kkt-verify`` or ``bench merge``.
+
+    One block per derivation step, newest first: its settings, every
+    per-solver tally the manifest records (whatever their names), and for
+    a merge the merged run directories with their row counts.
+    """
+    steps = _derived_steps(manifest.get("derived"))
+    if not steps:
+        return []
+    lines = [
+        "### Derived Run",
+        "",
+        "This run was derived from other runs; the steps below are newest first.",
+        "",
+    ]
+    for step in steps:
+        kind = step.get("kind")
+        title = {"kkt_verify": "`bench kkt-verify`", "merge": "`bench merge`"}.get(kind, f"`{kind}`")
+        settings = []
+        counts: dict[str, dict] = {}
+        tables: dict[str, list[dict]] = {}
+        for key, value in step.items():
+            if key in {"source_derived", "source_manifests", "selections"}:
+                continue
+            if _is_count_table(value):
+                counts[key] = value
+            elif isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+                tables[key] = value
+            elif isinstance(value, list):
+                settings.append((key, ", ".join(str(item) for item in value) or "none"))
+            elif not isinstance(value, dict):
+                settings.append((key, value))
+        lines.extend(
+            _section_table(title, pd.DataFrame(settings, columns=["field", "value"]), level=4, max_rows=50)
+        )
+        if counts:
+            solver_ids = sorted({str(solver) for tally in counts.values() for solver in tally})
+            per_solver = pd.DataFrame(
+                [
+                    {"solver_id": solver, **{key: int(tally.get(solver, 0)) for key, tally in counts.items()}}
+                    for solver in solver_ids
+                ],
+                columns=["solver_id", *counts],
+            )
+            lines.extend(
+                _section_table(
+                    "Rows per solver",
+                    per_solver,
+                    level=5,
+                    max_rows=200,
+                    max_cols=len(per_solver.columns),
+                    intro="Each column is a tally the manifest records for this step.",
+                )
+            )
+        for key, rows in tables.items():
+            table = pd.DataFrame(rows)
+            heading = key
+            if (kind, key) == ("merge", "sources"):
+                heading = "Merged runs"
+                # An input that was itself derived (kkt-verified, or a merge)
+                # says how; its manifest is kept in the same order.
+                inputs = _merge_input_manifests(step)
+                if len(inputs) == len(table):
+                    derivations = [_derivation_text(source.get("derived")) for source in inputs]
+                    if any(derivations):
+                        table["derived"] = derivations
+            lines.extend(_section_table(heading, table, level=5, max_rows=200, max_cols=len(table.columns)))
     return lines
 
 

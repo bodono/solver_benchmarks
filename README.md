@@ -1238,7 +1238,8 @@ cannot silently overwrite the original provenance. Install the optional
 to stdlib + `/proc` (Linux) / `sysctl` (macOS) without it.
 
 The generated markdown report renders the block as a `### System` section at
-the top of the Provenance block:
+the top of the Provenance block (after the `### Derived Run` block of a run
+written by `bench kkt-verify` or `bench merge`):
 
 ```text
 ### System
@@ -1356,13 +1357,18 @@ everything else. Archived derived runs therefore need their source limits
 preserved in the manifest, or an explicit override.
 
 Iteration and KKT metrics retain fixed defaults in their own units: iterations
-use penalty `1e6` and shift `100`, while the supported KKT residuals
-(`kkt.primal_res_rel`, `kkt.dual_res_rel`, `kkt.duality_gap_rel`,
-`kkt.comp_slack_rel`, `kkt.comp_slack`) use penalty `1` and shift `1e-12`, so a
-residual that is exactly zero counts as `1e-12` instead of dragging the mean of
-logs towards the smallest float. Time metrics use shift `10`. `--success-only` requires
-no failure penalty or time limit. These rules select the cost of failures;
-campaign-specific status filtering and time-limit rules remain separate.
+use penalty `1e6` and shift `100`, while every relative KKT residual (any
+`kkt.*_rel` field, such as `kkt.primal_res_rel`, `kkt.dual_res_rel`,
+`kkt.duality_gap_rel`, `kkt.comp_slack_rel`, `kkt.dual_bound_res_rel`,
+`kkt.primal_eq_res_rel`, `kkt.primal_cone_res_rel` and `kkt.dual_cone_res_rel`),
+the scaled certificate residual `kkt.cert_res` and `kkt.comp_slack` use penalty
+`1` and shift `1e-12`, so a residual that is exactly zero counts as `1e-12`
+instead of dragging the mean of logs towards the smallest float. Absolute
+residuals and other ad-hoc columns keep the run-time-style defaults (penalty
+`1000`, shift `10`) unless `--shift` / `--max-value` override them. Time
+metrics use shift `10`. `--success-only` requires no failure penalty or time
+limit. These rules select the cost of failures; campaign-specific status
+filtering and time-limit rules remain separate.
 
 Missing solves are charged too: run-directory commands use the manifest's
 configured solver and problem sets, intersecting includes with the dataset
@@ -1376,9 +1382,17 @@ retained solvers, whereas completion reports count only planned jobs.
 No-manifest analyses use the union of observed problems crossed with observed solvers. Python callers can
 pass `expected=` as a DataFrame of `dataset`, `problem`, and `solver_id` identities
 to include completely absent solvers or problems. Duplicate attempts contribute
-once per identity, using the best successful result, as in performance profiles;
-every per-solve table and plot of a report (solver metrics, failure rates, status
-matrix, cross-solver comparison, cactus, KKT tables) resolves them the same way.
+once per identity, using the best successful result, as in performance profiles:
+a success beats a failure, then a success with a usable value of the metric beats
+one without (a retried success still counts when the solver does not record the
+metric), then the best value of the metric, then file order.
+A report resolves each duplicated solve once, by its `--metric`, and every
+per-solve table and plot (solver metrics, failure rates, status matrix,
+cross-solver comparison, objective spreads, difficulty scaling, cactus, KKT and
+certificate tables) describes that one attempt; status counts, completion and the
+slowest-solves table list the rows as recorded. Python callers of the table
+functions get the same resolution through their `metric=` argument
+(`run_time_seconds` by default).
 A solver that reports no value of the metric on any of its successful solves
 (several adapters never set `solve_time_seconds` or `setup_time_seconds`) is left
 out of profiles and geomeans on that metric with a warning, instead of having
@@ -1404,7 +1418,8 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 - A generated Markdown report at `index.md`, mirrored to `README.md`, that presents run metadata, completion, solver metrics, status counts, plots, diagnostics, provenance (including the captured `### System` block — CPU model, cores, RAM, OS, library versions), and links to the full CSV artifacts in a single document.
 - Solver-level metrics, status counts, failure rates, completion, and missing results.
 - Dolan-More performance-profile CSVs and plots.
-- Cactus plots showing the fraction of problems solved under each time/iteration budget.
+- Cactus plots showing the fraction of problems solved under each time/iteration budget, over the same problems as the performance profile (planned solves never recorded included) and with values floored at the profile's resolution (0.01 s, one iteration).
+- A difficulty-scaling table and plot: problems in equal-population bins of `metadata.n`, each sized from any of its rows that recorded it (a solve killed at the time limit or lost to a worker crash records no dimensions), with the solves of problems no row sized in a row with an empty `size_bin`.
 - Pairwise scatter plots for problems solved by both solvers.
 - Pairwise speedup tables with wins/losses/ties and largest wins.
 - A per-problem cross-solver table, `problem_solver_comparison.csv`, with columns such as `qtqp_default__status`, `qtqp_default__run_time_seconds`, and `qtqp_default__iterations`.
@@ -1415,7 +1430,17 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 - A setup-vs-solve time breakdown per solver over successful solves (`setup_solve_breakdown.csv` / `.png`, for adapters that report the split) and a difficulty-scaling table and plot of the median metric per solver across problem-size bins (`difficulty_scaling_<metric>.csv` / `.png`).
 - KKT-residual summaries (`kkt_summary.csv` over successful optimality claims, `kkt_certificate_summary.csv` over infeasibility claims, counting the recorded certificates as valid, invalid or unchecked (`cert_unknown`), `claimed_optimal_kkt_thresholds.csv` over the residuals `bench kkt-verify` checks) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack_rel` (`comp_slack` for records written before it existed) / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile with one panel per residual showing, for each solver, the fraction of its successful solves whose residual is at most tau. Exact zeros are drawn at `1e-16`.
 - For multi-dataset runs, a `## By Dataset` section that re-emits the headline tables (solver metrics, failure rates, shifted geomean, KKT summary) sliced per dataset. The cross-dataset aggregates above the section remain the primary view.
+- For a run written by `bench kkt-verify` or `bench merge`, a `### Derived Run` block in Provenance (and one sentence in the executive summary): the tolerance, `--promote`, `--allow-missing` (`missing_is_failure`) and every per-solver tally `kkt-verify` recorded, and for a merge the merged run directories with their row counts. The copied source config of a merge is labelled as the first merged run's.
 - An artifact index listing every CSV and plot written by the report command.
+
+The report owns the file names it writes: re-running `bench report` with the same
+`--metric` into the same directory removes a table, plot or `by_dataset/` file of
+an earlier report that the new one no longer writes (for example
+`missing_results.csv` once the run is complete), and the `solver_problem_tables/`
+file of a configured solver that now has no rows. Files of another metric, and
+files of datasets or solvers no longer in the manifest, are not tracked and stay;
+other files in the directory are left alone. `bench plot` does the same for its
+plot names of the metric.
 
 Programmatic use:
 

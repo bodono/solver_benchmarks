@@ -28,10 +28,14 @@ import pandas as pd
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
+from solver_benchmarks.analysis.outcomes import with_expected_outcomes
 from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.profiles import (
     TIME_METRICS,
+    complete_results,
+    drop_solvers_without_metric,
     performance_profile,
+    profile_floor,
     shifted_geomean,
 )
 from solver_benchmarks.analysis.tables import (
@@ -77,6 +81,11 @@ def write_analysis_plots(
     them already (``bench report``) skip loading them again. Without a
     usable time limit (and no ``max_value``) the penalized time geomean is
     skipped with a warning; every other plot is still written.
+
+    Duplicated solves are resolved once, by ``metric``, and every plot draws
+    that one row per solve. A plot of ``metric`` (see :func:`plot_names`)
+    that is not drawn removes the file of its name left by an earlier call;
+    plots of another metric and every other file are left alone.
     """
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir
@@ -91,23 +100,49 @@ def write_analysis_plots(
         expected = expected_results(run_dir, repo_root=repo_root)
     if geomean_options is None:
         geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
+    scored = with_expected_outcomes(results)
+    solves = one_row_per_solve(scored, metric=metric)
     paths = [
-        _write_performance_profile(results, output_dir, metric, expected=expected),
-        _write_shifted_geomean(results, output_dir, metric, expected=expected, geomean_options=geomean_options)
+        _write_performance_profile(solves, output_dir, metric, expected=expected),
+        _write_shifted_geomean(solves, output_dir, metric, expected=expected, geomean_options=geomean_options)
         if geomean_options.get("available", True)
         else None,
-        _write_failure_rates(results, output_dir, expected=expected),
-        _write_cactus(results, output_dir, metric),
-        _write_pairwise_scatter(results, output_dir, metric),
-        _write_performance_ratio_heatmap(results, output_dir, metric),
-        _write_status_heatmap(results, output_dir),
-        _write_kkt_residual_boxplot(results, output_dir),
-        _write_kkt_residual_heatmap(results, output_dir),
-        _write_kkt_accuracy_profile(results, output_dir),
-        _write_difficulty_scaling(results, output_dir, metric),
-        _write_setup_solve_breakdown(results, output_dir),
+        _write_failure_rates(solves, output_dir, expected=expected),
+        _write_cactus(solves, output_dir, metric, expected=expected),
+        _write_pairwise_scatter(solves, output_dir, metric),
+        _write_performance_ratio_heatmap(solves, output_dir, metric),
+        _write_status_heatmap(solves, output_dir),
+        _write_kkt_residual_boxplot(solves, output_dir),
+        _write_kkt_residual_heatmap(solves, output_dir),
+        _write_kkt_accuracy_profile(solves, output_dir),
+        # Sizes problems from every row and resolves duplicates like solves.
+        _write_difficulty_scaling(scored, output_dir, metric),
+        _write_setup_solve_breakdown(solves, output_dir),
     ]
-    return [path for path in paths if path is not None]
+    written = [path for path in paths if path is not None]
+    drawn = {path.name for path in written}
+    for name in plot_names(metric):
+        if name not in drawn:
+            (output_dir / name).unlink(missing_ok=True)
+    return written
+
+
+def plot_names(metric: str) -> list[str]:
+    """File names of every plot :func:`write_analysis_plots` can write for ``metric``."""
+    return [
+        f"performance_profile_{metric}.png",
+        f"shifted_geomean_{metric}.png",
+        "failure_rates.png",
+        f"cactus_{metric}.png",
+        f"pairwise_scatter_{metric}.png",
+        f"performance_ratio_heatmap_{metric}.png",
+        "status_heatmap.png",
+        "kkt_residual_boxplot.png",
+        "kkt_residual_heatmap.png",
+        "kkt_accuracy_profile.png",
+        f"difficulty_scaling_{metric}.png",
+        "setup_solve_breakdown.png",
+    ]
 
 
 def penalized_geomean_options(run_dir: Path, *, metric: str, max_value: float | None) -> dict:
@@ -201,7 +236,15 @@ def _unique_problem_count(results: pd.DataFrame) -> int:
     return max(1, results["problem"].nunique())
 
 
-def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
+def _write_cactus(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None) -> Path | None:
+    """Fraction of problems solved within each budget of ``metric``.
+
+    The denominator is the performance profile's: every problem of the
+    comparison, planned solves never recorded included when ``expected`` is
+    given. Values are floored at the profile's resolution for ``metric``
+    (``profile_floor``), and zeros of metrics without one at 1e-12, so they
+    sit at the left edge of the log axis.
+    """
     if metric not in results:
         return None
     # One row per solve, as in the profile: duplicated attempts (merged
@@ -220,19 +263,25 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
     if successful.empty:
         return None
 
-    problem_count = _unique_problem_count(results)
+    compared, compared_expected = drop_solvers_without_metric(results, metric, expected=expected)
+    problem_count = _unique_problem_count(complete_results(compared, expected=compared_expected))
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     has_positive = False
-    # On a log axis a literal zero would map to -inf. Floor zeros to a
-    # tiny positive value so they're drawn at the leftmost edge of the
-    # axis but still contribute one step to the curve.
-    log_floor = 1.0e-12
+    # On a log axis a literal zero would map to -inf. Values below the
+    # profile's resolution count as that resolution (one iteration, 0.01 s);
+    # zeros of metrics without one are drawn at a tiny positive value, at
+    # the leftmost edge of the axis. Either way each still adds a step.
+    floor = profile_floor(metric)
     for solver_id, group in successful.groupby("solver_id", observed=True):
-        raw = group[metric].to_numpy()
+        raw = group[metric].to_numpy(dtype=float)
         if raw.size == 0:
             continue
-        has_positive = has_positive or bool(np.any(raw > 0.0))
-        values = np.sort(np.where(raw > 0.0, raw, log_floor))
+        if floor > 0.0:
+            values = np.maximum(raw, floor)
+        else:
+            values = np.where(raw > 0.0, raw, 1.0e-12)
+        has_positive = has_positive or floor > 0.0 or bool(np.any(raw > 0.0))
+        values = np.sort(values)
         fractions = np.arange(1, len(values) + 1) / problem_count
         ax.step(values, fractions, where="post", label=solver_id, linewidth=2)
     if not ax.lines:
@@ -650,7 +699,8 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
     if table.empty:
         return None
     median_column = f"median_{metric}"
-    plottable = table.dropna(subset=[median_column])
+    # The row of problems of unknown size has no place on the size axis.
+    plottable = table.dropna(subset=[median_column, "size_bin"])
     if plottable.empty:
         return None
 

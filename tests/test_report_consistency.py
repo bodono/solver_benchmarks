@@ -16,14 +16,19 @@ from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 from solver_benchmarks.analysis.tables import (
+    claimed_optimal_kkt_thresholds,
+    difficulty_scaling,
     failure_rates,
+    kkt_certificate_summary,
     kkt_summary,
     objective_spreads,
     pairwise_speedups,
     performance_ratio_matrix,
+    problem_dimensions,
     problem_solver_comparison,
     slowest_solves,
     solver_metrics,
+    solver_problem_tables,
     status_matrix,
 )
 
@@ -350,3 +355,456 @@ def test_summary_and_failures_commands_count_unattempted_solves(tmp_path, repo_r
     metrics_block = summary.output.split("Status counts:")[0]
     line_b = next(line for line in metrics_block.splitlines() if line.split() and line.split()[0] == "b")
     assert "0.5" in line_b.split()
+
+
+# --- difficulty scaling and dimensions keep solves that recorded no size ---
+
+
+def _killed_on_large():
+    """Eight problems, n = 100..800. Solver a times out on the four large
+    ones; those rows carry no dimensions (a killed worker records the spec's
+    metadata only), and a's row comes first in the file."""
+    rows = []
+    for i in range(1, 9):
+        if i > 4:
+            rows.append(_row(f"p{i}", "a", "time_limit", 60.0))
+        else:
+            rows.append(_row(f"p{i}", "a", time=1.0, **{"metadata.n": 100 * i}))
+        rows.append(_row(f"p{i}", "b", time=2.0, **{"metadata.n": 100 * i}))
+    return rows
+
+
+def test_difficulty_scaling_counts_solves_that_recorded_no_size():
+    table = difficulty_scaling(pd.DataFrame(_killed_on_large()), bin_count=2)
+    table = table.set_index(["solver_id", "size_bin"])
+    assert table.loc[("a", 0), "problem_count"] == 4 and table.loc[("a", 0), "success_count"] == 4
+    assert table.loc[("a", 1), "problem_count"] == 4 and table.loc[("a", 1), "success_count"] == 0
+    # the bins are over problems: both solvers see the same size ranges
+    for solver in "ab":
+        assert (table.loc[(solver, 0), "size_min"], table.loc[(solver, 0), "size_max"]) == (100.0, 400.0)
+        assert (table.loc[(solver, 1), "size_min"], table.loc[(solver, 1), "size_max"]) == (500.0, 800.0)
+    assert table.loc[("b", 1), "problem_count"] == 4
+
+
+def test_difficulty_scaling_keeps_unsized_problems_in_an_unknown_size_row():
+    rows = _killed_on_large() + [_row("p9", "a", "time_limit", 60.0), _row("p9", "b", "worker_error", None)]
+    table = difficulty_scaling(pd.DataFrame(rows), bin_count=2)
+    unknown = table[table["size_bin"].isna()].set_index("solver_id")
+    assert unknown["problem_count"].to_dict() == {"a": 1, "b": 1}
+    assert unknown["success_count"].to_dict() == {"a": 0, "b": 0}
+    assert unknown["size_min"].isna().all() and unknown["size_max"].isna().all()
+    assert table["problem_count"].sum() == 18
+
+
+def test_problem_dimensions_use_any_row_that_recorded_them():
+    frame = pd.DataFrame(_killed_on_large())
+    dims = problem_dimensions(frame).set_index("problem")
+    assert dims.loc[["p5", "p6", "p7", "p8"], "n"].tolist() == [500, 600, 700, 800]
+    per_solver = solver_problem_tables(frame)
+    assert per_solver["a"].set_index("problem").loc["p8", "n"] == 800
+    assert per_solver["b"].set_index("problem").loc["p8", "n"] == 800
+
+
+# --- one resolution of a duplicated solve in every view ---
+
+
+def _two_successful_attempts():
+    """Solver a has two optimal rows for p1: a slow accurate one first in the
+    file, then a fast sloppy one. Every view must describe the fast one."""
+
+    def row(solver, seconds, residual, objective):
+        return _row("p1", solver, time=seconds, objective_value=objective, **{
+            "kkt.primal_res_rel": residual, "kkt.dual_res_rel": residual, "kkt.duality_gap_rel": residual})
+
+    return [row("a", 30.0, 1e-9, 1.000), row("a", 1.0, 5e-3, 1.004), row("b", 10.0, 1e-9, 1.000)]
+
+
+def test_duplicated_solve_is_the_same_attempt_in_every_table():
+    frame = pd.DataFrame(_two_successful_attempts())
+    assert shifted_geomean(frame, max_value=1000.0).set_index("solver_id").loc["a", "run_time_seconds"] == pytest.approx(1.0)
+    assert solver_metrics(frame).set_index("solver_id").loc["a", "run_time_median_seconds"] == 1.0
+    assert kkt_summary(frame).set_index("solver_id").loc["a", "primal_res_rel_max"] == 5e-3
+    assert claimed_optimal_kkt_thresholds(frame).set_index("solver_id").loc["a", "worst_max"] == 5e-3
+    comparison = problem_solver_comparison(frame).iloc[0]
+    assert comparison["a__run_time_seconds"] == 1.0 and comparison["a__objective_value"] == 1.004
+    spread = objective_spreads(frame).iloc[0]
+    assert spread["objective_max"] == 1.004 and spread["solver_max"] == "a"
+
+
+def test_views_resolve_failed_duplicates_by_the_metric_too():
+    frame = pd.DataFrame([_row("p1", "a", "time_limit", 60.0), _row("p1", "a", "solver_error", 0.1),
+                          _row("p1", "b")])
+    assert status_matrix(frame).loc[("d", "p1"), "a"] == "solver_error"
+    assert failure_rates(frame).set_index("solver_id").loc["a", "statuses"] == "solver_error=1"
+    assert problem_solver_comparison(frame).iloc[0]["a__status"] == "solver_error"
+
+
+def test_certificate_summary_counts_a_duplicated_solve_once():
+    def cert(seconds, valid):
+        return _row("p1", "a", "primal_infeasible", seconds, **{"kkt.certificate": "primal_infeasible",
+                                                                 "kkt.valid": valid})
+
+    summary = kkt_certificate_summary(pd.DataFrame([cert(2.0, False), cert(1.0, True)])).iloc[0]
+    assert summary["infeasible_count"] == 1
+    assert summary["cert_count"] == 1
+    assert (summary["cert_valid"], summary["cert_invalid"]) == (1, 0)
+
+
+def test_report_tables_describe_the_same_attempt(tmp_path, repo_root):
+    run = _write_run(tmp_path, _two_successful_attempts())
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    report = tmp_path / "report"
+    headline = pd.read_csv(report / "headline_solver_metrics.csv").set_index("solver_id")
+    assert headline.loc["a", "run_time_median_seconds"] == 1.0
+    kkt = pd.read_csv(report / "kkt_summary.csv").set_index("solver_id")
+    assert kkt.loc["a", "primal_res_rel_max"] == 5e-3
+    thresholds = pd.read_csv(report / "claimed_optimal_kkt_thresholds.csv").set_index("solver_id")
+    assert thresholds.loc["a", "worst_max"] == 5e-3
+    spreads = pd.read_csv(report / "objective_spreads.csv")
+    assert spreads.loc[0, "objective_max"] == 1.004
+    # status counts and slowest solves keep the rows as recorded
+    counts = pd.read_csv(report / "status_counts.csv").set_index(["solver_id", "status"])
+    assert counts.loc[("a", "optimal"), "count"] == 2
+    slowest = pd.read_csv(report / "slowest_solves_run_time_seconds.csv")
+    assert slowest["run_time_seconds"].tolist() == [30.0, 10.0, 1.0]
+
+
+# --- the scoring helper column stays out of every written table ---
+
+
+def test_report_scores_rows_once_and_writes_no_helper_column(tmp_path, repo_root, monkeypatch):
+    from solver_benchmarks.analysis import outcomes
+
+    rows = [_row(f"p{i}", s, "optimal" if (i + ord(s)) % 3 else "solver_error", 1.0 + i,
+                 iterations=10 + i, objective_value=float(i), **{"metadata.n": i + 1, "kkt.primal_res_rel": 1e-9})
+            for i in range(6) for s in "abc"]
+    run = _write_run(tmp_path, rows)
+    computed = []
+    original = outcomes._compute_expected_outcomes
+    monkeypatch.setattr(outcomes, "_compute_expected_outcomes",
+                        lambda frame: computed.append(len(frame)) or original(frame))
+    outputs = write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    # rows are scored about once, not once per table, plot and slice
+    assert sum(computed) <= 2 * len(rows)
+    for path in outputs:
+        if path.suffix in {".csv", ".md"}:
+            assert outcomes.OUTCOME_COLUMN not in path.read_text(), path
+
+
+# --- a re-run of the report leaves no file of an earlier one under its names ---
+
+
+def _manifest_run(tmp_path: Path, rows, datasets, solvers) -> Path:
+    """A run whose expectation is the include lists (no dataset files under the repo root)."""
+    run = tmp_path / "run"
+    run.mkdir(exist_ok=True)
+    manifest = {"run_id": "run", "config": {
+        "timeout_seconds": 60,
+        "datasets": [{"id": d, "name": "maros_meszaros", "include": problems} for d, problems in datasets.items()],
+        "solvers": [{"id": s, "solver": "scs", "settings": {}} for s in solvers],
+    }}
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return run
+
+
+def _report_row(dataset, problem, solver, status="optimal", **extra):
+    return {"dataset": dataset, "problem": problem, "solver_id": solver, "status": status,
+            "run_time_seconds": 1.0, **extra}
+
+
+def test_rerun_report_removes_tables_and_plots_it_no_longer_writes(tmp_path):
+    row = _report_row
+    empty_root = tmp_path / "repo"
+    empty_root.mkdir()
+    # interrupted: b never reached p2 and failed p1; sizes recorded
+    first = [row("d", "p1", "a", **{"metadata.n": 1}), row("d", "p2", "a", **{"metadata.n": 2}),
+             row("d", "p1", "b", "solver_error"), row("e", "q1", "a"), row("e", "q1", "b")]
+    run = _manifest_run(tmp_path, first, {"d": ["p1", "p2"], "e": ["q1"]}, "ab")
+    report = run / "report"
+    write_run_report(run, repo_root=empty_root)
+    unrelated = report / "notes.txt"
+    unrelated.write_text("kept")
+    owned = ["missing_results.csv", "failures_with_successful_alternatives_run_time_seconds.csv",
+             "difficulty_scaling_run_time_seconds.csv", "difficulty_scaling_run_time_seconds.png",
+             "by_dataset/e/headline_solver_metrics.csv", "by_dataset/e/kkt_summary.csv"]
+    for name in owned:
+        assert (report / name).exists(), name
+
+    # rerun to completion with e excluded and no sizes recorded
+    second = [row("d", "p1", "a"), row("d", "p2", "a"), row("d", "p1", "b"), row("d", "p2", "b")]
+    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in second))
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["datasets"][1]["exclude"] = ["q1"]
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    write_run_report(run, repo_root=empty_root)
+    assert "Completion checks found no missing" in (report / "index.md").read_text()
+    for name in owned:
+        assert not (report / name).exists(), name
+    assert unrelated.read_text() == "kept"
+    assert (report / "by_dataset" / "d" / "headline_solver_metrics.csv").exists()
+
+
+def test_rerun_report_removes_the_problem_table_of_a_solver_without_rows(tmp_path, repo_root):
+    run = _write_run(tmp_path, [_row("p1", "a"), _row("p1", "c")], solvers=["a", "c"])
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    tables = tmp_path / "report" / "solver_problem_tables"
+    assert (tables / "c.csv").exists()
+    (run / "results.jsonl").write_text(json.dumps(_row("p1", "a")) + "\n")
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    assert (tables / "a.csv").exists() and not (tables / "c.csv").exists()
+
+
+def test_unavailable_penalized_geomean_removes_the_earlier_one(tmp_path, repo_root):
+    run = _write_run(tmp_path, [_row("p1", "a"), _row("p1", "b", "solver_error")])
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    for name in ("shifted_geomean_run_time_seconds.csv", "shifted_geomean_run_time_seconds.png"):
+        assert (tmp_path / "report" / name).exists()
+    manifest = json.loads((run / "manifest.json").read_text())
+    manifest["config"]["timeout_seconds"] = None
+    (run / "manifest.json").write_text(json.dumps(manifest))
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    for name in ("shifted_geomean_run_time_seconds.csv", "shifted_geomean_run_time_seconds.png"):
+        assert not (tmp_path / "report" / name).exists()
+
+
+# --- the cactus plot counts like the profile ---
+
+
+def _cactus_curves(frame, tmp_path, metric, **kwargs):
+    from solver_benchmarks.analysis.plots import _write_cactus
+
+    captured = {}
+    real_step = mpl_axes.Axes.step
+
+    def capturing_step(self, x, y, *args, label=None, **kw):
+        captured[label] = (np.asarray(x).copy(), np.asarray(y).copy())
+        return real_step(self, x, y, *args, label=label, **kw)
+
+    mpl_axes.Axes.step = capturing_step  # type: ignore[method-assign]
+    try:
+        _write_cactus(frame, tmp_path, metric, **kwargs)
+    finally:
+        mpl_axes.Axes.step = real_step  # type: ignore[method-assign]
+    return captured
+
+
+def test_cactus_uses_the_profile_denominator_and_floor(tmp_path):
+    frame = pd.DataFrame([_row("p1", "a", iterations=0), _row("p2", "a", iterations=12),
+                          _row("p1", "b", iterations=9), _row("p2", "b", iterations=15)])
+    expected = pd.DataFrame([{"dataset": "d", "problem": p, "solver_id": s}
+                             for p in ("p1", "p2", "p3", "p4") for s in "ab"])
+    # a presolve-only solve sits at the profile's floor of one iteration
+    assert _cactus_curves(frame, tmp_path, "iterations")["a"][0].tolist() == [1.0, 12.0]
+    # planned solves never recorded count in the denominator, as in the profile
+    profile = performance_profile(frame, metric="iterations", expected=expected)
+    curves = _cactus_curves(frame, tmp_path, "iterations", expected=expected)
+    assert curves["a"][1][-1] == profile["a"].iloc[-1] == 0.5
+    # metrics without a floor still draw a zero at 1e-12
+    zero = pd.DataFrame([_row("p1", "a", **{"kkt.primal_res_rel": 0.0}),
+                         _row("p2", "a", **{"kkt.primal_res_rel": 1e-6})])
+    assert _cactus_curves(zero, tmp_path, "kkt.primal_res_rel")["a"][0].tolist() == [1e-12, 1e-6]
+
+
+# --- every KKT residual gets the residual geomean defaults ---
+
+
+def test_every_relative_kkt_residual_gets_residual_defaults():
+    import scipy.sparse as sp
+
+    from solver_benchmarks.analysis import derive, kkt
+    from solver_benchmarks.analysis.profiles import KKT_SHIFT, metric_defaults
+
+    one = sp.csc_matrix(np.array([[1.0]]))
+    records = [
+        kkt.qp_residuals(sp.csc_matrix((1, 1)), np.array([1.0]), one, np.array([0.0]), np.array([1.0]),
+                         np.array([0.5]), np.array([0.0])),
+        kkt.cone_residuals(sp.csc_matrix((1, 1)), np.array([-1.0]), one, np.array([1.0]), {"l": 1},
+                           np.array([1.0]), np.array([1.0]), np.array([0.0])),
+        kkt.cone_primal_infeasibility_cert(sp.csc_matrix(np.array([[1.0], [-1.0]])), np.array([0.0, -1.0]),
+                                           {"z": 1, "l": 1}, np.array([1.0, 1.0])),
+    ]
+    emitted = {key for record in records for key, value in record.items()
+               if isinstance(value, float) and (key.endswith("_rel") or key == "cert_res")}
+    checked = set(derive.KKT_FIELDS) | set(derive.QP_FIELDS) | set(derive.CONE_FIELDS) | {"cert_res"}
+    assert {"dual_bound_res_rel", "primal_cone_res_rel", "primal_eq_res_rel", "cert_res"} <= emitted | checked
+    for field in sorted(emitted | checked | {"comp_slack"}):
+        assert metric_defaults(f"kkt.{field}") == (1.0, KKT_SHIFT), field
+    assert metric_defaults("run_time_seconds") == (1.0e3, 10.0)
+    assert metric_defaults("iterations") == (1.0e6, 100.0)
+
+
+# --- a derived run says so ---
+
+
+def test_report_of_a_verified_merge_states_its_provenance(tmp_path, repo_root):
+    from solver_benchmarks.analysis.derive import kkt_verify, merge_runs
+
+    def shard(name, solver, rows):
+        run = tmp_path / name
+        run.mkdir()
+        (run / "manifest.json").write_text(json.dumps({"run_id": name, "config": {
+            "name": name, "timeout_seconds": 60,
+            "datasets": [{"id": "d", "name": "synthetic_qp", "include": ["p1", "p2"]}],
+            "solvers": [{"id": solver, "solver": "scs", "settings": {}}]}}))
+        (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (run / "run_config.yaml").write_text(f"run:\n  name: {name}\n")
+        return run
+
+    good = {"primal_res_rel": 1e-9, "dual_res_rel": 1e-9, "duality_gap_rel": 1e-9}
+    loose = {"primal_res_rel": 1e-3, "dual_res_rel": 1e-9, "duality_gap_rel": 1e-9}
+    m3 = shard("m3", "A", [_row("p1", "A", kkt=good), _row("p2", "A", kkt=loose)])
+    m4 = shard("m4", "B", [_row("p1", "B", kkt=good)])
+    merged = tmp_path / "merged"
+    merge_runs([m3, m4], merged)
+    write_run_report(merged, output_dir=tmp_path / "merge_report", repo_root=repo_root)
+    merge_md = (tmp_path / "merge_report" / "index.md").read_text()
+    assert "### Derived Run" in merge_md
+    assert str(m3) in merge_md and str(m4) in merge_md
+    assert "merge of 2 runs" in merge_md.split("## Run Scope")[0]
+    assert "first merged run" in merge_md
+
+    verified = tmp_path / "verified"
+    kkt_verify(merged, verified, tol=1e-6, promote=True)
+    write_run_report(verified, output_dir=tmp_path / "verified_report", repo_root=repo_root)
+    markdown = (tmp_path / "verified_report" / "index.md").read_text()
+    provenance = markdown.split("## Provenance")[1]
+    assert "### Derived Run" in provenance
+    assert "kkt_verify" in provenance and "1e-06" in provenance
+    assert "| promote | True |" in provenance and "| missing_is_failure | True |" in provenance
+    derived = provenance.split("### Derived Run")[1].split("\n### ")[0]
+    assert "| A |" in derived and "| B |" in derived
+    assert "demoted" in derived and "kept" in derived
+    # the verified merge still lists the merged runs and labels the copied config
+    assert str(m3) in derived and str(m4) in derived
+    assert "first merged run" in provenance
+    summary = markdown.split("## Run Scope")[0]
+    assert "bench kkt-verify" in summary and "1e-06" in summary
+
+    # the other order: shards verified separately, then merged
+    v3, v4 = tmp_path / "v3", tmp_path / "v4"
+    kkt_verify(m3, v3, tol=1e-6, promote=True)
+    kkt_verify(m4, v4, tol=1e-4, missing_is_failure=False)
+    verified_first = tmp_path / "verified_first"
+    merge_runs([v3, v4], verified_first)
+    write_run_report(verified_first, output_dir=tmp_path / "vf_report", repo_root=repo_root)
+    markdown = (tmp_path / "vf_report" / "index.md").read_text()
+    summary = markdown.split("## Run Scope")[0]
+    assert "merge of 2 runs" in summary
+    assert "bench kkt-verify" in summary and "1e-06" in summary and "0.0001" in summary
+    derived = markdown.split("### Derived Run")[1].split("\n### ")[0]
+    merged_runs = derived.split("Merged runs")[1]
+    row_v3 = next(line for line in merged_runs.splitlines() if str(v3) in line)
+    assert "kkt-verify" in row_v3 and "1e-06" in row_v3 and "1 demoted" in row_v3
+    row_v4 = next(line for line in merged_runs.splitlines() if str(v4) in line)
+    assert "0.0001" in row_v4 and "without `--promote`" in row_v4
+
+
+# --- a retried success wins even under a metric the solver does not record ---
+
+
+def _failed_then_retried():
+    """Solver plain records no ``solve_time_seconds``: p1 failed, then succeeded on retry."""
+    return [
+        _row("p1", "plain", "solver_error", 0.1),
+        _row("p1", "plain", time=2.0),
+        _row("p2", "plain", time=1.0),
+        _row("p1", "timed", time=1.0, solve_time_seconds=0.5),
+        _row("p2", "timed", time=1.0, solve_time_seconds=0.5),
+    ]
+
+
+def test_retried_success_without_the_metric_beats_the_failure():
+    frame = pd.DataFrame(_failed_then_retried())
+    assert status_matrix(frame, metric="solve_time_seconds").loc[("d", "p1"), "plain"] == "optimal"
+    metrics = solver_metrics(frame, metric="solve_time_seconds").set_index("solver_id")
+    assert metrics.loc["plain", "success_count"] == 2 and metrics.loc["plain", "failure_count"] == 0
+    rates = failure_rates(frame, metric="solve_time_seconds").set_index("solver_id")
+    assert rates.loc["plain", "statuses"] == "optimal=2"
+    # a kkt metric the success did not record: same rule
+    kkt = pd.DataFrame([_row("p1", "a", "solver_error", 0.1, **{"kkt.primal_res_rel": 1e-9}),
+                        _row("p1", "a", time=2.0), _row("p1", "b", **{"kkt.primal_res_rel": 1e-9})])
+    assert status_matrix(kkt, metric="kkt.primal_res_rel").loc[("d", "p1"), "a"] == "optimal"
+    assert kkt_summary(kkt, metric="kkt.primal_res_rel").set_index("solver_id").loc["a", "success_count"] == 1
+    # among successes, a usable value still wins over a missing one, then the best value
+    both = pd.DataFrame([_row("p1", "a", time=3.0), _row("p1", "a", time=2.0, solve_time_seconds=0.9),
+                         _row("p1", "a", time=1.0, solve_time_seconds=0.4)])
+    comparison = problem_solver_comparison(both, metric="solve_time_seconds").iloc[0]
+    assert comparison["a__run_time_seconds"] == 1.0
+
+
+def test_report_with_an_unrecorded_metric_keeps_the_retried_success(tmp_path, repo_root):
+    run = _write_run(tmp_path, _failed_then_retried())
+    write_run_report(run, metric="solve_time_seconds", output_dir=tmp_path / "report", repo_root=repo_root)
+    report = tmp_path / "report"
+    headline = pd.read_csv(report / "headline_solver_metrics.csv").set_index("solver_id")
+    assert headline.loc["plain", "success_count"] == 2
+    matrix = pd.read_csv(report / "status_matrix.csv").set_index(["dataset", "problem"])
+    assert matrix.loc[("d", "p1"), "plain"] == "optimal"
+
+
+# --- the resolved frame keeps file order ---
+
+
+def test_resolved_rows_keep_file_order():
+    from solver_benchmarks.analysis.tables import one_row_per_solve
+
+    frame = pd.DataFrame([_row("p1", "a", time=5.0), _row("p2", "a", time=1.0), _row("p3", "a", time=3.0),
+                          _row("p2", "a", "solver_error", 0.1), _row("p1", "b", time=2.0)])
+    resolved = one_row_per_solve(frame, metric="run_time_seconds")
+    assert resolved.index.tolist() == [0, 1, 2, 4]
+
+
+# --- the report sizes problems from every recorded row ---
+
+
+def test_report_sizes_problems_from_discarded_duplicates(tmp_path, repo_root):
+    # p3's only sized row is a failure that loses to the killed attempt (faster)
+    rows = [_row(f"p{i}", s, time=1.0, **{"metadata.n": 10 * i}) for i in (1, 2) for s in "ab"]
+    rows += [_row("p3", "a", "solver_error", 12.0, **{"metadata.n": 30}), _row("p3", "a", "time_limit", 10.0),
+             _row("p3", "b", "time_limit", 10.0)]
+    run = _write_run(tmp_path, rows)
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    scaling = pd.read_csv(tmp_path / "report" / "difficulty_scaling_run_time_seconds.csv")
+    assert scaling["size_bin"].notna().all()
+    for solver in "ab":
+        table = pd.read_csv(tmp_path / "report" / "solver_problem_tables" / f"{solver}.csv").set_index("problem")
+        assert table.loc["p3", "n"] == 30
+        assert table.loc["p3", "status"] == "time_limit"
+
+
+# --- the plots of a report count and resolve like its tables ---
+
+
+def test_report_plots_use_the_expected_problems_and_the_report_resolution(tmp_path, monkeypatch):
+    empty_root = tmp_path / "repo"
+    empty_root.mkdir()
+    row = _report_row
+    # interrupted: p3 and p4 never ran; a ran p1 twice, the attempt with fewer
+    # iterations is the less accurate one
+    rows = [row("d", "p1", "a", iterations=50, **{"kkt.primal_res_rel": 1e-9}),
+            row("d", "p1", "a", iterations=5, **{"kkt.primal_res_rel": 1e-3}),
+            row("d", "p2", "a", iterations=7, **{"kkt.primal_res_rel": 1e-9}),
+            row("d", "p1", "b", iterations=9, **{"kkt.primal_res_rel": 1e-9}),
+            row("d", "p2", "b", iterations=9, **{"kkt.primal_res_rel": 1e-9})]
+    run = _manifest_run(tmp_path, rows, {"d": ["p1", "p2", "p3", "p4"]}, "ab")
+    steps, boxes = {}, []
+    real_step, real_boxplot = mpl_axes.Axes.step, mpl_axes.Axes.boxplot
+
+    def capturing_step(self, x, y, *args, label=None, **kw):
+        steps[label] = np.asarray(y).copy()
+        return real_step(self, x, y, *args, label=label, **kw)
+
+    def capturing_boxplot(self, data, *args, tick_labels=None, **kw):
+        boxes.append(dict(zip(tick_labels, [np.asarray(d).copy() for d in data])))
+        return real_boxplot(self, data, *args, tick_labels=tick_labels, **kw)
+
+    monkeypatch.setattr(mpl_axes.Axes, "step", capturing_step)
+    monkeypatch.setattr(mpl_axes.Axes, "boxplot", capturing_boxplot)
+    write_run_report(run, metric="iterations", repo_root=empty_root)
+    profile = pd.read_csv(run / "report" / "performance_profile_iterations.csv")
+    assert steps["a"][-1] == profile["a"].iloc[-1] == 0.5
+    kkt = pd.read_csv(run / "report" / "kkt_summary.csv").set_index("solver_id")
+    assert kkt.loc["a", "primal_res_rel_max"] == 1e-3
+    # the boxplot draws the attempt the tables describe (fewest iterations)
+    assert sorted(boxes[0]["a"].tolist()) == sorted(np.log10([1e-3, 1e-9]).tolist())

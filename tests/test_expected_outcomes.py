@@ -318,3 +318,72 @@ def test_dimacs_records_filtinf1_as_infeasible(tmp_path):
         ]
     )
     assert expected_outcomes(archived).tolist() == [status.EXPECT_INFEASIBLE, status.EXPECT_INFEASIBLE, None]
+
+
+def _row_by_row_outcomes(frame):
+    """The per-row definition the vectorized ``expected_outcomes`` must match."""
+    from solver_benchmarks.analysis.outcomes import _inferred_outcome
+
+    def column(name):
+        return frame[name] if name in frame else [None] * len(frame)
+
+    return [
+        rec if isinstance(rec, str) and rec in status.EXPECTED_OUTCOMES else _inferred_outcome(ds, prob, src)
+        for rec, ds, prob, src in zip(column("metadata.expected_status"), column("dataset"),
+                                      column("problem"), column("metadata.source"))
+    ]
+
+
+def _every_outcome_branch():
+    sources = [
+        "/r/problem_classes/netlib_data/infeasible/x.mps", "/r/problem_classes/netlib_data/feasible/x.mps",
+        "C:\\r\\problem_classes\\netlib_data\\infeasible\\x.mps", "C:\\r\\problem_classes\\sdplib_data\\x.dat-s",
+        "/r/problem_classes/dimacs_data/x.mat", "/r/liu_pataki_data/x.mat", None, float("nan"), 3,
+    ]
+    datasets = ["netlib", "liu_pataki", "sdplib", "dimacs", "mm", None, float("nan")]
+    problems = ["infd1", "filtinf1", "afiro", "control1", None, float("nan")]
+    recorded = [None, float("nan"), status.EXPECT_OPTIMAL, status.EXPECT_INFEASIBLE, status.EXPECT_UNBOUNDED,
+                "bogus", 1]
+    rows = [
+        {"dataset": d, "problem": p, "metadata.source": s, "metadata.expected_status": r}
+        for d in datasets for p in problems for s in sources for r in recorded
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_vectorized_expected_outcomes_match_the_row_by_row_definition():
+    frame = _every_outcome_branch()
+    values = expected_outcomes(frame).tolist()
+    reference = _row_by_row_outcomes(frame)
+    assert values == reference
+    assert set(reference) == {None, *status.EXPECTED_OUTCOMES}
+    # every column optional, any index
+    for missing in ("metadata.expected_status", "metadata.source", "dataset", "problem"):
+        partial = frame.drop(columns=missing).set_index(pd.RangeIndex(10, 10 + len(frame)))
+        assert expected_outcomes(partial).tolist() == _row_by_row_outcomes(partial), missing
+    # pyarrow-backed strings with nulls, as read from results.parquet
+    arrow = frame.astype({"dataset": "string[pyarrow]", "problem": "string[pyarrow]"})
+    assert expected_outcomes(arrow).tolist() == reference
+
+
+def test_attached_outcomes_stay_correct_when_rows_change():
+    from solver_benchmarks.analysis.outcomes import OUTCOME_COLUMN, with_expected_outcomes
+    from solver_benchmarks.analysis.profiles import complete_results
+
+    frame = _every_outcome_branch().assign(solver_id="s", status=status.PRIMAL_INFEASIBLE)
+    scored = with_expected_outcomes(frame)
+    assert OUTCOME_COLUMN in scored and OUTCOME_COLUMN not in frame
+    assert with_expected_outcomes(scored) is scored
+    assert expected_outcomes(scored).tolist() == expected_outcomes(frame).tolist()
+    assert success_mask(scored).tolist() == success_mask(frame).tolist()
+    # a slice keeps valid outcomes; a status rewrite changes the success, not the outcome
+    part = scored.iloc[::7].assign(status=status.OPTIMAL)
+    assert success_mask(part).tolist() == success_mask(frame.iloc[::7].assign(status=status.OPTIMAL)).tolist()
+    # rows added later (planned solves never attempted) are scored on demand
+    small = pd.DataFrame([{"dataset": "sdplib", "problem": "infd1", "solver_id": "s",
+                           "status": status.PRIMAL_INFEASIBLE}])
+    expected = pd.DataFrame([{"dataset": "sdplib", "problem": p, "solver_id": s}
+                             for p in ("infd1", "infd2") for s in ("s", "t")])
+    padded = complete_results(with_expected_outcomes(small), expected=expected)
+    assert expected_outcomes(padded).tolist() == [status.EXPECT_INFEASIBLE] * 4
+    assert success_mask(padded).tolist() == [True, False, False, False]
