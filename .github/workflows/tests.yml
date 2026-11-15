@@ -36,7 +36,13 @@ jobs:
         run: python -m pip install --upgrade pip "ruff>=0.5"
 
       - name: Run ruff
-        run: python -m ruff check solver_benchmarks tests problem_classes scripts
+        run: python -m ruff check solver_benchmarks tests problem_classes scripts tools
+
+      # tools/ and scripts/ are run by hand, not imported by the package, so
+      # make sure every file still compiles (tests/test_tools.py imports and
+      # exercises the campaign tools; bench_modal.py needs Modal to import).
+      - name: Compile tools and scripts
+        run: python -m compileall -q tools scripts
 
   type-check:
     name: Type check

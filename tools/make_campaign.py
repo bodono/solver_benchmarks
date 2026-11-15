@@ -51,7 +51,8 @@ FAMILIES: dict[str, list[dict]] = {
         {"name": "sdplib", "id": "sdplib"},
         {"name": "mittelmann_sdp", "id": "mittelmann_sdp", "dataset_options": {"subset": "all"}},
     ],
-    # Large LPs, 1e-4 only, 1800 s limit, 64 GB containers (see bench_modal --cpu-kind cpu_big).
+    # Large LPs, 1800 s limit, 64 GB containers (see bench_modal --cpu-kind cpu_big). The
+    # published campaign ran this family at 1e-4 only: generate it with --tols 1e-4.
     "lpbig": [
         {"name": "mittelmann", "id": f"mittelmann{k}", "include": chunk}
         for k, chunk in enumerate(MITTELMANN_CHUNKS)
@@ -75,8 +76,6 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
         {"id": f"clarabel_{tag}", "solver": "clarabel",
          "settings": {"tol_feas": t, "tol_gap_abs": t, "tol_gap_rel": t, "time_limit": timeout}, "gpu": False},
     ]
-    if family == "lpbig":
-        pass
     if family in ("qp", "lp"):
         variants += [
             {"id": f"osqp_{tag}", "solver": "osqp",

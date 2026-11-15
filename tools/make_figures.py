@@ -13,8 +13,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import re
+import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
@@ -25,7 +29,10 @@ import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
 from solver_benchmarks.analysis.load import load_results
-from solver_benchmarks.analysis.profiles import shifted_geomean
+from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
+from solver_benchmarks.core.config import manifest_dataset_entries
+from solver_benchmarks.core.problem import QP, cone_dimensions, qp_dimensions
+from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 FAMILY_TITLES = {"qp": "Maros-Meszaros, QPLIB and MPC QPs", "lp": "Netlib, Kennington and MIPLIB-relaxation LPs",
@@ -59,7 +66,7 @@ FAMILY_NOUN = {"qp": "QPs", "lp": "LPs", "sdp": "SDPs"}
 
 def sets_title(family: str, df: pd.DataFrame) -> str:
     """'Maros-Meszaros and QPLIB QPs' from the data sets actually present."""
-    if family not in FAMILY_NOUN:
+    if family not in FAMILY_NOUN or df.empty:
         return FAMILY_TITLES.get(family, family)
     names = []
     for d in df["dataset"].unique():
@@ -108,20 +115,90 @@ def solver_tol(solver_id: str) -> str | None:
     return m.group(1) if m else None
 
 
-def problem_size(df: pd.DataFrame) -> pd.Series:
+PROBLEM_KEYS = ["dataset", "problem"]
+SizeLookup = Callable[[str, str], "float | None"]
+
+
+def problem_sizes(df: pd.DataFrame, size_lookup: SizeLookup | None = None) -> pd.Series:
+    """nnz(A) + nnz(P) of every (dataset, problem) in ``df``, NaN where unknown.
+
+    Size is a property of the problem, not of a solve. The worker records the
+    problem's dimensions (``metadata.nnz_a`` / ``metadata.nnz_p``) on every row
+    it writes, whatever the outcome, so any such row sizes the problem. Rows
+    the runner writes itself (a solve killed at the harness timeout, a worker
+    that crashed) carry no dimensions, and when every solver ended that way,
+    typically on the largest instances, ``size_lookup(dataset, problem)`` is
+    asked instead (see :func:`registry_size_lookup`).
+    """
     def col(name: str) -> pd.Series:
         if name not in df.columns:
-            return pd.Series(0.0, index=df.index)
-        return pd.to_numeric(df[name], errors="coerce").fillna(0)
+            return pd.Series(np.nan, index=df.index)
+        return pd.to_numeric(df[name], errors="coerce")
 
-    return col("metadata.nnz_a") + col("metadata.nnz_p")
+    nnz_a = col("metadata.nnz_a")
+    # Cone problems have no P; a row is sized exactly when it recorded nnz(A).
+    row_size = (nnz_a + col("metadata.nnz_p").fillna(0)).where(nnz_a.notna())
+    sizes = df.assign(__size=row_size).groupby(PROBLEM_KEYS)["__size"].max()
+    if size_lookup is not None:
+        for key in sizes.index[sizes.isna()]:
+            size = size_lookup(*key)
+            if size is not None:
+                sizes[key] = float(size)
+    return sizes
 
 
-def largest_quartile(df: pd.DataFrame) -> pd.DataFrame:
-    sizes = df.assign(__size=problem_size(df)).groupby(["dataset", "problem"])["__size"].max()
-    cutoff = sizes.quantile(0.75)
-    keep = sizes[sizes >= cutoff].index
-    idx = pd.MultiIndex.from_frame(df[["dataset", "problem"]])
+def registry_size_lookup(run_dir: str | Path, repo_root: str | Path | None = None) -> SizeLookup:
+    """A ``size_lookup`` that loads the problem through the dataset registry.
+
+    The dataset id in a result row is the config entry id; the registry name
+    and dataset options behind it come from ``RUN_DIR/manifest.json`` (a
+    merged run's manifest lists every shard's entries). Returns None for a
+    dataset the manifest does not list or a problem that cannot be loaded.
+    """
+    path = Path(run_dir) / "manifest.json"
+    manifest = json.loads(path.read_text()) if path.exists() else {}
+    entries = {entry["id"]: entry for entry in manifest_dataset_entries(manifest.get("config") or {})}
+    datasets: dict[str, Any] = {}
+
+    def lookup(dataset: str, problem: str) -> float | None:
+        entry = entries.get(dataset)
+        if entry is None:
+            return None
+        try:
+            if dataset not in datasets:
+                datasets[dataset] = get_dataset(entry["name"])(repo_root=repo_root, **entry["dataset_options"])
+            data = datasets[dataset].load_problem(problem)
+            dims = qp_dimensions(data.qp) if data.kind == QP else cone_dimensions(data.cone)
+        except Exception as exc:  # a size is optional: report it and go on
+            print(f"warning: could not load {dataset}/{problem} to size it: {exc}", file=sys.stderr)
+            return None
+        return float(dims.get("nnz_a", 0) + dims.get("nnz_p", 0))
+
+    return lookup
+
+
+def largest_quartile(df: pd.DataFrame, sizes: pd.Series | None = None) -> pd.DataFrame:
+    """Rows of the problems whose size is in the top quartile of ``df``'s problems.
+
+    ``sizes`` is indexed by (dataset, problem), as from :func:`problem_sizes`
+    (computed from ``df`` alone when omitted). A problem of unknown size is
+    left out and named on stderr: counting it as size 0 would both drop it and
+    pull the cutoff down.
+    """
+    if sizes is None:
+        sizes = problem_sizes(df)
+    present = pd.MultiIndex.from_frame(df[PROBLEM_KEYS].drop_duplicates())
+    sizes = sizes.reindex(present)
+    unknown = sizes.index[sizes.isna()]
+    if len(unknown):
+        names = ", ".join(f"{d}/{p}" for d, p in unknown)
+        print(f"warning: size unknown for {len(unknown)} problems, left out of the largest quartile: {names}",
+              file=sys.stderr)
+    known = sizes.dropna()
+    if known.empty:
+        return df.iloc[0:0].copy()
+    keep = known[known >= known.quantile(0.75)].index
+    idx = pd.MultiIndex.from_frame(df[PROBLEM_KEYS])
     return df[idx.isin(keep)].copy()
 
 
@@ -142,27 +219,17 @@ TAU_MAX = 1.0e4
 def full_denominator_profile(df: pd.DataFrame) -> pd.DataFrame:
     """Dolan-More profile whose denominator is every problem in ``df``.
 
-    The harness helper drops problems on which every solver failed, which
-    lets curves reach 1.0 while the bars report fewer solves. Here failures
-    have an infinite ratio and never count, and the y axis is the fraction of
-    all problems, matching the solved counts shown next to the bars.
+    This is the harness's ``performance_profile``, so a solve counts exactly
+    when ``solver_benchmarks.analysis.outcomes.success_mask`` says it does: an
+    optimal status where a solution is expected, and on problems known to be
+    infeasible or unbounded only the matching certificate (one the harness did
+    not find invalid). Failures and solves a solver has no row for have an
+    infinite ratio; problems every solver failed stay in the denominator, so
+    the y axis is the fraction of all problems, matching the solved counts
+    next to the bars. Times are floored at ``TIME_FLOOR`` and tau runs from 1
+    to ``TAU_MAX``.
     """
-    from solver_benchmarks.core import status as st
-    keys = ["dataset", "problem"]
-    ok = df["status"].isin(set(st.SOLUTION_PRESENT))
-    times = df.assign(t=df["run_time_seconds"].where(ok, np.inf)).pivot_table(index=keys, columns="solver_id", values="t", aggfunc="min")
-    n = times.shape[0]
-    if n == 0:
-        return pd.DataFrame()
-    best = times.min(axis=1)
-    ratios = times.divide(best, axis=0)
-    tau = np.logspace(0, np.log10(TAU_MAX), 1000)
-    out = {"tau": tau}
-    for sid in ratios.columns:
-        r = np.sort(ratios[sid].to_numpy(dtype=float))
-        r = r[np.isfinite(r)]
-        out[sid] = np.searchsorted(r, tau, side="right") / float(n)
-    return pd.DataFrame(out)
+    return performance_profile(df, metric="run_time_seconds", min_value=TIME_FLOOR, tau_max=TAU_MAX, n_tau=1000)
 
 
 def draw_profile(ax, df: pd.DataFrame, title: str, compact: bool = False) -> bool:
@@ -327,6 +394,9 @@ def main() -> None:
     ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
                     help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend says so "
                          "when TAG differs from the plot's tolerance")
+    ap.add_argument("--repo-root", type=Path, default=None,
+                    help="repository whose data directories hold the problems, for sizing problems no "
+                         "result row recorded dimensions for (default: this checkout)")
     args = ap.parse_args()
     global NEUTRAL
     NEUTRAL = bool(args.neutral)
@@ -347,6 +417,9 @@ def main() -> None:
         drop_p = FAMILY_DROP_PROBLEMS.get(family)
         if drop_p:
             df = df[~pd.Series(list(zip(df["dataset"], df["problem"])), index=df.index).isin(drop_p)]
+        # Sized once per family, over every tolerance's rows, so the quartile
+        # is the same set of problems in each tolerance's figures.
+        sizes = problem_sizes(df, size_lookup=registry_size_lookup(run_dir, repo_root=args.repo_root))
         limit = FAMILY_LIMIT.get(family)
         if limit:
             late = df["run_time_seconds"] > limit + LIMIT_GRACE
@@ -388,7 +461,7 @@ def main() -> None:
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")
             plot_pair(sub, title, args.out_dir / f"{family}_{tag}_pair.png", family)
             gm = plot_geomean(sub, title, args.out_dir / f"{family}_{tag}_geomean.png", family=family)
-            big = largest_quartile(sub)
+            big = largest_quartile(sub, sizes)
             n_big = big.groupby(["dataset", "problem"]).ngroups
             title_big = f"{sets_title(family, big)}, largest quartile ({n_big} problems), tolerance {tag}"
             plot_profile(big, title_big, args.out_dir / f"{family}_{tag}_profile_largest.png")
