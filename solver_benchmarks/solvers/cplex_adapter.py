@@ -79,6 +79,7 @@ class CPLEXSolverAdapter(SolverAdapter):
             start = time.perf_counter()
             try:
                 model.solve()
+                resolved = _resolve_infeasible_or_unbounded(model, settings)
             except Exception as exc:
                 return SolverResult(
                     status=status.SOLVER_ERROR,
@@ -88,6 +89,7 @@ class CPLEXSolverAdapter(SolverAdapter):
             elapsed = time.perf_counter() - start
             raw_status = model.solution.get_status()
             mapped = _map_cplex_status(raw_status, model)
+            iteration_counts = _cplex_iterations(model)
             objective_value = None
             kkt_dict = None
             if mapped in status.ANY_FEASIBLE:
@@ -107,14 +109,17 @@ class CPLEXSolverAdapter(SolverAdapter):
                 status=mapped,
                 kkt=kkt_dict,
                 objective_value=reported_objective(mapped, objective_value),
-                iterations=_cplex_iterations(model),
+                iterations=iteration_counts["iterations"],
                 run_time_seconds=elapsed,
                 info={
                     "raw_status": raw_status,
                     "status_string": model.solution.get_status_string(raw_status),
                     "problem_type": model.problem_type[model.get_problem_type()],
                     "use_ranged_rows": use_ranged_rows,
+                    "simplex_iterations": iteration_counts["simplex_iterations"],
+                    "barrier_iterations": iteration_counts["barrier_iterations"],
                     **({"settings_translated": translated} if translated else {}),
+                    **({"inf_or_unbd_resolved": True} if resolved else {}),
                 },
             )
         finally:
@@ -254,8 +259,44 @@ def _map_cplex_status(raw_status: int, model) -> str:
     return mapping.get(raw_status, status.SOLVER_ERROR)
 
 
-def _cplex_iterations(model) -> int | None:
-    try:
-        return int(model.solution.progress.get_num_iterations())
-    except Exception:
-        return None
+def _resolve_infeasible_or_unbounded(model, settings: dict) -> bool:
+    """Re-solve without presolve reductions after infeasible_or_unbounded.
+
+    CPLEX's presolve can prove only that a model has no optimum; turning its
+    reductions off (preprocessing.reduce = 0) and re-solving gives the
+    definite answer, so the row can carry an infeasibility or unboundedness
+    status instead of primal_or_dual_infeasible, which never counts. Returns
+    whether the model was re-solved (the elapsed time covers both solves).
+    """
+    status_codes = model.solution.status
+    if model.solution.get_status() != status_codes.infeasible_or_unbounded:
+        return False
+    if settings.get("preprocessing.reduce") == 0:
+        return False  # already off: the answer is final
+    _set_cplex_parameter(model, "preprocessing.reduce", 0)
+    model.solve()
+    return True
+
+
+def _cplex_iterations(model) -> dict:
+    """Iteration counts; ``iterations`` is the count of the method that ran.
+
+    ``get_num_iterations`` counts simplex (or crossover) iterations, which is
+    0 for a QP solved by barrier without crossover, the default for
+    continuous QPs; the barrier count is used whenever barrier ran.
+    """
+    progress = model.solution.progress
+
+    def count(method) -> int | None:
+        try:
+            return int(method())
+        except Exception:
+            return None
+
+    simplex = count(progress.get_num_iterations)
+    barrier = count(getattr(progress, "get_num_barrier_iterations", lambda: None))
+    return {
+        "iterations": barrier if barrier else simplex,
+        "simplex_iterations": simplex,
+        "barrier_iterations": barrier,
+    }

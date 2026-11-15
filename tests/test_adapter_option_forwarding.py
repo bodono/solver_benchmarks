@@ -142,3 +142,23 @@ def test_clarabel_threads_marks_ignored_when_no_thread_attr():
 
     assert available == []
     assert info == {"threads_ignored": True, "threads_requested": 4}
+
+
+def test_highs_iterations_ignore_minus_one_counters():
+    """HiGHS sets its iteration counters to -1 for an algorithm that did not
+    run, and all of them to -1 when the solve errors (NETLIB cplex1 with
+    default settings ends in kSolveError); a row must not say -1 iterations."""
+    from types import SimpleNamespace
+
+    from solver_benchmarks.solvers.highs_adapter import _highs_iterations
+
+    counters = dict(
+        qp_iteration_count=-1,
+        ipm_iteration_count=-1,
+        simplex_iteration_count=-1,
+        pdlp_iteration_count=-1,
+    )
+    assert _highs_iterations(SimpleNamespace(**counters)) is None
+    counters["simplex_iteration_count"] = 0
+    counters["ipm_iteration_count"] = 14
+    assert _highs_iterations(SimpleNamespace(**counters)) == 14

@@ -5,9 +5,13 @@ cuOpt solves ``min c'x + (1/2) x'(Q + Q')x`` subject to
 ``min (1/2) x'P x + q'x, l <= A x <= u`` maps onto it with ``Q = P / 2``
 and free variables, so the objective is identical.
 
-The dual sign convention and the termination-status enum are checked at
-runtime against the installed cuOpt (see ``_probe``), since the Python API
-has changed across releases.
+Neither the dual sign nor the termination statuses are probed at run time.
+cuOpt's duals have the opposite sign to the harness convention (checked
+numerically on an active-bound LP); the ``dual_sign`` setting overrides it if
+a release flips it, which would otherwise show up as large ``dual_res_rel``
+on every solve. Termination names are matched against a static table across
+spellings (``_STATUS_MAP``); a name it does not know becomes ``solver_error``
+and the name itself is kept on ``info["termination"]``.
 """
 
 from __future__ import annotations

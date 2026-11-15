@@ -225,10 +225,13 @@ def _map_highs_status(model_status, highspy) -> str:
 
 
 def _highs_iterations(info) -> int | None:
+    """Iterations of the algorithm that ran (HiGHS keeps -1 for the others,
+    and for all of them when the solve errored before iterating)."""
     values = [
-        getattr(info, "qp_iteration_count", 0),
-        getattr(info, "ipm_iteration_count", 0),
-        getattr(info, "simplex_iteration_count", 0),
-        getattr(info, "pdlp_iteration_count", 0),
+        getattr(info, "qp_iteration_count", None),
+        getattr(info, "ipm_iteration_count", None),
+        getattr(info, "simplex_iteration_count", None),
+        getattr(info, "pdlp_iteration_count", None),
     ]
-    return int(max(values)) if values else None
+    counts = [int(value) for value in values if value is not None and value >= 0]
+    return max(counts) if counts else None

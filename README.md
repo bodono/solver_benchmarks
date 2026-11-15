@@ -383,9 +383,9 @@ Current maintained adapters:
 | ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite; optional on Python < 3.14 while wheels are available. ProxSuite's default stopping test checks only the primal and dual residuals and can call a point with a large duality gap solved, so the adapter turns on its duality-gap test (`check_duality_gap: true`, with `eps_duality_gap_abs` / `eps_duality_gap_rel` taken from `eps_abs` / `eps_rel` unless given); the values used are on `info`. Set `check_duality_gap: false` for ProxSuite's own default, which ProxQP results recorded before this change used. |
 | PIQP | `piqp` | QP | Direct sparse/dense QP adapter. |
 | SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets, optional on Python < 3.14 while wheels are available. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. |
-| GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. |
+| GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. When presolve can only say "infeasible or unbounded", the adapter re-solves with `DualReductions=0` (Gurobi's documented remedy) so the row gets a definite status; `info.inf_or_unbd_resolved` marks it. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. |
-| CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. |
+| CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
 
 Unsupported solver/problem combinations are skipped by default and recorded as
 `skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped.

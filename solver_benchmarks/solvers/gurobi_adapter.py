@@ -101,6 +101,7 @@ class GurobiSolverAdapter(SolverAdapter):
                 start = time.perf_counter()
                 try:
                     model.optimize()
+                    resolved = _resolve_inf_or_unbd(model, grb, self.settings)
                 except Exception as exc:
                     return SolverResult(
                         status=status.SOLVER_ERROR,
@@ -134,6 +135,7 @@ class GurobiSolverAdapter(SolverAdapter):
                             getattr(model, "Runtime", None)
                         ),
                         **({"settings_translated": translated} if translated else {}),
+                        **({"inf_or_unbd_resolved": True} if resolved else {}),
                     },
                 )
             finally:
@@ -142,6 +144,25 @@ class GurobiSolverAdapter(SolverAdapter):
                 model.dispose()
         finally:
             env.dispose()
+
+
+def _resolve_inf_or_unbd(model, grb, settings: dict) -> bool:
+    """Tell an infeasible model from an unbounded one after INF_OR_UNBD.
+
+    Gurobi's presolve dual reductions can prove only that a model has no
+    optimum; its documented remedy is to set DualReductions=0 and
+    reoptimize. Without it the row is primal_or_dual_infeasible, which never
+    counts as a certificate. Returns whether the model was re-solved (the
+    elapsed time covers both solves, as HiGHS's internal re-solve does).
+    """
+    if model.Status != grb.GRB.INF_OR_UNBD:
+        return False
+    for key, value in settings.items():
+        if key.lower() == "dualreductions" and int(value) == 0:
+            return False  # already off: the answer is final
+    model.setParam("DualReductions", 0)
+    model.optimize()
+    return True
 
 
 def _create_environment(grb):

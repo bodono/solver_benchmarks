@@ -588,3 +588,79 @@ def test_cuopt_unknown_parameter_is_a_value_error(monkeypatch, tmp_path):
     _install_fake_cuopt(monkeypatch, {"status": "Optimal"})
     with pytest.raises(ValueError, match="iteration_limt"):
         _solve("cuopt", _small_qp(), tmp_path, {"iteration_limt": 3})
+
+
+# ---------------------------------------------------------------------------
+# infeasible-or-unbounded: re-solve without dual reductions
+
+
+def test_gurobi_resolves_inf_or_unbd_without_dual_reductions(monkeypatch, tmp_path):
+    # Gurobi's documented remedy for INF_OR_UNBD: DualReductions=0, reoptimize.
+    models, log = _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.INF_OR_UNBD}, {"Status": _GRB.INFEASIBLE}]
+    )
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    optimizes = [entry for entry in log if entry[0] == "optimize"]
+    assert len(optimizes) == 2
+    assert "DualReductions" not in optimizes[0][1]
+    assert optimizes[1][1]["DualReductions"] == 0
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.info["raw_status"] == _GRB.INFEASIBLE
+    assert result.info["inf_or_unbd_resolved"] is True
+
+
+def test_gurobi_keeps_inf_or_unbd_if_the_resolve_cannot_tell(monkeypatch, tmp_path):
+    _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.INF_OR_UNBD}, {"Status": _GRB.INF_OR_UNBD}]
+    )
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    assert result.status == status.PRIMAL_OR_DUAL_INFEASIBLE
+
+
+def test_gurobi_does_not_resolve_when_dual_reductions_are_already_off(monkeypatch, tmp_path):
+    _, log = _install_fake_gurobipy(monkeypatch, [{"Status": _GRB.INF_OR_UNBD}])
+    result = _solve("gurobi", _small_qp(), tmp_path, {"DualReductions": 0})
+    assert len([entry for entry in log if entry[0] == "optimize"]) == 1
+    assert result.status == status.PRIMAL_OR_DUAL_INFEASIBLE
+
+
+def test_cplex_resolves_infeasible_or_unbounded_without_reductions(monkeypatch, tmp_path):
+    models, log = _install_fake_cplex(
+        monkeypatch,
+        [{"status": _CplexStatus.infeasible_or_unbounded}, {"status": _CplexStatus.unbounded}],
+    )
+    result = _solve("cplex", _small_qp(), tmp_path)
+    solves = [entry for entry in log if entry[0] == "solve"]
+    assert len(solves) == 2
+    assert "preprocessing.reduce" not in solves[0][1]
+    assert solves[1][1]["preprocessing.reduce"] == 0
+    assert result.status == status.DUAL_INFEASIBLE
+    assert result.info["raw_status"] == _CplexStatus.unbounded
+    assert result.info["inf_or_unbd_resolved"] is True
+
+
+# ---------------------------------------------------------------------------
+# iteration counts
+
+
+def test_cplex_reports_barrier_iterations_for_barrier_solves(monkeypatch, tmp_path):
+    # get_num_iterations() counts simplex (or crossover) iterations, which is
+    # 0 for a QP solved by barrier without crossover.
+    _install_fake_cplex(
+        monkeypatch,
+        [{"status": _CplexStatus.optimal, "x": [-1.0, -1.0], "objective": -1.0,
+          "duals": [0.0] * 4, "iterations": 0, "barrier_iterations": 12}],
+    )
+    result = _solve("cplex", _small_qp(), tmp_path)
+    assert result.iterations == 12
+    assert result.info["barrier_iterations"] == 12
+    assert result.info["simplex_iterations"] == 0
+
+
+def test_cplex_reports_simplex_iterations_for_simplex_solves(monkeypatch, tmp_path):
+    _install_fake_cplex(
+        monkeypatch,
+        [{"status": _CplexStatus.optimal, "x": [-1.0, -1.0], "objective": -1.0,
+          "duals": [0.0] * 4, "iterations": 7, "barrier_iterations": 0}],
+    )
+    assert _solve("cplex", _small_qp(), tmp_path).iterations == 7
