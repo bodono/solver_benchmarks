@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import scipy.sparse as sp
@@ -70,8 +71,25 @@ class OSQPSolverAdapter(SolverAdapter):
 
         solver = osqp.OSQP()
         start = time.perf_counter()
-        solver.setup(p, qp["q"], a_kept, l[kept], u[kept], **settings)
-        raw = solver.solve()
+        try:
+            solver.setup(p, qp["q"], a_kept, l[kept], u[kept], **settings)
+            raw = solver.solve()
+        except _osqp_exception(osqp) as exc:
+            code = exc.args[0] if exc.args else None
+            if code == _OSQP_SETTINGS_VALIDATION_ERROR:
+                raise ValueError(
+                    "OSQP rejected a setting value (see its message in stdout.log): "
+                    f"{sorted(settings)}"
+                ) from exc
+            # Data validation (e.g. l > u) and a non-convex P are the solver
+            # failing on this problem, not a harness error.
+            error_info = {"raw_status": "error", "error": f"OSQPException: {code}"}
+            mark_threads_ignored(error_info, threads)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info=error_info,
+            )
         elapsed = time.perf_counter() - start
 
         iterations = _maybe_int(raw.info.iter)
@@ -83,7 +101,7 @@ class OSQPSolverAdapter(SolverAdapter):
             osqp,
             hit_iteration_limit=iterations is not None and iterations >= int(max_iter),
         )
-        info = {
+        info: dict[str, Any] = {
             key: getattr(raw.info, key, None)
             for key in [
                 "status",
@@ -127,6 +145,15 @@ class OSQPSolverAdapter(SolverAdapter):
 # OSQP's default iteration cap, used only if the solver does not expose its
 # settings after setup.
 _OSQP_DEFAULT_MAX_ITER = 4000
+# osqp_error_type in OSQP's C API (not exported by the Python package):
+# 1 data validation, 2 settings validation, 4 non-convex problem, ...
+_OSQP_SETTINGS_VALIDATION_ERROR = 2
+
+
+def _osqp_exception(osqp):
+    """The exception type osqp raises for solver errors (if this build has one)."""
+    exc = getattr(osqp, "OSQPException", None)
+    return exc if isinstance(exc, type) and issubclass(exc, Exception) else ()
 _INACCURATE_AT_LIMIT = (
     "OSQP_SOLVED_INACCURATE",
     "OSQP_PRIMAL_INFEASIBLE_INACCURATE",

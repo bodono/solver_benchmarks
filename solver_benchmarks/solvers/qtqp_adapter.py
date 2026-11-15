@@ -69,12 +69,27 @@ class QTQPSolverAdapter(SolverAdapter):
         p = sp.csc_matrix(qp["P"])
         c = np.asarray(qp["q"], dtype=float)
 
-        start = time.perf_counter()
-        solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
+        # Per-iteration statistics (collect_stats) are diagnostics computed
+        # inside the timed solve, 2-5 ms per solve on small problems; they are
+        # collected only when the config asks, and the result's objective
+        # comes from the returned point instead.
         solve_kwargs = dict(settings)
-        if "collect_stats" in inspect.signature(solver.solve).parameters:
-            solve_kwargs["collect_stats"] = True
-        solution = solver.solve(**solve_kwargs)
+        start = time.perf_counter()
+        try:
+            solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
+            solution = solver.solve(**solve_kwargs)
+        except (ValueError, ArithmeticError, np.linalg.LinAlgError) as exc:
+            # qtqp raises ValueError for data it cannot take (non-finite or
+            # non-symmetric P, a non-convex KKT system) and for failed
+            # factorizations: the solver failing on this problem.
+            error_info = {"raw_status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            mark_time_limit_ignored(error_info, time_limit)
+            mark_threads_ignored(error_info, threads)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info=error_info,
+            )
         elapsed = time.perf_counter() - start
 
         raw_status = getattr(solution.status, "value", str(solution.status))
@@ -86,14 +101,15 @@ class QTQPSolverAdapter(SolverAdapter):
         # zero-based label, one below the completed count for any solve that
         # took a step, and is kept only as the fallback for older builds.
         iterations = _maybe_int(getattr(solution, "iterations", None))
+        objective = _point_objective(getattr(solution, "x", None), p, c)
         if not stats.empty:
             last = stats.tail(1).iloc[0]
-            objective = _maybe_float(last.get("pcost"))
+            if objective is None:
+                objective = _maybe_float(last.get("pcost"))
             if iterations is None:
                 iterations = _maybe_int(last.get("iter"))
             info = to_jsonable(last.to_dict())
         else:
-            objective = None
             info = {}
 
         mapped = _map_qtqp_status(
@@ -120,6 +136,14 @@ class QTQPSolverAdapter(SolverAdapter):
             trace=[to_jsonable(row) for row in trace],
             kkt=kkt_dict,
         )
+
+
+def _point_objective(x, p, c) -> float | None:
+    """``0.5 x'Px + c'x`` at the returned point, or None if it is not finite."""
+    if not finite_point(x):
+        return None
+    x = np.asarray(x, dtype=float)
+    return float(0.5 * x @ (p @ x) + c @ x)
 
 
 def _map_qtqp_status(raw_status, *, hit_iteration_limit: bool = False) -> str:

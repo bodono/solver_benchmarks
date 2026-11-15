@@ -1113,7 +1113,9 @@ Solver-specific traces:
 
 - SCS can write a CSV trace if `log_csv_filename: true` is set. The adapter maps
   this to a per-solve artifact path.
-- QTQP writes `trace.jsonl` when its collected stats are available.
+- QTQP writes `trace.jsonl` when its settings include `collect_stats: true`.
+  qtqp computes these per-iteration statistics inside the timed solve, so they
+  are not collected by default.
 - PDLP writes `pdlp_solve_log.textproto` and `pdlp_response.textproto` when
   OR-Tools is installed and a solve is attempted.
 
@@ -1546,6 +1548,8 @@ Adapter expectations:
 - Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states. A solve that stopped on its iteration or time limit is `MAX_ITER_REACHED` / `TIME_LIMIT` even when the solver labels its last iterate "solved inaccurate" or "almost solved"; keep the solver's own status in `info["raw_status"]`.
 - Populate `SolverResult.kkt` whenever the solver returned a finite primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) for every status in `status.ANY_FEASIBLE` (optimal, inaccurate, iteration or time limit, solver error), and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate. `bench kkt-verify --promote` can then judge every solver's limit-hit point by the same check. The KKT plots, summaries, and accuracy profile all read this field. `cone_residuals` projects onto every cone but complex PSD (zero, nonnegative, box, second-order, PSD, exponential and its dual, power and its dual), and its `primal_res` is the larger of `Ax + s − b` and the distance of `s` to the cone, so an adapter may pass `s = b − Ax`.
 - Report `objective_value` only for `OPTIMAL` and `OPTIMAL_INACCURATE` (`reported_objective` does this); it is `None` for limits, certificates and errors, whose point's objective is still on `kkt.primal_obj`.
+- Return `SOLVER_ERROR` with the message on `info["error"]` (and the elapsed time) when the solver itself fails on a problem by raising, e.g. on a non-convex `P` or crossed bounds; an exception escaping `solve` is recorded as a harness `worker_error` and re-run on resume. Keep raising for configuration errors (unknown settings, a missing backend).
+- Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.
