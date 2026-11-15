@@ -410,6 +410,17 @@ Current maintained adapters:
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. A license failure raised by the solve (missing, expired or exhausted license) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as MOSEK failing the problem. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
 
+Comparing with run directories written before the conic adapters adopted the
+shared result policy: SCS stops on `max_iters` / `time_limit_secs` are now
+`max_iter_reached` / `time_limit` (they were `optimal_inaccurate`, so configs
+that count `optimal_inaccurate` as success lose those rows); CVXOPT `unknown`
+stops before `maxiters` are now `solver_error` or `optimal_inaccurate` (they
+were `max_iter_reached` or `*_infeasible_inaccurate`), and CVXOPT solves LPs,
+SOCPs and SDPs with `conelp`; ECOS `run_time_seconds` now includes the QP to
+SOCP reformulation; SDPA runs single-threaded unless `threads` is set (it used
+every core, so its timings are slower than in old runs); and limit stops and
+infeasibility certificates carry no `objective_value` in any conic adapter.
+
 Unsupported solver/problem combinations are skipped by default and recorded as
 `skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped.
 
