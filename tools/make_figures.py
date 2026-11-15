@@ -8,6 +8,13 @@ chart, with the SCS series drawn in front.
 
 Usage:
   python tools/make_figures.py OUT_DIR qp=results/qp_verified_1e-4 lp=... [--tol-tag 1e-4]
+
+A problem that no result row sized (every solver timed out, crashed or
+raised on it) is loaded from its dataset to size it for the largest-quartile
+figures. For the lpbig family (the Mittelmann LP set) that can mean parsing
+several very large MPS files, which can be slow and need a lot of memory; pass
+--no-size-lookup to skip it, in which case such problems are left out of the
+largest quartile and named on stderr.
 """
 
 from __future__ import annotations
@@ -122,13 +129,16 @@ SizeLookup = Callable[[str, str], "float | None"]
 def problem_sizes(df: pd.DataFrame, size_lookup: SizeLookup | None = None) -> pd.Series:
     """nnz(A) + nnz(P) of every (dataset, problem) in ``df``, NaN where unknown.
 
-    Size is a property of the problem, not of a solve. The worker records the
-    problem's dimensions (``metadata.nnz_a`` / ``metadata.nnz_p``) on every row
-    it writes, whatever the outcome, so any such row sizes the problem. Rows
-    the runner writes itself (a solve killed at the harness timeout, a worker
-    that crashed) carry no dimensions, and when every solver ended that way,
-    typically on the largest instances, ``size_lookup(dataset, problem)`` is
-    asked instead (see :func:`registry_size_lookup`).
+    Size is a property of the problem, not of a solve. When the solver
+    returns, the worker records the problem's dimensions (``metadata.nnz_a`` /
+    ``metadata.nnz_p``) on its row, whatever status the solver reported, so
+    any such row sizes the problem. Three kinds of row carry no dimensions:
+    the ``worker_error`` row the worker writes when loading the problem or the
+    solver raised, and the rows the runner writes itself for a solve killed at
+    the harness timeout or a worker that crashed. When every solver's row for
+    a problem is one of those, typically on the largest instances,
+    ``size_lookup(dataset, problem)`` is asked instead (see
+    :func:`registry_size_lookup`).
     """
     def col(name: str) -> pd.Series:
         if name not in df.columns:
@@ -397,6 +407,9 @@ def main() -> None:
     ap.add_argument("--repo-root", type=Path, default=None,
                     help="repository whose data directories hold the problems, for sizing problems no "
                          "result row recorded dimensions for (default: this checkout)")
+    ap.add_argument("--no-size-lookup", action="store_true",
+                    help="do not load problems that no result row sized; leave them out of the largest "
+                         "quartile instead (loading the largest Mittelmann LPs is slow and memory-hungry)")
     args = ap.parse_args()
     global NEUTRAL
     NEUTRAL = bool(args.neutral)
@@ -419,7 +432,8 @@ def main() -> None:
             df = df[~pd.Series(list(zip(df["dataset"], df["problem"])), index=df.index).isin(drop_p)]
         # Sized once per family, over every tolerance's rows, so the quartile
         # is the same set of problems in each tolerance's figures.
-        sizes = problem_sizes(df, size_lookup=registry_size_lookup(run_dir, repo_root=args.repo_root))
+        lookup = None if args.no_size_lookup else registry_size_lookup(run_dir, repo_root=args.repo_root)
+        sizes = problem_sizes(df, size_lookup=lookup)
         limit = FAMILY_LIMIT.get(family)
         if limit:
             late = df["run_time_seconds"] > limit + LIMIT_GRACE

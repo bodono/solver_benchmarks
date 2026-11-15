@@ -157,8 +157,9 @@ def test_largest_quartile_reports_unknown_sizes_instead_of_counting_them_as_zero
 
 
 def test_problem_sizes_use_any_row_that_recorded_dimensions(make_figures):
-    # A solver that reported a failure still went through the worker, which
-    # records the problem's dimensions whatever the outcome.
+    # A solver that returned a failure status still went through the
+    # worker, which records the problem's dimensions whatever status the
+    # solver reported.
     df = pd.DataFrame([
         {"dataset": "lp", "problem": "p", "solver_id": "a", "status": status.SOLVER_ERROR,
          "run_time_seconds": 1.0, "metadata.nnz_a": 40, "metadata.nnz_p": 2},
@@ -239,3 +240,40 @@ def test_make_figures_main_survives_a_family_with_no_sized_problem(make_figures,
 
     assert (out_dir / "qp_1e-4_profile.png").exists()
     assert not (out_dir / "qp_1e-4_profile_largest.png").exists()
+
+
+@pytest.mark.parametrize("skip_lookup", [False, True], ids=["lookup", "no-size-lookup"])
+def test_make_figures_no_size_lookup_leaves_unsized_problems_out(make_figures, tmp_path, monkeypatch, capsys,
+                                                                 skip_lookup):
+    # Loading a problem to size it can mean parsing a multi-GB MPS file (the
+    # Mittelmann LP set); --no-size-lookup skips that and leaves such problems
+    # out of the largest quartile, naming them on stderr.
+    run_dir = tmp_path / "lpbig_run"
+    run_dir.mkdir()
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in _sized_rows(4, ("huge1",)).to_dict("records"):
+            handle.write(json.dumps(record) + "\n")
+    looked_up = []
+
+    def fake_registry_size_lookup(run_dir, repo_root=None):
+        def lookup(dataset, problem):
+            looked_up.append((dataset, problem))
+            return 10_000_000
+        return lookup
+
+    monkeypatch.setattr(make_figures, "registry_size_lookup", fake_registry_size_lookup)
+    out_dir = tmp_path / "figs"
+    argv = ["make_figures.py", str(out_dir), f"lp={run_dir}"] + (["--no-size-lookup"] if skip_lookup else [])
+    monkeypatch.setattr(sys, "argv", argv)
+
+    make_figures.main()
+
+    captured = capsys.readouterr()
+    if skip_lookup:
+        assert looked_up == []
+        assert "huge1" in captured.err
+        # small4 alone: the cutoff is taken over small1..small4.
+        assert "lp 1e-4: 5 problems, largest quartile 1" in captured.out
+    else:
+        assert looked_up == [("lp", "huge1")]
+        assert "lp 1e-4: 5 problems, largest quartile 2" in captured.out  # huge1 and small4
