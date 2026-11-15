@@ -200,6 +200,23 @@ def test_readMpsProblem_returns_the_quadratic_objective(tmp_path: Path, section:
     np.testing.assert_array_equal(problem.hessian.toarray(), [[2.0, 1.0], [1.0, 4.0]])
 
 
+def test_readMpsLp_warns_that_it_leaves_out_a_quadratic_objective(tmp_path: Path):
+    # readMpsLp returns four values, so it cannot return the Hessian; it
+    # used to say so, and must keep saying so now that readMpsProblem reads it.
+    pytest.importorskip("highspy")
+    import warnings
+
+    path = _write(tmp_path / "qp.mps", _QUADOBJ_BODY.format(section=_QUADOBJ))
+    with pytest.warns(qpsreader.QuadraticDataIgnoredWarning, match="qp.mps"):
+        a, c, l, u = qpsreader.readMpsLp(str(path))
+    assert c.tolist() == [1.0, 1.0] and a.shape[1] == 2
+
+    lp = _write(tmp_path / "lp.mps", _QUADOBJ_BODY.format(section=""))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", qpsreader.QuadraticDataIgnoredWarning)
+        qpsreader.readMpsLp(str(lp))
+
+
 def test_readMpsProblem_negates_the_hessian_of_a_maximisation(tmp_path: Path):
     pytest.importorskip("highspy")
     body = _QUADOBJ_BODY.format(section=_QUADOBJ.replace("2.0", "-2.0").replace("4.0", "-4.0"))

@@ -32,6 +32,14 @@ def _sanitize_upper(v: np.ndarray) -> np.ndarray:
     return np.where(v >= _INF_SENTINEL, np.inf, v)
 
 
+class QuadraticDataIgnoredWarning(UserWarning):
+    """A reader that returns only the linear part dropped a quadratic objective.
+
+    ``readMpsLp`` returns ``(A, c, l, u)``; ``readMpsProblem`` returns the
+    quadratic objective as well.
+    """
+
+
 class MpsProblem(NamedTuple):
     """An LP read from an MPS file, as the minimisation the harness solves:
     minimise ``c'x + offset`` subject to ``l <= mat x <= u``."""
@@ -78,8 +86,11 @@ def readMpsLp(filename):
     """Read an MPS LP file and return ``(mat, c, l, u)`` in canonical bound form.
 
     The objective's constant term is left out; ``readMpsProblem`` returns it.
+    A quadratic objective section (QPS) is left out too, with a
+    ``QuadraticDataIgnoredWarning``: the four values are then only the
+    linear part of the problem the file states.
     """
-    return readMpsProblem(filename)[:4]
+    return _linear_part(readMpsProblem(filename), filename)
 
 
 @contextlib.contextmanager
@@ -99,7 +110,19 @@ def _decompressed_temp_file(path: Path, opener):
 
 
 def _read_uncompressed_mps(filename: str):
-    return _read_uncompressed_mps_problem(filename)[:4]
+    return _linear_part(_read_uncompressed_mps_problem(filename), filename)
+
+
+def _linear_part(problem: MpsProblem, filename) -> tuple:
+    if problem.hessian is not None and problem.hessian.nnz:
+        warnings.warn(
+            f"MPS file {Path(filename).name} has a quadratic objective section "
+            "(QUADOBJ/QMATRIX/QSECTION), which readMpsLp leaves out; use "
+            "readMpsProblem to keep it.",
+            QuadraticDataIgnoredWarning,
+            stacklevel=3,
+        )
+    return tuple(problem[:4])
 
 
 def _read_uncompressed_mps_problem(filename: str, source_name: str | None = None) -> MpsProblem:
