@@ -374,18 +374,21 @@ def test_run_completes_when_parquet_cannot_be_written(tmp_path: Path, monkeypatc
     assert events[-1]["message"] == "benchmark_complete"
 
 
-@pytest.mark.parametrize("writer", ["text", "bytes"])
+@pytest.mark.parametrize("writer", ["text", "bytes", "stream"])
 def test_atomic_writes_honour_the_umask_and_keep_an_existing_mode(tmp_path: Path, writer):
     import os
     import stat
 
+    from solver_benchmarks.core.atomic import atomic_write_stream
     from solver_benchmarks.datasets.base import atomic_write_bytes
 
     def write(path):
         if writer == "text":
             atomic_write_text(path, "content")
-        else:
+        elif writer == "bytes":
             atomic_write_bytes(path, b"content")
+        else:
+            atomic_write_stream(path, lambda handle: handle.write(b"content"))
 
     previous = os.umask(0o022)
     try:

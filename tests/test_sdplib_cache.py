@@ -130,3 +130,28 @@ def test_dataset_lists_from_the_index_and_loads_over_a_truncated_cache(tmp_path:
     # One opening of the archive, to extract the member again; the listing
     # came from the index.
     assert len(scans) == 1
+
+
+def test_extracted_members_and_the_index_get_the_mode_open_would_give(tmp_path: Path):
+    # A temporary file from tempfile is always 0o600, and the rename keeps
+    # that mode: on a shared data directory another user's load then found
+    # the cached member (its size check needs no read permission) and failed
+    # to open it.
+    import stat
+
+    tar_path = _tar(tmp_path / "sdplib.tar", {"a.jld2": b"1", "b.jld2": b"22"})
+    previous = os.umask(0o022)
+    try:
+        cache = tmp_path / ".cache"
+        index = cache / "sdplib.tar.index.json"
+        assert list_sdplib_tar(tar_path, index_path=index) == {"a": 1, "b": 2}
+        member = extract_from_tar(tar_path, "a", cache)
+        assert stat.S_IMODE(index.stat().st_mode) == 0o644
+        assert stat.S_IMODE(member.stat().st_mode) == 0o644
+
+        os.umask(0o027)
+        other = extract_from_tar(tar_path, "b", tmp_path / "group")
+        assert stat.S_IMODE(other.stat().st_mode) == 0o640
+    finally:
+        os.umask(previous)
+    assert sorted(path.name for path in cache.iterdir()) == ["a.jld2", "sdplib.tar.index.json"]

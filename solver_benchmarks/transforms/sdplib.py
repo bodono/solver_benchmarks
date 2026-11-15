@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tarfile
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
+
+from solver_benchmarks.core.atomic import atomic_write_bytes, atomic_write_stream
 
 
 def list_sdplib_tar(tar_path: Path, index_path: Path | None = None) -> dict[str, int]:
@@ -25,7 +25,8 @@ def list_sdplib_tar(tar_path: Path, index_path: Path | None = None) -> dict[str,
     it (911 MB for the bundled one, about a second). With ``index_path`` the
     listing is kept in that JSON file, with the archive's size and
     modification time, and read from there while they still match. The index
-    is written atomically, and a failure to write it is ignored.
+    is written atomically, with the mode ``open()`` would give it, and a
+    failure to write it is ignored.
     """
     if not tar_path.exists():
         return {}
@@ -44,7 +45,7 @@ def list_sdplib_tar(tar_path: Path, index_path: Path | None = None) -> dict[str,
     if index_path is not None:
         payload = json.dumps({**stamp, "members": members}, sort_keys=True).encode("utf-8")
         try:
-            _write_atomically(index_path, lambda handle: handle.write(payload))
+            atomic_write_bytes(index_path, payload)
         except OSError:
             pass
     return members
@@ -72,6 +73,9 @@ def extract_from_tar(
     target. A file already at the target is used as it is, unless
     ``expected_size`` (the member's size) is given and differs, as for a
     file truncated by an interrupted copy before extraction was atomic.
+    A new file gets the mode ``open()`` would give it (0o666 less the
+    umask), so on a shared data directory other users can read what one
+    user extracted.
     """
     target = cache_dir / f"{name}.jld2"
     if target.exists() and (expected_size is None or target.stat().st_size == int(expected_size)):
@@ -84,33 +88,8 @@ def extract_from_tar(
             raise FileNotFoundError(member_name)
         # Copied in pieces: the largest member is 395 MB.
         with source:
-            _write_atomically(target, lambda handle: shutil.copyfileobj(source, handle))
+            atomic_write_stream(target, lambda handle: shutil.copyfileobj(source, handle))
     return target
-
-
-def _write_atomically(target: Path, write) -> None:
-    """Call ``write`` on a temporary file beside ``target``, then rename it onto ``target``.
-
-    The temporary name ends in ``.part``, so no dataset listing picks it up,
-    and it is removed if writing fails or is interrupted.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".part", dir=target.parent)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            write(handle)
-            handle.flush()
-            try:
-                os.fsync(handle.fileno())
-            except OSError:
-                pass
-        os.replace(tmp_name, target)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
 
 
 def read_sdplib_jld2(path: Path) -> dict:

@@ -239,7 +239,9 @@ into place when complete, so concurrent workers never read a partial file; a
 cached file whose size differs from the archive member is extracted again.
 The list of archive members is kept in `.cache/sdplib.tar.index.json` and
 rebuilt when the archive's size or modification time changes, since listing
-the compressed archive means decompressing all of it.
+the compressed archive means decompressing all of it. Extracted files and the
+index get the mode a plain write would give them (0o666 less the umask), so on
+a shared data directory other users can read what one user extracted.
 
 Three members of the archive are damaged and cannot be read: `maxG55`,
 `maxG60` and `thetaG51` (stretches of each file are zeros). Their original

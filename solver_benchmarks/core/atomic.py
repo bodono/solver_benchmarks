@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import secrets
 import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 
 def atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -16,6 +18,19 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     from ``tempfile`` is always 0o600, which ``os.replace`` would carry over:
     on a shared machine colleagues could then not read manifest.json.
     """
+    atomic_write_stream(path, lambda handle: handle.write(data))
+
+
+def atomic_write_stream(path: Path, write: Callable[[BinaryIO], object]) -> None:
+    """``atomic_write_bytes`` for content too large to hold in memory.
+
+    ``write`` is called with the temporary file, open for binary writing,
+    and writes the content to it, for instance with ``shutil.copyfileobj``
+    from another stream. If ``write`` raises, or the process is interrupted
+    (``KeyboardInterrupt`` included), the temporary file is removed and
+    ``path`` is left as it was. The temporary file is named
+    ``.<name>.<random>.tmp``, so a glob for ``path``'s suffix never matches it.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -25,7 +40,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     fd, tmp_name = _create_temporary(path)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
+            write(handle)
             handle.flush()
             # Force the data to disk before the rename so a power loss
             # cannot leave the rename visible with a zero-length payload.
