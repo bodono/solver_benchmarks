@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -103,9 +104,15 @@ class QPLIBDataset(Dataset):
         if all_problems:
             names = list(qplib_index(self.folder))
         elif problem_names:
-            names = list(problem_names)
+            # A list or comma-separated subset reaches here as problem names
+            # and may mix categories with IDs (``[ccb, 8495]``).
+            names = sorted(_subset_ids(self.folder, list(problem_names)) or ())
         else:
-            names = list(QPLIB_DEFAULT_SUBSET)
+            # A category (``subset: ccb``) or a single ID is not passed in as
+            # problem names; without this the default trio was fetched and
+            # the run quietly covered part of the category.
+            subset = _subset_ids(self.folder, self.options.get("subset"))
+            names = sorted(subset) if subset is not None else list(QPLIB_DEFAULT_SUBSET)
         self.folder.mkdir(parents=True, exist_ok=True)
         for name in names:
             download_qplib_problem(name, self.folder)
@@ -136,17 +143,37 @@ def download_qplib_problem(name: str, folder: Path) -> Path:
         return target
     folder.mkdir(parents=True, exist_ok=True)
     url = f"{QPLIB_BASE_URL}/QPLIB_{problem_id}.qplib"
-    # Narrow the exception scope to network/transport errors so a typo
-    # in the URL does not silently bypass HTTPS via the HTTP fallback.
+    # Only a transport failure (no connection, a TLS failure, a timeout)
+    # falls back to plain HTTP. An HTTP error is the server's answer, and a
+    # 404 for an unknown ID must stay an error rather than be retried
+    # unauthenticated.
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             content = response.read()
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+    except urllib.error.HTTPError:
+        raise
+    except (urllib.error.URLError, TimeoutError, OSError):
         fallback = f"http://qplib.zib.de/qplib/QPLIB_{problem_id}.qplib"
         with urllib.request.urlopen(fallback, timeout=60) as response:
             content = response.read()
+    # Parse before caching: an error page or a truncated body would
+    # otherwise be cached and fail every later load, since preparation
+    # skips files that exist.
+    _validate_qplib_payload(content, problem_id)
     atomic_write_bytes(target, content)
     return target
+
+
+def _validate_qplib_payload(content: bytes, problem_id: str) -> None:
+    with tempfile.TemporaryDirectory() as staging:
+        path = Path(staging) / f"QPLIB_{problem_id}.qplib"
+        path.write_bytes(content)
+        try:
+            QPLIB(str(path), problem_id)
+        except (ValueError, IndexError, KeyError) as exc:
+            raise RuntimeError(
+                f"QPLIB problem {problem_id} did not download as a readable QPLIB file: {exc}"
+            ) from exc
 
 
 def _qplib_id(name: str) -> str:
@@ -159,18 +186,27 @@ def _qplib_id(name: str) -> str:
 
 
 def _subset_ids(folder: Path, subset) -> set[str] | None:
+    """The QPLIB IDs a ``subset`` option selects, or None for no filter.
+
+    ``None``/``"all"``: no filter; ``"default"``: the default subset.
+    Otherwise a comma-separated string or a list, each item a category of
+    the index (``ccb``, any case) or a numeric ID.
+    """
     if subset is None or subset == "all":
         return None
     if subset == "default":
         return set(QPLIB_DEFAULT_SUBSET)
+    if isinstance(subset, str):
+        items = [item.strip() for item in subset.split(",") if item.strip()]
+    else:
+        items = [str(item).strip() for item in subset]
     categories = _qplib_categories(folder)
-    if isinstance(subset, str) and "," in subset:
-        return {_qplib_id(item.strip()) for item in subset.split(",") if item.strip()}
-    subset_key = str(subset).lower()
-    matching = {problem_id for problem_id, category in categories.items() if category == subset_key}
-    if matching:
-        return matching
-    return {_qplib_id(str(subset))}
+    ids: set[str] = set()
+    for item in items:
+        key = item.lower()
+        matching = {problem_id for problem_id, category in categories.items() if category == key}
+        ids |= matching if matching else {_qplib_id(item)}
+    return ids
 
 
 def _qplib_categories(folder: Path) -> dict[str, str]:

@@ -493,3 +493,28 @@ def test_normalize_subset_accepts_comma_string_and_list():
 
     assert _normalize_subset("a, b, c") == {"a", "b", "c"}
     assert _normalize_subset(["x", "y"]) == {"x", "y"}
+
+
+def test_list_problems_lists_plain_and_gzipped_copies_once(tmp_path: Path):
+    folder = tmp_path / "tsplib_data"
+    _write_tsp(folder, "tiny4", TINY_EUC2D)
+    (folder / "tiny4.tsp.gz").write_bytes(gzip.compress(TINY_EUC2D.encode()))
+    (folder / "zipped.tsp.gz").write_bytes(gzip.compress(TINY_EUC2D.encode()))
+
+    specs = _local_dataset(folder).list_problems()
+
+    assert [(spec.name, spec.path.name) for spec in specs] == [
+        ("tiny4", "tiny4.tsp"),
+        ("zipped", "zipped.tsp.gz"),
+    ]
+
+
+def test_subset_default_is_the_curated_default_subset(tmp_path: Path):
+    from solver_benchmarks.datasets.tsplib_sdp import TSPLIB_DEFAULT_SUBSET, _normalize_subset
+
+    assert _normalize_subset("default") == set(TSPLIB_DEFAULT_SUBSET)
+    folder = tmp_path / "tsplib_data"
+    _write_tsp(folder, "gr17", TINY_EUC2D)
+    _write_tsp(folder, "tiny4", TINY_EUC2D)
+    names = [spec.name for spec in _local_dataset(folder, subset="default").list_problems()]
+    assert names == ["gr17"]

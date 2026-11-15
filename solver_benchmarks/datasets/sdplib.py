@@ -96,6 +96,14 @@ class SDPLIBDataset(Dataset):
     def tar_path(self) -> Path:
         return self.folder / "sdplib.tar"
 
+    @property
+    def cache_dir(self) -> Path:
+        """Where archive members are extracted for loading, with the member index."""
+        return self.folder / ".cache"
+
+    def _member_sizes(self) -> dict[str, int]:
+        return list_sdplib_tar(self.tar_path, index_path=self.cache_dir / "sdplib.tar.index.json")
+
     def list_problems(self) -> list[ProblemSpec]:
         """One spec per problem name in the selected subset, with explicit precedence.
 
@@ -118,7 +126,7 @@ class SDPLIBDataset(Dataset):
         self._check_options()
         specs: dict[str, ProblemSpec] = {}
         rank: dict[str, int] = {}
-        member_sizes = list_sdplib_tar(self.tar_path) if self.tar_path.exists() else {}
+        member_sizes = self._member_sizes() if self.tar_path.exists() else {}
         entries = sorted(self.folder.iterdir()) if self.folder.is_dir() else []
         # Size of the converted file of each name: the archive member, or an
         # extracted .jld2 where there is no archive.
@@ -174,7 +182,9 @@ class SDPLIBDataset(Dataset):
                           "num_blocks": len(primal.blocks), "block_orders": [blk.order for blk in primal.blocks]},
             )
         if path.suffix == ".tar":
-            path = extract_from_tar(path, name, self.folder / ".cache")
+            path = extract_from_tar(
+                path, name, self.cache_dir, expected_size=spec.metadata.get("size_bytes")
+            )
         problem = read_sdplib_jld2(path)
         metadata = dict(spec.metadata)
         # The matrices are stored whole; the file records the blocks apart.
@@ -208,7 +218,7 @@ class SDPLIBDataset(Dataset):
                 "problem_classes/sdplib_data/sdplib.tar, or place converted "
                 f"`.jld2` files or original `.dat-s` files in {self.folder}."
             )
-        members = list_sdplib_tar(self.tar_path)
+        members = self._member_sizes()
         names = list(members) if all_problems else list(problem_names or SDPLIB_DEFAULT_SUBSET)
         missing = [name for name in names if name not in members]
         if missing:
@@ -218,7 +228,7 @@ class SDPLIBDataset(Dataset):
         originals = {_original_stem(path) for path in self.folder.iterdir()} - {None}
         for name in names:
             if name not in originals:
-                extract_from_tar(self.tar_path, name, self.folder)
+                extract_from_tar(self.tar_path, name, self.folder, expected_size=members[name])
 
     def missing_data_message(self) -> str:
         return (

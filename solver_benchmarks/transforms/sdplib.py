@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tarfile
 from collections.abc import Sequence
@@ -10,29 +11,75 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.core.atomic import atomic_write_bytes, atomic_write_stream
 
-def list_sdplib_tar(tar_path: Path) -> dict[str, int]:
+
+def list_sdplib_tar(tar_path: Path, index_path: Path | None = None) -> dict[str, int]:
     """Return a mapping from problem name to the tar member size in bytes.
 
     The size is exposed so callers (and the runner-level size filter) can
     reason about per-member sizes without having to crack open the archive
     again.
+
+    Listing the members of the gzip-compressed archive decompresses all of
+    it (911 MB for the bundled one, about a second). With ``index_path`` the
+    listing is kept in that JSON file, with the archive's size and
+    modification time, and read from there while they still match. The index
+    is written atomically, with the mode ``open()`` would give it, and a
+    failure to write it is ignored.
     """
     if not tar_path.exists():
         return {}
+    stat = tar_path.stat()
+    stamp = {"archive_size": int(stat.st_size), "archive_mtime_ns": int(stat.st_mtime_ns)}
+    if index_path is not None:
+        cached = _read_member_index(index_path, stamp)
+        if cached is not None:
+            return cached
     with tarfile.open(tar_path) as archive:
-        return {
+        members = {
             Path(member.name).stem: int(member.size)
             for member in archive
             if member.name.endswith(".jld2")
         }
+    if index_path is not None:
+        payload = json.dumps({**stamp, "members": members}, sort_keys=True).encode("utf-8")
+        try:
+            atomic_write_bytes(index_path, payload)
+        except OSError:
+            pass
+    return members
 
 
-def extract_from_tar(tar_path: Path, name: str, cache_dir: Path) -> Path:
+def _read_member_index(index_path: Path, stamp: dict[str, int]) -> dict[str, int] | None:
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        if any(index.get(key) != value for key, value in stamp.items()):
+            return None
+        return {str(name): int(size) for name, size in index["members"].items()}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def extract_from_tar(
+    tar_path: Path, name: str, cache_dir: Path, expected_size: int | None = None
+) -> Path:
+    """Extract member ``<name>.jld2`` to ``cache_dir`` and return its path.
+
+    The member is copied to a temporary file in ``cache_dir`` and renamed
+    onto ``<name>.jld2`` once complete, so a reader never sees a partial
+    file: a second worker loading the same problem meanwhile extracts its
+    own copy, and a worker killed during the copy leaves nothing at the
+    target. A file already at the target is used as it is, unless
+    ``expected_size`` (the member's size) is given and differs, as for a
+    file truncated by an interrupted copy before extraction was atomic.
+    A new file gets the mode ``open()`` would give it (0o666 less the
+    umask), so on a shared data directory other users can read what one
+    user extracted.
+    """
     target = cache_dir / f"{name}.jld2"
-    if target.exists():
+    if target.exists() and (expected_size is None or target.stat().st_size == int(expected_size)):
         return target
-    cache_dir.mkdir(parents=True, exist_ok=True)
     member_name = f"{name}.jld2"
     with tarfile.open(tar_path) as archive:
         member = archive.getmember(member_name)
@@ -40,8 +87,8 @@ def extract_from_tar(tar_path: Path, name: str, cache_dir: Path) -> Path:
         if source is None:
             raise FileNotFoundError(member_name)
         # Copied in pieces: the largest member is 395 MB.
-        with source, open(target, "wb") as sink:
-            shutil.copyfileobj(source, sink)
+        with source:
+            atomic_write_stream(target, lambda handle: shutil.copyfileobj(source, handle))
     return target
 
 

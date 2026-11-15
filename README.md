@@ -108,20 +108,20 @@ Current maintained adapters:
 |---|---|---|---|
 | Maros-Meszaros | `maros_meszaros` | QP | Loads `.mat` QP files. |
 | NETLIB | `netlib` | LP as QP | Use `dataset_options.subset: feasible` or `infeasible`. |
-| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset (16 instances). Bundled in the repo as decoded MPS — NETLIB hosts these in EMPS (compressed-MPS) format which our `qpsreader` cannot parse, so the prepare path copies from the bundled checkout instead of fetching from the network. |
+| Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset (16 instances). Bundled in the repo as decoded MPS — NETLIB hosts these in EMPS (compressed-MPS) format, which HiGHS cannot read, so the prepare path copies from the bundled checkout instead of fetching from the network (the EMPS decoder in `transforms/emps.py`, used for Mittelmann's EMPS files, would also decode the NETLIB originals). |
 | Liu-Pataki | `liu_pataki` | Cone/SDP | Bundled infeasible and weakly infeasible SeDuMi `.mat` SDP instances; converted to canonical PSD triangle cones. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only; downloads official MIPLIB 2017 benchmark `.mps.gz` files on request. |
-| QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. |
+| QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. A download is parsed before it is cached, and only a transport failure (not an HTTP error such as a 404) is retried over plain HTTP. |
 | Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
-| Mittelmann SDP | `mittelmann_sdp` | Cone/SDP | Mittelmann's SDP test set in SDPA-S sparse format (G-graph maxcut relaxations + Lovász theta numbers); downloads from `plato.asu.edu`. |
+| Mittelmann SDP | `mittelmann_sdp` | Cone/SDP | Mittelmann's SDP test set in SDPA-S sparse format; downloads from `plato.asu.edu`. The default subset is truss topology design (`trto3`, `buck3`), `rose13`, `cnhil8`, `biggs` and one maxcut relaxation (`G40mc`, a PSD block of order 2000); some take a minute or more. Each file's problem `min c'x` s.t. `sum_k x_k F_k - F_0` PSD is posed, as for SDPLIB. A plain `.dat-s` is preferred to a `.dat-s.gz` of the same name. |
 | SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files (or original `.dat-s` files placed beside the archive); requires `h5py`. Problems are posed with the block structure the original SDPLIB files declare (several semidefinite blocks, and diagonal blocks as nonnegative rows); the converted files store each constraint as one matrix and record the structure apart, as `blockvec`. `dataset_options.subset: feasible` (default), `infeasible` (the four instances `infd1`, `infd2`, `infp1`, `infp2`) or `all`. `dataset_options.blocks: merged` poses each problem read from the archive as one semidefinite block of the full order instead, as results from before the loader gave the block-diagonal problems their declared blocks were produced (an original `.dat-s` file has no merged form). |
 | TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
-| DIMACS | `dimacs` | Cone | Reads SeDuMi-format `.mat` and `.mat.gz` and poses the file's dual, `maximize b'y` subject to `c - A'y in K*`, as `minimize -b'y`: rows in SeDuMi's order (free, linear, second-order, PSD), each PSD block as the scaled lower triangle of its symmetric part. The recorded objective is minus the published optimum. Rotated Lorentz cones are not yet supported. |
-| CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. |
-| MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`. |
+| DIMACS | `dimacs` | Cone | Reads SeDuMi-format `.mat` and `.mat.gz` and poses the file's dual, `maximize b'y` subject to `c - A'y in K*`, as `minimize -b'y`: rows in SeDuMi's order (free, linear, second-order, PSD), each PSD block as the scaled lower triangle of its symmetric part. The recorded objective is minus the published optimum. `filtinf1`, the library's infeasible variant of `filter48_socp`, is recorded as expected infeasible. Rotated Lorentz cones are not yet supported. |
+| CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. Listing reads only each file's header (the sections before the first coordinate section); a file that cannot be read is skipped with a warning, and a plain `.cbf` is preferred to a `.cbf.gz` of the same name. A maximisation is posed as the minimisation of minus its objective, with `original_obj_type: max` in the metadata. |
+| MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`, at a pinned commit (`MPC_QPBENCHMARK_REVISION`). `.npz` files are read without unpickling: an object array is accepted only as a `None` placeholder for a missing array. `P` may be the whole symmetric Hessian or one triangle of it, which is mirrored; a `P` that is neither is rejected. |
 | LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
-| DC OPF | `dc_opf` | LP as QP | DC Optimal Power Flow LPs from MATPOWER `.m` case files; sparse power-balance equalities, line-flow inequality limits, generator box bounds. What a case marks as out of service is left out, as MATPOWER does: an isolated bus (type 4) with its demand and the branches and generators attached to it, and a generator that is off, which stays as a variable fixed at zero and adds nothing to the cost. |
-| CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. |
+| DC OPF | `dc_opf` | QP | DC Optimal Power Flow problems from evaluated MATPOWER cases (`.mat` files downloaded from a pinned snapshot into `dc_opf_data/<revision>/`; the `.m` files bundled in `dc_opf_data/` are MATPOWER's sources of the default cases, kept for reference and not read). An LP when every generator cost is linear or piecewise linear, a QP when costs are quadratic. Sparse power-balance equalities, line-flow inequality limits, generator box bounds. What a case marks as out of service is left out, as MATPOWER does: an isolated bus (type 4) with its demand and the branches and generators attached to it, and a generator that is off, which stays as a variable fixed at zero and adds nothing to the cost. |
+| CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. Read with the MPC `.npz` schema: `P` dense, the whole symmetric Hessian or one triangle. Preparing checks that the requested exports exist; when some are missing it names them and writes `EXPORT_README.md`, with the schema, into `cutest_qp_data/`. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
 | Synthetic cone smoke test | `synthetic_cone` | Cone | Tiny deterministic conic LP test problem. |
 
@@ -137,6 +137,15 @@ in the file's objective is part of the recorded objective (of the bundled
 files only NETLIB `e226` has one, 7.113: its recorded optimum is -11.6389,
 where the Netlib table lists -18.7519 without the constant). The sense the
 file states is recorded in the problem's metadata as `original_obj_type`.
+
+An MPS file read by these datasets may also carry a quadratic objective
+(`QUADOBJ`, `QMATRIX` or `QSECTION`, in a file named `.mps`); HiGHS reads it
+and it becomes the problem's `P` (none of the bundled files has one). A column
+whose only bound is an `UP` bound below zero is taken as free below, as CPLEX,
+Gurobi and lp_solve read it, with a warning; HiGHS alone keeps the default
+lower bound 0, which makes the problem infeasible. A lower bound the file
+states is kept. Compressed files are decompressed in pieces to a temporary
+file for HiGHS, never whole in memory.
 
 Check local dataset availability:
 
@@ -157,8 +166,14 @@ are prepared explicitly. The convention is:
 - `bench run CONFIG --prepare-data` or `run.auto_prepare_data: true` prepares
   data implied by the config before solving. If `include` is set, those problem
   names are prepared. If `dataset_options.subset: all` is set, the dataset's
-  full remote index is prepared. Otherwise the dataset's small default subset is
-  prepared.
+  full remote index is prepared. If the subset names problems, those are
+  prepared: a single name, a list or a comma-separated string, for the datasets
+  whose `subset` takes problem names (`qplib`, where a category such as `ccb`
+  also works, `mpc_qpbenchmark`, `cutest_qp`, `cblib`, `mittelmann_sdp`,
+  `tsplib_sdp`, `dc_opf` and `libsvm_qp`). Otherwise the dataset's small
+  default subset is prepared. Requested problems that are already present are
+  not requested again, and a failed preparation stops the run with an error
+  naming the dataset.
 - `bench data prepare DATASET` downloads or extracts a small default subset.
 - `bench data prepare DATASET --problem NAME` prepares one or more named problems.
 - `bench data prepare DATASET --all` opts into the largest known source for that dataset.
@@ -223,7 +238,15 @@ adapter reads converted `.jld2` files, or extracts them from
 `problem_classes/sdplib_data/sdplib.tar` when that archive is present. It does
 not download and convert the original SDPLIB files automatically. If the
 converted archive is absent, restore `sdplib.tar` or place converted `.jld2`
-files in `problem_classes/sdplib_data`.
+files in `problem_classes/sdplib_data`. A problem read from the archive is
+extracted once into `sdplib_data/.cache/`, through a temporary file renamed
+into place when complete, so concurrent workers never read a partial file; a
+cached file whose size differs from the archive member is extracted again.
+The list of archive members is kept in `.cache/sdplib.tar.index.json` and
+rebuilt when the archive's size or modification time changes, since listing
+the compressed archive means decompressing all of it. Extracted files and the
+index get the mode a plain write would give them (0o666 less the umask), so on
+a shared data directory other users can read what one user extracted.
 
 Three members of the archive are damaged and cannot be read: `maxG55`,
 `maxG60` and `thetaG51` (stretches of each file are zeros). Their original
@@ -308,25 +331,25 @@ Useful dataset options:
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
 | `sdplib` | `subset=feasible`, `subset=infeasible` or `subset=all` | Select the SDPLIB feasibility subset (default `feasible`). |
 | `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the merged-form rows move to `results.superseded.jsonl`, so use a new run directory to keep both forms. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |
-| `qplib` | `subset=default`, `ccb`, `ccl`, `dcl`, `all`, or comma-separated IDs | Filter convex QPLIB instances. |
+| `qplib` | `subset=default`, `all`, or a category (`ccb`, `ccl`, `dcl`, ...), an ID, or a list or comma-separated string of them | Filter convex QPLIB instances. |
 | `liu_pataki` | `classification=infeas` or `classification=weak` | Select infeasible or weakly infeasible SDP families. |
 | `liu_pataki` | `conditioning=clean` or `conditioning=messy` | Select clean or numerically messier Liu-Pataki instances. |
 | `liu_pataki` | `constraint_count=10` or `constraint_count=20` | Select Liu-Pataki instances by equality count. |
 | `liu_pataki` | `block_dim=10` | Select Liu-Pataki instances by PSD block dimension. |
 | `mpc_qpbenchmark` | `subset=default`, `all`, or comma-separated names | Filter downloaded MPC QP `.npz` files. |
-| `cutest_qp` | `subset=default`, `all`, or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
+| `cutest_qp` | `subset=default`, `all`, or a list or comma-separated names | Filter locally exported CUTEst QP `.npz` files. |
 | `cblib` | `subset=default`, `all`, or comma-separated names | Filter downloaded CBF files. |
 | `cblib` | `subset_kind=expcone`, `socp`, or `lp` | Filter CBF instances by cone shape rather than by name. Combines with `subset` (both filters must pass). |
 | `cblib` | `include_unsupported=true` | Show downloaded CBF files the parser would otherwise hide. |
-| `mittelmann_sdp` | `subset=all` (no filter) or comma-separated names | Filter to a subset of locally available SDPA-S instances. |
-| `tsplib_sdp` | `subset=all` (no filter) or comma-separated names | Filter to a subset of locally available TSPLIB instances. |
-| `dc_opf` | `subset=all` (no filter) or comma-separated names | Filter to a subset of locally available MATPOWER cases. |
+| `mittelmann_sdp` | `subset=all` (no filter, the default), `default`, or comma-separated names | Filter to a subset of locally available SDPA-S instances. |
+| `tsplib_sdp` | `subset=all` (no filter, the default), `default`, or comma-separated names | Filter to a subset of locally available TSPLIB instances; a plain `.tsp` is preferred to a `.tsp.gz` of the same name. |
+| `dc_opf` | `subset=all` (no filter), `feasible`, `infeasible`, or a list or comma-separated names | Filter to a subset of locally available MATPOWER cases; `feasible`/`infeasible` use the snapshot's feasibility labels. |
 | `libsvm_qp` | `kind=svm_dual` (default) or `markowitz` | Choose the QP shape derived from the LIBSVM data. |
 | `libsvm_qp` | `kernel=linear` (default) or `rbf` | SVM-dual kernel choice. Linear gives a low-rank `Q` (rank ≤ feature dimension). |
 | `libsvm_qp` | `gamma=<float>` | RBF kernel bandwidth; defaults to `1 / num_features`. |
 | `libsvm_qp` | `C=<float>` | SVM regularization upper bound on dual variables (default `1.0`). |
 | `libsvm_qp` | `risk_aversion=<float>` | Markowitz `λ` in the objective `½ w'Σw − λ μ'w` (default `1.0`). |
-| `libsvm_qp` | `max_samples=<int>` | Deterministically subsample to this many rows (default `200`). |
+| `libsvm_qp` | `max_samples=<int>` | Deterministically subsample to this many rows (default `200`): rows `0, k, 2k, ...` with `k = n // max_samples`, the first `max_samples` of them, so a file with fewer than twice that many rows contributes its first `max_samples` rows. |
 | `libsvm_qp` | `subset=default`, `all`, or comma-separated names | Filter to a subset of LIBSVM datasets. |
 
 ### Filtering by file size
@@ -458,7 +481,7 @@ as YAML 1.2 and JSON read them:
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
 | `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
-| `run.auto_prepare_data` | If true, run dataset preparation before listing/solving missing requested problems. Requested problems that are already present are not requested again, and a failed preparation stops the run with an error naming the dataset. For `cblib`, `mittelmann_sdp` and `libsvm_qp`, a `subset` naming a single problem prepares that problem. |
+| `run.auto_prepare_data` | If true, prepare the missing requested data before listing and solving: the problems `include` names, else those `dataset_options.subset` names (for the datasets whose subset takes problem names), else the dataset's small default subset. Problems already present are not requested again, and a failed preparation stops the run with an error naming the dataset. The details are under [Supported Datasets](#supported-datasets). |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
 | `solvers[].settings` | Passed directly to the solver adapter. |
@@ -1203,7 +1226,8 @@ it (runs recorded before this field existed are scored the same way, with the
 outcome inferred from the dataset id, problem name and source path):
 
 - `infeasible` (NETLIB `subset: infeasible`, all of Liu-Pataki, SDPLIB
-  `infd1`/`infd2`/`infp1`/`infp2`, DC OPF cases labelled infeasible): solved
+  `infd1`/`infd2`/`infp1`/`infp2`, DIMACS `filtinf1`, DC OPF cases labelled
+  infeasible): solved
   only by `primal_infeasible` or `dual_infeasible`. Either certificate proves
   no optimal pair exists, and some instances (NETLIB `cplex1`) are primal and
   dual infeasible at once. Weakly infeasible Liu-Pataki instances are held to

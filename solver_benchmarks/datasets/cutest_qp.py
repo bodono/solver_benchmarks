@@ -40,12 +40,7 @@ class CUTEstQPDataset(Dataset):
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():
             return []
-        subset = self.options.get("subset")
-        allowed = None
-        if subset == "default":
-            allowed = set(CUTEST_QP_DEFAULT_SUBSET)
-        elif isinstance(subset, str) and subset != "all":
-            allowed = {item.strip() for item in subset.split(",") if item.strip()}
+        allowed = _normalize_subset(self.options.get("subset"))
         specs = []
         for path in sorted(self.folder.glob("*.npz")):
             if allowed is not None and path.stem not in allowed:
@@ -79,15 +74,49 @@ class CUTEstQPDataset(Dataset):
         *,
         all_problems: bool = False,
     ) -> None:
+        """Check that the requested exports are present; nothing can be fetched.
+
+        The requested problems are ``problem_names``, else those the
+        ``subset`` option names. With neither (or with ``all_problems``)
+        any exported problem will do. When something is missing, the
+        export instructions are written to the folder and the error names
+        only the missing problems.
+        """
+        subset = _normalize_subset(self.options.get("subset"))
+        if problem_names:
+            requested: list[str] | None = list(problem_names)
+        elif subset is not None and not all_problems:
+            requested = [name for name in CUTEST_QP_DEFAULT_SUBSET if name in subset]
+            requested += sorted(subset - set(requested))
+        else:
+            requested = None
+        if requested is None:
+            if self.data_status().available:
+                return
+            missing = list(CUTEST_QP_DEFAULT_SUBSET)
+        else:
+            missing = [name for name in requested if not (self.folder / f"{name}.npz").is_file()]
+            if not missing:
+                return
         self.folder.mkdir(parents=True, exist_ok=True)
         _write_export_readme(self.folder)
-        requested = "all curated QP names" if all_problems else ", ".join(problem_names or CUTEST_QP_DEFAULT_SUBSET)
         raise RuntimeError(
             "CUTEst QP data cannot be downloaded automatically. Created "
-            f"{self.folder / 'EXPORT_README.md'} with the expected .npz schema "
-            f"and requested set ({requested}). Export those problems from a local "
+            f"{self.folder / 'EXPORT_README.md'} with the expected .npz schema. "
+            f"Missing: {', '.join(missing)}. Export those problems from a local "
             "CUTEst/SIF toolchain into this directory, then rerun the benchmark."
         )
+
+
+def _normalize_subset(value) -> set[str] | None:
+    """``None``/``"all"``: no filter; ``"default"``: the curated names; else names."""
+    if value is None or value == "all":
+        return None
+    if value == "default":
+        return set(CUTEST_QP_DEFAULT_SUBSET)
+    if isinstance(value, str):
+        return {item.strip().removesuffix(".npz") for item in value.split(",") if item.strip()}
+    return {str(item).removesuffix(".npz") for item in value}
 
 
 def _write_export_readme(folder: Path) -> None:
@@ -102,11 +131,17 @@ into this repository.
 
 Export one `.npz` file per problem with these arrays:
 
-- `P`: dense or sparse-compatible Hessian matrix.
+- `P`: the Hessian of `0.5 x' P x` as a dense array: the whole symmetric
+  matrix, or one triangle of it (a triangle is mirrored on load). A
+  scipy.sparse matrix passed to `np.savez` is stored as a pickled object
+  and is not read; store `P.toarray()`.
 - `q`: objective vector.
 - `G`, `h`: optional inequality rows `G x <= h`.
 - `A`, `b`: optional equality rows `A x = b`.
 - `lb`, `ub`: optional variable bounds.
+
+An optional array may also be stored as `None` (`np.savez(..., G=None)`);
+no other object array is read.
 
 The benchmark adapter converts that schema to the native QP form
 `0.5 x' P x + q' x` subject to `l <= A x <= u`.

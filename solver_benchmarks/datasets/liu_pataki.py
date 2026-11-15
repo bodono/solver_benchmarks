@@ -6,13 +6,12 @@ import re
 from pathlib import Path
 
 import numpy as np
-import scipy.io
 import scipy.sparse as sp
 
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset
+from .base import Dataset, loadmat
 
 _NAME_RE = re.compile(
     r"^(?P<classification>infeas|weak)_"
@@ -78,7 +77,7 @@ class LiuPatakiDataset(Dataset):
 
 
 def _read_liu_pataki_mat(path: Path) -> dict:
-    data = scipy.io.loadmat(path)
+    data = loadmat(path)
     a_full = sp.csc_matrix(data["A"], dtype=float)
     b = np.asarray(data["b"], dtype=float).reshape(-1)
     c_full = np.asarray(data["c"], dtype=float).reshape(-1)

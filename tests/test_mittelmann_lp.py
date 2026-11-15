@@ -278,3 +278,25 @@ def test_preparation_never_lists_the_staging_model(monkeypatch, tmp_path, fail_v
         dataset.prepare_data(["plain"])
     assert observed == [[]]
     assert list(dataset.folder.iterdir()) == ([] if fail_validation else [dataset.folder / "plain.mps"])
+
+
+def test_download_is_streamed_and_decompressed_in_pieces(monkeypatch, tmp_path):
+    """The compressed body was read whole and decompressed whole, so both
+    copies of a multi-gigabyte instance sat in memory at once."""
+    body = b"NAME TINY\nROWS\n N COST\nCOLUMNS\n    X COST 1\nRHS\nENDATA\n"
+
+    class StreamOnly(io.BytesIO):
+        def read(self, size=-1):
+            assert size is not None and size > 0, "the whole body was read at once"
+            return super().read(size)
+
+    monkeypatch.setattr(mps.urllib.request, "urlopen", lambda *a, **kw: StreamOnly(bz2.compress(body)))
+    monkeypatch.setattr(
+        mps.bz2, "decompress", lambda *a, **kw: pytest.fail("decompressed whole in memory")
+    )
+    dataset = mps.MittelmannDataset(data_root=tmp_path)
+
+    dataset.prepare_data(["plain"])
+
+    assert (dataset.folder / "plain.mps").read_bytes() == body
+    assert list(dataset.folder.iterdir()) == [dataset.folder / "plain.mps"]

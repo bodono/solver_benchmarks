@@ -1,37 +1,44 @@
 """SDPA-S (sparse) format parser.
 
 SDPA-S is the standard text format for SDP benchmark suites including
-SDPLIB and Mittelmann's SDP test set. Each ``.dat-s`` file describes
-the primal SDP::
+SDPLIB and Mittelmann's SDP test set. A ``.dat-s`` file gives a vector
+``c`` of length ``m`` and symmetric block-diagonal matrices ``F_0, F_1,
+..., F_m``, the data of SDPA's pair of problems::
 
-    minimize    C • X
-    subject to  A_k • X = b_k,   k = 1..m
-                X is block-diagonal, each block PSD or NN (diagonal).
+    (P)  minimize    c' x
+         subject to  sum_k x_k F_k - F_0 = X,   X ⪰ 0
 
-We convert it to the CONE-form dual problem this codebase uses::
+    (D)  maximize    F_0 • Y
+         subject to  F_k • Y = c_k,   k = 1..m,   Y ⪰ 0
+
+where X and Y have the block structure of the F's, each block PSD or,
+for a diagonal block, nonnegative.
+
+We pose (P) in the CONE form this codebase uses::
 
     minimize    q' x
     subject to  A x + s = b,  s in K
 
-where ``x`` is the SDPA-S primal variable, ``q = c``, columns of ``A`` are
-``-vec(F_k)``, ``b = -vec(F_0)`` (so that ``s = sum_k x_k F_k - F_0``), and
-``K`` is the product of the SDP's PSD / NN blocks
-in the canonical layout (``s``: list of PSD orders; ``l``: count of
-diagonal/NN-block rows). PSD entries are vectorized in column-major
-lower order with √2 scaling on off-diagonals — matching the layout
-in `transforms.psd`.
+with ``q = c``, the columns of ``A`` ``-vec(F_k)`` and ``b = -vec(F_0)``
+(so that ``s = sum_k x_k F_k - F_0``), and ``K`` the product of the
+blocks in the canonical layout (``s``: list of PSD orders; ``l``: count
+of diagonal-block rows). PSD entries are vectorized in column-major
+lower order with √2 scaling on off-diagonals — matching the layout in
+`transforms.psd`. The optimum of (P) is the optimum SDPLIB and
+Mittelmann publish.
 
 File format reference (SDPA-S):
 
     "* comments (start with * or ")
-    m                          (number of equality constraints)
-    nblocks                    (number of blocks in X)
+    m                          (number of matrices F_1..F_m, the length of c)
+    nblocks                    (number of diagonal blocks)
     blocksizes                 (positive: PSD block of that order;
                                 negative: |size| diagonal block)
-    b_1 b_2 ... b_m            (right-hand side)
-    matno blockno i j value    (one line per non-zero of A_matno's
-                                blockno-th block; matno=0 → C; i ≤ j;
-                                only the lower triangle is given)
+    c_1 c_2 ... c_m            (the objective of (P))
+    matno blockno i j value    (one line per nonzero of F_matno's
+                                blockno-th block; matno=0 → F_0; i ≤ j,
+                                the upper triangle of the symmetric block;
+                                an entry given with i > j is read as (j, i))
 """
 
 from __future__ import annotations
@@ -60,13 +67,15 @@ class SDPABlock:
 
 @dataclass
 class SDPAProblem:
-    """Parsed SDPA-S contents in primal form.
+    """Parsed SDPA-S contents.
 
-    ``c_blocks`` and ``a_blocks`` are lists keyed first by constraint
-    (``a_blocks[k][b]`` is constraint ``k``'s entries for block ``b``)
-    and then by block. Entries are stored as ``(i, j, value)`` triples
-    with ``i ≤ j`` (lower triangle, BLAS-style); every matrix is
-    symmetric.
+    The names follow (D) written as ``max C • Y s.t. A_k • Y = b_k``:
+    ``b`` is SDPA's ``c`` (the objective of (P)), ``c_blocks`` holds the
+    blocks of ``F_0`` and ``a_blocks`` those of ``F_1..F_m``.
+    ``a_blocks`` is keyed first by matrix (``a_blocks[k][b]`` is ``F_{k+1}``'s
+    entries for block ``b``) and then by block. Entries are stored as
+    0-based ``(i, j, value)`` triples with ``i ≤ j`` (the upper triangle);
+    every matrix is symmetric.
     """
 
     m: int

@@ -133,6 +133,9 @@ def test_readMpsLp_accepts_highs_warning_with_populated_model(monkeypatch, tmp_p
         def getLp(self):
             return FakeLp()
 
+        def getModel(self):
+            return types.SimpleNamespace(hessian_=types.SimpleNamespace(dim_=0))
+
     fake_highspy = types.SimpleNamespace(
         Highs=FakeHighs, HighsStatus=FakeStatus, ObjSense=FakeObjSense
     )
@@ -162,43 +165,179 @@ def test_readMpsLp_missing_gz_raises(tmp_path: Path):
         qpsreader.readMpsLp(str(tmp_path / "does_not_exist.mps.gz"))
 
 
-def test_readMpsLp_warns_on_quadratic_section(tmp_path: Path):
-    """A QPS file with a quadratic section should warn (HiGHS getLp() drops it).
-
-    The warning fires before HiGHS attempts to parse, so even if HiGHS
-    rejects the QPS file the user gets a clear signal about the dropped
-    quadratic data.
-    """
-    qps_body = _TINY_MPS.replace(
-        "ENDATA\n",
-        "QUADOBJ\n    X1   X1   2.0\nENDATA\n",
-    )
-    path = _write(tmp_path / "tiny.qps", qps_body)
-    import warnings as _warnings
-
-    with _warnings.catch_warnings(record=True) as record:
-        _warnings.simplefilter("always")
-        try:
-            qpsreader.readMpsLp(str(path))
-        except RuntimeError:
-            pass  # HiGHS may also fail to parse; the warning is what we test.
-    quadratic_warnings = [
-        w for w in record if issubclass(w.category, qpsreader.QuadraticDataIgnoredWarning)
-    ]
-    assert quadratic_warnings, "Expected a QuadraticDataIgnoredWarning"
+# min x1 + x2 + 0.5 x'Hx, H = [[2, 1], [1, 4]], x1 + x2 >= 1, x >= 0. The
+# optimum is 1.875 at x = (0.75, 0.25); without H (the LP) it is 1.
+_QUADOBJ_BODY = """\
+NAME          QPEX
+ROWS
+ N  OBJ
+ G  C1
+COLUMNS
+    X1        OBJ       1.0        C1        1.0
+    X2        OBJ       1.0        C1        1.0
+RHS
+    RHS       C1        1.0
+{section}
+ENDATA
+"""
+_QUADOBJ = "QUADOBJ\n    X1        X1        2.0\n    X1        X2        1.0\n    X2        X2        4.0"
+_QMATRIX = (
+    "QMATRIX\n    X1        X1        2.0\n    X1        X2        1.0\n"
+    "    X2        X1        1.0\n    X2        X2        4.0"
+)
 
 
-def test_readMpsLp_does_not_warn_on_plain_lp(tmp_path: Path):
+@pytest.mark.parametrize("section", [_QUADOBJ, _QMATRIX], ids=["QUADOBJ", "QMATRIX"])
+def test_readMpsProblem_returns_the_quadratic_objective(tmp_path: Path, section: str):
+    """HiGHS parses QUADOBJ / QMATRIX into its Hessian; the reader used to
+    drop it with a warning and the problem was solved as the LP."""
+    pytest.importorskip("highspy")
+    path = _write(tmp_path / "qp.mps", _QUADOBJ_BODY.format(section=section))
+
+    problem = qpsreader.readMpsProblem(str(path))
+
+    assert problem.hessian is not None
+    np.testing.assert_array_equal(problem.hessian.toarray(), [[2.0, 1.0], [1.0, 4.0]])
+
+
+def test_readMpsLp_warns_that_it_leaves_out_a_quadratic_objective(tmp_path: Path):
+    # readMpsLp returns four values, so it cannot return the Hessian; it
+    # used to say so, and must keep saying so now that readMpsProblem reads it.
+    pytest.importorskip("highspy")
+    import warnings
+
+    path = _write(tmp_path / "qp.mps", _QUADOBJ_BODY.format(section=_QUADOBJ))
+    with pytest.warns(qpsreader.QuadraticDataIgnoredWarning, match="qp.mps"):
+        a, c, l, u = qpsreader.readMpsLp(str(path))
+    assert c.tolist() == [1.0, 1.0] and a.shape[1] == 2
+
+    lp = _write(tmp_path / "lp.mps", _QUADOBJ_BODY.format(section=""))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", qpsreader.QuadraticDataIgnoredWarning)
+        qpsreader.readMpsLp(str(lp))
+
+
+def test_readMpsProblem_negates_the_hessian_of_a_maximisation(tmp_path: Path):
+    pytest.importorskip("highspy")
+    body = _QUADOBJ_BODY.format(section=_QUADOBJ.replace("2.0", "-2.0").replace("4.0", "-4.0"))
+    path = _write(tmp_path / "qpmax.mps", body.replace("NAME          QPEX\n", "NAME          QPEX\nOBJSENSE\n    MAX\n"))
+
+    problem = qpsreader.readMpsProblem(str(path))
+
+    assert problem.maximise is True
+    assert problem.c.tolist() == [-1.0, -1.0]
+    np.testing.assert_array_equal(problem.hessian.toarray(), [[2.0, -1.0], [-1.0, 4.0]])
+
+
+def test_mps_dataset_solves_a_qps_file_as_the_qp(tmp_path: Path):
+    pytest.importorskip("highspy")
+    pytest.importorskip("clarabel")
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers.registry import get_solver
+
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    gz = folder / "qpex.mps.gz"
+    with gzip.open(gz, "wt") as handle:
+        handle.write(_QUADOBJ_BODY.format(section=_QUADOBJ))
+
+    problem = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root).load_problem("qpex")
+    result = get_solver("clarabel")({"verbose": False}).solve(problem, tmp_path)
+
+    assert result.objective_value == pytest.approx(1.875, abs=1e-6)
+
+
+def test_readMpsProblem_of_an_lp_has_no_hessian(tmp_path: Path):
     path = _write(tmp_path / "tiny.mps", _TINY_MPS)
-    import warnings as _warnings
+    assert qpsreader.readMpsProblem(str(path)).hessian is None
 
-    with _warnings.catch_warnings(record=True) as record:
-        _warnings.simplefilter("always")
-        qpsreader.readMpsLp(str(path))
-    quadratic_warnings = [
-        w for w in record if issubclass(w.category, qpsreader.QuadraticDataIgnoredWarning)
-    ]
-    assert quadratic_warnings == []
+
+# min x + y s.t. x + y >= -10 with only "UP BND X -2": CPLEX, Gurobi and
+# lp_solve take a negative upper bound without a lower bound as x <= -2
+# with x free below, and the optimum is -10. HiGHS keeps the default lower
+# bound 0 and warns about the inconsistent bounds [0, -2]; posed like that
+# the problem is infeasible.
+_NEGATIVE_UP = """\
+NAME          NEGUB
+ROWS
+ N  COST
+ G  R1
+COLUMNS
+    X         COST      1.0        R1        1.0
+    Y         COST      1.0        R1        1.0
+RHS
+    RHS       R1        -10.0
+BOUNDS
+{bounds}ENDATA
+"""
+
+
+def test_negative_upper_bound_alone_frees_the_lower_bound(tmp_path: Path):
+    pytest.importorskip("highspy")
+    path = _write(tmp_path / "negub.mps", _NEGATIVE_UP.format(bounds=" UP BND       X         -2.0\n"))
+
+    with pytest.warns(UserWarning, match="negative upper bound"):
+        a, c, l, u = qpsreader.readMpsLp(str(path))
+
+    # One constraint row, then one row per variable with a finite bound.
+    assert l.tolist() == [-10.0, -np.inf, 0.0]
+    assert u.tolist() == [np.inf, -2.0, np.inf]
+
+
+def test_negative_upper_bound_with_a_stated_lower_bound_is_kept(tmp_path: Path):
+    # The file states 0 <= x <= -2: infeasible as written, and posed so.
+    pytest.importorskip("highspy")
+    bounds = " LO BND       X         0.0\n UP BND       X         -2.0\n"
+    path = _write(tmp_path / "neglo.mps", _NEGATIVE_UP.format(bounds=bounds))
+
+    a, c, l, u = qpsreader.readMpsLp(str(path))
+
+    assert l.tolist() == [-10.0, 0.0, 0.0]
+    assert u.tolist() == [np.inf, -2.0, np.inf]
+
+
+def test_negative_upper_bound_in_a_compressed_file(tmp_path: Path):
+    pytest.importorskip("highspy")
+    path = tmp_path / "negub.mps.bz2"
+    path.write_bytes(bz2.compress(_NEGATIVE_UP.format(bounds=" UP BND       X         -2.0\n").encode()))
+
+    with pytest.warns(UserWarning, match="negative upper bound"):
+        _, _, l, _ = qpsreader.readMpsLp(str(path))
+
+    assert l.tolist() == [-10.0, -np.inf, 0.0]
+
+
+def test_compressed_file_is_decompressed_in_pieces(tmp_path: Path, monkeypatch):
+    """A compressed file was read whole into memory (twice, with the text
+    scan for quadratic sections) before HiGHS saw it."""
+    pytest.importorskip("highspy")
+    path = tmp_path / "tiny.mps.gz"
+    with gzip.open(path, "wt") as handle:
+        handle.write(_TINY_MPS)
+    real_open = gzip.open
+
+    class _NoWholeRead:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1):
+            assert size is not None and size > 0, "the whole file was read at once"
+            return self._handle.read(size)
+
+        def readinto(self, buffer):
+            return self._handle.readinto(buffer)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self._handle.close()
+
+    monkeypatch.setattr(qpsreader.gzip, "open", lambda *args, **kwargs: _NoWholeRead(real_open(*args, **kwargs)))
+
+    a, c, l, u = qpsreader.readMpsLp(str(path))
+    assert c.tolist() == [1.0, 1.0]
 
 
 def test_readMpsLp_normalizes_sentinel_bounds_to_inf(tmp_path: Path):

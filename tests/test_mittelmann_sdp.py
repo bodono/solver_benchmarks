@@ -542,3 +542,33 @@ def test_download_mittelmann_sdp_uses_kocvara_zip_fallback(monkeypatch, tmp_path
     assert gzip.decompress(path.read_bytes()) == raw
     assert [url for url, _ in calls].count(primary_url) == 3
     assert (fallback_url, mittelmann_sdp.MITTELMANN_SDP_DOWNLOAD_TIMEOUT) in calls
+
+
+def test_list_problems_lists_plain_and_gzipped_copies_once(tmp_path: Path):
+    """A gunzipped copy beside the download is the same problem, read from
+    the plain file; listing both ran every solver on it twice."""
+    folder = tmp_path / "data"
+    _write_dat_s(folder, "trace_one", TRACE_ONE_SDP)
+    (folder / "trace_one.dat-s.gz").write_bytes(gzip.compress(TRACE_ONE_SDP.encode()))
+    (folder / "zipped.dat-s.gz").write_bytes(gzip.compress(TRACE_ONE_SDP.encode()))
+
+    specs = _local_dataset(folder).list_problems()
+
+    assert [(spec.name, spec.path.name) for spec in specs] == [
+        ("trace_one", "trace_one.dat-s"),
+        ("zipped", "zipped.dat-s.gz"),
+    ]
+
+
+def test_subset_default_is_the_curated_default_subset(tmp_path: Path):
+    from solver_benchmarks.datasets.mittelmann_sdp import (
+        MITTELMANN_SDP_DEFAULT_SUBSET,
+        _normalize_subset,
+    )
+
+    assert _normalize_subset("default") == set(MITTELMANN_SDP_DEFAULT_SUBSET)
+    folder = tmp_path / "data"
+    _write_dat_s(folder, "trto3", TRACE_ONE_SDP)
+    _write_dat_s(folder, "extra", TRACE_ONE_SDP)
+    names = [spec.name for spec in _local_dataset(folder, subset="default").list_problems()]
+    assert names == ["trto3"]

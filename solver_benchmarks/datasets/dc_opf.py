@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import json
 import urllib.request
 from pathlib import Path
-
-from scipy.io import loadmat
 
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, loadmat
 
 MATPOWER_REVISION = "d295273485e88127d8b582927cfa0c54e5ce7279"
 MATPOWER_BASE_URL = (
@@ -90,13 +89,13 @@ class DCOPFDataset(Dataset):
         labels = json.loads(download_feasibility_labels(self.data_dir).read_bytes())
         selection = self.options.get("subset")
         names = list(labels) if all_problems else (problem_names or DCOPF_DEFAULT_SUBSET)
-        if (
-            not all_problems
-            and not problem_names
-            and isinstance(selection, str)
-            and selection in ("feasible", "infeasible")
-        ):
-            names = [name for name, label in labels.items() if label == selection]
+        if not all_problems and not problem_names:
+            if isinstance(selection, str) and selection in ("feasible", "infeasible"):
+                names = [name for name, label in labels.items() if label == selection]
+            elif (subset := _normalize_subset(selection)) is not None:
+                # Case names given as the subset (one name is not passed in
+                # as problem names) are what the run will look for.
+                names = sorted(subset)
         for name in names:
             download_matpower_case(name, self.data_dir)
 
@@ -115,7 +114,16 @@ def download_feasibility_labels(folder: Path) -> Path:
     target = folder / "feasibility.json"
     if not target.exists():
         with urllib.request.urlopen(MATPOWER_FEASIBILITY_URL, timeout=30) as response:
-            atomic_write_bytes(target, response.read())
+            body = response.read()
+        # Checked before caching: a cached error page would make every
+        # later listing of the dataset fail, and preparing again skips it.
+        try:
+            labels = json.loads(body)
+        except ValueError as exc:
+            raise RuntimeError(f"MATPOWER feasibility labels did not download as JSON: {exc}") from exc
+        if not isinstance(labels, dict):
+            raise RuntimeError("MATPOWER feasibility labels did not download as a JSON object")
+        atomic_write_bytes(target, body)
     return target
 
 
@@ -124,7 +132,14 @@ def download_matpower_case(name: str, folder: Path) -> Path:
     target = folder / f"{name}.mat"
     if not target.exists():
         with urllib.request.urlopen(f"{MATPOWER_BASE_URL}/{target.name}", timeout=120) as response:
-            atomic_write_bytes(target, response.read())
+            body = response.read()
+        try:
+            has_case = "mpc" in loadmat(io.BytesIO(body), struct_as_record=False)
+        except Exception as exc:  # whatever loadmat fails with, the body is not a case
+            raise RuntimeError(f"MATPOWER case {name!r} did not download as a .mat file: {exc}") from exc
+        if not has_case:
+            raise RuntimeError(f"MATPOWER case {name!r} downloaded without an mpc struct")
+        atomic_write_bytes(target, body)
     return target
 
 

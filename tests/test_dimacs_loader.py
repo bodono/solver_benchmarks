@@ -371,3 +371,35 @@ def test_results_from_before_the_corrected_conversion_are_not_resumed():
     assert _signature_dataset_options("dimacs", {}) != {}
     assert _signature_dataset_options("dimacs", {"subset": "all"}) != {"subset": "all"}
     assert _signature_dataset_options("dimacs", {"subset": "all"})["subset"] == "all"
+
+
+def test_filtinf1_posed_problem_has_an_improving_ray():
+    """Why filtinf1 is recorded as infeasible: there is a direction d with
+    -A d in K and q'd = -1, so the problem posed here (the SeDuMi dual) has
+    no optimum, and the SeDuMi primal no feasible point. filter48_socp, its
+    feasible sibling, has no such direction."""
+    pytest.importorskip("clarabel")
+    from solver_benchmarks.core import status
+    from solver_benchmarks.core.problem import CONE, ProblemData
+
+    def ray_status(name: str) -> str:
+        problem = get_dataset("dimacs")().load_problem(name).cone
+        a, q = problem["A"], problem["q"]
+        cone = {"z": 1, **{key: value for key, value in problem["cone"].items() if key != "z"}}
+        assert "z" not in problem["cone"]
+        data = {
+            "P": None,
+            "A": sp.vstack([sp.csr_matrix(q.reshape(1, -1)), a], format="csc"),
+            "b": np.concatenate([[-1.0], np.zeros(a.shape[0])]),
+            "q": np.zeros(a.shape[1]),
+            "r": 0.0,
+            "n": a.shape[1],
+            "m": a.shape[0] + 1,
+            "cone": cone,
+            "obj_type": "min",
+        }
+        ray = ProblemData("dimacs", f"{name}_ray", CONE, data, metadata={})
+        return get_solver("clarabel")({"verbose": False}).solve(ray, Path(".")).status
+
+    assert ray_status("filtinf1") in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
+    assert ray_status("filter48_socp") == status.PRIMAL_INFEASIBLE

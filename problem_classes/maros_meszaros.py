@@ -1,11 +1,27 @@
 import numpy as np
-import scipy.io as spio
+import scipy.io
 
 # The archived .mat files use +-1e20 as their infinity sentinel, in a few
 # files stored with ULPs of representation error (e.g. -9.99...e+19).
 # Anything at or beyond this magnitude on the correct side is normalized
 # to a true infinity (same 1e19 cut as transforms/cones.py).
 _INF_SENTINEL = 1.0e19
+
+
+def loadmat(file, **kwargs):
+    """``scipy.io.loadmat`` returning sparse variables as scipy.sparse matrices.
+
+    SciPy 1.18 warns on every call that the default becomes sparse arrays
+    in 1.20, which would make this the one loader handing ``csc_array``
+    downstream. Versions without the ``spmatrix`` keyword return matrices
+    anyway; any other TypeError is raised as it is.
+    """
+    try:
+        return scipy.io.loadmat(file, spmatrix=True, **kwargs)
+    except TypeError as exc:
+        if "spmatrix" not in str(exc):
+            raise
+        return scipy.io.loadmat(file, **kwargs)
 
 
 class MarosMeszaros:
@@ -26,7 +42,7 @@ class MarosMeszaros:
     @staticmethod
     def _load_maros_meszaros_problem(f):
         # Load file
-        m = spio.loadmat(f)
+        m = loadmat(f)
 
         # Convert matrices
         P = m['P'].astype(float).tocsc()

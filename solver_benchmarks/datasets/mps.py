@@ -73,12 +73,14 @@ class MPSLPDataset(Dataset):
         spec = self.problem_by_name(name)
         assert spec.path is not None
         # The minimisation the harness solves: for a file that states a
-        # maximisation, the costs and the constant are minus the file's.
-        a, c, l, u, offset, maximise = qpsreader.readMpsProblem(str(spec.path))
+        # maximisation, the costs, the constant and a quadratic term are
+        # minus the file's.
+        a, c, l, u, offset, maximise, hessian = qpsreader.readMpsProblem(str(spec.path))
         a = sp.csc_matrix(a)
         n = a.shape[1]
         qp = {
-            "P": sp.csc_matrix((n, n)),
+            # A QPS quadratic objective section, as HiGHS reads it; zero for an LP.
+            "P": sp.csc_matrix(hessian) if hessian is not None else sp.csc_matrix((n, n)),
             "q": np.asarray(c, dtype=float),
             "r": float(offset),
             "A": a,
@@ -89,7 +91,7 @@ class MPSLPDataset(Dataset):
             "obj_type": "min",
         }
         if self.options.get("add_quadratic", False):
-            qp["P"] = sp.eye(n, format="csc")
+            qp["P"] = sp.csc_matrix(qp["P"] + sp.eye(n, format="csc"))
         # As for QPLIB: the problem is always posed as a minimisation, and
         # the sense the file states is recorded beside it. For "max" the
         # recorded objective is minus the file's optimum.
@@ -340,28 +342,37 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     candidates = [f"{stem}.mps.bz2", f"{stem}.bz2"]
     last_error = None
-    for filename in candidates:
-        url = f"https://plato.asu.edu/ftp/lptestset/{filename}"
-        try:
-            with urllib.request.urlopen(url, timeout=60) as response:
-                compressed = response.read()
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-            last_error = exc
-            continue
-        break
-    else:
-        raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}") from last_error
+    # The body and the decompressed file go through anonymous temporary
+    # files beside the target, in pieces: instances reach gigabytes, and
+    # both copies used to sit in memory at once.
+    with tempfile.TemporaryFile(dir=folder) as compressed:
+        for filename in candidates:
+            url = f"https://plato.asu.edu/ftp/lptestset/{filename}"
+            compressed.seek(0)
+            compressed.truncate()
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    shutil.copyfileobj(response, compressed)
+            except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+                last_error = exc
+                continue
+            break
+        else:
+            raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}") from last_error
 
-    # A successful fetch selects the source. Corruption and local staging
-    # failures must not trigger another download or lose their original cause.
-    try:
-        payload = bz2.decompress(compressed)
-    except (OSError, EOFError, ValueError) as exc:
-        raise RuntimeError(
-            f"Mittelmann problem {name!r} from {url} is not valid bzip2 data: {exc}"
-        ) from exc
-    with io.BytesIO(payload) as source:
-        _stage_mittelmann_mps(source, target)
+        # A successful fetch selects the source. Corruption and local staging
+        # failures must not trigger another download or lose their original cause.
+        with tempfile.TemporaryFile(dir=folder) as payload:
+            compressed.seek(0)
+            try:
+                with bz2.open(compressed, "rb") as decompressed:
+                    shutil.copyfileobj(decompressed, payload)
+            except (OSError, EOFError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Mittelmann problem {name!r} from {url} is not valid bzip2 data: {exc}"
+                ) from exc
+            payload.seek(0)
+            _stage_mittelmann_mps(payload, target)
 
 
 def _is_emps_stream(source: BinaryIO) -> bool:
@@ -448,14 +459,12 @@ def _copy_bundled_kennington_problem(name: str, folder: Path) -> None:
     The Kennington files at NETLIB
     (``https://www.netlib.org/lp/data/kennington/<stem>.gz``) are
     distributed in NETLIB's **EMPS** (compressed MPS) format, not
-    standard MPS. ``qpsreader`` (and the HiGHS MPS reader it
-    delegates to) cannot parse EMPS, so the network path was
-    permanently broken. This adapter therefore ships a one-time
-    EMPS-decoded copy under the source repo's
-    ``problem_classes/kennington/`` and the prepare path simply
-    copies from there into the user's ``data_root``. If anyone ever
-    adds an EMPS decoder, restoring a ``urlopen`` fallback is a
-    clean two-line change.
+    standard MPS, which HiGHS cannot read. The source repo ships
+    EMPS-decoded copies under ``problem_classes/kennington/``, and the
+    prepare path copies from there into the user's ``data_root``; it
+    does not download. ``transforms.emps.decode_emps`` (which the
+    Mittelmann preparation uses for its EMPS files) could decode the
+    NETLIB originals, should a download be wanted.
     """
     stem = _mps_name(Path(name))
     stem = stem if stem is not None else Path(name).name.removesuffix(".gz")

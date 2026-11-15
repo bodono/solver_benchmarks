@@ -1,8 +1,8 @@
 """PSD triangle vec ordering helpers.
 
-The benchmark suite uses *column-major lower-triangular* (also called
-``"triu_col_major"`` for symmetric matrices) as the canonical PSD vec
-ordering — this matches SCS and the KKT residual code in
+The benchmark suite uses *column-major lower-triangular* (for a
+symmetric matrix the same as row-major upper-triangular) as the
+canonical PSD vec ordering — this matches SCS and the KKT residual code in
 ``solver_benchmarks.analysis.kkt``. For ``n=3`` the canonical entries
 are ``M[0,0], M[1,0], M[2,0], M[1,1], M[2,1], M[2,2]``.
 
