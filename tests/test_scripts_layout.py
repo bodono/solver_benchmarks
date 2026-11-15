@@ -17,16 +17,40 @@ PERSONAL_PATH = re.compile(r"""["'](/Users/|/home/)[^"']+["']""")
 
 
 def test_maintained_scripts_are_prepare_wrappers_or_ci_tools():
-    names = sorted(path.name for path in SCRIPTS.iterdir() if path.is_file())
+    names = sorted(path.name for path in SCRIPTS.iterdir() if path.is_file() and not path.name.startswith("."))
     unexpected = [name for name in names if not name.startswith("prepare_") and name != "ci_solver_smoke.py"]
     assert not unexpected, f"move research scripts and patches to scripts/research/: {unexpected}"
 
 
+def _undocumented_research_files(research: Path) -> list[str]:
+    # Regular, non-hidden files only: `python -m compileall scripts` (a CI
+    # lint step) creates scripts/research/__pycache__/, and editors and
+    # Finder leave .DS_Store and similar files behind.
+    readme = (research / "README.md").read_text()
+    return [
+        path.name
+        for path in sorted(research.iterdir())
+        if path.is_file() and not path.name.startswith(".") and path.name != "README.md" and path.name not in readme
+    ]
+
+
 def test_research_scripts_are_documented():
-    readme = (SCRIPTS / "research" / "README.md").read_text()
-    for path in sorted((SCRIPTS / "research").iterdir()):
-        if path.name != "README.md":
-            assert path.name in readme, f"scripts/research/README.md does not mention {path.name}"
+    undocumented = _undocumented_research_files(SCRIPTS / "research")
+    assert not undocumented, f"scripts/research/README.md does not mention {undocumented}"
+
+
+def test_research_listing_ignores_bytecode_caches_and_hidden_files(tmp_path):
+    research = tmp_path / "research"
+    research.mkdir()
+    (research / "README.md").write_text("- `aa_tool.py`\n")
+    (research / "aa_tool.py").write_text("")
+    (research / "__pycache__").mkdir()
+    (research / "__pycache__" / "aa_tool.cpython-312.pyc").write_bytes(b"")
+    (research / ".DS_Store").write_bytes(b"")
+    assert _undocumented_research_files(research) == []
+
+    (research / "aa_new_tool.py").write_text("")
+    assert _undocumented_research_files(research) == ["aa_new_tool.py"]
 
 
 def test_scripts_hard_code_no_personal_paths():
