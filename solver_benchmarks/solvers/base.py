@@ -7,6 +7,9 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import ProblemData
 from solver_benchmarks.core.result import SolverResult
 
@@ -32,6 +35,37 @@ class SolverAdapter(ABC):
     @abstractmethod
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         raise NotImplementedError
+
+
+# Cross-adapter reporting rules. A solver may stop with a point for any
+# status in ``status.ANY_FEASIBLE`` (optimal, inaccurate, iteration or time
+# limit, error); adapters compute KKT residuals for that point whenever it is
+# finite, so ``bench kkt-verify --promote`` judges every solver's limit-hit
+# iterate by the same check. Only a solution, though, has an objective value:
+# ``objective_value`` is reported for these statuses and is None for limits,
+# certificates and errors (the point's own objective is on kkt.primal_obj).
+OBJECTIVE_STATUSES = frozenset({status.OPTIMAL, status.OPTIMAL_INACCURATE})
+
+
+def reported_objective(mapped_status: str, value: Any) -> float | None:
+    """``objective_value`` for a result: ``value`` if the status has a solution."""
+    if mapped_status not in OBJECTIVE_STATUSES or value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def finite_point(*arrays: Any) -> bool:
+    """True when every array is present and holds only finite numbers."""
+    for array in arrays:
+        if array is None:
+            return False
+        values = np.asarray(array, dtype=float)
+        if not np.all(np.isfinite(values)):
+            return False
+    return True
 
 
 # Default to non-verbose. Batch benchmark runs would otherwise have every

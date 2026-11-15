@@ -13,10 +13,12 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import combine_qp_duals, dual_from_lower_upper, split_qp_for_range_constraints
@@ -91,7 +93,7 @@ class PIQPSolverAdapter(SolverAdapter):
             ineq_dual,
         )
         kkt_dict = None
-        if mapped in status.ANY_FEASIBLE and result.x is not None and y is not None:
+        if mapped in status.ANY_FEASIBLE and finite_point(result.x, y):
             kkt_dict = kkt.qp_residuals(
                 qp["P"],
                 qp["q"],
@@ -106,7 +108,7 @@ class PIQPSolverAdapter(SolverAdapter):
         mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(info.get("primal_obj")),
+            objective_value=reported_objective(mapped, info.get("primal_obj")),
             iterations=_maybe_int(info.get("iter")),
             run_time_seconds=elapsed,
             setup_time_seconds=_maybe_float(info.get("setup_time")),

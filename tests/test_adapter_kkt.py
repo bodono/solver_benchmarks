@@ -416,6 +416,33 @@ def limit_qp():
     }
 
 
+@pytest.fixture(scope="module")
+def limit_lp():
+    # Feasible, bounded random LP for the LP-only adapters (PDLP).
+    n, m = 200, 300
+    rng = np.random.default_rng(1)
+    a = sp.random(m, n, density=0.05, random_state=1, format="csc")
+    a = a + sp.vstack([sp.eye(n), sp.csc_matrix((m - n, n))])
+    x0 = rng.uniform(size=n)
+    return {
+        "P": sp.csc_matrix((n, n)),
+        "q": rng.normal(size=n),
+        "A": sp.vstack([a, sp.eye(n)], format="csc"),
+        "l": np.concatenate([a @ x0 - 1.0, np.full(n, -10.0)]),
+        "u": np.concatenate([a @ x0 + 1.0, np.full(n, 10.0)]),
+    }
+
+
+_LP_ONLY = {"pdlp"}
+
+
+def _limit_problem(solver_name, request):
+    return request.getfixturevalue("limit_lp" if solver_name in _LP_ONLY else "limit_qp")
+
+
+# Every adapter that returns its iterate at a limit must report KKT residuals
+# for it, so ``bench kkt-verify --promote`` can promote any solver's
+# limit-hit point that passes the check, not only some solvers'.
 @pytest.mark.parametrize("solver_name, settings", [
     ("clarabel", {"presolve_enable": False, "time_limit": 0.001}),
     ("cpo3", {"presolve": False, "time_limit": 0.001}),
@@ -423,10 +450,12 @@ def limit_qp():
     ("mosek", {"MSK_IPAR_PRESOLVE_USE": 0, "time_limit": 0.001}),
     ("highs", {"presolve": "off", "time_limit": 0.001}),
     ("gurobi", {"Method": 2, "Presolve": 0, "threads": 1, "time_limit": 0.1}),
+    ("osqp", {"time_limit": 1e-4}),
+    ("pdlp", {"time_limit": 1e-3}),
 ])
-def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monkeypatch):
+def test_time_limit_retains_kkt(solver_name, settings, request, tmp_path, monkeypatch):
     monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
-    result = _solve(solver_name, limit_qp, tmp_path)
+    result = _solve(solver_name, _limit_problem(solver_name, request), tmp_path)
     assert result.status == status.TIME_LIMIT
     assert result.kkt is not None
     for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
@@ -441,14 +470,59 @@ def test_time_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monke
     ("mosek", {"MSK_IPAR_INTPNT_MAX_ITERATIONS": 1, "MSK_IPAR_PRESOLVE_USE": 0}),
     ("highs", {"qp_iteration_limit": 1, "presolve": "off"}),
     ("gurobi", {"Method": 2, "Presolve": 0, "BarIterLimit": 1}),
+    ("osqp", {"max_iter": 5}),
+    ("proxqp", {"max_iter": 1}),
+    ("qtqp", {"max_iter": 1}),
+    ("pdlp", {"max_iter": 10}),
 ])
-def test_iteration_limit_retains_kkt(solver_name, settings, limit_qp, tmp_path, monkeypatch):
+def test_iteration_limit_retains_kkt(solver_name, settings, request, tmp_path, monkeypatch):
     monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
-    result = _solve(solver_name, limit_qp, tmp_path)
+    result = _solve(solver_name, _limit_problem(solver_name, request), tmp_path)
     assert result.status == status.MAX_ITER_REACHED
     assert result.kkt is not None
     for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
         assert np.isfinite(result.kkt[field])
+
+
+# objective_value is reported only with a solution (optimal or
+# optimal_inaccurate); a limit-hit iterate, a certificate or an error has
+# none, so a number next to such a status in a table never looks like an
+# objective. The point's own objective is still on ``kkt.primal_obj``.
+_QP_ADAPTERS = ["osqp", "piqp", "proxqp", "qtqp", "highs", "pdlp", "cpo3"]
+
+
+@pytest.mark.parametrize("solver_name", _QP_ADAPTERS)
+def test_qp_adapter_reports_no_objective_for_an_infeasible_problem(solver_name, tmp_path):
+    result = _solve(solver_name, _infeasible_lp(), tmp_path)
+    # ProxQP does not detect this infeasibility and stops on max_iter.
+    assert result.status in status.ANY_INFEASIBLE | {status.MAX_ITER_REACHED}, result.status
+    assert result.objective_value is None
+
+
+@pytest.mark.parametrize("solver_name, settings", [
+    ("osqp", {"max_iter": 5}),
+    ("piqp", {"max_iter": 1}),
+    ("proxqp", {"max_iter": 1}),
+    ("qtqp", {"max_iter": 1}),
+    ("highs", {"max_iter": 1, "presolve": "off"}),
+    ("pdlp", {"max_iter": 10}),
+    ("cpo3", {"max_iter": 1}),
+])
+def test_qp_adapter_reports_no_objective_at_a_limit(
+    solver_name, settings, request, tmp_path, monkeypatch
+):
+    monkeypatch.setitem(SOLVER_SETTINGS, solver_name, settings)
+    result = _solve(solver_name, _limit_problem(solver_name, request), tmp_path)
+    assert result.status == status.MAX_ITER_REACHED
+    assert result.objective_value is None
+    assert result.kkt is not None and np.isfinite(result.kkt["primal_obj"])
+
+
+@pytest.mark.parametrize("solver_name", _QP_ADAPTERS)
+def test_qp_adapter_reports_objective_with_a_solution(solver_name, tmp_path):
+    result = _solve(solver_name, _small_lp(), tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(-1.0, abs=1e-4)
 
 
 @pytest.mark.parametrize("itr_x, bas_x, expected", [

@@ -18,6 +18,7 @@ from .base import (
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import normalize_qp_bounds
@@ -103,7 +104,7 @@ class CPLEXSolverAdapter(SolverAdapter):
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
-                objective_value=objective_value,
+                objective_value=reported_objective(mapped, objective_value),
                 iterations=_cplex_iterations(model),
                 run_time_seconds=elapsed,
                 info={

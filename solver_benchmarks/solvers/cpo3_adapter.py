@@ -46,6 +46,7 @@ from .base import (
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 
@@ -185,9 +186,7 @@ class Cpo3SolverAdapter(SolverAdapter):
             result_info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(getattr(info, "pobj", None))
-            if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
-            else None,
+            objective_value=reported_objective(mapped, getattr(info, "pobj", None)),
             iterations=_maybe_int(getattr(info, "iters", None)),
             run_time_seconds=elapsed,
             # cpo3 reports one elapsed time, presolve, equilibration and every

@@ -1465,7 +1465,12 @@ from pathlib import Path
 
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
-from solver_benchmarks.solvers.base import SolverAdapter, SolverUnavailable
+from solver_benchmarks.solvers.base import (
+    SolverAdapter,
+    SolverUnavailable,
+    finite_point,
+    reported_objective,
+)
 
 
 class MySolverAdapter(SolverAdapter):
@@ -1494,14 +1499,14 @@ class MySolverAdapter(SolverAdapter):
 
         mapped = status.OPTIMAL  # map raw solver status to a canonical value
         kkt_dict = None
-        if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
+        if mapped in status.ANY_FEASIBLE and finite_point(result.x, result.y):
             kkt_dict = kkt.qp_residuals(
                 qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], result.x, result.y
             )
 
         return SolverResult(
             status=mapped,
-            objective_value=float(result.objective),
+            objective_value=reported_objective(mapped, result.objective),
             iterations=int(result.iterations),
             run_time_seconds=float(result.runtime),
             info={"raw_status": result.status},
@@ -1521,8 +1526,9 @@ Adapter expectations:
 - Do not import optional solver packages at module import time if they may be missing.
 - Use `is_available()` for optional dependency checks.
 - Keep solver adapter modules solver-specific rather than grouping unrelated adapters together.
-- Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states.
-- Populate `SolverResult.kkt` whenever the solver returned a primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) on `OPTIMAL` / `OPTIMAL_INACCURATE`, and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate. The KKT plots, summaries, and accuracy profile all read this field. `cone_residuals` projects onto every cone but complex PSD (zero, nonnegative, box, second-order, PSD, exponential and its dual, power and its dual), and its `primal_res` is the larger of `Ax + s − b` and the distance of `s` to the cone, so an adapter may pass `s = b − Ax`.
+- Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states. A solve that stopped on its iteration or time limit is `MAX_ITER_REACHED` / `TIME_LIMIT` even when the solver labels its last iterate "solved inaccurate" or "almost solved"; keep the solver's own status in `info["raw_status"]`.
+- Populate `SolverResult.kkt` whenever the solver returned a finite primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) for every status in `status.ANY_FEASIBLE` (optimal, inaccurate, iteration or time limit, solver error), and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate. `bench kkt-verify --promote` can then judge every solver's limit-hit point by the same check. The KKT plots, summaries, and accuracy profile all read this field. `cone_residuals` projects onto every cone but complex PSD (zero, nonnegative, box, second-order, PSD, exponential and its dual, power and its dual), and its `primal_res` is the larger of `Ax + s − b` and the distance of `s` to the cone, so an adapter may pass `s = b − Ax`.
+- Report `objective_value` only for `OPTIMAL` and `OPTIMAL_INACCURATE` (`reported_objective` does this); it is `None` for limits, certificates and errors, whose point's objective is still on `kkt.primal_obj`.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.

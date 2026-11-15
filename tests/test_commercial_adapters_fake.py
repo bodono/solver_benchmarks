@@ -14,8 +14,10 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pytest
 import scipy.sparse as sp
 
+from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 
 # ---------------------------------------------------------------------------
@@ -443,3 +445,64 @@ def test_cuopt_treats_near_sentinel_bounds_as_infinite(monkeypatch, tmp_path):
     (upper,) = record["model"].calls["set_constraint_upper_bounds"]
     assert lower.tolist() == [-np.inf, -5.0]
     assert upper.tolist() == [5.0, np.inf]
+
+
+# ---------------------------------------------------------------------------
+# objective_value only with a solution; KKT for every returned point
+
+
+@pytest.mark.parametrize("raw, expected, objective", [
+    (_GRB.OPTIMAL, status.OPTIMAL, -1.0),
+    (_GRB.SUBOPTIMAL, status.OPTIMAL_INACCURATE, -1.0),
+    (_GRB.TIME_LIMIT, status.TIME_LIMIT, None),
+    (_GRB.ITERATION_LIMIT, status.MAX_ITER_REACHED, None),
+    (_GRB.NUMERIC, status.SOLVER_ERROR, None),
+])
+def test_gurobi_objective_only_with_a_solution(monkeypatch, tmp_path, raw, expected, objective):
+    _install_fake_gurobipy(monkeypatch, [{"Status": raw, "values": _OPTIMAL_POINT}])
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    assert result.status == expected
+    assert result.objective_value == objective
+    assert result.kkt is not None and result.kkt["primal_obj"] == pytest.approx(-1.0)
+
+
+@pytest.mark.parametrize("raw, expected, objective", [
+    (_CplexStatus.optimal, status.OPTIMAL, -1.0),
+    (_CplexStatus.num_best, status.OPTIMAL_INACCURATE, -1.0),
+    (_CplexStatus.abort_time_limit, status.TIME_LIMIT, None),
+    (_CplexStatus.abort_iteration_limit, status.MAX_ITER_REACHED, None),
+    (99, status.SOLVER_ERROR, None),
+])
+def test_cplex_objective_only_with_a_solution(monkeypatch, tmp_path, raw, expected, objective):
+    # Each two-sided row becomes a >= and a <= row: four multipliers.
+    _install_fake_cplex(
+        monkeypatch,
+        [{"status": raw, "x": [-1.0, -1.0], "objective": -1.0, "duals": [0.0] * 4}],
+    )
+    result = _solve("cplex", _small_qp(), tmp_path)
+    assert result.status == expected
+    assert result.objective_value == objective
+    assert result.kkt is not None and result.kkt["primal_obj"] == pytest.approx(-1.0)
+
+
+@pytest.mark.parametrize("raw, expected, objective", [
+    ("Optimal", status.OPTIMAL, -1.0),
+    ("TimeLimit", status.TIME_LIMIT, None),
+    ("IterationLimit", status.MAX_ITER_REACHED, None),
+    ("NumericalError", status.SOLVER_ERROR, None),
+])
+def test_cuopt_objective_only_with_a_solution(monkeypatch, tmp_path, raw, expected, objective):
+    _install_fake_cuopt(
+        monkeypatch, {"status": raw, "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
+    )
+    result = _solve("cuopt", _small_qp(), tmp_path)
+    assert result.status == expected
+    assert result.objective_value == objective
+    assert result.kkt is not None and result.kkt["primal_obj"] == pytest.approx(-1.0)
+
+
+def test_cuopt_infeasible_has_no_objective(monkeypatch, tmp_path):
+    _install_fake_cuopt(monkeypatch, {"status": "PrimalInfeasible", "objective": 3.0})
+    result = _solve("cuopt", _small_qp(), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.objective_value is None

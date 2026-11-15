@@ -19,6 +19,7 @@ from .base import (
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import normalize_qp_bounds
@@ -115,8 +116,8 @@ class GurobiSolverAdapter(SolverAdapter):
                 return SolverResult(
                     status=mapped,
                     kkt=kkt_dict,
-                    objective_value=(
-                        kkt_dict["primal_obj"] if kkt_dict is not None else None
+                    objective_value=reported_objective(
+                        mapped, kkt_dict["primal_obj"] if kkt_dict is not None else None
                     ),
                     iterations=_maybe_int(
                         getattr(model, "BarIterCount", None)

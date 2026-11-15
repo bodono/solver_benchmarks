@@ -13,10 +13,12 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import combine_qp_duals, split_qp_for_range_constraints
@@ -87,7 +89,7 @@ class ProxQPSolverAdapter(SolverAdapter):
             getattr(result, "z", None),
         )
         kkt_dict = None
-        if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE} and y is not None:
+        if mapped in status.ANY_FEASIBLE and finite_point(result.x, y):
             kkt_dict = kkt.qp_residuals(
                 qp["P"],
                 qp["q"],
@@ -102,7 +104,7 @@ class ProxQPSolverAdapter(SolverAdapter):
         mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(info.get("objValue")),
+            objective_value=reported_objective(mapped, info.get("objValue")),
             iterations=_maybe_int(info.get("iter")),
             run_time_seconds=elapsed,
             setup_time_seconds=_proxqp_seconds(info.get("setup_time")),
@@ -160,10 +162,6 @@ def _info_dict(info) -> dict:
 
 def _proxqp_seconds(value):
     return None if value is None else float(value) / 1.0e6
-
-
-def _maybe_float(value):
-    return None if value is None else float(value)
 
 
 def _maybe_int(value):

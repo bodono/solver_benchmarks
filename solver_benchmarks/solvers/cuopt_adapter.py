@@ -26,8 +26,10 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import normalize_qp_bounds
@@ -180,10 +182,10 @@ class CuOptSolverAdapter(SolverAdapter):
             pass
         x = y = None
         kkt_dict = None
-        if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE, status.TIME_LIMIT, status.MAX_ITER_REACHED}:
+        if mapped in status.ANY_FEASIBLE:
             x = np.asarray(solution.get_primal_solution(), dtype=np.float64)
             y = np.asarray(solution.get_dual_solution(), dtype=np.float64)
-            if x.size == n and y.size == a.shape[0]:
+            if x.size == n and y.size == a.shape[0] and finite_point(x, y):
                 kkt_dict = kkt.qp_residuals(p, q, sp.csc_matrix(a), l, u, x, dual_sign * y)
         iterations = None
         stats = info.get("lp_stats") or {}
@@ -193,7 +195,7 @@ class CuOptSolverAdapter(SolverAdapter):
                 break
         return SolverResult(
             status=mapped,
-            objective_value=info["primal_objective"] if x is not None else None,
+            objective_value=reported_objective(mapped, info["primal_objective"]),
             iterations=iterations,
             run_time_seconds=elapsed,
             solve_time_seconds=info["solve_time"],

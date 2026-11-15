@@ -29,8 +29,10 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
@@ -339,15 +341,11 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         # PDLP is single-threaded by design; surface so callers can detect.
         info["threads_ignored"] = True
         info["threads_requested"] = int(threads)
-    # Gate objective on a solution-bearing status; for infeasibility
-    # certs OR-Tools may still populate objective_value with the
-    # certificate's residual.
-    objective_present = mapped_status in status.SOLUTION_PRESENT or (
-        mapped_status == status.OPTIMAL_INACCURATE
-    )
+    # For infeasibility certificates OR-Tools may still fill objective_value
+    # with the certificate's residual; only a solution's objective is reported.
     return SolverResult(
         status=mapped_status,
-        objective_value=float(response.objective_value) if objective_present else None,
+        objective_value=reported_objective(mapped_status, response.objective_value),
         iterations=_extract_iterations(solve_log),
         run_time_seconds=elapsed,
         info=info,
@@ -406,8 +404,8 @@ def _apply_pure_pdlp_defaults(parameters) -> None:
 
 
 def _qp_kkt(mapped_status, qp, x, y):
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None:
+    if mapped_status in status.ANY_FEASIBLE:
+        if not finite_point(x, y):
             return None
         return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
@@ -427,8 +425,8 @@ def _cone_kkt(mapped_status, cone_problem, x, y):
     p = cone_problem.get("P")
     if p is None:
         p = sp.csc_matrix((a.shape[1], a.shape[1]))
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None:
+    if mapped_status in status.ANY_FEASIBLE:
+        if not finite_point(x, y):
             return None
         s = b - a @ x
         return kkt.cone_residuals(p, c, a, b, cone, x, y, s)

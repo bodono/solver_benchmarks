@@ -17,6 +17,7 @@ from .base import (
     SolverAdapter,
     SolverUnavailable,
     pop_threads,
+    reported_objective,
     settings_with_defaults,
 )
 from .qp_split import free_row_mask, normalize_qp_bounds
@@ -112,9 +113,7 @@ class HighsSolverAdapter(SolverAdapter):
             )
         return SolverResult(
             status=mapped,
-            objective_value=float(info.objective_function_value)
-            if mapped in status.SOLUTION_PRESENT
-            else None,
+            objective_value=reported_objective(mapped, info.objective_function_value),
             iterations=_highs_iterations(info),
             run_time_seconds=elapsed,
             info={

@@ -21,10 +21,12 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 from .base import (
     SolverAdapter,
     SolverUnavailable,
+    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
 )
 
@@ -94,7 +96,10 @@ class QTQPSolverAdapter(SolverAdapter):
             objective = None
             info = {}
 
-        mapped = _map_qtqp_status(raw_status)
+        mapped = _map_qtqp_status(
+            raw_status,
+            hit_iteration_limit=_hit_iteration_limit(solver, iterations, solve_kwargs, sig),
+        )
         cone_dict: dict = {}
         if z:
             cone_dict["z"] = int(z)
@@ -108,7 +113,7 @@ class QTQPSolverAdapter(SolverAdapter):
             result_info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
-            objective_value=objective,
+            objective_value=reported_objective(mapped, objective),
             iterations=iterations,
             run_time_seconds=elapsed,
             info=result_info,
@@ -117,7 +122,16 @@ class QTQPSolverAdapter(SolverAdapter):
         )
 
 
-def _map_qtqp_status(raw_status) -> str:
+def _map_qtqp_status(raw_status, *, hit_iteration_limit: bool = False) -> str:
+    """Canonical status for a qtqp ``SolutionStatus`` value.
+
+    qtqp returns ``almost_solved`` when it salvages its best iterate after
+    running out of iterations or after a numerical breakdown. The first is a
+    solve stopped by its iteration limit and is reported as such; the second
+    is an inaccurate solution.
+    """
+    if str(raw_status) == "almost_solved" and hit_iteration_limit:
+        return status.MAX_ITER_REACHED
     return {
         "solved": status.OPTIMAL,
         "almost_solved": status.OPTIMAL_INACCURATE,
@@ -129,14 +143,34 @@ def _map_qtqp_status(raw_status) -> str:
     }.get(str(raw_status), status.SOLVER_ERROR)
 
 
+def _hit_iteration_limit(solver, iterations, solve_kwargs, signature) -> bool:
+    """Whether the solve used up its ``max_iter`` attempts.
+
+    qtqp keeps the zero-based index of its last attempt on ``solver.it``; the
+    completed-step count can be lower than ``max_iter`` when steps are
+    retried, so it is only the fallback.
+    """
+    max_iter = solve_kwargs.get("max_iter")
+    if max_iter is None:
+        parameter = signature.parameters.get("max_iter")
+        default = None if parameter is None else parameter.default
+        max_iter = None if default is inspect.Parameter.empty else default
+    if max_iter is None:
+        return False
+    last_attempt = getattr(solver, "it", None)
+    if isinstance(last_attempt, int):
+        return last_attempt + 1 >= int(max_iter)
+    return iterations is not None and iterations >= int(max_iter)
+
+
 def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
     x = getattr(solution, "x", None)
     y = getattr(solution, "y", None)
     s_slack = getattr(solution, "s", None)
     if x is None:
         return None
-    if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
-        if y is None or s_slack is None:
+    if mapped_status in status.ANY_FEASIBLE:
+        if not finite_point(x, y, s_slack):
             return None
         return kkt.cone_residuals(p, c, a, b, cone_dict, x, y, s_slack)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
