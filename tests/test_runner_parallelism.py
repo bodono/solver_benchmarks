@@ -205,6 +205,7 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     import sys
     import threading
     import time
+    import uuid
 
     from solver_benchmarks.core import runner
 
@@ -212,6 +213,8 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     monkeypatch.setitem(solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter)
     started: list[str] = []
     lock = threading.Lock()
+    # Names this test's sleepers, not those of a concurrent run of it.
+    marker = f"bench-interrupt-test-{uuid.uuid4().hex}"
 
     def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
         problem = json.loads(Path(cmd[-1]).read_text())["problem"]
@@ -224,7 +227,7 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
             )
         # A long solve, killed only if the runner kills its process group.
         return real_run_subprocess(
-            [sys.executable, "-c", "import time; time.sleep(60)"],
+            [sys.executable, "-c", "import time; time.sleep(60)", marker],
             cwd=cwd, timeout=None, stdout_path=stdout_path, stderr_path=stderr_path,
             stream_output=False,
         )
@@ -250,7 +253,5 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
     assert [row["problem"] for row in rows] == ["p000"]
     assert len(started) <= 3
-    leftover = subprocess.run(
-        ["pgrep", "-f", "import time; time.sleep(60)"], capture_output=True, text=True
-    )
+    leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
     assert leftover.stdout.strip() == ""

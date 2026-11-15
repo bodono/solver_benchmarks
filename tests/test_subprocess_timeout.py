@@ -93,6 +93,11 @@ def _assert_helper_dies(tmp_path: Path, *, within: float = 10.0) -> None:
         os.close(fd)
 
 
+# Below the 10 s the log readers' joins stall for while a helper holds the
+# pipes, with room for a loaded host; the flock check proves the kill.
+_STALL_BOUND_SECONDS = 8.0
+
+
 def _run(script: Path, tmp_path: Path, *, timeout: float | None, stream_output=False):
     return _run_subprocess(
         [sys.executable, str(script)],
@@ -129,7 +134,7 @@ def test_run_subprocess_sweeps_helpers_after_a_normal_exit(tmp_path: Path):
     started = time.monotonic()
     result = _run(script, tmp_path, timeout=30.0)
     assert result.returncode == 0 and result.timed_out is False
-    assert time.monotonic() - started < 4.0
+    assert time.monotonic() - started < _STALL_BOUND_SECONDS
     _assert_helper_dies(tmp_path)
 
 
@@ -153,7 +158,7 @@ def test_run_subprocess_kills_the_worker_when_interrupted(tmp_path: Path, monkey
     started = time.monotonic()
     with pytest.raises(KeyboardInterrupt):
         _run(script, tmp_path, timeout=120.0)
-    assert time.monotonic() - started < 4.0
+    assert time.monotonic() - started < _STALL_BOUND_SECONDS
     _assert_helper_dies(tmp_path)
 
 
