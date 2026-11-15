@@ -108,7 +108,7 @@ def run_environment_matrix(
         if stream_output:
             print(f"[bench env] running {environment.id}: {' '.join(cmd)}", file=sys.stderr)
         try:
-            subprocess.run(cmd, cwd=repo_root, check=True)
+            _run_child(cmd, cwd=repo_root)
         except (subprocess.CalledProcessError, OSError) as exc:
             # OSError: a mistyped `python:` or a venv that does not exist yet.
             error = _describe_failure(exc)
@@ -131,6 +131,37 @@ def run_environment_matrix(
         labels = ", ".join(f"{env_id} ({phase})" for env_id, phase in failures)
         raise RuntimeError(f"environment matrix had failures: {labels}")
     return run_dir
+
+
+# How long a child `bench run` gets to kill its workers after a SIGTERM
+# before it is killed itself.
+_CHILD_SHUTDOWN_SECONDS = 10.0
+
+
+def _run_child(cmd: list[str], *, cwd: Path) -> None:
+    """Run one environment's ``bench run`` like ``subprocess.run(check=True)``.
+
+    If this process is interrupted (Ctrl+C, or the SIGTERM handler's
+    SystemExit) while the child runs, the child is asked to stop with
+    SIGTERM and given time to kill its workers, which run in their own
+    sessions; ``subprocess.run`` would SIGKILL it at once and leave them
+    solving with no time limit. It is killed only if it does not exit in
+    time.
+    """
+    process = subprocess.Popen(cmd, cwd=cwd)
+    try:
+        returncode = process.wait()
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=_CHILD_SHUTDOWN_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, cmd)
 
 
 def _describe_failure(exc: BaseException) -> str:

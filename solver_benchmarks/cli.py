@@ -471,7 +471,7 @@ def report_cmd(
 
 @contextlib.contextmanager
 def terminate_like_interrupt() -> Iterator[None]:
-    """Make SIGTERM unwind the run the way Ctrl+C does.
+    """Make SIGTERM unwind the run the way Ctrl+C does, once.
 
     Workers run in their own sessions, so a SIGTERM to the runner (Slurm's
     scancel, ``kill``, a CI job timeout) reaches only the runner, which died
@@ -479,20 +479,30 @@ def terminate_like_interrupt() -> Iterator[None]:
     ``SystemExit(128 + SIGTERM)`` from the handler sends the signal through
     the runner's ``except BaseException`` paths, which kill the workers and
     keep the results that had finished, and exits with the usual status.
-    Only the main thread can install a handler; elsewhere this does nothing.
+
+    Only the first SIGINT or SIGTERM unwinds the run; later ones are ignored
+    so they cannot cut that cleanup short. A terminal's Ctrl+C reaches a
+    matrix child directly and the matrix runner then forwards a SIGTERM to
+    it, so a child sees both. A cleanup that hangs is still ended by SIGKILL.
+    Only the main thread can install handlers; elsewhere this does nothing.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
         return
 
-    def _raise(signum, frame):
+    def _stop(signum, frame):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
         raise SystemExit(128 + signum)
 
-    previous = signal.signal(signal.SIGTERM, _raise)
+    previous = {sig: signal.signal(sig, _stop) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def _load_config(loader, config_path: Path):
