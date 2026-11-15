@@ -988,15 +988,16 @@ def _run_subprocess(
         except subprocess.TimeoutExpired:
             timed_out = True
             returncode = _terminate_process(process)
-        except BaseException:
-            # KeyboardInterrupt or any other error while waiting: the worker
-            # would otherwise keep solving, unsupervised and with no timeout.
-            _kill_process_group(process)
-            raise
         else:
             # Helpers the worker left behind would hold the pipes open, stall
             # the log readers and compete for CPU with later solves.
             _kill_process_group(process)
+    except BaseException:
+        # KeyboardInterrupt or any other error once the worker started: it
+        # would otherwise keep solving, unsupervised and with no timeout.
+        if process is not None:
+            _kill_process_group(process)
+        raise
     finally:
         if process is not None:
             _WORKERS.discard(process)
