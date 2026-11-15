@@ -255,3 +255,69 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     assert len(started) <= 3
     leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
     assert leftover.stdout.strip() == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
+def test_sigterm_to_bench_run_kills_workers_and_keeps_finished_results(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """SIGTERM (Slurm scancel, kill, CI timeouts) reaches only the runner, as
+    Ctrl+C does. Under ``bench run``'s handler it must unwind the same way:
+    running workers killed, finished results kept, exit status 128 + 15."""
+    import signal
+    import subprocess
+    import sys
+    import threading
+    import time
+    import uuid
+
+    from solver_benchmarks.cli import terminate_like_interrupt
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter)
+    started: list[str] = []
+    lock = threading.Lock()
+    marker = f"bench-sigterm-test-{uuid.uuid4().hex}"
+
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        problem = json.loads(Path(cmd[-1]).read_text())["problem"]
+        with lock:
+            started.append(problem)
+        if problem == "p000":
+            return _fake_run_subprocess(
+                cmd, cwd=cwd, timeout=timeout, stdout_path=stdout_path,
+                stderr_path=stderr_path, stream_output=stream_output,
+            )
+        return real_run_subprocess(
+            [sys.executable, "-c", "import time; time.sleep(60)", marker],
+            cwd=cwd, timeout=None, stdout_path=stdout_path, stderr_path=stderr_path,
+            stream_output=False,
+        )
+
+    real_run_subprocess = runner._run_subprocess
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", worker)
+    real_record = runner._ProgressReporter.record_result
+
+    def record_then_terminate(self, result):
+        real_record(self, result)
+        deadline = time.monotonic() + 10
+        while len(started) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(5)  # the handler raises in this (the main) thread first
+
+    monkeypatch.setattr(runner._ProgressReporter, "record_result", record_then_terminate)
+    previous = signal.getsignal(signal.SIGTERM)
+    started_at = time.monotonic()
+    with pytest.raises(SystemExit) as raised:
+        with terminate_like_interrupt():
+            run_benchmark(_parallel_config(tmp_path), run_dir=tmp_path / "run", repo_root=repo_root)
+    assert raised.value.code == 128 + signal.SIGTERM
+    assert signal.getsignal(signal.SIGTERM) is previous
+    assert time.monotonic() - started_at < 20
+    rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
+    assert [row["problem"] for row in rows] == ["p000"]
+    leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+    assert leftover.stdout.strip() == ""

@@ -1052,7 +1052,7 @@ Files:
 Each solve runs in a subprocess. This gives:
 
 - Native solver crashes do not kill the main runner.
-- Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C kills the running workers too, and a parallel run keeps the results that had already finished.
+- Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C, or a SIGTERM to `bench run` / `bench env run` (Slurm's `scancel`, `kill`, a CI job timeout), kills the running workers too, and a parallel run keeps the results that had already finished; a SIGTERM exits with status 143.
 - Solver stdout/stderr are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.

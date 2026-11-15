@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import signal
+import threading
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -194,22 +198,23 @@ def run_cmd(
         config = replace(config, auto_prepare_data=True)
     env_metadata = _parse_json_option(environment_metadata)
     try:
-        store = run_benchmark(
-            config,
-            run_dir=run_dir,
-            repo_root=repo_root,
-            stream_output=True,
-            stream_solver_output=stream_solver_output,
-            environment_id=environment_id,
-            environment_metadata=env_metadata,
-            prepare_data_command=run_with_prepare_command(
-                config_path,
+        with terminate_like_interrupt():
+            store = run_benchmark(
+                config,
                 run_dir=run_dir,
                 repo_root=repo_root,
-                data_root=data_root,
-            ),
-            source_config_path=config_path,
-        )
+                stream_output=True,
+                stream_solver_output=stream_solver_output,
+                environment_id=environment_id,
+                environment_metadata=env_metadata,
+                prepare_data_command=run_with_prepare_command(
+                    config_path,
+                    run_dir=run_dir,
+                    repo_root=repo_root,
+                    data_root=data_root,
+                ),
+                source_config_path=config_path,
+            )
     except (RuntimeError, ValueError, KeyError) as exc:
         raise click.ClickException(_error_text(exc)) from exc
     click.echo(str(store.run_dir))
@@ -242,14 +247,15 @@ def env_run_cmd(
 ) -> None:
     config = _load_config(load_environment_run_config, config_path)
     try:
-        out = run_environment_matrix(
-            config,
-            run_dir=run_dir,
-            repo_root=repo_root,
-            stream_output=True,
-            stream_solver_output=stream_solver_output,
-            source_config_path=config_path,
-        )
+        with terminate_like_interrupt():
+            out = run_environment_matrix(
+                config,
+                run_dir=run_dir,
+                repo_root=repo_root,
+                stream_output=True,
+                stream_solver_output=stream_solver_output,
+                source_config_path=config_path,
+            )
     except (RuntimeError, ValueError, KeyError) as exc:
         raise click.ClickException(_error_text(exc)) from exc
     click.echo(str(out))
@@ -461,6 +467,32 @@ def report_cmd(
         return
     for path in paths:
         click.echo(str(path))
+
+
+@contextlib.contextmanager
+def terminate_like_interrupt() -> Iterator[None]:
+    """Make SIGTERM unwind the run the way Ctrl+C does.
+
+    Workers run in their own sessions, so a SIGTERM to the runner (Slurm's
+    scancel, ``kill``, a CI job timeout) reaches only the runner, which died
+    without killing them: they kept solving with no time limit. Raising
+    ``SystemExit(128 + SIGTERM)`` from the handler sends the signal through
+    the runner's ``except BaseException`` paths, which kill the workers and
+    keep the results that had finished, and exits with the usual status.
+    Only the main thread can install a handler; elsewhere this does nothing.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _raise(signum, frame):
+        raise SystemExit(128 + signum)
+
+    previous = signal.signal(signal.SIGTERM, _raise)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _load_config(loader, config_path: Path):
