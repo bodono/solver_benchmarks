@@ -407,7 +407,7 @@ Current maintained adapters:
 | PIQP | `piqp` | QP | Direct sparse/dense QP adapter. |
 | SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets, optional on Python < 3.14 while wheels are available. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. |
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. When presolve can only say "infeasible or unbounded", the adapter re-solves with `DualReductions=0` (Gurobi's documented remedy) so the row gets a definite status; `info.inf_or_unbd_resolved` marks it. |
-| MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. |
+| MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. A license failure raised by the solve (missing, expired or exhausted license) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as MOSEK failing the problem. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
 
 Unsupported solver/problem combinations are skipped by default and recorded as

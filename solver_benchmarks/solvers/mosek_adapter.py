@@ -77,6 +77,11 @@ class MosekSolverAdapter(SolverAdapter):
             try:
                 termination_code = task.optimize()
             except Exception as exc:
+                if _is_license_error(exc, mosek):
+                    # MOSEK checks out its license in optimize(). A missing,
+                    # expired or exhausted license is a broken environment,
+                    # not MOSEK failing this problem.
+                    raise SolverUnavailable(f"MOSEK license error: {exc}") from exc
                 return SolverResult(
                     status=status.SOLVER_ERROR,
                     run_time_seconds=time.perf_counter() - start,
@@ -89,7 +94,14 @@ class MosekSolverAdapter(SolverAdapter):
             mapped = _map_mosek_status(raw_status, termination_code, mosek)
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
-            objective = task.getprimalobj(soltype) if kkt_dict is not None else None
+            # Only a claimed solution has an objective; a limit-hit point
+            # keeps its residuals (and primal_obj) in the KKT record.
+            objective = (
+                task.getprimalobj(soltype)
+                if kkt_dict is not None
+                and mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
+                else None
+            )
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
@@ -130,6 +142,18 @@ def _configure_mosek(task, env, settings: dict, mosek) -> None:
             _handle_mosek_str_param(task, key.strip(), value)
         else:
             _handle_mosek_enum_param(task, key, value, mosek)
+
+
+def _is_license_error(exc: Exception, mosek) -> bool:
+    """True for a ``mosek.Error`` whose response code is a license failure
+    (the ``err_license*`` family, ``err_missing_license_file``,
+    ``err_*_license``, ``err_flexlm``, ``err_platform_not_licensed``)."""
+    error_type = getattr(mosek, "Error", None)
+    if error_type is None or not isinstance(exc, error_type):
+        return False
+    code = getattr(exc, "errno", None)
+    name = str(getattr(code, "name", code)).lower()
+    return "licen" in name or "flexlm" in name
 
 
 def _mosek_bound(lower: float, upper: float, mosek):
