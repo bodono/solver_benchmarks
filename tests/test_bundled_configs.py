@@ -72,6 +72,17 @@ def _variants(paths: list[Path]) -> dict[tuple[str, str], tuple[dict, list[str]]
     return variants
 
 
+def test_configs_readme_lists_exactly_the_maintained_configs():
+    text = (CONFIGS / "README.md").read_text()
+    section = text[text.index("**Maintained configs**") : text.index("**Experimental configs**")]
+    listed = set(re.findall(r"`([\w.-]+\.(?:ya?ml|json))`", section))
+    maintained = {path.name for path in _maintained_configs()}
+    assert listed == maintained, (
+        f"configs/README.md lists {sorted(listed - maintained)} as maintained, but they are experimental "
+        f"or missing; it leaves out {sorted(maintained - listed)}"
+    )
+
+
 @pytest.mark.parametrize("name", _readme_configs())
 def test_readme_configs_exist_and_are_maintained(name):
     path = CONFIGS / name

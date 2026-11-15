@@ -1754,8 +1754,9 @@ Current tests cover:
 - The campaign tools `tools/make_figures.py` and `tools/make_campaign.py`
   against the analysis API they use.
 - Every solver variant of the maintained configs in `configs/` against the
-  installed solvers, and the README's CLI, config-field and solver tables
-  against the code.
+  installed solvers, `configs/README.md`'s list of maintained configs against
+  the configs without the `# EXPERIMENTAL:` header, and the README's CLI,
+  config-field and solver tables against the code.
 
 GitHub Actions runs additional matrix workflows that install each open-source
 solver in isolation and exercise its adapter via `scripts/ci_solver_smoke.py`,
