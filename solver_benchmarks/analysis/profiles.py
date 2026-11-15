@@ -28,18 +28,15 @@ KKT_SHIFT = 1.0e-12
 # Fixed defaults for non-time failure penalties and metric-specific shifts.
 # Time geomeans require a declared limit or explicit penalty; historical time
 # penalty values remain available through metric_defaults for compatibility.
-# Unknown metrics retain the historical defaults until callers override them.
+# KKT residuals get _KKT_RESIDUAL_DEFAULTS (see _is_kkt_residual). Unknown
+# metrics retain the historical defaults until callers override them.
 _METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
     "run_time_seconds": (1.0e3, 10.0),
     "setup_time_seconds": (1.0e3, 10.0),
     "solve_time_seconds": (1.0e3, 10.0),
     "iterations": (1.0e6, 100.0),
-    "kkt.primal_res_rel": (1.0, KKT_SHIFT),
-    "kkt.dual_res_rel": (1.0, KKT_SHIFT),
-    "kkt.duality_gap_rel": (1.0, KKT_SHIFT),
-    "kkt.comp_slack_rel": (1.0, KKT_SHIFT),
-    "kkt.comp_slack": (1.0, KKT_SHIFT),
 }
+_KKT_RESIDUAL_DEFAULTS = (1.0, KKT_SHIFT)
 
 # Finite profile ratios need a positive resolution for metrics that can
 # legitimately report zero. Other metrics keep exact ratios unless the
@@ -64,12 +61,30 @@ def profile_floor(metric: str) -> float:
 def metric_defaults(metric: str) -> tuple[float, float]:
     """Return ``(failure_penalty, shift)`` defaults for ``metric``.
 
-    Falls back to the run-time-style defaults for unknown metrics so
-    aggregates remain useful for ad-hoc columns (e.g. wall-time
+    KKT residuals (see :func:`_is_kkt_residual`) use penalty 1 and shift
+    ``KKT_SHIFT``. Falls back to the run-time-style defaults for unknown
+    metrics so aggregates remain useful for ad-hoc columns (e.g. wall-time
     derivatives). Time geomeans use the shift but require a time limit or
     explicit penalty instead of using the historical failure-penalty default.
     """
+    if _is_kkt_residual(metric):
+        return _KKT_RESIDUAL_DEFAULTS
     return _METRIC_DEFAULTS.get(metric, (DEFAULT_FAILURE_PENALTY, 10.0))
+
+
+def _is_kkt_residual(metric: str) -> bool:
+    """Whether ``metric`` is a scaled KKT residual recorded under ``kkt.``.
+
+    Every relative residual ``analysis/kkt.py`` records ends in ``_rel``
+    (``primal_res_rel``, ``dual_bound_res_rel``, ``primal_cone_res_rel``,
+    ``Aty_rel`` ...), and the scaled certificate residual is ``cert_res``;
+    ``comp_slack`` is kept from the original list. Absolute residuals,
+    objectives and flags are not residuals in these units.
+    """
+    if not metric.startswith("kkt."):
+        return False
+    field = metric.removeprefix("kkt.")
+    return field.endswith("_rel") or field in {"cert_res", "comp_slack"}
 
 
 def deduplicate_for_pivot(
@@ -83,48 +98,49 @@ def deduplicate_for_pivot(
 
     ``pivot_table(aggfunc="first")`` on a frame with duplicate
     ``(problem, solver_id)`` rows picks non-deterministically across
-    pandas versions; sort first by status (successful rows beat failed
-    rows) and then by the metric so we always keep the best
-    *successful* row per ``(problem, solver_id)``. NaN metrics sort
-    last so a successful numeric row wins over a NaN row.
+    pandas versions, so every view resolves duplicates here first. The
+    kept row of a group is chosen by, in order:
 
-    Pre-fix this sorted only by metric, which let a fast failure
-    (``solver_error`` at 0.1s) win over a slow success (``optimal`` at
-    1s) when the same solver had both a failed and a retried row, and
-    ``performance_profile`` then penalized the kept row as failed.
+    1. the status: a successful row beats a failed one;
+    2. a usable ``metric`` (finite and nonnegative) beats a missing or
+       unusable one, so a retried success the solver recorded no value of
+       ``metric`` for still beats the failed attempt;
+    3. the lowest ``metric`` (missing values last);
+    4. file order.
 
-    When ``metric`` is None or absent from the frame, a successful row
-    still wins over a failed one, and otherwise the first row in file order
-    is kept. Every per-identity view of a report resolves duplicates this
-    way, so they agree on which attempt a duplicated solve stands for.
+    Without a ``status`` column every row counts as successful; when
+    ``metric`` is None or absent from the frame, only the status and file
+    order decide. The kept rows are returned in that ranking order (the
+    order the geomean averages them in); ``one_row_per_solve`` returns them
+    in file order.
+
+    A report resolves duplicates once, with its metric, and hands the result
+    to every per-solve table and plot, so they agree on which attempt a
+    duplicated solve stands for; the table functions resolve with their
+    ``metric`` argument (``run_time_seconds`` by default) the same way.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     subset_keys = [*keys, "solver_id"]
-    if (metric is None or metric not in frame.columns) and "status" in frame.columns and not frame.empty:
-        failed = ~solved_mask(frame, success_statuses).to_numpy()
-        order = np.argsort(failed, kind="stable")
-        return frame.iloc[order].drop_duplicates(subset=subset_keys, keep="first")
-    if metric is not None and metric in frame.columns:
-        sortable = frame.assign(
-            __metric_for_dedup=pd.to_numeric(frame[metric], errors="coerce"),
-        )
-        # Status-failure flag sorts ascending: False (success) before
-        # True (failure). When the status column is missing we treat
-        # every row as successful so behavior matches the old code path.
-        if "status" in sortable.columns:
-            valid = np.isfinite(sortable["__metric_for_dedup"]) & sortable["__metric_for_dedup"].ge(0)
-            sortable["__failure_for_dedup"] = ~(solved_mask(sortable, success_statuses) & valid)
-            sort_columns = ["__failure_for_dedup", "__metric_for_dedup"]
-        else:
-            sort_columns = ["__metric_for_dedup"]
-        sortable = sortable.sort_values(
-            sort_columns, kind="stable", na_position="last"
-        )
-        deduped = sortable.drop_duplicates(subset=subset_keys, keep="first")
-        drop_columns = [c for c in ("__metric_for_dedup", "__failure_for_dedup") if c in deduped.columns]
-        return deduped.drop(columns=drop_columns)
-    return frame.drop_duplicates(subset=subset_keys, keep="first")
+    if frame.empty:
+        return frame.drop_duplicates(subset=subset_keys, keep="first")
+    has_status = "status" in frame.columns
+    has_metric = metric is not None and metric in frame.columns
+    if not has_status and not has_metric:
+        return frame.drop_duplicates(subset=subset_keys, keep="first")
+    position = np.arange(len(frame))
+    sort_keys: list[np.ndarray] = [position]  # np.lexsort: the last key is primary
+    if has_metric:
+        values = pd.to_numeric(frame[metric], errors="coerce").to_numpy(dtype=float)
+        missing = np.isnan(values)
+        sort_keys += [np.where(missing, 0.0, values), missing]
+        if has_status:
+            sort_keys.append(~(np.isfinite(values) & (values >= 0)))
+    if has_status:
+        sort_keys.append(~solved_mask(frame, success_statuses).to_numpy(dtype=bool))
+    order = np.lexsort(tuple(sort_keys))
+    first = ~frame.iloc[order].duplicated(subset=subset_keys, keep="first").to_numpy()
+    return frame.iloc[order[first]]
 
 
 def performance_profile(
