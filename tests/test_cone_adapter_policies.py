@@ -289,10 +289,11 @@ def test_exponential_cone_orientation_agrees_across_solvers(solver_name, tmp_pat
     result = _solve(solver_name, CONE, _exp_cone_problem(), settings, tmp_path)
     assert result.status == status.OPTIMAL, (result.status, result.info)
     assert result.objective_value == pytest.approx(3.0 * np.log(3.0), abs=1e-5)
-    # The harness cannot project onto exponential cones: residuals are
-    # recorded and the cone blocks flagged, not silently passed.
-    assert result.kkt["unsupported_cones"] == ["ep"]
+    # The harness projects onto exponential cones, so a wrong orientation
+    # would show up as a cone distance in the residuals.
+    assert "unsupported_cones" not in result.kkt
     assert result.kkt["primal_res_rel"] < 1e-6
+    assert result.kkt["dual_res_rel"] < 1e-6
 
 
 @pytest.mark.parametrize("alpha", [0.25, 0.6])
@@ -302,7 +303,9 @@ def test_power_cone_orientation_agrees_across_solvers(solver_name, alpha, tmp_pa
     result = _solve(solver_name, CONE, _power_cone_problem(alpha), settings, tmp_path)
     assert result.status == status.OPTIMAL, (result.status, result.info)
     assert result.objective_value == pytest.approx(-(2.0**alpha) * 8.0 ** (1 - alpha), abs=1e-5)
-    assert result.kkt["unsupported_cones"] == ["p"]
+    assert "unsupported_cones" not in result.kkt
+    assert result.kkt["primal_res_rel"] < 1e-6
+    assert result.kkt["dual_res_rel"] < 1e-6
 
 
 @pytest.mark.parametrize(
