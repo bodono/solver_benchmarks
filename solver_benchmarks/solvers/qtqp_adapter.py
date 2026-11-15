@@ -9,14 +9,13 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
+from solver_benchmarks.core.atomic import atomic_write_text
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult, to_jsonable
-from solver_benchmarks.core.storage import atomic_write_text
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
@@ -100,15 +99,17 @@ class QTQPSolverAdapter(SolverAdapter):
         raw_status = getattr(solution.status, "value", str(solution.status))
         trace = list(getattr(solution, "stats", []) or [])
         _write_trace(artifacts_dir / "trace.jsonl", trace)
-        stats = pd.DataFrame(trace) if trace else pd.DataFrame()
         # qtqp reports completed IPM steps on ``Solution.iterations`` (main
         # after google-deepmind/qtqp#131). The last trace row's ``iter`` is a
         # zero-based label, one below the completed count for any solve that
         # took a step, and is kept only as the fallback for older builds.
         iterations = _maybe_int(getattr(solution, "iterations", None))
         objective = _point_objective(getattr(solution, "x", None), p, c)
-        if not stats.empty:
-            last = stats.tail(1).iloc[0]
+        if trace:
+            # Imported only for a trace (collect_stats): workers run without pandas.
+            import pandas as pd
+
+            last = pd.DataFrame(trace).tail(1).iloc[0]
             if objective is None:
                 objective = _maybe_float(last.get("pcost"))
             if iterations is None:

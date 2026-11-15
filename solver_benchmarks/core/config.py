@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from itertools import product
 from pathlib import Path
@@ -246,7 +247,7 @@ def parse_run_config(raw: dict[str, Any]) -> RunConfig:
     if not solvers:
         raise ValueError("Config must define at least one solver")
 
-    output_dir = Path(run.get("output_dir", raw.get("output_dir", "results")))
+    output_dir = _validate_output_dir(run.get("output_dir", raw.get("output_dir", "results")))
 
     include = _listify(run.get("include", raw.get("include", [])))
     exclude = _listify(run.get("exclude", raw.get("exclude", [])))
@@ -320,12 +321,19 @@ def resolve_output_dir(config: RunConfig, root: str | Path) -> RunConfig:
 
 def parse_environment_run_config(raw: dict[str, Any]) -> EnvironmentRunConfig:
     raw = _mapping(raw, "config")
+    if "solvers" in raw:
+        raise ValueError(
+            "An environment matrix config takes its solvers from each environment: "
+            "move the top-level `solvers` into environments[].solvers."
+        )
     environments_raw = _entries(raw.get("environments"), "environments")
     if not environments_raw:
         raise ValueError("Environment config must define environments")
     environments = []
     all_solver_ids: set[str] = set()
     solver_slugs: dict[str, str] = {}
+    environment_ids: set[str] = set()
+    environment_slugs: dict[str, str] = {}
     for item in environments_raw:
         if not isinstance(item, dict):
             raise ValueError(
@@ -335,6 +343,13 @@ def parse_environment_run_config(raw: dict[str, Any]) -> EnvironmentRunConfig:
         if not env_id:
             raise ValueError("Every environment entry must define id")
         _check_keys(item, _ENVIRONMENT_KEYS, f"environment {env_id!r}")
+        # The id names the child run's config file in the run directory and
+        # is recorded on every result row.
+        _validate_identifier(str(env_id), context="environment id")
+        if str(env_id) in environment_ids:
+            raise ValueError(f"Duplicate environment id: {str(env_id)!r}")
+        environment_ids.add(str(env_id))
+        _check_slug_unique(str(env_id), environment_slugs, "environment")
         solvers = _parse_solver_entries(
             item.get("solvers"),
             context=f"environment {env_id!r} solver",
@@ -634,6 +649,13 @@ def _render_solver_id_template(
         return template.format(**fields)
     except KeyError as exc:
         raise ValueError(f"id_template references unknown field {exc.args[0]!r}") from exc
+    except (IndexError, AttributeError, TypeError, ValueError) as exc:
+        # A positional field ({0}), an attribute or index of a value
+        # ({x.y}, {x[0]}), or a format spec the value does not take.
+        raise ValueError(
+            f"id_template {template!r} cannot be rendered: {exc}. Use only named "
+            "fields: id, solver and the settings."
+        ) from exc
 
 
 def _default_sweep_id(base_id: str, sweep_settings: dict[str, Any]) -> str:
@@ -776,8 +798,30 @@ def _check_registered_dataset(name: str) -> None:
         raise ValueError(_unknown_name_message("dataset", name, DATASETS))
 
 
+def close_names(name: str, known: Iterable[str], n: int = 1) -> list[str]:
+    """The names in ``known`` that ``name`` was probably meant to be.
+
+    Names equal to it but for case come first (problem names differ in case
+    between datasets: NETLIB is lower case, Maros-Meszaros upper case), then
+    ``difflib``'s close matches, compared case-insensitively.
+    """
+    candidates = sorted(set(known))
+    same = [candidate for candidate in candidates if candidate.lower() == name.lower()]
+    if same:
+        return same[:n]
+    by_lower: dict[str, str] = {}
+    for candidate in candidates:
+        by_lower.setdefault(candidate.lower(), candidate)
+    return [by_lower[match] for match in difflib.get_close_matches(name.lower(), list(by_lower), n=n)]
+
+
+def unknown_name_message(kind: str, name: str, known: Iterable[str]) -> str:
+    """``Unknown <kind> <name>.`` with a suggestion and the known names."""
+    return _unknown_name_message(kind, name, {key: None for key in known})
+
+
 def _unknown_name_message(kind: str, name: str, known: dict[str, Any]) -> str:
-    close = difflib.get_close_matches(name.lower(), sorted(known), n=1)
+    close = close_names(name, known)
     suggestion = f" Did you mean {close[0]!r}?" if close else ""
     return (
         f"Unknown {kind} {name!r}.{suggestion} Available: {', '.join(sorted(known))} "
@@ -830,6 +874,17 @@ def _validate_identifier(value: str, *, context: str) -> None:
             "use only those characters so the id round-trips through "
             "filesystem paths and CSV column names."
         )
+
+
+def _validate_output_dir(value: Any) -> Path:
+    if isinstance(value, Path):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"run.output_dir must be a directory path, got {value!r}; "
+            "leave it out to use the default 'results'."
+        )
+    return Path(value)
 
 
 def _validate_worker_error_retries(value: Any) -> int:

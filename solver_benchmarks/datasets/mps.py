@@ -130,6 +130,10 @@ class KenningtonDataset(MPSLPDataset):
     prepare_command = "python scripts/prepare_kennington.py"
     automatic_download = True
 
+    def known_problem_names(self) -> set[str] | None:
+        """The bundled set, which prepare_data copies from."""
+        return set(_KENNINGTON_PROBLEMS)
+
     def prepare_data(
         self,
         problem_names: list[str] | None = None,

@@ -25,6 +25,7 @@ from solver_benchmarks.core.config import (
     DatasetConfig,
     RunConfig,
     SolverConfig,
+    close_names,
     resolve_data_roots,
     resolve_output_dir,
     solve_signature,
@@ -42,7 +43,11 @@ from solver_benchmarks.core.storage import (
     atomic_write_text,
 )
 from solver_benchmarks.datasets import get_dataset
-from solver_benchmarks.datasets.base import default_repo_root, filter_problem_specs_by_size
+from solver_benchmarks.datasets.base import (
+    Dataset,
+    default_repo_root,
+    filter_problem_specs_by_size,
+)
 from solver_benchmarks.solvers import get_solver
 
 # Bounds of the grace added on top of the configured timeout before the
@@ -52,8 +57,15 @@ from solver_benchmarks.solvers import get_solver
 # residuals) instead of being killed mid-return.
 SUBPROCESS_TIMEOUT_GRACE_SECONDS = 30.0
 SUBPROCESS_TIMEOUT_MIN_GRACE_SECONDS = 5.0
-# Lines of each worker stream kept in memory; the logs hold everything.
+# Lines of the worker's stderr kept in memory; the logs hold everything.
 _OUTPUT_TAIL_LINES = 200
+# How much of that tail a worker error row quotes.
+_ERROR_TAIL_LINES = 5
+_ERROR_TAIL_CHARS = 500
+# Tells a worker which process started it, so that it dies with it.
+RUNNER_PID_ENV = "SOLVER_BENCHMARKS_RUNNER_PID"
+# Held (flock) by the one process writing to a run directory.
+RUN_DIR_LOCK_NAME = ".bench.lock"
 
 logger = logging.getLogger(__name__)
 _POOL_IDS = itertools.count(1)
@@ -71,6 +83,43 @@ def run_benchmark(
     prepare_data_command: str | None = None,
     source_config_path: str | Path | None = None,
 ) -> ResultStore:
+    """Run every solve ``config`` plans into a run directory; return its store.
+
+    A run directory has one writer at a time: the run holds an exclusive
+    lock on ``<run_dir>/.bench.lock`` from start to finish, and a second run
+    on the same directory fails at once (see :class:`_RunDirLock`).
+    """
+    lock = _RunDirLock()
+    try:
+        return _run_benchmark(
+            config,
+            lock=lock,
+            run_dir=run_dir,
+            repo_root=repo_root,
+            stream_output=stream_output,
+            stream_solver_output=stream_solver_output,
+            environment_id=environment_id,
+            environment_metadata=environment_metadata,
+            prepare_data_command=prepare_data_command,
+            source_config_path=source_config_path,
+        )
+    finally:
+        lock.release()
+
+
+def _run_benchmark(
+    config: RunConfig,
+    *,
+    lock: _RunDirLock,
+    run_dir: str | Path | None,
+    repo_root: str | Path | None,
+    stream_output: bool,
+    stream_solver_output: bool | None,
+    environment_id: str | None,
+    environment_metadata: dict | None,
+    prepare_data_command: str | None,
+    source_config_path: str | Path | None,
+) -> ResultStore:
     repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
     config = resolve_output_dir(config, repo_root)
     # Like output_dir, a relative data_root names a directory under repo_root,
@@ -79,6 +128,10 @@ def run_benchmark(
     config = dataclasses.replace(config, datasets=resolve_data_roots(config.datasets, repo_root))
     if stream_solver_output is None:
         stream_solver_output = stream_output
+    if run_dir is not None:
+        run_dir = Path(run_dir).resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        lock.acquire(run_dir)
     if run_dir is not None and not config.resume:
         refuse_to_rerun_into(run_dir, config)
     previous_manifest = (
@@ -91,7 +144,25 @@ def run_benchmark(
         for solver_config in config.solvers
         if get_solver(solver_config.solver).is_available()
     }
+    if config.fail_on_unsupported:
+        for solver_config in config.solvers:
+            if solver_config.id not in available_solver_ids:
+                raise RuntimeError(
+                    f"Solver {solver_config.solver!r} is unavailable (not installed) and "
+                    f"run.fail_on_unsupported is true, so {solver_config.id!r} is not "
+                    "skipped: install it or remove it from the config."
+                )
+    listings = _list_datasets(config, repo_root)
+    filter_warnings = _check_filter_names(config, listings, repo_root=repo_root)
     store = ResultStore.create(config, run_dir=run_dir)
+    if run_dir is None:
+        lock.acquire(store.run_dir)
+    if lock.warning is not None:
+        store.append_event("warning", lock.warning)
+        _emit_progress(stream_output, f"warning: {lock.warning}")
+    for message, fields in filter_warnings:
+        store.append_event("warning", message, **fields)
+        _emit_progress(stream_output, f"warning: {message}")
     # results.parquet is a success sentinel: it exists iff a run finished
     # all queued tasks without raising. Clear any leftover parquet from
     # a prior aborted attempt at the same run_dir (resume case) so that
@@ -116,35 +187,49 @@ def run_benchmark(
             superseded_rows=retired,
         )
 
+    recorded_skips = (
+        _recorded_skips(store, completed) if config.fail_on_unsupported else {}
+    )
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]] = []
     already_complete = 0
     skipped_during_planning = 0
-    for dataset_config in config.datasets:
-        dataset_cls = get_dataset(dataset_config.name)
-        dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
+    for dataset_config, dataset, listed in listings:
         include, exclude = config.effective_filters(dataset_config)
-        if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
-            _prepare_data(dataset, config, dataset_config)
-        problems = _filter_problems(dataset.list_problems(), include, exclude)
-        problems = filter_problem_specs_by_size(
-            problems, dataset_config.dataset_options.get("max_size_mb")
+        selected = _filter_problems(listed, include, exclude)
+        max_size_mb = dataset_config.dataset_options.get("max_size_mb")
+        problems = filter_problem_specs_by_size(selected, max_size_mb)
+        too_large = sorted(
+            ({problem.name for problem in selected} - {problem.name for problem in problems})
+            & set(include)
         )
+        if too_large:
+            message = (
+                f"Dataset {dataset_config.id!r}: {_quoted(too_large)} in include "
+                f"{'is' if len(too_large) == 1 else 'are'} larger than "
+                f"max_size_mb={max_size_mb} and not solved."
+            )
+            store.append_event("warning", message, dataset=dataset_config.id, problems=too_large)
+            _emit_progress(stream_output, f"warning: {message}")
         if not problems:
             data_status = (
                 dataset.data_status() if hasattr(dataset, "data_status") else None
             )
-            message = (
-                data_status.message
-                if data_status is not None
-                else f"Dataset {dataset_config.id!r} produced no problems."
-            )
+            if listed:
+                message = (
+                    f"Dataset {dataset_config.id!r} has no problems left after the "
+                    f"include / exclude / max_size_mb filters ({len(listed)} listed)."
+                )
+            elif data_status is not None:
+                message = data_status.message
+            else:
+                message = f"Dataset {dataset_config.id!r} produced no problems."
             if data_status is not None and not getattr(data_status, "available", True):
                 problem_names, all_problems = data_prepare_selection(
                     config, dataset_config
                 )
                 message = _missing_data_run_message(
                     dataset_config,
-                    message,
+                    data_status.message,
                     problem_names=problem_names,
                     all_problems=all_problems,
                     repo_root=repo_root,
@@ -192,6 +277,13 @@ def run_benchmark(
             solver = solver_cls(solver_config.settings)
             for problem in problems:
                 if _already_done(dataset_config, problem, solver_config, completed):
+                    key = (dataset_config.id, problem.name, solver_config.id)
+                    if key in recorded_skips:
+                        raise RuntimeError(
+                            f"{solver_config.id!r} has {dataset_config.id}/{problem.name} recorded "
+                            f"as skipped_unsupported ({str(recorded_skips[key]).rstrip('.')}); "
+                            "run.fail_on_unsupported is true, so the run stops."
+                        )
                     already_complete += 1
                     continue
                 if not solver.supports(problem.kind):
@@ -265,8 +357,12 @@ def run_benchmark(
                 result = run_task(*task)
                 store.write_result(result)
                 progress.record_result(result)
+                _check_supported(config, result)
         else:
-            _run_tasks_in_parallel(tasks, run_task, store, progress, parallelism)
+            _run_tasks_in_parallel(
+                tasks, run_task, store, progress, parallelism,
+                check_result=lambda result: _check_supported(config, result),
+            )
     finally:
         # Also after an interruption, so the results written so far stand
         # alone in results.jsonl.
@@ -278,6 +374,273 @@ def run_benchmark(
     _write_parquet(store)
     progress.emit_final()
     return store
+
+
+class _RunDirLock:
+    """An exclusive ``flock`` on ``<run_dir>/.bench.lock`` for one run.
+
+    Two runs writing one directory would solve everything twice into the
+    same artifact paths, and a rewrite of results.jsonl in one would drop
+    rows the other appended meanwhile. The holder's pid is written into the
+    file for the error message of a second run. The kernel releases the lock
+    when the holder exits, however it dies, so nothing stale is left. Where
+    locks are not available (no ``fcntl``, or a file system that refuses
+    them, as some network mounts do) the run goes on unlocked and
+    ``warning`` says so.
+    """
+
+    def __init__(self) -> None:
+        self._fd: int | None = None
+        self.warning: str | None = None
+
+    def acquire(self, run_dir: Path) -> None:
+        try:
+            import fcntl
+        except ImportError:
+            self.warning = (
+                f"File locks are not available here, so nothing stops another bench run "
+                f"from writing to {run_dir} at the same time."
+            )
+            return
+        path = Path(run_dir) / RUN_DIR_LOCK_NAME
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+        except OSError as exc:
+            self.warning = f"Could not lock {run_dir} ({exc}); running without a lock."
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            try:
+                holder = os.read(fd, 64).decode(errors="replace").strip()
+            except OSError:
+                holder = ""
+            os.close(fd)
+            raise RuntimeError(
+                f"Run directory {run_dir} is in use by another bench run"
+                + (f" (pid {holder})" if holder else "")
+                + "; wait for it to finish, or use another --run-dir."
+            ) from None
+        except OSError as exc:
+            os.close(fd)
+            self.warning = f"Could not lock {run_dir} ({exc}); running without a lock."
+            return
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+        except OSError:
+            pass
+        self._fd = fd
+
+    def release(self) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+
+
+def _list_datasets(
+    config: RunConfig, repo_root: Path
+) -> list[tuple[DatasetConfig, Any, list[ProblemSpec]]]:
+    """Build each dataset, prepare its data if asked to, and list its problems."""
+    listings = []
+    for dataset_config in config.datasets:
+        dataset_cls = get_dataset(dataset_config.name)
+        dataset = dataset_cls(repo_root=repo_root, **dataset_config.dataset_options)
+        if config.auto_prepare_data and hasattr(dataset, "prepare_data"):
+            _prepare_data(dataset, config, dataset_config)
+        listings.append((dataset_config, dataset, list(dataset.list_problems())))
+    return listings
+
+
+def _may_have_problem(dataset: Any, listed: list[ProblemSpec], name: str) -> bool:
+    """Whether ``dataset`` may have a problem ``name`` it does not list.
+
+    A dataset that knows every name it can list (``known_problem_names``)
+    answers from that set. Otherwise, datasets that download or prepare their
+    data list only what is present, so they cannot tell a misspelled name
+    from one not downloaded yet; nor can a dataset with no data listed at all.
+    """
+    known = dataset.known_problem_names() if hasattr(dataset, "known_problem_names") else None
+    if known is not None:
+        return name in known
+    if not listed:
+        return True
+    if getattr(dataset, "automatic_download", False) or getattr(dataset, "prepare_command", None):
+        return True
+    prepare = getattr(type(dataset), "prepare_data", None)
+    return prepare is not None and prepare is not Dataset.prepare_data
+
+
+def _check_filter_names(
+    config: RunConfig,
+    listings: list[tuple[DatasetConfig, Any, list[ProblemSpec]]],
+    *,
+    repo_root: Path,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Raise for ``include`` names that match no problem; warn about the rest.
+
+    A dataset entry's own ``include`` must match in that dataset, and the
+    run-level ``include`` in at least one of the datasets it applies to. A
+    name a dataset may have without listing it (see ``_may_have_problem``)
+    gets a warning instead; a dataset with no data at all gets the
+    missing-data error later. ``exclude`` names that match nothing are
+    warnings. Returns the warnings as ``(message, event fields)``.
+    """
+    warnings: list[tuple[str, dict[str, Any]]] = []
+    run_include = list(config.include)
+    run_include_datasets: list[tuple[DatasetConfig, Any, list[ProblemSpec]]] = []
+    run_exclude_known: set[str] = set()
+    any_listed = False
+    for dataset_config, dataset, listed in listings:
+        known = {problem.name for problem in listed}
+        any_listed = any_listed or bool(listed)
+        if dataset_config.include:
+            unmatched = [name for name in dataset_config.include if name not in known]
+            suggestions = known | _known_names(dataset)
+            typos = [name for name in unmatched if not _may_have_problem(dataset, listed, name)]
+            if typos:
+                raise RuntimeError(
+                    f"Dataset {dataset_config.id!r} has no problem named "
+                    f"{_described(typos, suggestions)} (its include list). "
+                    f"`bench list problems {dataset_config.name}` lists its problems."
+                )
+            if unmatched and listed:
+                warnings.append(
+                    (
+                        f"Dataset {dataset_config.id!r} does not have "
+                        f"{_described(unmatched, suggestions)} locally: not prepared yet, "
+                        "or misspelled."
+                        + _prepare_advice(dataset_config, dataset, unmatched, repo_root),
+                        {"dataset": dataset_config.id, "problems": unmatched},
+                    )
+                )
+        elif run_include:
+            run_include_datasets.append((dataset_config, dataset, listed))
+        unmatched_exclude = [name for name in dataset_config.exclude if name not in known]
+        if unmatched_exclude and listed:
+            warnings.append(
+                (
+                    f"Dataset {dataset_config.id!r} has no problem named "
+                    f"{_described(unmatched_exclude, known)} (its exclude list); "
+                    "nothing was excluded for it.",
+                    {"dataset": dataset_config.id, "problems": unmatched_exclude},
+                )
+            )
+        run_exclude_known |= known
+    if run_include_datasets:
+        known = {problem.name for _, _, listed in run_include_datasets for problem in listed}
+        suggestions = known.union(*(_known_names(dataset) for _, dataset, _ in run_include_datasets))
+        unmatched = [name for name in run_include if name not in known]
+        ids = [str(dataset_config.id) for dataset_config, _, _ in run_include_datasets]
+        where = f"dataset{'s' if len(ids) > 1 else ''} {_quoted(ids)}"
+        typos = [
+            name
+            for name in unmatched
+            if not any(_may_have_problem(dataset, listed, name) for _, dataset, listed in run_include_datasets)
+        ]
+        if typos:
+            raise RuntimeError(
+                f"run.include: no problem named {_described(typos, suggestions)} in {where}. "
+                "`bench list problems DATASET` lists a dataset's problems."
+            )
+        if unmatched and known:
+            advice = "".join(
+                _prepare_advice(dataset_config, dataset, maybe, repo_root)
+                for dataset_config, dataset, listed in run_include_datasets
+                if (maybe := [name for name in unmatched if _may_have_problem(dataset, listed, name)])
+            )
+            warnings.append(
+                (
+                    f"run.include: {_described(unmatched, suggestions)} not found locally in "
+                    f"{where}: not prepared yet, or misspelled.{advice}",
+                    {"problems": unmatched},
+                )
+            )
+    unmatched = [name for name in config.exclude if name not in run_exclude_known]
+    if unmatched and any_listed:
+        warnings.append(
+            (
+                f"run.exclude: no problem named {_described(unmatched, run_exclude_known)} "
+                "in any dataset; nothing was excluded for it.",
+                {"problems": unmatched},
+            )
+        )
+    return warnings
+
+
+def _known_names(dataset: Any) -> set[str]:
+    known = dataset.known_problem_names() if hasattr(dataset, "known_problem_names") else None
+    return set(known or ())
+
+
+def _prepare_advice(
+    dataset_config: DatasetConfig,
+    dataset: Any,
+    names: list[str],
+    repo_root: Path,
+) -> str:
+    """How to prepare ``names`` for this dataset, or nothing if it has no way."""
+    if getattr(dataset, "automatic_download", False):
+        command = data_prepare_command(dataset_config, problem_names=names, repo_root=repo_root)
+        return f" Prepare them with `{command}`, or rerun with --prepare-data."
+    prepare_command = getattr(dataset, "prepare_command", None)
+    if prepare_command:
+        return f" Dataset {dataset_config.id!r} is prepared with `{prepare_command}`."
+    return ""
+
+
+def _described(names: list[str], known: set[str]) -> str:
+    parts = []
+    for name in names:
+        close = close_names(name, known)
+        parts.append(f"{name!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+    return ", ".join(parts)
+
+
+def _quoted(names: Iterable[str]) -> str:
+    return ", ".join(repr(name) for name in names)
+
+
+def _recorded_skips(
+    store: ResultStore, completed: set[tuple[str, str, str]]
+) -> dict[tuple[str, str, str], str | None]:
+    """The completed solves whose latest row is skipped_unsupported, with its reason.
+
+    A resumed run counts such a row as complete; under
+    ``fail_on_unsupported`` it must fail the run like the skip did.
+    """
+    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+    path = store.results_jsonl_path
+    if not path.exists():
+        return {}
+    with path.open() as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            key = (str(record.get("dataset")), str(record.get("problem")), str(record.get("solver_id")))
+            if key in completed:
+                latest[key] = record
+    return {
+        key: record.get("error")
+        for key, record in latest.items()
+        if record.get("status") == status.SKIPPED_UNSUPPORTED
+    }
+
+
+def _check_supported(config: RunConfig, result: ProblemResult) -> None:
+    """Fail the run on a skip the adapter reported, under ``fail_on_unsupported``.
+
+    The row is written first, so it is not lost.
+    """
+    if config.fail_on_unsupported and result.status == status.SKIPPED_UNSUPPORTED:
+        raise RuntimeError(
+            f"{result.solver_id!r} skipped {result.dataset}/{result.problem}: "
+            f"{str(result.error).rstrip('.')}; run.fail_on_unsupported is true, so the run stops."
+        )
 
 
 def _retire_replaced_rows(store: ResultStore) -> None:
@@ -354,13 +717,16 @@ def _run_tasks_in_parallel(
     store: ResultStore,
     progress: _ProgressReporter,
     parallelism: int,
+    *,
+    check_result: Callable[[ProblemResult], None] | None = None,
 ) -> None:
     """Run ``tasks`` on a thread pool and write each result as it lands.
 
-    On any exception in this thread, KeyboardInterrupt included, solves that
-    have not started are cancelled, results that had already finished are
-    written, and the workers still running are killed (their results are not
-    recorded) before the exception propagates. Workers run in their own
+    ``check_result`` sees each result once it is written and may raise to
+    stop the run. On any exception in this thread, KeyboardInterrupt
+    included, solves that have not started are cancelled, results that had
+    already finished are written, and the workers still running are killed
+    (their results are not recorded) before the exception propagates. Workers run in their own
     sessions, so a terminal Ctrl+C reaches only this process.
     """
     prefix = f"bench-pool-{next(_POOL_IDS)}"
@@ -376,6 +742,8 @@ def _run_tasks_in_parallel(
             written.add(future)
             store.write_result(result)
             progress.record_result(result)
+            if check_result is not None:
+                check_result(result)
     except BaseException:
         executor.shutdown(wait=False, cancel_futures=True)
         for future in futures:
@@ -687,10 +1055,13 @@ def _run_one(
             f"finished {problem.name} with {solver_config.id}: {result.status}",
         )
         return result
-    _emit_progress(
-        stream_output,
-        f"worker error {problem.name} with {solver_config.id}: exit {completed.returncode}",
-    )
+    if not _WORKERS.aborting():
+        # A worker the runner killed itself while stopping is not an error
+        # of its own, and its result is not recorded.
+        _emit_progress(
+            stream_output,
+            f"worker error {problem.name} with {solver_config.id}: exit {completed.returncode}",
+        )
     return ProblemResult(
         run_id=store.run_id,
         dataset=dataset_config.id,
@@ -702,7 +1073,7 @@ def _run_one(
         objective_value=None,
         iterations=None,
         run_time_seconds=None,
-        error=f"Worker exited with code {completed.returncode}",
+        error=_worker_exit_message(completed.returncode, completed.stderr),
         artifact_dir=str(artifacts_dir),
         metadata=_metadata_with_environment(
             problem,
@@ -719,6 +1090,35 @@ def _run_one(
 _CONCLUSIVE_STATUSES = frozenset(
     {status.OPTIMAL, status.OPTIMAL_INACCURATE, *status.ANY_INFEASIBLE}
 )
+
+
+def _worker_exit_message(returncode: int | None, stderr: str | None) -> str:
+    """Why a worker ended without a result: its exit status and stderr tail.
+
+    A negative code is the signal that killed it; SIGKILL usually comes from
+    the out-of-memory killer. The last few non-empty stderr lines usually
+    name the reason (an abort message, an import error).
+    """
+    sigkill = getattr(signal, "SIGKILL", None)
+    if returncode is not None and returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = f"signal {-returncode}"
+        message = f"Worker killed by {name}"
+        if sigkill is not None and -returncode == sigkill:
+            message += " (possibly out of memory)"
+    elif returncode == 0:
+        message = "Worker exited with code 0 without writing worker_result.json"
+    else:
+        message = f"Worker exited with code {returncode}"
+    lines = [line.rstrip() for line in (stderr or "").splitlines() if line.strip()]
+    tail = "\n".join(lines[-_ERROR_TAIL_LINES:])
+    if len(tail) > _ERROR_TAIL_CHARS:
+        tail = "..." + tail[-_ERROR_TAIL_CHARS:]
+    if tail:
+        message += f"; stderr ends with:\n{tail}"
+    return message
 
 
 def _subprocess_timeout(time_limit: float | None) -> float | None:
@@ -741,24 +1141,33 @@ def _subprocess_timeout(time_limit: float | None) -> float | None:
 
 
 def _apply_time_limit(result: ProblemResult, time_limit: float | None) -> None:
-    """Record a conclusion reached after ``time_limit`` as time_limit.
+    """Mark a result returned after ``time_limit``; a conclusion becomes time_limit.
 
-    The solver's own status stays in ``info["status_before_timeout"]``.
+    Every such result gets ``info["exceeded_time_limit"]``, whatever its
+    status, so that ``bench kkt-verify --promote`` does not count its point
+    as solved. A conclusive status is recorded as time_limit, with the
+    solver's own status in ``info["status_before_timeout"]``; it loses its
+    objective (reported only for optimal and optimal_inaccurate rows), which
+    is kept in ``info["objective_before_timeout"]``. Other statuses are kept.
     """
     if (
         time_limit is None
-        or result.status not in _CONCLUSIVE_STATUSES
         or result.run_time_seconds is None
         or not result.run_time_seconds > time_limit
     ):
         return
-    result.info = {**(result.info or {}), "status_before_timeout": result.status}
-    result.status = status.TIME_LIMIT
-    if result.error is None:
-        result.error = (
-            f"Solve took {result.run_time_seconds:.3g} s, more than "
-            f"timeout_seconds={time_limit:g}"
-        )
+    info = {**(result.info or {}), "exceeded_time_limit": True}
+    if result.status in _CONCLUSIVE_STATUSES:
+        info["status_before_timeout"] = result.status
+        info["objective_before_timeout"] = result.objective_value
+        result.status = status.TIME_LIMIT
+        result.objective_value = None
+        if result.error is None:
+            result.error = (
+                f"Solve took {result.run_time_seconds:.3g} s, more than "
+                f"timeout_seconds={time_limit:g}"
+            )
+    result.info = info
 
 
 def _check_schema_version(record_version: object) -> str | None:
@@ -949,6 +1358,12 @@ class _WorkerProcesses:
         with self._lock:
             self._aborted.discard(prefix)
 
+    def aborting(self) -> bool:
+        """Whether the calling thread belongs to a pool being aborted."""
+        name = threading.current_thread().name
+        with self._lock:
+            return any(name.startswith(f"{prefix}_") for prefix in self._aborted)
+
 
 _WORKERS = _WorkerProcesses()
 
@@ -962,9 +1377,9 @@ def _run_subprocess(
     stderr_path: Path,
     stream_output: bool,
 ):
-    # Only a bounded tail stays in memory: verbose solvers can print hundreds
-    # of MB, and the logs on disk already hold everything.
-    stdout_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
+    # Only a bounded tail of stderr stays in memory, to say why a worker
+    # crashed: verbose solvers can print hundreds of MB, and the logs on disk
+    # already hold everything.
     stderr_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
     # Line-buffered open so the on-disk log reflects in-progress output if
     # the worker is killed mid-line (prior bufsize=1 referred only to the
@@ -989,7 +1404,8 @@ def _run_subprocess(
             # Python's stdout is block-buffered on a pipe, and a timeout kill
             # drops the buffer: the log of a timed-out solve would lose the
             # iterations that explain the timeout.
-            "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+            # The worker dies with this process (see worker._die_with_runner).
+            "env": {**os.environ, "PYTHONUNBUFFERED": "1", RUNNER_PID_ENV: str(os.getpid())},
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
@@ -1004,7 +1420,7 @@ def _run_subprocess(
         threads = [
             threading.Thread(
                 target=_tee_stream,
-                args=(process.stdout, stdout_log, sys.stdout, stdout_tail, stream_output),
+                args=(process.stdout, stdout_log, sys.stdout, None, stream_output),
                 daemon=True,
             ),
             threading.Thread(
@@ -1049,7 +1465,6 @@ def _run_subprocess(
             pass
     return SimpleNamespace(
         returncode=returncode,
-        stdout="".join(stdout_tail),
         stderr="".join(stderr_tail),
         timed_out=timed_out,
     )
@@ -1103,8 +1518,8 @@ def _terminate_process(process: subprocess.Popen) -> int:
         return -signal.SIGKILL
 
 
-def _tee_stream(source, log_file, sink, tail: deque[str], stream_output: bool) -> None:
-    """Copy ``source`` to the log (and the terminal) until it closes.
+def _tee_stream(source, log_file, sink, tail: deque[str] | None, stream_output: bool) -> None:
+    """Copy ``source`` to the log (and the terminal, and ``tail``) until it closes.
 
     Keeps draining when the log or the terminal fails: closing the pipe
     early would kill the worker with EPIPE and lose a result it had
@@ -1114,7 +1529,8 @@ def _tee_stream(source, log_file, sink, tail: deque[str], stream_output: bool) -
     sink_ok = stream_output
     try:
         for line in source:
-            tail.append(line)
+            if tail is not None:
+                tail.append(line)
             if log_ok:
                 try:
                     log_file.write(line)

@@ -196,11 +196,12 @@ def test_a_failing_task_becomes_a_worker_error_row(
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
 def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
-    monkeypatch, tmp_path: Path, repo_root: Path
+    monkeypatch, tmp_path: Path, repo_root: Path, capsys
 ):
     """Ctrl+C reaches only the runner (workers run in their own sessions).
     Queued solves must not start, running workers must be killed rather than
-    recorded, and results that had already finished must be written."""
+    recorded (nor reported as worker errors), and results that had already
+    finished must be written."""
     import subprocess
     import sys
     import threading
@@ -248,11 +249,14 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     monkeypatch.setattr(runner._ProgressReporter, "record_result", record_then_interrupt)
     started_at = time.monotonic()
     with pytest.raises(KeyboardInterrupt):
-        run_benchmark(_parallel_config(tmp_path), run_dir=tmp_path / "run", repo_root=repo_root)
+        run_benchmark(
+            _parallel_config(tmp_path), run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True
+        )
     assert time.monotonic() - started_at < 20
     rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
     assert [row["problem"] for row in rows] == ["p000"]
     assert len(started) <= 3
+    assert "worker error" not in capsys.readouterr().err
     leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
     assert leftover.stdout.strip() == ""
 

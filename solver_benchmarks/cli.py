@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import signal
 import threading
 from collections.abc import Iterator
@@ -31,12 +32,14 @@ from solver_benchmarks.core.config import (
     DatasetConfig,
     load_environment_run_config,
     load_run_config,
+    unknown_name_message,
 )
 from solver_benchmarks.core.data_prepare import (
     data_prepare_command,
     run_with_prepare_command,
 )
-from solver_benchmarks.core.env_runner import run_environment_matrix
+from solver_benchmarks.core.env_runner import MATRIX_RUNNER_PID_ENV, run_environment_matrix
+from solver_benchmarks.core.parent_watch import watch_parent
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.datasets import get_dataset, list_datasets
 from solver_benchmarks.solvers import get_solver, list_solvers
@@ -79,16 +82,40 @@ def list_problems_cmd(
     options: tuple[str],
     prepare: bool,
 ) -> None:
-    dataset_cls = get_dataset(dataset)
-    dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
+    dataset_cls = _dataset_class(dataset)
+    with _dataset_errors(dataset):
+        dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
     if prepare:
         try:
             dataset_obj.prepare_data()
         except (RuntimeError, OSError, ValueError) as exc:
             # Same failures, and the same message, as `bench data prepare`.
             raise click.ClickException(f"Preparing {dataset} failed: {exc}") from exc
-    for spec in dataset_obj.visible_problems():
+    with _dataset_errors(dataset):
+        specs = dataset_obj.visible_problems()
+    for spec in specs:
         click.echo(f"{spec.name}\t{spec.kind}\t{spec.path or ''}")
+
+
+def _dataset_class(name: str):
+    """The registered dataset ``name``; a misspelled name is a click error."""
+    try:
+        return get_dataset(name)
+    except KeyError:
+        raise click.ClickException(unknown_name_message("dataset", name, list_datasets())) from None
+
+
+@contextlib.contextmanager
+def _dataset_errors(name: str) -> Iterator[None]:
+    """Report a dataset's refusal of its options or data as a click error.
+
+    For example ``--option max_size_mb=abc``, which the dataset raises as
+    ValueError when it lists its problems.
+    """
+    try:
+        yield
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise click.ClickException(f"Dataset {name}: {exc}") from exc
 
 
 @main.group("data")
@@ -108,9 +135,10 @@ def data_status_cmd(
     names = [dataset] if dataset else list_datasets()
     parsed_options = _parse_options(options)
     for name in names:
-        dataset_cls = get_dataset(name)
-        dataset_obj = dataset_cls(repo_root=repo_root, **parsed_options)
-        status = dataset_obj.data_status()
+        dataset_cls = _dataset_class(name)
+        with _dataset_errors(name):
+            dataset_obj = dataset_cls(repo_root=repo_root, **parsed_options)
+            status = dataset_obj.data_status()
         marker = "available" if status.available else "missing"
         path = str(status.data_dir) if status.data_dir is not None else ""
         command = (
@@ -140,8 +168,9 @@ def data_prepare_cmd(
     problems: tuple[str],
     all_problems: bool,
 ) -> None:
-    dataset_cls = get_dataset(dataset)
-    dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
+    dataset_cls = _dataset_class(dataset)
+    with _dataset_errors(dataset):
+        dataset_obj = dataset_cls(repo_root=repo_root, **_parse_options(options))
     try:
         dataset_obj.prepare_data(list(problems) or None, all_problems=all_problems)
     except (RuntimeError, OSError, ValueError) as exc:
@@ -203,6 +232,7 @@ def run_cmd(
     env_metadata = _parse_json_option(environment_metadata)
     try:
         with terminate_like_interrupt():
+            _stop_with_matrix_runner()
             store = run_benchmark(
                 config,
                 run_dir=run_dir,
@@ -389,7 +419,8 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
     """Concatenate sharded run directories into one for analysis."""
     from solver_benchmarks.analysis.derive import merge_runs
 
-    summary = merge_runs(list(run_dirs), out_dir, overwrite=overwrite)
+    with _derive_errors():
+        summary = merge_runs(list(run_dirs), out_dir, overwrite=overwrite)
     click.echo(
         f"{out_dir}: {summary['rows']} rows from {summary['sources']} runs"
         + (f", {summary['duplicate_keys']} duplicated keys" if summary["duplicate_keys"] else "")
@@ -421,7 +452,11 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
 @click.option(
     "--promote",
     is_flag=True,
-    help="Also mark inaccurate, iteration-limited or time-limited solves optimal when their returned point passes the check.",
+    help=(
+        "Also mark inaccurate, iteration-limited or time-limited solves optimal when their returned "
+        "point passes the check; a result returned after the run's time limit is never promoted "
+        "(with a solver limit equal to timeout_seconds, its time-limit stops never are: set it lower)."
+    ),
 )
 @click.option("--overwrite", is_flag=True, help="Replace the output directory if it exists.")
 def kkt_verify_cmd(
@@ -437,11 +472,13 @@ def kkt_verify_cmd(
     from solver_benchmarks.analysis.derive import kkt_verify
 
     out = output_dir or run_dir.parent / f"{run_dir.name}_kkt{tol:.0e}"
-    summary = kkt_verify(
-        run_dir, out, tol=tol, missing_is_failure=not allow_missing, promote=promote, overwrite=overwrite
-    )
+    with _derive_errors():
+        summary = kkt_verify(
+            run_dir, out, tol=tol, missing_is_failure=not allow_missing, promote=promote, overwrite=overwrite
+        )
     solvers = sorted(
-        set(summary["kept"]) | set(summary["demoted"]) | set(summary["promoted"]) | set(summary["missing_residuals"])
+        set(summary["kept"]) | set(summary["demoted"]) | set(summary["promoted"])
+        | set(summary["missing_residuals"]) | set(summary["over_time_limit"])
     )
     for solver_id in solvers:
         click.echo(
@@ -449,6 +486,11 @@ def kkt_verify_cmd(
             f"\tdemoted={summary['demoted'].get(solver_id, 0)}"
             f"\tpromoted={summary['promoted'].get(solver_id, 0)}"
             f"\tno_residuals={summary['missing_residuals'].get(solver_id, 0)}"
+            + (
+                f"\tover_time_limit={summary['over_time_limit'][solver_id]}"
+                if solver_id in summary["over_time_limit"]
+                else ""
+            )
         )
     for key, what in (
         ("unverified_cones", "rows whose cone distances could not be checked"),
@@ -464,6 +506,19 @@ def kkt_verify_cmd(
     if summary.get("skipped_lines"):
         click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     click.echo(str(out))
+
+
+@contextlib.contextmanager
+def _derive_errors() -> Iterator[None]:
+    """Report the user errors of ``bench merge`` / ``bench kkt-verify`` as click errors."""
+    from solver_benchmarks.analysis.derive import DeriveInputError, OutputExistsError
+
+    try:
+        yield
+    except OutputExistsError as exc:
+        raise click.ClickException(f"{exc.path} exists; pass --overwrite to replace it") from exc
+    except DeriveInputError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command("report")
@@ -498,17 +553,20 @@ def report_cmd(
 
 @contextlib.contextmanager
 def terminate_like_interrupt() -> Iterator[None]:
-    """Make SIGTERM unwind the run the way Ctrl+C does, once.
+    """Make SIGTERM and SIGHUP unwind the run the way Ctrl+C does, once.
 
     Workers run in their own sessions, so a SIGTERM to the runner (Slurm's
-    scancel, ``kill``, a CI job timeout) reaches only the runner, which died
-    without killing them: they kept solving with no time limit. Raising
-    ``SystemExit(128 + SIGTERM)`` from the handler sends the signal through
+    scancel, ``kill``, a CI job timeout) or the SIGHUP of a closed terminal
+    or dropped ssh session reaches only the runner, which died without
+    killing them: they kept solving with no time limit. Raising
+    ``SystemExit(128 + signum)`` from the handler sends the signal through
     the runner's ``except BaseException`` paths, which kill the workers and
     keep the results that had finished, and exits with the usual status.
+    SIGHUP is left alone where the platform has none, and when it is
+    already ignored, so ``nohup bench run ...`` keeps running.
 
-    Only the first SIGINT or SIGTERM unwinds the run; later ones are ignored
-    so they cannot cut that cleanup short. A terminal's Ctrl+C reaches a
+    Only the first stop signal unwinds the run; later ones are ignored so
+    they cannot cut that cleanup short. A terminal's Ctrl+C reaches a
     matrix child directly and the matrix runner then forwards a SIGTERM to
     it, so a child sees both. A cleanup that hangs is still ended by SIGKILL.
     Only the main thread can install handlers; elsewhere this does nothing.
@@ -517,19 +575,44 @@ def terminate_like_interrupt() -> Iterator[None]:
         yield
         return
 
+    signals = [signal.SIGINT, signal.SIGTERM]
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None and signal.getsignal(sighup) is not signal.SIG_IGN:
+        signals.append(sighup)
+
     def _stop(signum, frame):
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        for sig in signals:
+            signal.signal(sig, signal.SIG_IGN)
         if signum == signal.SIGINT:
             raise KeyboardInterrupt
         raise SystemExit(128 + signum)
 
-    previous = {sig: signal.signal(sig, _stop) for sig in (signal.SIGINT, signal.SIGTERM)}
+    previous = {sig: signal.signal(sig, _stop) for sig in signals}
     try:
         yield
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+
+
+def _stop_with_matrix_runner() -> None:
+    """Stop this `bench run` like a SIGTERM when the `bench env run` that started it dies.
+
+    The matrix runner passes its pid in the environment. Without this, a
+    matrix runner killed outright left the current environment's run, and
+    its workers, solving. The variable is removed so the workers do not
+    inherit it.
+    """
+    value = os.environ.pop(MATRIX_RUNNER_PID_ENV, None)
+    try:
+        matrix_pid = int(value) if value is not None else None
+    except ValueError:
+        return
+    watch_parent(
+        matrix_pid,
+        signum=signal.SIGTERM,
+        on_gone=lambda: os.kill(os.getpid(), signal.SIGTERM),
+    )
 
 
 def _load_config(loader, config_path: Path):

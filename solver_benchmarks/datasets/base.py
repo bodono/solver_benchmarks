@@ -99,6 +99,16 @@ class Dataset(ABC):
     def load_problem(self, name: str) -> ProblemData:
         raise NotImplementedError
 
+    def known_problem_names(self) -> set[str] | None:
+        """Every name ``list_problems`` can list under these options, local or not.
+
+        None (the default) means the dataset does not know: it lists only the
+        problems present, so a name it does not list may just not be
+        downloaded yet. A dataset that knows its full set lets the runner
+        call a name outside it a typo.
+        """
+        return None
+
     def visible_problems(self) -> list[ProblemSpec]:
         """Problems visible after generic dataset options are applied.
 
