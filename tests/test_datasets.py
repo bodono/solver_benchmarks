@@ -58,6 +58,7 @@ def test_required_datasets_are_registered():
 def test_required_solvers_are_registered():
     required = {
         "qtqp",
+        "cpo3",
         "scs",
         "clarabel",
         "osqp",

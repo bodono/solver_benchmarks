@@ -28,10 +28,12 @@ pip install -e ".[all]"
 ```
 
 The `all` extra installs open-source solver dependencies declared by the package,
-including QTQP, SCS, OSQP, Clarabel, ECOS, CVXOPT, HiGHS, PIQP, OR-Tools/PDLP,
+including QTQP, cpo3, SCS, OSQP, Clarabel, ECOS, CVXOPT, HiGHS, PIQP, OR-Tools/PDLP,
 PyYAML, and pytest. ProxQP and SDPA are included on Python versions where their
 wheels are available; currently they are skipped on Python 3.14 by dependency
-markers.
+markers. cpo3 publishes wheels for Linux x86-64, Windows x86-64 and macOS; on
+other platforms (e.g. Linux aarch64) pip builds it from source, which needs a
+Rust toolchain.
 
 Commercial solvers are optional and must be installed separately with valid licenses:
 
@@ -51,6 +53,7 @@ pip install -e ".[ecos]"
 pip install -e ".[cvxopt]"
 pip install -e ".[highs]"
 pip install -e ".[qtqp]"
+pip install -e ".[cpo3]"
 pip install -e ".[pdlp]"
 pip install -e ".[piqp]"
 pip install -e ".[proxqp]"
@@ -76,6 +79,7 @@ Example output:
 ```text
 clarabel  available               cone,qp
 cplex     missing optional extra  qp
+cpo3      available               cone,qp
 cvxopt    available               cone,qp
 ecos      available               cone,qp
 gurobi    missing optional extra  qp
@@ -367,7 +371,7 @@ Current maintained adapters:
 | Solver | ID | Supported types | Notes |
 |---|---|---|---|
 | QTQP | `qtqp` | QP | Converts QP bounds to nonnegative cone form internally. Needs qtqp >= 0.0.7; tolerances are `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (the harness also accepts `eps`/`eps_abs`/`eps_rel` and the pre-0.0.7 `atol`/`rtol`, translated to whatever the installed version takes). |
-| cpo3 | `cpo3` | QP | Rust interior-point solver (Mehrotra predictor-corrector) for LPs and QPs, converted to zero / nonnegative cone form like QTQP. Install from the public repository with `pip install git+https://github.com/cpo3-org/cpo3.git` (needs a Rust toolchain). Tolerances are Clarabel-style `tol_feas`, `tol_gap_abs`, `tol_gap_rel`, `tol_infeas_abs`, `tol_infeas_rel`; `eps` / `eps_abs` / `eps_rel` map onto them. |
+| cpo3 | `cpo3` | QP, cone (zero / nonnegative only) | Sparse interior-point solver for LPs and QPs, written in Rust ([cpo3-org/cpo3](https://github.com/cpo3-org/cpo3)); install with the `cpo3` extra (`pip install cpo3`, wheels for Linux x86-64, Windows x86-64 and macOS). QPs are converted to zero / nonnegative cone form like QTQP; cone problems pass through when they use only zero and nonnegative cones, and are skipped otherwise (cpo3 0.0.1 does not solve second-order or PSD cones). Tolerances are Clarabel-style `tol_feas`, `tol_gap_abs`, `tol_gap_rel`, `tol_infeas_abs`, `tol_infeas_rel`; `eps` / `eps_abs` / `eps_rel` map onto them and `max_iter` onto `max_iters`. `linear_solver` is `faer` (default, always available), `accelerate`, `cholmod` or `pardiso`; a backend the installed build or host cannot load stops the solve with a `SolverUnavailable` worker error instead of being scored as a solver failure. `threads` and `time_limit` are forwarded. |
 | SCS | `scs` | QP, cone | Supports SCS box-cone form for QPs and native conic data. |
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD cones. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
@@ -666,7 +670,7 @@ Bundled benchmark configs:
 | `configs/synthetic_smoke.json` | Tiny one-problem smoke run. |
 | `configs/netlib_feasible_example.yaml` | NETLIB feasible subset example. |
 | `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example. |
-| `configs/maros_meszaros_qp_solvers.yaml` | Maros-Meszaros QP run comparing OSQP, SCS, Clarabel, and QTQP. |
+| `configs/maros_meszaros_qp_solvers.yaml` | Maros-Meszaros QP run comparing OSQP, SCS, Clarabel, QTQP, and cpo3. |
 | `configs/multi_dataset_example.yaml` | Example of one run spanning several datasets. |
 | `configs/scs_anderson_sweep.yaml` | SCS Anderson acceleration sweep over NETLIB feasible, MIPLIB instances up to 5 MB, Maros-Meszaros, and SDPLIB instances up to 1 MB. Includes `scs_aa_disabled` with `acceleration_lookback: 0`, plus the cross-product `acceleration_lookback: [5, 10, 20]` and `acceleration_interval: [1, 5, 10]`. |
 | `configs/qtqp_refinement_regularization_sweep.yaml` | QTQP sweep over NETLIB feasible, MIPLIB instances up to 5 MB, and Maros-Meszaros. Uses `linear_solver: qdldl` and sweeps `max_iterative_refinement_steps: [1, 3, 5, 10, 20]` by `min_static_regularization: [1.0e-10, 1.0e-8, 1.0e-6]`. |
@@ -1548,13 +1552,13 @@ Current tests cover:
 - Worker trace serialization.
 - Generated Markdown reports from `bench report`.
 - Real solver smoke coverage on a small QP and LP for every open-source adapter
-  (OSQP, SCS, Clarabel, QTQP, ECOS, CVXOPT, HiGHS, ProxQP, PIQP, plus PDLP on
-  the LP), with KKT residuals checked against tight tolerances.
-- SDPA cone smoke coverage on a small linear cone LP with KKT residuals.
+  (OSQP, SCS, Clarabel, QTQP, cpo3, ECOS, CVXOPT, HiGHS, ProxQP, PIQP, plus PDLP
+  on the LP), with KKT residuals checked against tight tolerances.
+- SDPA and cpo3 cone smoke coverage on a small linear cone LP with KKT residuals.
 - Multi-solver agreement tests on a small SDP with PSD cones (SCS, Clarabel,
   SDPA, CVXOPT) — guarding against PSD-vec layout drift.
 - Primal- and dual-infeasibility certificate checks for SCS, Clarabel, OSQP,
-  and ECOS against deliberately infeasible / unbounded LPs.
+  ECOS, and cpo3 against deliberately infeasible / unbounded LPs.
 - Adapter status-mapping unit tests (e.g. `test_scs_status_val_mapping`,
   `test_sdpa_phase_mapping`) that pin the raw → canonical status translation
   for every documented solver code.

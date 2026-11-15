@@ -116,6 +116,15 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"qtqp_cudss_{tag}", "solver": "qtqp", "settings": {**qtqp_common, "linear_solver": "cudss"},
              "gpu": True, "runner": "qtqp_gpu"},
         ]
+    if family in ("qp", "lp", "lpbig"):
+        # cpo3 (Rust interior point, Faer backend): Clarabel-style tolerances and
+        # a native time limit; runs on its own image (runner cpo3_cpu).
+        variants.append(
+            {"id": f"cpo3_{tag}", "solver": "cpo3",
+             "settings": {"tol_feas": t, "tol_gap_abs": t, "tol_gap_rel": t, "max_iters": 200,
+                          "time_limit": timeout, "verbose": False},
+             "gpu": False, "runner": "cpo3_cpu"}
+        )
     if family in ("lp", "lpbig"):
         variants.append(
             {"id": f"pdlp_{tag}", "solver": "pdlp",

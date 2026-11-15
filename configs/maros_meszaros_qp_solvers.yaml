@@ -25,3 +25,8 @@ solvers:
     solver: qtqp
     settings:
       max_iter: 100
+
+  - id: cpo3_default
+    solver: cpo3
+    settings:
+      max_iters: 100
