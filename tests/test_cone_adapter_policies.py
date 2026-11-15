@@ -539,16 +539,118 @@ def test_ecos_factors_only_the_block_of_p_with_entries(tmp_path):
     assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-6)
 
 
-def test_ecos_refuses_a_large_dense_factor_up_front(tmp_path):
-    """A non-diagonal P above ECOS_DENSE_FACTOR_MAX_DIM is skipped with a
-    reason instead of densified (path-graph Laplacian, n = 2500)."""
+def test_ecos_refuses_a_large_dense_factor_up_front(tmp_path, monkeypatch):
+    """A P whose off-diagonal entries couple more than ECOS_DENSE_FACTOR_MAX_DIM
+    rows into one block is skipped with a reason instead of densified
+    (path-graph Laplacian, n = 2500), before anything is factored."""
+    import scipy.linalg
+
     from solver_benchmarks.solvers.ecos_adapter import ECOS_DENSE_FACTOR_MAX_DIM
 
+    def no_dense_factorization(*args, **kwargs):
+        raise AssertionError("an oversized block must be refused before factoring")
+
+    monkeypatch.setattr(scipy.linalg, "cholesky", no_dense_factorization)
+    monkeypatch.setattr(scipy.linalg, "eigh", no_dense_factorization)
     n = ECOS_DENSE_FACTOR_MAX_DIM + 500
     lap = sp.diags([-np.ones(n - 1), 2.0 * np.ones(n), -np.ones(n - 1)], [-1, 0, 1])
     result = _solve("ecos", QP, _box_qp(lap), {}, tmp_path)
     assert result.status == status.SKIPPED_UNSUPPORTED
-    assert str(ECOS_DENSE_FACTOR_MAX_DIM) in result.info["reason"]
+    reason = result.info["reason"]
+    assert str(ECOS_DENSE_FACTOR_MAX_DIM) in reason
+    assert f"coupling {n} rows/columns in 1 connected block(s), the largest {n} x {n}" in reason
+
+
+def _diagonal_plus_blocks(n: int, block_starts: list[int], block_size: int, seed: int = 0):
+    """``diag(1..2)`` with dense SPD blocks (off-diagonal coupling) placed on
+    the given leading indices; every other row has only its diagonal."""
+    rng = np.random.default_rng(seed)
+    p = sp.lil_matrix(sp.diags(np.linspace(1.0, 2.0, n)))
+    for start in block_starts:
+        g = rng.standard_normal((block_size, block_size))
+        idx = np.arange(start, start + block_size)
+        p[np.ix_(idx, idx)] = g.T @ g / block_size + np.eye(block_size)
+    return sp.csc_matrix(p)
+
+
+def test_ecos_factors_only_the_off_diagonal_block_of_a_mostly_diagonal_p(
+    tmp_path, monkeypatch
+):
+    """Rows whose only entry is the diagonal take sqrt(p_ii) like a diagonal
+    P; only the rows coupled by off-diagonal entries are factored densely.
+    Maros-Meszaros MOSARQP1 (n = 2500, coupled block 10) and STCQP1/2
+    (n = 4097, coupled block 1534) were refused while every row with an
+    entry counted towards the dense limit."""
+    import scipy.linalg
+
+    from solver_benchmarks.solvers.ecos_adapter import (
+        ECOS_DENSE_FACTOR_MAX_DIM,
+        _qp_to_ecos_via_socp,
+    )
+
+    n = 3000
+    assert n > ECOS_DENSE_FACTOR_MAX_DIM
+    p = _diagonal_plus_blocks(n, [1234], 10)
+    qp = _box_qp(p, seed=3)
+    factored_shapes: list[tuple[int, ...]] = []
+    real_cholesky = scipy.linalg.cholesky
+
+    def recording_cholesky(a, *args, **kwargs):
+        factored_shapes.append(np.shape(a))
+        return real_cholesky(a, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scipy.linalg, "cholesky", recording_cholesky)
+        data, dims, _, state = _qp_to_ecos_via_socp(qp)
+    assert factored_shapes == [(10, 10)]
+    r = state["r_factor"]
+    assert r.shape == (n, n)
+    assert abs(r.T @ r - p).max() < 1e-12
+    # n - 10 diagonal rows plus a 10 x 10 upper-triangular Cholesky factor.
+    assert r.nnz == (n - 10) + 10 * 11 // 2
+    result = _solve("ecos", QP, qp, {}, tmp_path)
+    reference = _solve("clarabel", QP, qp, {}, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-6)
+
+
+def test_ecos_factors_each_coupled_block_separately():
+    """Separate off-diagonal blocks are factored one at a time, so R is block
+    diagonal; the limit is on the entries of all dense factors together."""
+    from solver_benchmarks.solvers.ecos_adapter import (
+        ECOS_DENSE_FACTOR_MAX_DIM,
+        _psd_square_root,
+        _SOCPReformulationError,
+    )
+
+    n = 400
+    starts = [0, 100, 250]
+    p = _diagonal_plus_blocks(n, starts, 40)
+    r = _psd_square_root(p)
+    assert abs(r.T @ r - p).max() < 1e-12
+    assert r.nnz == (n - 3 * 40) + 3 * (40 * 41 // 2)
+    rows, cols = r.nonzero()
+    for start in starts:
+        block = (cols >= start) & (cols < start + 40)
+        # A row touching one block touches no other column.
+        assert set(cols[np.isin(rows, rows[block])]) <= set(range(start, start + 40))
+
+    # Three blocks of 0.6 * limit each are fine one at a time but hold more
+    # than limit^2 entries together.
+    size = int(0.6 * ECOS_DENSE_FACTOR_MAX_DIM)
+    big = sp.block_diag([sp.diags([-np.ones(size - 1), 2.0 * np.ones(size), -np.ones(size - 1)],
+                                  [-1, 0, 1])] * 3, format="csc")
+    with pytest.raises(_SOCPReformulationError, match="3 connected block"):
+        _psd_square_root(big)
+
+
+def test_ecos_rejects_indefinite_coupled_block_in_a_large_p():
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    n = 3000
+    p = sp.lil_matrix(sp.eye(n))
+    p[[5, 5, 6, 6], [5, 6, 5, 6]] = [1.0, 2.0, 2.0, 1.0]  # eigenvalues 3 and -1
+    assert _psd_square_root(sp.csc_matrix(p)) is None
 
 
 def test_ecos_times_the_socp_reformulation(tmp_path):

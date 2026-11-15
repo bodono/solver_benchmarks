@@ -16,14 +16,16 @@ rank-deficient ``P``):
     SOCP: minimize  t + q'x  subject to  l ≤ Ax ≤ u
                                           (u, v, Rx) in std SOC of dim k+2
 
-where ``u = t/√2 + 1/√2``, ``v = t/√2 - 1/√2``. ``R`` is built from the
-part of ``P`` that has nonzeros: a diagonal ``P`` gives ``R = diag(√p_ii)``
-directly (any size), otherwise the rows and columns of ``P`` that carry
-entries are factored densely. That dense factor is refused above
-``ECOS_DENSE_FACTOR_MAX_DIM`` (2000) rows/columns: the problem is skipped as
-unsupported rather than allocating an ``n × n`` matrix and handing ECOS an
-almost dense SOC block (which runs out of memory or measures a far larger
-artificial problem). The reformulation is part of ``run_time_seconds``
+where ``u = t/√2 + 1/√2``, ``v = t/√2 - 1/√2``. ``R`` is built without
+densifying ``P``: a row/column whose only entry is its diagonal gives one
+row ``√p_ii e_i'`` (so a diagonal ``P`` gives ``R = diag(√p_ii)`` at any
+size), and only the rows/columns coupled by off-diagonal entries are
+factored densely, one connected block at a time. Those dense factors may
+together hold at most ``ECOS_DENSE_FACTOR_MAX_DIM ** 2`` entries (one
+2000 × 2000 block); above that the problem is skipped as unsupported rather
+than allocating a huge dense matrix and handing ECOS an almost dense SOC
+block (which runs out of memory or measures a far larger artificial
+problem). The reformulation is part of ``run_time_seconds``
 (it is work a QP solver does in its own factorization) and is also recorded
 as ``info["socp_reformulation_seconds"]``. The std SOC means
 ``u² ≥ v² + ‖Rx‖²``, which after the substitution reduces to
@@ -74,8 +76,10 @@ from .base import (
     settings_with_defaults,
 )
 
-# Largest dense block of P (rows/columns carrying entries) the QP -> SOCP
-# reformulation factors. A diagonal P never needs one.
+# The QP -> SOCP reformulation factors densely only the rows/columns of P
+# coupled by off-diagonal entries, one connected block at a time; the dense
+# factors together may hold at most ECOS_DENSE_FACTOR_MAX_DIM ** 2 entries
+# (one block of this order). Diagonal-only rows never need a dense factor.
 ECOS_DENSE_FACTOR_MAX_DIM = 2000
 
 
@@ -223,8 +227,9 @@ def _qp_has_nonzero_p(qp: dict) -> bool:
 class _SOCPReformulationError(ValueError):
     """Raised when a QP cannot be cleanly reformulated as an SOCP for
     ECOS — because ``P`` is not symmetric / PSD within numerical
-    tolerance, or its non-diagonal part has more than
-    ``ECOS_DENSE_FACTOR_MAX_DIM`` rows/columns to factor densely."""
+    tolerance, or the blocks of ``P`` coupled by off-diagonal entries are
+    too large to factor densely (more than ``ECOS_DENSE_FACTOR_MAX_DIM ** 2``
+    entries together)."""
 
 
 def _qp_to_ecos_via_socp(qp: dict):
@@ -340,13 +345,18 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
     up-front rather than silently solved as if its negative curvature
     didn't exist.
 
-    ``P`` is never densified as a whole. A diagonal ``P`` gives
-    ``R = diag(√p_ii)`` (zero entries dropped). Otherwise only the rows and
-    columns that carry entries are factored densely — Cholesky first
+    ``P`` is never densified as a whole. A row/column whose only entry is
+    its diagonal ``p_ii`` gives one row ``√p_ii e_i'`` of ``R`` (zero entries
+    dropped), so a diagonal ``P`` gives ``R = diag(√p_ii)`` at any size. The
+    rows/columns coupled by off-diagonal entries split into the connected
+    components of that coupling graph; each component's block (its
+    diagonal included) is factored densely on its own — Cholesky first
     (cheap, only works for SPD), then a symmetric eigendecomposition that
-    drops near-zero eigenvalues but rejects any ``< -threshold``
-    curvature — and that block is limited to ``ECOS_DENSE_FACTOR_MAX_DIM``
-    (``_SOCPReformulationError`` above it).
+    drops near-zero eigenvalues but rejects any ``< -threshold`` curvature
+    — so ``R`` is block diagonal. The dense factors together may hold at
+    most ``ECOS_DENSE_FACTOR_MAX_DIM ** 2`` entries (one 2000 x 2000 block,
+    or e.g. four 1000 x 1000 ones); above that ``_SOCPReformulationError``
+    is raised before anything is factored.
     """
     p = sp.csc_matrix(p, dtype=float)
     if p.ndim != 2 or p.shape[0] != p.shape[1]:
@@ -364,30 +374,62 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
         return sp.csc_matrix((0, n))
 
     diagonal = p_sym.diagonal()
-    if p_sym.nnz == np.count_nonzero(diagonal):
-        threshold = max(1e-12, float(diagonal.max()) * 1e-12)
-        if float(diagonal.min()) < -threshold:
-            return None
-        keep = np.flatnonzero(diagonal > threshold)
-        return sp.csc_matrix(
-            (np.sqrt(diagonal[keep]), (np.arange(keep.size), keep)), shape=(keep.size, n)
-        )
+    # One curvature scale for the whole of P, so diagonal-only rows and
+    # coupled blocks drop (or reject) eigenvalues against the same cut-off.
+    scale = float(np.abs(diagonal).max())
+    threshold = max(1e-12, scale * 1e-12)
+    off_diagonal = sp.csr_matrix(p_sym - sp.diags(diagonal))
+    off_diagonal.eliminate_zeros()
+    coupled_mask = np.diff(off_diagonal.indptr) > 0
+    coupled = np.flatnonzero(coupled_mask)
+    single = np.flatnonzero(~coupled_mask)
 
-    support = np.unique(p_sym.nonzero()[0])
-    if support.size > ECOS_DENSE_FACTOR_MAX_DIM:
-        raise _SOCPReformulationError(
-            f"QP P matrix has a {support.size} x {support.size} non-diagonal block to "
-            f"factor; the ECOS SOCP reformulation factors at most "
-            f"{ECOS_DENSE_FACTOR_MAX_DIM} rows/columns densely, and its SOC block "
-            "would be nearly dense."
-        )
-    block = p_sym[support, :][:, support].toarray()
-    r_block = _dense_psd_square_root(block)
-    if r_block is None:
+    single_diagonal = diagonal[single]
+    if single.size and float(single_diagonal.min()) < -threshold:
         return None
-    rows, cols = np.nonzero(r_block)
+    keep = single[single_diagonal > threshold]
+    row_parts = [np.arange(keep.size)]
+    col_parts = [keep]
+    val_parts = [np.sqrt(diagonal[keep])]
+    n_rows = int(keep.size)
+
+    if coupled.size:
+        from scipy.sparse.csgraph import connected_components
+
+        coupling = off_diagonal[coupled][:, coupled]
+        n_components, labels = connected_components(coupling, directed=False)
+        sizes = np.bincount(labels, minlength=n_components)
+        dense_entries = int(np.sum(sizes.astype(np.int64) ** 2))
+        if dense_entries > ECOS_DENSE_FACTOR_MAX_DIM**2:
+            largest = int(np.max(sizes))
+            raise _SOCPReformulationError(
+                f"QP P matrix has off-diagonal entries coupling {coupled.size} "
+                f"rows/columns in {n_components} connected block(s), the largest "
+                f"{largest} x {largest}; their dense factors would "
+                f"hold {dense_entries} entries, more than the "
+                f"{ECOS_DENSE_FACTOR_MAX_DIM} x {ECOS_DENSE_FACTOR_MAX_DIM} the ECOS "
+                "SOCP reformulation factors, and its SOC block would be nearly dense."
+            )
+        # Group the coupled rows by component: the permuted block of P is
+        # block diagonal with contiguous components.
+        order = np.argsort(labels, kind="stable")
+        members = coupled[order]
+        block_matrix = sp.csr_matrix(p_sym[members][:, members])
+        bounds = np.concatenate([[0], np.cumsum(sizes)])
+        for start, stop in zip(bounds[:-1], bounds[1:]):
+            block = block_matrix[start:stop, start:stop].toarray()
+            r_block = _dense_psd_square_root(block, scale=scale)
+            if r_block is None:
+                return None
+            rows, cols = np.nonzero(r_block)
+            row_parts.append(rows + n_rows)
+            col_parts.append(members[start + cols])
+            val_parts.append(r_block[rows, cols])
+            n_rows += int(r_block.shape[0])
+
     return sp.csc_matrix(
-        (r_block[rows, cols], (rows, support[cols])), shape=(r_block.shape[0], n)
+        (np.concatenate(val_parts), (np.concatenate(row_parts), np.concatenate(col_parts))),
+        shape=(n_rows, n),
     )
 
 
@@ -403,7 +445,14 @@ def _close_to_symmetric(p: sp.csc_matrix, p_sym: sp.csc_matrix) -> bool:
     return not (excess.nnz and float(excess.max()) > atol)
 
 
-def _dense_psd_square_root(p_sym: np.ndarray) -> np.ndarray | None:
+def _dense_psd_square_root(p_sym: np.ndarray, *, scale: float = 0.0) -> np.ndarray | None:
+    """Dense ``R`` with ``R'R = p_sym``, or None when ``p_sym`` is indefinite.
+
+    Eigenvalues up to ``1e-12 * max(largest eigenvalue, scale)`` (at least
+    ``1e-12``) count as zero: they are dropped, and anything below minus
+    that cut-off is negative curvature. ``scale`` lets a block of a larger
+    ``P`` use the curvature scale of the whole matrix.
+    """
     import scipy.linalg as la
 
     try:
@@ -420,20 +469,13 @@ def _dense_psd_square_root(p_sym: np.ndarray) -> np.ndarray | None:
         return np.zeros((0, p_sym.shape[0]))
     max_eig = float(eigvals.max())
     min_eig = float(eigvals.min())
-    if max_eig <= 0.0:
-        # All non-positive: either identically zero (LP path) or
-        # entirely negative (indefinite). For the all-zero case we
-        # return an empty factor; for any negative curvature we
-        # refuse so the caller surfaces SKIPPED_UNSUPPORTED rather
-        # than dropping the indefinite directions.
-        if min_eig < -max(1e-12, abs(min_eig) * 1e-12):
-            return None
-        return np.zeros((0, p_sym.shape[0]))
     # Reject if any eigenvalue is meaningfully negative (indefinite
     # P): pre-fix this branch silently dropped negative eigenvalues
     # alongside the near-zero ones, so a nonconvex QP like
     # ``diag([1, -1])`` was sent to ECOS as a rank-1 PSD relaxation.
-    threshold = max(1e-12, max_eig * 1e-12)
+    # An all-non-positive block is either zero within the cut-off (empty
+    # factor below) or negative definite (refused here).
+    threshold = max(1e-12, max(max_eig, float(scale)) * 1e-12)
     if min_eig < -threshold:
         return None
     # Drop near-zero eigenvalues (the QP epigraph constraint
