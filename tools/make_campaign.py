@@ -7,6 +7,11 @@ output is a JSON spec consumed by tools/bench_modal.py; the same YAML
 configs can be run locally with ``bench run``.
 
 Usage: python tools/make_campaign.py OUT_DIR [--families qp,lp,sdp] [--tols 1e-4,1e-6]
+
+Families: qp, lp, sdp, lpbig (the Mittelmann LP set) and infeas (the
+infeasible NETLIB LPs, with the LP solvers). Solver ids end in the tolerance
+tag (``clarabel_1e-4``, ``clarabel_5e-5``), which is how tools/make_figures.py
+tells the tolerances apart.
 """
 
 from __future__ import annotations
@@ -45,7 +50,6 @@ FAMILIES: dict[str, list[dict]] = {
         {"name": "netlib", "id": "netlib", "dataset_options": {"subset": "feasible"}},
         {"name": "kennington", "id": "kennington"},
         {"name": "miplib", "id": "miplib_relax", "dataset_options": {"max_size_mb": 20}},
-        {"name": "mittelmann", "id": "mittelmann"},
     ],
     "sdp": [
         {"name": "sdplib", "id": "sdplib"},
@@ -57,7 +61,18 @@ FAMILIES: dict[str, list[dict]] = {
         {"name": "mittelmann", "id": f"mittelmann{k}", "include": chunk}
         for k, chunk in enumerate(MITTELMANN_CHUNKS)
     ],
+    # Infeasible NETLIB LPs: success is a verified infeasibility certificate.
+    "infeas": [
+        {"name": "netlib", "id": "netlib_infeasible", "dataset_options": {"subset": "infeasible"}},
+    ],
 }
+
+
+def tolerance_tag(tol: float) -> str:
+    """The suffix of a solver id: ``1e-4`` for 1e-4, ``1.5e-5`` for 1.5e-5."""
+    mantissa, exponent = f"{float(tol):e}".split("e")
+    mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa}e{int(exponent)}"
 
 
 def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
@@ -68,7 +83,10 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     ``bench kkt-verify --tol`` on the harness's independent KKT residuals.
     """
     t = float(tol)
-    tag = f"{tol:.0e}".replace("e-0", "e-")
+    tag = tolerance_tag(t)
+    # The infeasible LPs are run with the LP family's solvers.
+    if family == "infeas":
+        family = "lp"
     scs_common = {"eps_abs": t, "eps_rel": t, "max_iters": 1_000_000, "time_limit_secs": timeout}
     variants = [
         {"id": f"scs_cpu_{tag}", "solver": "scs", "settings": dict(scs_common), "gpu": False},

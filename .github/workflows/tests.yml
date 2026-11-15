@@ -14,9 +14,15 @@ on:
 permissions:
   contents: read
 
+# Only a newer push to the same pull request cancels a run. Pushes to master,
+# the weekly scheduled run and manually dispatched runs (the two that run the
+# dataset-download smoke) share a ref, so each event type gets its own group
+# and none cancels another. Within a group that does not cancel, such as
+# pushes to master, a new run waits for the running one (GitHub keeps only
+# the newest waiting run).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -45,8 +51,22 @@ jobs:
         run: python -m compileall -q tools scripts
 
   type-check:
-    name: Type check
+    # The 3.11 cell keeps the job's original name, "Type check", which
+    # branch protection rules may require.
+    name: ${{ matrix.check-name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest supported Python (keep it aligned with
+        # [tool.mypy].python_version in pyproject.toml, which mypy checks
+        # against in both cells) and the newest, which installs the newest
+        # numpy and scipy and so the newest type stubs.
+        include:
+          - python-version: "3.11"
+            check-name: "Type check"
+          - python-version: "3.14"
+            check-name: "Type check - Python 3.14"
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -54,8 +74,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          # Keep this aligned with [tool.mypy].python_version in pyproject.toml.
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install package and mypy

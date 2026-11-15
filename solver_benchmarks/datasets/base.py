@@ -182,7 +182,15 @@ class Dataset(ABC):
         explicit = self.options.get("data_root")
         if explicit:
             return Path(explicit).resolve()
-        return self.repo_root / "problem_classes"
+        path = self.repo_root / "problem_classes"
+        if not path.is_dir() and _installed_checkout() is None:
+            raise ValueError(
+                f"{path} does not exist, and this install of solver_benchmarks has no bundled "
+                "data: the data ships with the repository. Install with `pip install -e .` from "
+                "a clone, or pass --repo-root naming a checkout or --data-root naming a data "
+                "directory (repo_root= / data_root= in Python)."
+            )
+        return path
 
 
 def filter_problem_specs_by_size(
@@ -220,13 +228,26 @@ def problem_spec_size_bytes(problem: ProblemSpec) -> int | None:
         return None
 
 
+def _installed_checkout() -> Path | None:
+    """The checkout this package was installed from (``pip install -e``),
+    or None for a non-editable install, whose parent is site-packages:
+    that holds the code of ``problem_classes`` but none of the data."""
+    checkout = Path(__file__).resolve().parents[2]
+    if (checkout / "pyproject.toml").is_file() and (checkout / "problem_classes").is_dir():
+        return checkout
+    return None
+
+
 def default_repo_root() -> Path:
     """The repository holding the benchmark data when none is given.
 
     The current directory if it has ``problem_classes``, otherwise the
-    checkout this package was installed from.
+    checkout this package was installed from. A non-editable install has
+    no checkout; the current directory is used then (never site-packages),
+    and looking up bundled data under it is an error (see
+    ``Dataset.problem_classes_dir``).
     """
     cwd = Path.cwd().resolve()
     if (cwd / "problem_classes").is_dir():
         return cwd
-    return Path(__file__).resolve().parents[2]
+    return _installed_checkout() or cwd

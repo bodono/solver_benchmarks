@@ -27,11 +27,20 @@ Create and activate your Python environment, then install the package in editabl
 pip install -e ".[all]"
 ```
 
+The bundled datasets live in the repository, not in the package, so install
+from a clone in editable mode. A non-editable install (`pip install .`, or from
+a git URL) has no data and takes the current directory as the repository root;
+a command that then looks for a dataset's files under a root without
+`problem_classes/` stops with an error, unless given `--repo-root` naming a
+checkout or `--data-root` (the `data_root` option) naming a data directory.
+Datasets without files (`synthetic_qp`, `synthetic_cone`) and the analysis of
+run directories whose datasets need no bundled files work without either.
+
 The `all` extra installs open-source solver dependencies declared by the package,
 including QTQP, cpo3, SCS, OSQP, Clarabel, ECOS, CVXOPT, HiGHS, PIQP, OR-Tools/PDLP,
-PyYAML, and pytest. ProxQP and SDPA are included on Python versions where their
-wheels are available; currently they are skipped on Python 3.14 by dependency
-markers. cpo3 publishes wheels for Linux x86-64, Windows x86-64 and macOS; on
+PyYAML, and pytest. On Python 3.14 it needs proxsuite >= 0.8.0 (3.14 wheels
+exist from 0.7.3) and sdpa-python >= 0.2.3 (the first release with them);
+ProxQP is left out on Windows with Python 3.14, where proxsuite has no wheel. cpo3 publishes wheels for Linux x86-64, Windows x86-64 and macOS; on
 other platforms (e.g. Linux aarch64) pip builds it from source, which needs a
 Rust toolchain.
 
@@ -275,6 +284,10 @@ python scripts/prepare_dimacs.py
 python scripts/prepare_cutest_qp.py
 ```
 
+Like `bench`, each wrapper takes `--repo-root` (default: the current directory
+if it has `problem_classes/`, else the checkout the package was installed from)
+and `--data-root` (the directory used in place of `problem_classes/`).
+
 `scripts/research/` holds one-off scripts and SCS patches from the Anderson
 acceleration experiments. They need a patched SCS build and local results that
 are not in the repository, and they are not maintained; see its `README.md`.
@@ -391,7 +404,7 @@ Notes on the semantics:
   and for MPS datasets that have both `.mps` and `.mps.gz` encodings of the
   same problem, where the smallest available local encoding is used for the
   size decision.
-- The `synthetic` dataset has no backing file and is unaffected.
+- The synthetic datasets (`synthetic_qp`, `synthetic_cone`) have no backing file and are unaffected.
 
 ## Supported Solvers
 
@@ -408,9 +421,9 @@ Current maintained adapters:
 | CVXOPT | `cvxopt` | QP, cone (LP/QP/SOCP/SDP) | Interior-point solver supporting QPs natively plus PSD cones (canonical PSD-vec layout converted to BLAS unpacked-L automatically). Problems with a linear objective (LP/SOCP/SDP) go through `cvxopt.solvers.conelp`, which certifies primal and dual infeasibility; problems with a quadratic objective go through `coneqp`, which cannot. `conelp`'s infeasibility test divides a residual by minus the objective, so at its least-squares starting point it only checks whether that objective exceeds `1/feastol` in magnitude; a claim at iteration 0 (NETLIB agg, agg2, agg3, grow7) is discarded and the problem solved with `coneqp` (`info.conelp_discarded_claim`, time of both calls reported). A later claim can be false as well on a badly scaled feasible problem (NETLIB scagr25, gfrd-pnc, nesm), with a scaled residual that passes the certificate check, so the adapter also solves such a problem with `coneqp`: the claim stands unless `coneqp` finds a solution, which is then reported (`info.coneqp_cross_check`; a genuinely infeasible problem costs two solves). NETLIB shell remains a false claim (`coneqp` fails on it). With second-order cones the adapter passes `conelp` the sparse `chol` KKT solver `coneqp` used, not CVXOPT's dense `qr` default, which turned DIMACS sched_50_50_scaled from `optimal` in 80 s into an error after 490 s. PSD-only problems keep `qr`: `conelp` with `chol` fails on SDPLIB control1 and hinf9 and is inaccurate on control2 and truss6/7, which `qr` solves; `qr` is slower (qap6/7 about 8x) and stops at `maxiters` on hinf1/6/14 and qap6/7. `kktsolver` overrides either choice. A problem without cone rows (equalities only) is solved by `coneqp`'s single KKT solve of `[[P, A'], [A, 0]]`, which always says `optimal`; a CVXOPT residual above `feastol` makes it `optimal_inaccurate` (below 1e-3) or `solver_error`. The default `chol2` KKT solver returns such a wrong point for singular `P` (HS52, GENHS28), so when `n + p` is at most 2000 the adapter uses the `ldl` KKT solver; `ldl` factors the KKT matrix as a dense array (7.3 GB for AUG2DC, `n + p` = 30200), so larger systems keep `chol2`. CVXOPT's `unknown` status is `max_iter_reached` only when `maxiters` was reached; an earlier stop is `optimal_inaccurate` when gap and residuals are below 1e-3 and `solver_error` otherwise. Settings are CVXOPT's options (`maxiters`, `abstol`, `reltol`, `feastol`, `refinement`, `kktreg`, ...) plus `kktsolver`; `max_iter` maps to `maxiters`, `eps` / `eps_abs` to `abstol` and `feastol`, `eps_rel` to `reltol`, and any other name raises (CVXOPT would ignore it). Exponential cones not supported. CVXOPT options live on a global dict; the adapter snapshots and restores it per solve so **sequential** solves in the same process don't leak knobs into each other. This is *not* thread-safe — concurrent in-process solves would still race on the global. The benchmark runner uses subprocess-level parallelism, so this per-process sequential contract is sufficient. |
 | PDLP | `pdlp` | LP-only QP, simple linear cone | Uses OR-Tools directly, no CVXPY. |
 | HiGHS | `highs` | QP | Direct LP/QP adapter through `highspy`; strong LP baseline. |
-| ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite; optional on Python < 3.14 while wheels are available. ProxSuite's default stopping test checks only the primal and dual residuals and can call a point with a large duality gap solved, so the adapter turns on its duality-gap test (`check_duality_gap: true`, with `eps_duality_gap_abs` / `eps_duality_gap_rel` taken from `eps_abs` / `eps_rel` unless given); the values used are on `info`. With `eps_rel` unset or 0 (ProxQP's default), `eps_abs` is the relative gap tolerance too: an absolute-only gap test is out of reach of double precision when the objective is large (at `eps_abs: 1.0e-9`, Maros-Meszaros QSCAGR25, objective 2e8, ran to `max_iter`, and QPCBOEI1 ended in a false infeasibility). Set `check_duality_gap: false` for ProxSuite's own default, which ProxQP results recorded before this change used. |
+| ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite. ProxSuite's default stopping test checks only the primal and dual residuals and can call a point with a large duality gap solved, so the adapter turns on its duality-gap test (`check_duality_gap: true`, with `eps_duality_gap_abs` / `eps_duality_gap_rel` taken from `eps_abs` / `eps_rel` unless given); the values used are on `info`. With `eps_rel` unset or 0 (ProxQP's default), `eps_abs` is the relative gap tolerance too: an absolute-only gap test is out of reach of double precision when the objective is large (at `eps_abs: 1.0e-9`, Maros-Meszaros QSCAGR25, objective 2e8, ran to `max_iter`, and QPCBOEI1 ended in a false infeasibility). Set `check_duality_gap: false` for ProxSuite's own default, which ProxQP results recorded before this change used. |
 | PIQP | `piqp` | QP | Direct sparse/dense QP adapter. |
-| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets, optional on Python < 3.14 while wheels are available. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. `lowerBound` / `upperBound` default to -1e30 / 1e30 (with sdpa-python's -1e5 / 1e5, SDPA stops as soon as an objective crosses them, so feasible problems with an optimum beyond 1e5 in magnitude came back infeasible or unbounded). `threads` maps to `numThreads`, which defaults to 1 (sdpa-python otherwise uses every core); `max_iter` maps to `maxIteration`, `eps_abs` / `eps_rel` (or `eps`) to `epsilonStar` / `epsilonDash`; other names must be sdpa-python parameters. `pdOPT` / `pdFEAS` are `optimal` when sdpa-python's primal / dual errors and gap are within `optimality_tolerance` (default `max(1e-6, epsilonStar, epsilonDash)`); an error sdpa-python could not compute (`None`) is left out. Infeasibility claims carry the harness certificate check. |
+| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. `lowerBound` / `upperBound` default to -1e30 / 1e30 (with sdpa-python's -1e5 / 1e5, SDPA stops as soon as an objective crosses them, so feasible problems with an optimum beyond 1e5 in magnitude came back infeasible or unbounded). `threads` maps to `numThreads`, which defaults to 1 (sdpa-python otherwise uses every core); `max_iter` maps to `maxIteration`, `eps_abs` / `eps_rel` (or `eps`) to `epsilonStar` / `epsilonDash`; other names must be sdpa-python parameters. `pdOPT` / `pdFEAS` are `optimal` when sdpa-python's primal / dual errors and gap are within `optimality_tolerance` (default `max(1e-6, epsilonStar, epsilonDash)`); an error sdpa-python could not compute (`None`) is left out. Infeasibility claims carry the harness certificate check. |
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. When presolve can only say "infeasible or unbounded", the adapter re-solves with `DualReductions=0` (Gurobi's documented remedy) so the row gets a definite status; `info.inf_or_unbd_resolved` marks it. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. A license failure raised by the solve (missing, expired or exhausted license) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as MOSEK failing the problem. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
@@ -520,10 +533,11 @@ as YAML 1.2 and JSON read them:
 | `solvers[].id_template` | Optional Python format string used to name expanded sweep variants. |
 
 The same solver may appear many times with different `id` and `settings`.
-Solver output is verbose by default and is captured in each solve's
-`stdout.log`/`stderr.log`; set `verbose: false` in a solver's settings to run it
-quietly. To keep full solver output in the log files without printing it to the
-terminal, pass `--no-stream-output` to `bench run`.
+Solvers run quietly by default (`verbose: false`), so each solve's
+`stdout.log`/`stderr.log` is normally empty; set `verbose: true` in a solver's
+settings to have its log captured there and streamed to the terminal. To keep
+the log files without printing solver output to the terminal, pass
+`--no-stream-output` to `bench run`.
 
 ### Shared Solver Settings
 
@@ -772,7 +786,7 @@ Bundled benchmark configs:
 
 | Config | Purpose |
 |---|---|
-| `configs/synthetic_smoke.json` | Tiny one-problem smoke run. |
+| `configs/synthetic_smoke.json` | Tiny smoke run: the two synthetic QPs with SCS and OSQP. |
 | `configs/netlib_feasible_example.yaml` | NETLIB feasible subset example. |
 | `configs/maros_meszaros_example.yaml` | Maros-Meszaros QP example: QTQP with its default backend and with `linear_solver: scipy`, SCS, and Clarabel. |
 | `configs/maros_meszaros_qp_solvers.yaml` | Maros-Meszaros QP run comparing OSQP, SCS, Clarabel, QTQP, and cpo3. |
@@ -887,7 +901,7 @@ Every result row records metadata under `metadata.runtime`:
 
 | Field | Meaning |
 |---|---|
-| `metadata.runtime.python_executable` | Python executable used by the solve subprocess. |
+| `metadata.runtime.python_executable` | Name (basename) of the Python executable used by the solve subprocess, e.g. `python3.12`. |
 | `metadata.runtime.python_version` | Python version. |
 | `metadata.runtime.platform` | OS/platform string. |
 | `metadata.runtime.solver_package_versions` | Installed package versions relevant to the solver adapter, such as `{"osqp": "1.1.1"}`. |
@@ -929,6 +943,16 @@ solvers:
       eps_abs: 1.0e-6
       eps_rel: 1.0e-6
 ```
+
+Each `bench run` into the directory rewrites `manifest.json` and
+`run_config.yaml` from its own config, so after the manual workflow they
+describe only the last config run (here `osqp_1_1.yaml`). The results of both
+environments are kept and analysed, but `bench missing` and the completion
+table in `bench summary` / `bench report` check only the last config's solver
+variants: an interrupted first-environment run is not reported as incomplete.
+When the full plan matters, use the environment matrix below, whose manifest
+records every environment's variants, or run each environment into its own
+directory and combine them with `bench merge`.
 
 Environment matrix workflow:
 
@@ -1027,7 +1051,8 @@ environments:
         solver: osqp
 ```
 
-After a version comparison run, normal analysis commands work unchanged:
+After a version comparison run, normal analysis commands work unchanged (with
+the manual workflow's completion caveat above):
 
 ```bash
 bench summary results/osqp_version_compare
@@ -1087,7 +1112,7 @@ Run and analysis commands:
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--repo-root PATH` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. Solves the manifest planned but the run did not record count as failures; `--repo-root` locates the dataset directories used to list them. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
-| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
+| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile), a setup-vs-solve time breakdown (`setup_solve_breakdown.png`), and a difficulty-scaling plot of the metric by problem size (`difficulty_scaling_<metric>.png`). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
 | `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are. Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection, so `summary`, `missing` and `report` treat the merged directory like one run. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. |
 | `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH` default `RUN_DIR_kkt<tol>` next to `RUN_DIR`, `--allow-missing` default false, `--promote` default false, `--overwrite` default false | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, PIQP, ProxQP, SDPA and the commercial adapters do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. At a strict `--tol` this favours adapters that record no certificate in infeasibility-heavy comparisons: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, and the over-time-limit count where there is one. Both commands refuse an existing output directory unless `--overwrite`, and a source directory with neither `results.jsonl` nor `manifest.json`. |
@@ -1097,7 +1122,8 @@ Common metrics for `profile` and `geomean` are `run_time_seconds`,
 each solver reports.
 
 When run from the CLI, `bench run` writes solver stdout/stderr to each solve's
-`stdout.log`/`stderr.log`. By default it also streams that solver output to the
+`stdout.log`/`stderr.log` (solvers print nothing there unless their settings
+say `verbose: true`). By default it also streams that solver output to the
 terminal; pass `--no-stream-output` to keep the log files without printing
 solver output live. It also prints progress lines such as `[bench] starting ...`
 and `[bench] finished ...`.
@@ -1126,8 +1152,8 @@ results/netlib_feasible_example_2026-04-26_14-03-27_UTC/
   results.jsonl
   results.parquet
   problems/
-    synthetic_qp/
-      one_variable_eq/
+    netlib/
+      afiro/
         scs_default/
           payload.json
           stdout.log
@@ -1166,7 +1192,7 @@ Each solve runs in a subprocess. This gives:
 
 - Native solver crashes do not kill the main runner. The `worker_error` row of a worker that died names the signal (SIGKILL usually means out of memory) and quotes the last lines of its stderr.
 - Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C, or a SIGTERM or SIGHUP to `bench run` / `bench env run` (Slurm's `scancel`, `kill`, a CI job timeout, a closed terminal or dropped ssh session), kills the running workers too, and a parallel run keeps the results that had already finished; a SIGTERM exits with status 143, a SIGHUP with 129. Under `nohup` the SIGHUP stays ignored. A runner killed outright (SIGKILL, the out-of-memory killer) takes its workers with it on Linux; on other POSIX systems they exit within about a second, or, while the solver holds Python's interpreter lock in a long native call, as soon as it releases it. On Windows workers are not tied to the runner. A `bench env run` killed outright stops the current environment's `bench run` as a SIGTERM would (on POSIX systems; at once on Linux, within about a second elsewhere), and that run kills its workers.
-- Solver stdout/stderr are streamed live by the CLI and captured per problem and solver variant.
+- Solver stdout/stderr (from solvers set to `verbose: true`) are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.
 
@@ -1178,6 +1204,7 @@ Warnings are structured JSON records. Example `events.jsonl` line:
   "level": "warning",
   "message": "Solver 'osqp' does not support 'cone' problems; skipping 'qssp30'",
   "solver_id": "osqp_skip",
+  "dataset": "dimacs",
   "problem": "qssp30",
   "problem_kind": "cone"
 }
@@ -1335,7 +1362,7 @@ use penalty `1e6` and shift `100`, while the supported KKT residuals
 residual that is exactly zero counts as `1e-12` instead of dragging the mean of
 logs towards the smallest float. Time metrics use shift `10`. `--success-only` requires
 no failure penalty or time limit. These rules select the cost of failures;
-campaign-specific status filtering and timeout grace rules remain separate.
+campaign-specific status filtering and time-limit rules remain separate.
 
 Missing solves are charged too: run-directory commands use the manifest's
 configured solver and problem sets, intersecting includes with the dataset
@@ -1385,6 +1412,7 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 - Objective-spread and slowest-solve tables.
 - Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
+- A setup-vs-solve time breakdown per solver over successful solves (`setup_solve_breakdown.csv` / `.png`, for adapters that report the split) and a difficulty-scaling table and plot of the median metric per solver across problem-size bins (`difficulty_scaling_<metric>.csv` / `.png`).
 - KKT-residual summaries (`kkt_summary.csv` over successful optimality claims, `kkt_certificate_summary.csv` over infeasibility claims, counting the recorded certificates as valid, invalid or unchecked (`cert_unknown`), `claimed_optimal_kkt_thresholds.csv` over the residuals `bench kkt-verify` checks) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack_rel` (`comp_slack` for records written before it existed) / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile with one panel per residual showing, for each solver, the fraction of its successful solves whose residual is at most tau. Exact zeros are drawn at `1e-16`.
 - For multi-dataset runs, a `## By Dataset` section that re-emits the headline tables (solver metrics, failure rates, shifted geomean, KKT summary) sliced per dataset. The cross-dataset aggregates above the section remain the primary view.
 - An artifact index listing every CSV and plot written by the report command.
@@ -1654,11 +1682,12 @@ pip install -e ".[pdlp]"
 ```
 
 The MPS reader uses HiGHS in the same worker as OR-Tools. The highspy 1.15.x
-wheels can clash with OR-Tools 9.15.6755's native HiGHS symbols when highspy
-loads first, causing an import error mentioning `HighsLogOptions` or
-`setLocalOptionValue`. This also affects macOS, not only Linux. Dependencies
-in the `pdlp` and `all` extras therefore exclude highspy 1.15.x; highspy 1.14.0
-has wheels for Python 3.10–3.14 and works with OR-Tools 9.15.6755. Reinstall the `pdlp` extra
+wheels ship a separate HiGHS library that clashes with OR-Tools 9.15.6755's
+native HiGHS symbols, causing an import error mentioning `HighsLogOptions`,
+`setLocalOptionValue` or `releaseMemory`. This also affects macOS, not only
+Linux. Dependencies in the `pdlp` and `all` extras therefore exclude highspy
+1.15.x (`highspy>=1.0,!=1.15.*`); highspy 1.14.0 and 1.16.0 link HiGHS into
+their own module and work with OR-Tools 9.15.6755. Reinstall the `pdlp` extra
 if an existing environment has the incompatible pair. CI imports the native
 libraries in both orders in fresh processes, then solves a real MPS file
 through the reader and PDLP adapter.
@@ -1766,7 +1795,9 @@ Current tests cover:
 - cuOpt adapter conventions (objective mapping, dual sign, status names, option
   forwarding) against a fake cuOpt, since CI has no GPU.
 - The campaign tools `tools/make_figures.py` and `tools/make_campaign.py`
-  against the analysis API they use.
+  against the analysis API they use and against each other (families, time
+  limits, tolerance tags), every CPU solver variant of the campaign against the
+  installed solvers, and `tools/bench_modal.py` against a stand-in for Modal.
 - Every solver variant of the maintained configs in `configs/` against the
   installed solvers, `configs/README.md`'s list of maintained configs against
   the configs without the `# EXPERIMENTAL:` header, and the README's CLI,
@@ -1776,8 +1807,8 @@ GitHub Actions runs additional matrix workflows that install each open-source
 solver in isolation and exercise its adapter via `scripts/ci_solver_smoke.py`,
 so a packaging or import regression in one extra cannot hide behind another
 solver's tests. A separate `commercial-adapters` job confirms that the CPLEX,
-Gurobi, and Mosek adapters register and report `is_available() == False`
-without their (proprietary) dependencies installed.
+Gurobi, and Mosek adapters register and import without their (proprietary)
+dependencies installed.
 
 Recommended tests for new contributions:
 

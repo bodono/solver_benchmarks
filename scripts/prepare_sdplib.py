@@ -22,7 +22,9 @@ from solver_benchmarks.datasets.sdplib import SDPLIBDataset
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    # Default: the repository bench uses (the working directory if it has
+    # problem_classes/, else the checkout this package is installed from).
+    parser.add_argument("--repo-root", type=Path, default=None)
     parser.add_argument("--data-root", type=Path, default=None)
     parser.add_argument("--problem", action="append", default=[])
     parser.add_argument("--all", action="store_true", dest="all_problems")

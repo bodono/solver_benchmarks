@@ -82,7 +82,7 @@ def split_qp_bounds(qp: dict):
     # missed legitimate equalities at scale 1e10 (where 1e-8 of slack
     # is well below floating-point precision of the bounds themselves).
     abs_diff = np.abs(u - l)
-    scale = np.maximum.reduce([np.abs(l), np.abs(u), np.ones_like(l)])
+    scale = np.maximum(np.maximum(np.abs(l), np.abs(u)), 1.0)
     eq = (abs_diff <= 1.0e-12 * scale) & ~inf_u & ~inf_l
     finite_u = (~eq) & ~inf_u
     finite_l = (~eq) & ~inf_l

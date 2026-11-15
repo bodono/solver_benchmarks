@@ -983,3 +983,129 @@ def test_qplib_loader_tolerates_blank_lines(tmp_path: Path):
     dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root)
     problem = dataset.load_problem("6666")
     assert problem.qp["n"] == 1
+
+
+def _installed_without_checkout(tmp_path: Path, monkeypatch) -> Path:
+    """Pretend the package was installed from a wheel: its parent is a
+    site-packages holding only the code of problem_classes, and the current
+    directory (returned) is not a checkout either."""
+    from solver_benchmarks.datasets import base as base_module
+
+    site = tmp_path / "site-packages"
+    (site / "solver_benchmarks" / "datasets").mkdir(parents=True)
+    (site / "problem_classes").mkdir()
+    (site / "problem_classes" / "qpsreader.py").write_text("")
+    monkeypatch.setattr(base_module, "__file__", str(site / "solver_benchmarks" / "datasets" / "base.py"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    return elsewhere
+
+
+def _site_files(tmp_path: Path) -> list[str]:
+    return sorted(str(path.relative_to(tmp_path)) for path in (tmp_path / "site-packages").rglob("*"))
+
+
+def test_default_repo_root_never_takes_site_packages(tmp_path, monkeypatch):
+    from solver_benchmarks.datasets.base import default_repo_root
+
+    cwd = _installed_without_checkout(tmp_path, monkeypatch)
+
+    assert default_repo_root() == cwd.resolve()
+
+
+def test_bundled_data_without_a_root_is_a_clear_error(tmp_path, monkeypatch):
+    _installed_without_checkout(tmp_path, monkeypatch)
+    before = _site_files(tmp_path)
+
+    netlib = get_dataset("netlib")()
+    with pytest.raises(ValueError, match="no bundled data") as excinfo:
+        netlib.data_status()
+    assert "pip install -e" in str(excinfo.value) and "--data-root" in str(excinfo.value)
+
+    config = tmp_path / "netlib.yaml"
+    config.write_text(
+        "run: {dataset: netlib, include: [afiro], timeout_seconds: 60}\n"
+        "solvers: [{id: highs, solver: highs, settings: {}}]\n"
+    )
+    result = CliRunner().invoke(main, ["run", str(config), "--run-dir", str(tmp_path / "run")])
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit)  # a clean Error:, no traceback
+    assert "no bundled data" in result.output
+    assert _site_files(tmp_path) == before
+
+
+def test_data_free_datasets_and_existing_runs_work_without_a_checkout(tmp_path, monkeypatch):
+    _installed_without_checkout(tmp_path, monkeypatch)
+    before = _site_files(tmp_path)
+    runner = CliRunner()
+
+    listed = runner.invoke(main, ["list", "problems", "synthetic_qp"])
+    assert listed.exit_code == 0, listed.output
+    assert "one_variable_lp" in listed.output
+
+    config = tmp_path / "synthetic.yaml"
+    config.write_text(
+        "run: {dataset: synthetic_qp, include: [one_variable_lp], timeout_seconds: 60}\n"
+        "solvers: [{id: highs, solver: highs, settings: {}}]\n"
+    )
+    run_dir = tmp_path / "synthetic_run"
+    result = runner.invoke(main, ["run", str(config), "--run-dir", str(run_dir), "--no-stream-output"])
+    assert result.exit_code == 0, result.output
+    summary = runner.invoke(main, ["summary", str(run_dir)])
+    assert summary.exit_code == 0, summary.output
+    assert "optimal" in summary.output
+    assert _site_files(tmp_path) == before
+
+
+def test_data_root_works_without_a_checkout_or_a_repo_root(tmp_path, monkeypatch, repo_root):
+    _installed_without_checkout(tmp_path, monkeypatch)
+    before = _site_files(tmp_path)
+    data_root = repo_root / "problem_classes"
+
+    netlib = get_dataset("netlib")(data_root=str(data_root))
+    assert netlib.data_status().available
+
+    config = tmp_path / "netlib.yaml"
+    config.write_text(
+        "run: {dataset: netlib, include: [afiro], timeout_seconds: 60}\n"
+        "solvers: [{id: highs, solver: highs, settings: {}}]\n"
+    )
+    run_dir = tmp_path / "netlib_run"
+    runner = CliRunner()
+    result = runner.invoke(main, ["run", str(config), "--run-dir", str(run_dir), "--data-root", str(data_root),
+                                  "--no-stream-output"])
+    assert result.exit_code == 0, result.output
+    rows = (run_dir / "results.jsonl").read_text()
+    assert '"status": "optimal"' in rows
+    summary = runner.invoke(main, ["summary", str(run_dir)])
+    assert summary.exit_code == 0, summary.output
+    assert _site_files(tmp_path) == before
+
+
+def test_default_repo_root_takes_the_checkout_or_a_working_directory_with_data(tmp_path, monkeypatch):
+    from solver_benchmarks.datasets import base as base_module
+
+    checkout = tmp_path / "checkout"
+    (checkout / "solver_benchmarks" / "datasets").mkdir(parents=True)
+    (checkout / "problem_classes").mkdir()
+    (checkout / "pyproject.toml").write_text("")
+    monkeypatch.setattr(base_module, "__file__", str(checkout / "solver_benchmarks" / "datasets" / "base.py"))
+    monkeypatch.chdir(tmp_path)
+    assert base_module.default_repo_root() == checkout.resolve()
+
+    work = tmp_path / "work"
+    (work / "problem_classes").mkdir(parents=True)
+    monkeypatch.chdir(work)
+    assert base_module.default_repo_root() == work.resolve()
+
+
+def test_explicit_roots_work_without_a_checkout(tmp_path, monkeypatch, repo_root):
+    _installed_without_checkout(tmp_path, monkeypatch)
+
+    netlib = get_dataset("netlib")(repo_root=repo_root)
+    assert netlib.data_status().available
+    runner = CliRunner()
+    result = runner.invoke(main, ["data", "status", "netlib", "--repo-root", str(repo_root)])
+    assert result.exit_code == 0, result.output
+    assert "\tavailable\t" in result.output

@@ -4,13 +4,20 @@ solver smoke script; one-off research scripts live in ``scripts/research/``.
 These checks keep machine-specific paths out of the scripts and catch a
 dataset constructed with a ``dataset_options=`` keyword: datasets take their
 options as keyword arguments, so that call stores an option literally named
-``dataset_options`` and silently ignores what it was meant to select.
+``dataset_options`` and silently ignores what it was meant to select. Every
+prepare wrapper takes ``--repo-root`` (default: the repository ``bench``
+would use, not the working directory) and ``--data-root``.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 PERSONAL_PATH = re.compile(r"""["'](/Users/|/home/)[^"']+["']""")
@@ -65,3 +72,38 @@ def test_scripts_pass_dataset_options_as_keywords():
         assert "Dataset(dataset_options=" not in text, (
             f"{path.relative_to(SCRIPTS)}: pass dataset options as keywords, e.g. NetlibDataset(subset=...)"
         )
+
+
+@pytest.mark.parametrize("script", sorted(path.name for path in SCRIPTS.glob("prepare_*.py")))
+def test_prepare_wrappers_default_to_bench_s_repository_and_take_a_data_root(script, tmp_path, monkeypatch):
+    # A wrapper run from another directory must not write a problem_classes/
+    # there (which default_repo_root would then take for the repository).
+    spec = importlib.util.spec_from_file_location(f"_scripts_{script[:-3]}", SCRIPTS / script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    created = []
+
+    class FakeDataset:
+        def __init__(self, repo_root=None, **options):
+            created.append((repo_root, options))
+            self.data_dir = tmp_path / "data"
+
+        def prepare_data(self, *args, **kwargs):
+            pass
+
+        def data_status(self):
+            return SimpleNamespace(dataset="fake", problem_count=0, data_dir=self.data_dir)
+
+    (dataset_name,) = [name for name in vars(module) if name.endswith("Dataset")]
+    monkeypatch.setattr(module, dataset_name, FakeDataset)
+    monkeypatch.chdir(tmp_path)
+    data_root = tmp_path / "elsewhere"
+
+    monkeypatch.setattr(sys, "argv", [script, "--data-root", str(data_root)])
+    assert module.main() == 0
+    monkeypatch.setattr(sys, "argv", [script, "--repo-root", str(tmp_path / "repo")])
+    assert module.main() == 0
+
+    assert created[0] == (None, {"data_root": str(data_root)})
+    assert created[1][0] == tmp_path / "repo"
