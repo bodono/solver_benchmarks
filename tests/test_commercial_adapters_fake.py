@@ -506,3 +506,85 @@ def test_cuopt_infeasible_has_no_objective(monkeypatch, tmp_path):
     result = _solve("cuopt", _small_qp(), tmp_path)
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.objective_value is None
+
+
+# ---------------------------------------------------------------------------
+# settings: shared aliases translated or refused, unknown names refused
+
+
+def test_gurobi_translates_max_iter_to_both_iteration_limits(monkeypatch, tmp_path):
+    models, _ = _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.OPTIMAL, "values": _OPTIMAL_POINT}]
+    )
+    result = _solve("gurobi", _small_qp(), tmp_path, {"max_iter": 25})
+    params = models[0].params
+    assert params["BarIterLimit"] == 25 and params["IterationLimit"] == 25
+    assert result.info["settings_translated"] == {"BarIterLimit": 25, "IterationLimit": 25}
+
+
+def test_gurobi_explicit_iteration_limit_wins_over_max_iter(monkeypatch, tmp_path):
+    models, _ = _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.OPTIMAL, "values": _OPTIMAL_POINT}]
+    )
+    _solve("gurobi", _small_qp(), tmp_path, {"max_iter": 25, "BarIterLimit": 3})
+    assert models[0].params["BarIterLimit"] == 3
+    assert models[0].params["IterationLimit"] == 25
+
+
+@pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
+def test_gurobi_refuses_eps_aliases(monkeypatch, tmp_path, alias):
+    _install_fake_gurobipy(monkeypatch, [])
+    with pytest.raises(ValueError, match="FeasibilityTol"):
+        _solve("gurobi", _small_qp(), tmp_path, {alias: 1e-8})
+
+
+def test_gurobi_unknown_parameter_is_a_value_error(monkeypatch, tmp_path):
+    _install_fake_gurobipy(monkeypatch, [])
+    with pytest.raises(ValueError, match="BogusParam"):
+        _solve("gurobi", _small_qp(), tmp_path, {"BogusParam": 1})
+
+
+def test_cplex_translates_max_iter_to_both_iteration_limits(monkeypatch, tmp_path):
+    models, _ = _install_fake_cplex(
+        monkeypatch,
+        [{"status": _CplexStatus.optimal, "x": [-1.0, -1.0], "objective": -1.0,
+          "duals": [0.0] * 4}],
+    )
+    result = _solve("cplex", _small_qp(), tmp_path, {"max_iter": 25})
+    params = models[0].params
+    assert params["barrier.limits.iteration"] == 25
+    assert params["simplex.limits.iterations"] == 25
+    assert result.info["settings_translated"] == {
+        "barrier.limits.iteration": 25,
+        "simplex.limits.iterations": 25,
+    }
+
+
+@pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
+def test_cplex_refuses_eps_aliases(monkeypatch, tmp_path, alias):
+    _install_fake_cplex(monkeypatch, [])
+    with pytest.raises(ValueError, match="barrier.convergetol"):
+        _solve("cplex", _small_qp(), tmp_path, {alias: 1e-8})
+
+
+@pytest.mark.parametrize("key", ["barrier.limits.iteratoin", "nonsense"])
+def test_cplex_unknown_parameter_is_a_value_error(monkeypatch, tmp_path, key):
+    _install_fake_cplex(monkeypatch, [])
+    with pytest.raises(ValueError, match=key):
+        _solve("cplex", _small_qp(), tmp_path, {key: 1})
+
+
+def test_cuopt_translates_max_iter_to_iteration_limit(monkeypatch, tmp_path):
+    record = _install_fake_cuopt(
+        monkeypatch, {"status": "Optimal", "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
+    )
+    result = _solve("cuopt", _small_qp(), tmp_path, {"max_iter": 40, "time_limit": 2})
+    assert record["settings"]["iteration_limit"] == 40
+    assert record["settings"]["time_limit"] == 2.0
+    assert result.info["settings_translated"] == {"iteration_limit": 40}
+
+
+def test_cuopt_unknown_parameter_is_a_value_error(monkeypatch, tmp_path):
+    _install_fake_cuopt(monkeypatch, {"status": "Optimal"})
+    with pytest.raises(ValueError, match="iteration_limt"):
+        _solve("cuopt", _small_qp(), tmp_path, {"iteration_limt": 3})

@@ -143,6 +143,37 @@ def mark_time_limit_ignored(info: dict[str, Any], time_limit: float | None) -> N
         info["time_limit_seconds"] = float(time_limit)
 
 
+# The shared tolerance aliases. ``eps`` sets both ``eps_abs`` and ``eps_rel``.
+EPS_ALIASES: tuple[str, ...] = ("eps", "eps_abs", "eps_rel")
+
+
+def translate_eps_alias(settings: dict[str, Any]) -> dict[str, float]:
+    """Expand ``eps`` into ``eps_abs`` and ``eps_rel`` for solvers that take both.
+
+    An explicit ``eps_abs`` / ``eps_rel`` wins. Returns the settings actually
+    inserted, for adapters to record as ``info["settings_translated"]``.
+    """
+    eps = settings.pop("eps", None)
+    translated: dict[str, float] = {}
+    if eps is not None:
+        for key in ("eps_abs", "eps_rel"):
+            if settings.get(key) is None:
+                settings[key] = float(eps)
+                translated[key] = float(eps)
+    return translated
+
+
+def refuse_settings(settings: dict[str, Any], names, solver: str, hint: str) -> None:
+    """Raise ValueError if ``settings`` uses any of ``names``.
+
+    For shared aliases a solver has no faithful equivalent for: refusing them
+    keeps a config from silently running the solver at its defaults.
+    """
+    present = sorted(name for name in names if name in settings)
+    if present:
+        raise ValueError(f"{solver} does not accept {present}: {hint}")
+
+
 THREADS_KEYS: tuple[str, ...] = ("threads", "num_threads")
 
 

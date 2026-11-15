@@ -34,6 +34,7 @@ from .base import (
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    translate_eps_alias,
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
@@ -268,7 +269,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     time_limit = pop_time_limit(settings)
     if time_limit is None:
         time_limit = settings.pop("solver_time_limit_sec", None)
-    threads = pop_threads(settings)
+    translated = translate_eps_alias(settings)
 
     request = linear_solver_pb2.MPModelRequest(
         enable_internal_solver_output=verbose,
@@ -337,10 +338,8 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     if time_limit_ignored:
         info["time_limit_ignored"] = True
         info["time_limit_seconds"] = float(time_limit)
-    if threads is not None:
-        # PDLP is single-threaded by design; surface so callers can detect.
-        info["threads_ignored"] = True
-        info["threads_requested"] = int(threads)
+    if translated:
+        info["settings_translated"] = translated
     # For infeasibility certificates OR-Tools may still fill objective_value
     # with the certificate's residual; only a solution's objective is reported.
     return SolverResult(
@@ -366,6 +365,7 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
     eps_rel = settings.pop("eps_rel", None)
     max_iter = settings.pop("max_iter", None)
     max_iter = settings.pop("iteration_limit", max_iter)
+    threads = pop_threads(settings)
 
     parameters = solvers_pb2.PrimalDualHybridGradientParams()
     _apply_pure_pdlp_defaults(parameters)
@@ -378,6 +378,10 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
         criteria.eps_optimal_relative = float(eps_rel)
     if max_iter is not None:
         parameters.termination_criteria.iteration_limit = int(max_iter)
+    if threads:
+        # PDLP parallelizes its matrix-vector products over num_threads
+        # (default 1); 0 keeps that default, as for the other adapters.
+        parameters.num_threads = int(threads)
     if parameters_text:
         text_format.Merge(str(parameters_text), parameters)
     return parameters

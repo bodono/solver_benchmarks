@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .base import (
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    translate_eps_alias,
 )
 from .qp_split import combine_qp_duals, split_qp_for_range_constraints
 
@@ -54,7 +56,10 @@ class ProxQPSolverAdapter(SolverAdapter):
         # configured values on info so callers know they were ignored.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        translated = translate_eps_alias(settings)
         settings.setdefault("compute_timings", True)
+        backend = proxsuite.proxqp.dense if use_dense else proxsuite.proxqp.sparse
+        _check_settings(settings, backend.solve)
         start = time.perf_counter()
         if use_dense:
             result = proxsuite.proxqp.dense.solve(
@@ -102,6 +107,8 @@ class ProxQPSolverAdapter(SolverAdapter):
         info = _info_dict(result.info)
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
+        if translated:
+            info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
             objective_value=reported_objective(mapped, info.get("objValue")),
@@ -111,6 +118,33 @@ class ProxQPSolverAdapter(SolverAdapter):
             solve_time_seconds=_proxqp_seconds(info.get("solve_time")),
             info=info,
             kkt=kkt_dict,
+        )
+
+
+# Positional problem data in ProxQP's ``solve`` signatures, not settings.
+_DATA_ARGUMENTS = {"H", "g", "A", "b", "C", "l", "u", "l_box", "u_box", "x", "y", "z"}
+
+
+def _check_settings(settings: dict, solve) -> None:
+    """Raise ValueError naming any setting ProxQP's ``solve`` does not take.
+
+    The nanobind binding would raise a TypeError that lists every passed
+    keyword without saying which one is wrong. The accepted names are read
+    from the binding's signature docstring (all overloads); if it cannot be
+    parsed, the settings are passed through unchecked.
+    """
+    accepted: set[str] = set()
+    for line in (getattr(solve, "__doc__", None) or "").splitlines():
+        if line.startswith("solve(") and ") ->" in line:
+            inner = line[len("solve(") : line.rindex(") ->")]
+            accepted.update(re.findall(r"(?:^|,\s)(\w+):", inner))
+    accepted -= _DATA_ARGUMENTS
+    if not accepted:
+        return
+    unknown = sorted(key for key in settings if key not in accepted)
+    if unknown:
+        raise ValueError(
+            f"Unrecognized ProxQP settings {unknown}; accepted: {sorted(accepted)}"
         )
 
 

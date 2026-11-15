@@ -14,9 +14,12 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    EPS_ALIASES,
     SolverAdapter,
     SolverUnavailable,
     pop_threads,
+    pop_time_limit,
+    refuse_settings,
     reported_objective,
     settings_with_defaults,
 )
@@ -132,41 +135,66 @@ class HighsSolverAdapter(SolverAdapter):
         )
 
 
+# HiGHS caps each algorithm separately; ``max_iter`` sets all of them.
+_ITERATION_LIMIT_OPTIONS = (
+    "simplex_iteration_limit",
+    "ipm_iteration_limit",
+    "qp_iteration_limit",
+    "pdlp_iteration_limit",
+)
+
+
 def _configure_highs(solver, settings: dict) -> None:
+    """Apply ``settings`` to a ``highspy.Highs`` instance.
+
+    highspy reports an unknown option or a bad value by returning
+    ``HighsStatus.kError`` rather than raising, so every return value is
+    checked and a rejected setting raises ValueError naming it.
+    """
+    refuse_settings(
+        settings,
+        EPS_ALIASES,
+        "HiGHS",
+        "it has no absolute/relative tolerance pair; set its own tolerances, e.g. "
+        "primal_feasibility_tolerance, dual_feasibility_tolerance, "
+        "ipm_optimality_tolerance",
+    )
     if "verbose" in settings:
-        solver.setOptionValue("output_flag", bool(settings.pop("verbose")))
-    for source, target in [
-        ("time_limit_sec", "time_limit"),
-        ("time_limit_secs", "time_limit"),
-        ("time_limit", "time_limit"),
-    ]:
-        if source in settings:
-            solver.setOptionValue(target, settings.pop(source))
+        _set_option(solver, "output_flag", bool(settings.pop("verbose")))
+    time_limit = pop_time_limit(settings)
+    if time_limit is not None:
+        _set_option(solver, "time_limit", float(time_limit))
     threads = pop_threads(settings)
     if threads is not None:
-        try:
-            solver.setOptionValue("threads", int(threads))
-        except Exception:
-            pass
+        _set_option(solver, "threads", int(threads))
     if "max_iter" in settings:
-        # HiGHS uses a separate iteration cap per algorithm. Forward
-        # the user's max_iter to all of them so an LP solved by IPM,
-        # a QP solved by the QP code, or a PDLP run is also capped.
         max_iter = settings.pop("max_iter")
-        for option in (
-            "simplex_iteration_limit",
-            "ipm_iteration_limit",
-            "qp_iteration_limit",
-            "pdlp_iteration_limit",
-        ):
+        accepted = 0
+        for option in _ITERATION_LIMIT_OPTIONS:
             try:
-                solver.setOptionValue(option, max_iter)
+                result = solver.setOptionValue(option, int(max_iter))
             except Exception:
-                # Older highspy versions lack one of these options;
-                # ignore so the available ones still take effect.
-                pass
+                # Older highspy builds lack some of these options; the
+                # available ones still take effect.
+                continue
+            if not _is_error(result):
+                accepted += 1
+        if not accepted:
+            raise ValueError(f"Invalid HiGHS setting 'max_iter'={max_iter!r}")
     for key, value in settings.items():
-        solver.setOptionValue(key, value)
+        _set_option(solver, key, value)
+
+
+def _set_option(solver, key: str, value) -> None:
+    if _is_error(solver.setOptionValue(key, value)):
+        raise ValueError(
+            f"Invalid HiGHS setting {key!r}={value!r}: unknown option or value "
+            "rejected by HiGHS (see its log)"
+        )
+
+
+def _is_error(result) -> bool:
+    return getattr(result, "name", None) == "kError"
 
 
 def _map_highs_status(model_status, highspy) -> str:

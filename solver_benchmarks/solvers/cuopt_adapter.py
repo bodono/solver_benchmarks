@@ -142,6 +142,13 @@ class CuOptSolverAdapter(SolverAdapter):
                 half.data.astype(np.float64), half.indices.astype(np.int32), half.indptr.astype(np.int32)
             )
 
+        translated: dict = {}
+        if "max_iter" in settings:
+            max_iter = int(settings.pop("max_iter"))
+            if "iteration_limit" not in settings:
+                settings["iteration_limit"] = max_iter
+                translated["iteration_limit"] = max_iter
+
         opts = solver_settings.SolverSettings()
         # ``eps`` sets all six of cuOpt's tolerances; ``eps_abs`` / ``eps_rel``
         # set the absolute and relative primal, dual and gap tolerances
@@ -157,7 +164,10 @@ class CuOptSolverAdapter(SolverAdapter):
         if threads is not None:
             opts.set_parameter("num_cpu_threads", int(threads))
         for key, value in settings.items():
-            opts.set_parameter(key, value)
+            try:
+                opts.set_parameter(key, value)
+            except Exception as exc:
+                raise ValueError(f"Invalid cuOpt setting {key!r}={value!r}: {exc}") from exc
         if verbose:
             try:
                 opts.set_parameter("log_to_console", True)
@@ -176,6 +186,8 @@ class CuOptSolverAdapter(SolverAdapter):
             "primal_objective": _maybe_float(solution.get_primal_objective()),
             "dual_objective": _maybe_float(solution.get_dual_objective()),
         }
+        if translated:
+            info["settings_translated"] = translated
         try:
             info["lp_stats"] = {k: _jsonable(v) for k, v in dict(solution.get_lp_stats()).items()}
         except Exception:  # pragma: no cover

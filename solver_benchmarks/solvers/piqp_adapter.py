@@ -20,6 +20,7 @@ from .base import (
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    translate_eps_alias,
 )
 from .qp_split import combine_qp_duals, dual_from_lower_upper, split_qp_for_range_constraints
 
@@ -52,12 +53,16 @@ class PIQPSolverAdapter(SolverAdapter):
         dense_flag = settings.pop("dense", False)
         backend_value = settings.pop("backend", "")
         use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
-        # PIQP has no native time-limit / threads knobs; surface the
-        # configured values in info so callers can detect they were
-        # ignored rather than silently dropped.
+        # PIQP has no time limit; record a configured one as ignored. Its
+        # thread count is ``num_threads`` (0 = PIQP's default), which
+        # pop_threads also consumes, so it is put back under that name.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        translated = translate_eps_alias(settings)
         solver = piqp.DenseSolver() if use_dense else piqp.SparseSolver()
+        if threads is not None and hasattr(solver.settings, "num_threads"):
+            settings["num_threads"] = threads
+            threads = None
         settings.setdefault("compute_timings", True)
         _configure_piqp(solver, settings)
 
@@ -106,6 +111,8 @@ class PIQPSolverAdapter(SolverAdapter):
         info = _info_dict(result.info)
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
+        if translated:
+            info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
             objective_value=reported_objective(mapped, info.get("primal_obj")),

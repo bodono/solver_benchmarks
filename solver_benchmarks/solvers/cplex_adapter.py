@@ -14,10 +14,12 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    EPS_ALIASES,
     SolverAdapter,
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    refuse_settings,
     reported_objective,
     settings_with_defaults,
 )
@@ -58,7 +60,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         # are released deterministically, even when an exception fires.
         try:
             model.objective.set_sense(model.objective.sense.minimize)
-            _configure_cplex(model, settings)
+            translated = _configure_cplex(model, settings)
             infinity = cplex.infinity
             model.variables.add(
                 obj=q.tolist(),
@@ -112,6 +114,7 @@ class CPLEXSolverAdapter(SolverAdapter):
                     "status_string": model.solution.get_status_string(raw_status),
                     "problem_type": model.problem_type[model.get_problem_type()],
                     "use_ranged_rows": use_ranged_rows,
+                    **({"settings_translated": translated} if translated else {}),
                 },
             )
         finally:
@@ -180,8 +183,29 @@ def _add_cplex_constraints(
     return constraint_rows
 
 
-def _configure_cplex(model, settings: dict) -> None:
+def _configure_cplex(model, settings: dict) -> dict:
+    """Apply ``settings`` (dotted CPLEX parameter paths) to ``model``.
+
+    Returns the aliases it translated: ``max_iter`` caps both the barrier and
+    the simplex iteration counts unless either path is given. The ``eps``
+    aliases are refused (CPLEX's tolerances are not an absolute/relative
+    pair), and a path CPLEX does not have raises ValueError naming it.
+    """
     settings = settings_with_defaults(settings)
+    refuse_settings(
+        settings,
+        EPS_ALIASES,
+        "CPLEX",
+        "set its own tolerances instead (barrier.convergetol, "
+        "simplex.tolerances.feasibility, simplex.tolerances.optimality)",
+    )
+    translated: dict = {}
+    if "max_iter" in settings:
+        max_iter = int(settings.pop("max_iter"))
+        for path in ("barrier.limits.iteration", "simplex.limits.iterations"):
+            if path not in settings:
+                settings[path] = max_iter
+                translated[path] = max_iter
     verbose = bool(settings.pop("verbose", False))
     if not verbose:
         model.set_results_stream(None)
@@ -196,13 +220,18 @@ def _configure_cplex(model, settings: dict) -> None:
         model.parameters.threads.set(int(threads))
     for key, value in settings.items():
         _set_cplex_parameter(model, key, value)
+    return translated
 
 
 def _set_cplex_parameter(model, key: str, value) -> None:
     node = model.parameters
-    for part in str(key).split("."):
-        node = getattr(node, part)
-    node.set(value)
+    try:
+        for part in str(key).split("."):
+            node = getattr(node, part)
+        setter = node.set
+    except AttributeError:
+        raise ValueError(f"Unknown CPLEX parameter {key!r}") from None
+    setter(value)
 
 
 def _map_cplex_status(raw_status: int, model) -> str:

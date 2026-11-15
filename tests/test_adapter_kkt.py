@@ -555,11 +555,16 @@ def test_mosek_selects_point_by_kkt(itr_x, bas_x, expected):
 @pytest.mark.parametrize("free_bound", [np.inf, 1e20])
 def test_highs_omits_free_rows_and_verifies_original_problem(free_bound, tmp_path, monkeypatch):
     highspy = pytest.importorskip("highspy")
+    # HiPO (where free rows once corrupted the heap) is an optional HiGHS
+    # component; builds without it reject solver=hipo, so let HiGHS choose.
+    probe = highspy.Highs()
+    probe.setOptionValue("output_flag", False)
+    hipo = probe.setOptionValue("solver", "hipo") == highspy.HighsStatus.kOk
     solver = highspy.Highs()
     monkeypatch.setattr(highspy, "Highs", lambda: solver)
     monkeypatch.setitem(SOLVER_SETTINGS, "highs", {
         "verbose": False,
-        "solver": "hipo",
+        "solver": "hipo" if hipo else "choose",
         "optimality_tolerance": 1e-9,
     })
     qp = {

@@ -22,6 +22,7 @@ from .base import (
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    translate_eps_alias,
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
@@ -54,6 +55,7 @@ class OSQPSolverAdapter(SolverAdapter):
             settings["time_limit"] = float(time_limit)
         # OSQP does not expose a thread count knob.
         threads = pop_threads(settings)
+        translated = translate_eps_alias(settings)
         p = sp.csc_matrix(qp["P"])
         a = sp.csc_matrix(qp["A"])
         # OSQP counts a bound as infinite only beyond OSQP_INFTY * MIN_SCALING
@@ -103,6 +105,8 @@ class OSQPSolverAdapter(SolverAdapter):
         info["raw_status"] = getattr(raw.info, "status", None)
         kkt_dict = _compute_kkt(mapped, raw, qp, p, a, l, u, kept)
         mark_threads_ignored(info, threads)
+        if translated:
+            info["settings_translated"] = translated
         return SolverResult(
             status=mapped,
             objective_value=reported_objective(mapped, raw.info.obj_val),

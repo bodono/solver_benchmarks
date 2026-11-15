@@ -15,10 +15,12 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    EPS_ALIASES,
     SolverAdapter,
     SolverUnavailable,
     pop_threads,
     pop_time_limit,
+    refuse_settings,
     reported_objective,
     settings_with_defaults,
 )
@@ -57,7 +59,7 @@ class GurobiSolverAdapter(SolverAdapter):
         try:
             model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
             try:
-                _configure_gurobi(model, self.settings, grb)
+                translated = _configure_gurobi(model, self.settings, grb)
 
                 variables = [
                     model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY)
@@ -131,6 +133,7 @@ class GurobiSolverAdapter(SolverAdapter):
                         "solver_reported_runtime": _maybe_float(
                             getattr(model, "Runtime", None)
                         ),
+                        **({"settings_translated": translated} if translated else {}),
                     },
                 )
             finally:
@@ -171,8 +174,29 @@ def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
     return None
 
 
-def _configure_gurobi(model, settings: dict, grb) -> None:
+def _configure_gurobi(model, settings: dict, grb) -> dict:
+    """Apply ``settings`` to ``model``; return the aliases it translated.
+
+    ``max_iter`` caps both the barrier and the simplex iteration counts
+    (unless either is given by its Gurobi name). The ``eps`` aliases are
+    refused: Gurobi's tolerances are not an absolute/relative pair. A
+    parameter Gurobi rejects raises ValueError naming it.
+    """
     settings = settings_with_defaults(settings)
+    refuse_settings(
+        settings,
+        EPS_ALIASES,
+        "Gurobi",
+        "set its own tolerances instead (FeasibilityTol, OptimalityTol, BarConvTol)",
+    )
+    translated: dict = {}
+    if "max_iter" in settings:
+        max_iter = int(settings.pop("max_iter"))
+        given = {key.lower() for key in settings}
+        for name in ("BarIterLimit", "IterationLimit"):
+            if name.lower() not in given:
+                settings[name] = max_iter
+                translated[name] = max_iter
     if not settings.pop("verbose", False):
         model.setParam("OutputFlag", 0)
     time_limit = pop_time_limit(settings)
@@ -183,7 +207,11 @@ def _configure_gurobi(model, settings: dict, grb) -> None:
         model.setParam("Threads", int(threads))
     settings.pop("high_accuracy", None)
     for key, value in settings.items():
-        model.setParam(key, value)
+        try:
+            model.setParam(key, value)
+        except grb.GurobiError as exc:
+            raise ValueError(f"Invalid Gurobi parameter {key!r}={value!r}: {exc}") from exc
+    return translated
 
 
 def _map_gurobi_status(raw_status: int, grb) -> str:

@@ -483,7 +483,24 @@ A few setting names mean the same thing for every adapter:
   setting for OSQP). Leave it out to run without a limit. Adapters whose solver
   has no time limit record `time_limit_ignored` on the result's `info`.
 - `threads` (or `num_threads`): the solver's thread count, forwarded where the
-  solver has one and recorded as `threads_ignored` otherwise.
+  solver has one (e.g. PIQP and PDLP `num_threads`, HiGHS, Gurobi, CPLEX,
+  cuOpt, cpo3) and recorded as `threads_ignored` otherwise (e.g. OSQP, ProxQP,
+  QTQP).
+- `max_iter`: the iteration cap, under the solver's own name where it differs
+  (HiGHS: every algorithm's `*_iteration_limit`; Gurobi: `BarIterLimit` and
+  `IterationLimit`; CPLEX: `barrier.limits.iteration` and
+  `simplex.limits.iterations`; cuOpt: `iteration_limit`; cpo3: `max_iters`). A
+  native name given alongside wins.
+- `eps_abs` / `eps_rel` (and `eps`, which sets both): the absolute and relative
+  tolerances, native for OSQP, PIQP, ProxQP and PDLP and translated for QTQP,
+  cpo3 and cuOpt. HiGHS, Gurobi and CPLEX have no such pair and refuse these
+  names; set their own tolerances instead.
+
+The QP adapters (OSQP, PIQP, ProxQP, QTQP, HiGHS, PDLP, cpo3, Gurobi, CPLEX,
+cuOpt) refuse a setting they do not know, or a value their solver rejects, with
+a `ValueError` naming it (recorded as a `worker_error`), so a misspelled option
+cannot silently leave a solver on its defaults. Translated aliases are listed
+on the result's `info.settings_translated`.
 
 In the QP form `l <= A x <= u`, every adapter treats a bound with magnitude
 `>= 1e19` on the open side as infinite (the datasets write `+-1e20`, sometimes
