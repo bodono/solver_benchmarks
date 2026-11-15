@@ -251,6 +251,60 @@ def test_osqp_solved_inaccurate_at_max_iter_is_reported_as_max_iter(tmp_path):
         pytest.skip("this OSQP build never stopped at 'solved inaccurate' here")
 
 
+def test_osqp_inaccurate_infeasibility_names_the_certificate_it_carries():
+    osqp = pytest.importorskip("osqp")
+    from solver_benchmarks.solvers.osqp_adapter import _certificate_kind
+
+    assert _certificate_kind(osqp.constant("OSQP_PRIMAL_INFEASIBLE_INACCURATE"), osqp) == (
+        status.PRIMAL_INFEASIBLE_INACCURATE
+    )
+    assert _certificate_kind(osqp.constant("OSQP_DUAL_INFEASIBLE_INACCURATE"), osqp) == (
+        status.DUAL_INFEASIBLE_INACCURATE
+    )
+    for name in ("OSQP_SOLVED", "OSQP_SOLVED_INACCURATE", "OSQP_PRIMAL_INFEASIBLE"):
+        assert _certificate_kind(osqp.constant(name), osqp) is None
+
+
+def test_osqp_keeps_the_certificate_of_an_inaccurate_infeasibility_at_a_limit(tmp_path):
+    # OSQP returns NaN x / y with "primal infeasible inaccurate" (reported as
+    # the limit), but still returns prim_inf_cert; its residuals are kept.
+    pytest.importorskip("osqp")
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.osqp_adapter import OSQPSolverAdapter
+
+    rng = np.random.default_rng(2)
+    n = 5
+    a = rng.normal(size=(8, n))
+    # Row 0 bounded in [-1, 0.5] and again in [2, 3]: primal infeasible.
+    a = np.vstack([a, a[:1]])
+    l = np.concatenate([-np.ones(8), [2.0]])
+    u = np.concatenate([np.ones(8), [3.0]])
+    l[0], u[0] = -1.0, 0.5
+    qp = {
+        "P": sp.diags(rng.uniform(0, 1, n), format="csc"),
+        "q": rng.normal(size=n),
+        "A": sp.csc_matrix(a),
+        "l": l,
+        "u": u,
+    }
+    problem = ProblemData("t", "p", QP, qp)
+    seen = 0
+    for max_iter in (5, 10, 20, 30, 50, 75, 100):
+        settings = {"verbose": False, "max_iter": max_iter, "check_termination": 1}
+        result = OSQPSolverAdapter(settings).solve(problem, tmp_path)
+        if result.info["raw_status"] == "primal infeasible inaccurate":
+            seen += 1
+            assert result.status == status.MAX_ITER_REACHED
+            assert result.kkt is not None
+            assert result.kkt["certificate"] == "primal_infeasible"
+            assert "primal_res_rel" not in result.kkt
+    if not seen:
+        pytest.skip("this OSQP build never stopped at 'primal infeasible inaccurate' here")
+
+
 def test_qtqp_almost_solved_maps_by_why_the_solve_stopped():
     from solver_benchmarks.solvers.qtqp_adapter import _map_qtqp_status
 

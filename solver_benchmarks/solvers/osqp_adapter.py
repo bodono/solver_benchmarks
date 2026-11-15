@@ -121,7 +121,9 @@ class OSQPSolverAdapter(SolverAdapter):
             if hasattr(raw.info, key)
         }
         info["raw_status"] = getattr(raw.info, "status", None)
-        kkt_dict = _compute_kkt(mapped, raw, qp, p, a, l, u, kept)
+        kkt_dict = _compute_kkt(
+            _certificate_kind(raw.info.status_val, osqp) or mapped, raw, qp, p, a, l, u, kept
+        )
         mark_threads_ignored(info, threads)
         if translated:
             info["settings_translated"] = translated
@@ -189,6 +191,26 @@ def _map_osqp_status(status_val, osqp, *, hit_iteration_limit: bool) -> str:
         except (ValueError, KeyError, AttributeError, RuntimeError):
             continue
     return status_map.get(status_val, status.SOLVER_ERROR)
+
+
+def _certificate_kind(status_val, osqp) -> str | None:
+    """The certificate an ``*_INFEASIBLE_INACCURATE`` status carries, if any.
+
+    Those statuses are reported as the limit the solve stopped on, and their
+    ``x`` / ``y`` are NaN, but OSQP still returns the (inaccurate) certificate;
+    its residuals are kept on ``kkt``. They never count as success: the row's
+    status is a limit, and kkt-verify finds no solution residuals to promote.
+    """
+    for name, kind in (
+        ("OSQP_PRIMAL_INFEASIBLE_INACCURATE", status.PRIMAL_INFEASIBLE_INACCURATE),
+        ("OSQP_DUAL_INFEASIBLE_INACCURATE", status.DUAL_INFEASIBLE_INACCURATE),
+    ):
+        try:
+            if status_val == osqp.constant(name):
+                return kind
+        except (ValueError, KeyError, AttributeError, RuntimeError):
+            continue
+    return None
 
 
 def _compute_kkt(mapped_status, raw, qp, p, a, l, u, kept):
