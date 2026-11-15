@@ -426,7 +426,8 @@ def test_run_subprocess_streams_while_writing_logs(tmp_path: Path, capsys, repo_
     captured = capsys.readouterr()
 
     assert result.returncode == 0
-    assert result.stdout == "solver stdout\n"
+    # Only stderr is kept in memory (to say why a worker crashed); stdout
+    # is in its log.
     assert result.stderr == "solver stderr\n"
     assert (tmp_path / "stdout.log").read_text() == "solver stdout\n"
     assert (tmp_path / "stderr.log").read_text() == "solver stderr\n"

@@ -545,3 +545,119 @@ def test_verify_does_not_demote_rows_whose_cones_could_not_be_checked(tmp_path):
     assert out[("p2", "a")]["status"] == "optimal_inaccurate"
     assert summary["unverified_cones"] == {"a": 1}
     assert summary["kept"] == {"a": 1} and summary["demoted"] == {"a": 1}
+
+
+_PASSING_KKT = {"primal_res_rel": 1e-9, "dual_res_rel": 1e-9, "duality_gap_rel": 1e-9}
+
+
+def test_promote_never_turns_a_solve_returned_after_the_limit_into_optimal(tmp_path):
+    """The runner records a conclusion reached after timeout_seconds as
+    time_limit: the limit is every solver's budget. Its point passes the
+    check by construction, and promoting it would give that solver more
+    time than the others. A solver-reported time_limit within the limit
+    whose point passes is still promoted."""
+    from solver_benchmarks.core.result import ProblemResult
+    from solver_benchmarks.core.runner import _apply_time_limit
+
+    over = ProblemResult(
+        run_id="r", dataset="d", problem="late", problem_kind="qp", solver_id="a", solver="a",
+        status="optimal", objective_value=0.5, iterations=3, run_time_seconds=5.9, kkt=dict(_PASSING_KKT),
+    )
+    late_iters = ProblemResult(
+        run_id="r", dataset="d", problem="late_iters", problem_kind="qp", solver_id="a", solver="a",
+        status="max_iter_reached", objective_value=None, iterations=3, run_time_seconds=5.9,
+        kkt=dict(_PASSING_KKT),
+    )
+    within = ProblemResult(
+        run_id="r", dataset="d", problem="within", problem_kind="qp", solver_id="a", solver="a",
+        status="time_limit", objective_value=None, iterations=3, run_time_seconds=0.99,
+        kkt=dict(_PASSING_KKT),
+    )
+    for result in (over, late_iters, within):
+        _apply_time_limit(result, 1.0)
+    assert over.status == "time_limit" and over.objective_value is None
+    src = _write_run(tmp_path, "src", [r.to_record() for r in (over, late_iters, within)])
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6, promote=True)
+    rows = {r["problem"]: r for r in map(json.loads, (tmp_path / "out" / "results.jsonl").read_text().splitlines())}
+    assert rows["late"]["status"] == "time_limit"
+    assert rows["late_iters"]["status"] == "max_iter_reached"
+    assert rows["within"]["status"] == "optimal"
+    assert "time limit" in rows["late"]["metadata"]["kkt_verify"]["reason"]
+    assert rows["late"]["metadata"]["kkt_verify"]["original_status"] == "time_limit"
+    assert summary["promoted"] == {"a": 1}
+    assert summary["over_time_limit"] == {"a": 2}
+
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    result = CliRunner().invoke(
+        main, ["kkt-verify", str(src), "--tol", "1e-6", "--promote", "--output-dir", str(tmp_path / "cli")]
+    )
+    assert result.exit_code == 0, result.output
+    assert "a\tkept=0\tdemoted=0\tpromoted=1\tno_residuals=0\tover_time_limit=2" in result.stdout
+
+
+def test_promote_skips_rows_marked_by_an_older_runner(tmp_path):
+    """Rows of runs recorded before the exceeded_time_limit marker carry
+    only status_before_timeout; they are not promoted either."""
+    row = _row("p1", "a", status="time_limit", kkt=dict(_PASSING_KKT))
+    row["info"] = {"status_before_timeout": "optimal"}
+    row["objective_value"] = 0.5
+    src = _write_run(tmp_path, "src", [row])
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6, promote=True)
+    (out,) = map(json.loads, (tmp_path / "out" / "results.jsonl").read_text().splitlines())
+    assert out["status"] == "time_limit"
+    assert summary["promoted"] == {}
+    assert summary["over_time_limit"] == {"a": 1}
+
+
+def test_derive_commands_report_user_errors_without_a_traceback(tmp_path):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    src = _write_run(tmp_path, "src", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    runner = CliRunner()
+    assert runner.invoke(main, ["kkt-verify", str(src), "--tol", "1e-6"]).exit_code == 0
+    cases = [
+        (["kkt-verify", str(src), "--tol", "1e-6"], "--overwrite"),
+        (["kkt-verify", str(src), "--tol", "1e-6", "--output-dir", str(src / "sub")], "overlaps"),
+        (["merge", str(tmp_path / "src_kkt1e-06"), str(src)], "--overwrite"),
+        (["merge", str(src / "sub"), str(src)], "overlaps"),
+    ]
+    for args, expected in cases:
+        result = runner.invoke(main, args)
+        assert result.exit_code == 1, (args, result.output)
+        assert isinstance(result.exception, SystemExit), (args, result.exception)
+        assert "Error:" in result.output and expected in result.output, (args, result.output)
+
+
+def test_a_directory_that_is_not_a_run_is_refused(tmp_path):
+    import pytest
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    empty = tmp_path / "not_a_run"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="results.jsonl"):
+        kkt_verify(empty, tmp_path / "out", tol=1e-6)
+    with pytest.raises(ValueError, match="results.jsonl"):
+        merge_runs([empty], tmp_path / "merged")
+    assert not (tmp_path / "out").exists() and not (tmp_path / "merged").exists()
+    result = CliRunner().invoke(main, ["kkt-verify", str(empty), "--tol", "1e-6"])
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+    assert "results.jsonl" in result.output
+    assert not (tmp_path / "not_a_run_kkt1e-06").exists()
+
+
+def test_a_run_that_planned_no_solves_can_be_merged(tmp_path):
+    """A finished run whose filters left nothing to solve has a manifest but
+    no results.jsonl; it is a run, not a wrong path."""
+    zero = tmp_path / "zero"
+    zero.mkdir()
+    (zero / "manifest.json").write_text(json.dumps({"config": {}}))
+    src = _write_run(tmp_path, "src", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    summary = merge_runs([zero, src], tmp_path / "merged")
+    assert summary["rows"] == 1

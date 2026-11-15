@@ -206,12 +206,14 @@ def test_run_subprocess_output_reaches_the_log_before_a_timeout_kill(tmp_path: P
 
 
 def test_run_subprocess_returns_only_a_bounded_tail(tmp_path: Path):
+    """The stderr tail says why a worker crashed; only a bounded part of it
+    is kept in memory."""
     script = tmp_path / "verbose.py"
-    script.write_text("for i in range(20000):\n    print(f'iter {i}')\n")
+    script.write_text("import sys\nfor i in range(20000):\n    print(f'iter {i}', file=sys.stderr)\n")
     result = _run(script, tmp_path, timeout=30.0)
     assert result.returncode == 0
-    assert len((tmp_path / "stdout.log").read_text().splitlines()) == 20000
-    tail = result.stdout.splitlines()
+    assert len((tmp_path / "stderr.log").read_text().splitlines()) == 20000
+    tail = result.stderr.splitlines()
     assert 0 < len(tail) <= 1000 and tail[-1] == "iter 19999"
 
 
@@ -329,3 +331,40 @@ def test_success_after_the_time_limit_is_recorded_as_time_limit(
         assert "timeout_seconds=1" in row["error"]
     else:
         assert "status_before_timeout" not in row["info"]
+
+
+@pytest.mark.parametrize(
+    "reported_status, run_time, expected, exceeded",
+    [
+        ("optimal", 23.46, "time_limit", True),
+        ("max_iter_reached", 23.0, "max_iter_reached", True),
+        ("solver_error", 3.0, "solver_error", True),
+        ("time_limit", 1.2, "time_limit", True),
+        ("optimal", 0.5, "optimal", False),
+        ("max_iter_reached", 0.5, "max_iter_reached", False),
+    ],
+)
+def test_a_solve_returned_after_the_limit_is_marked_and_loses_its_objective(
+    monkeypatch, tmp_path: Path, repo_root: Path, reported_status, run_time, expected, exceeded
+):
+    """A conclusion reached after the limit reports no objective (only
+    optimal / optimal_inaccurate rows do; the value is kept in info), and
+    every result returned after the limit is marked, whatever its status,
+    so that a later kkt-verify --promote does not count it as solved."""
+    from types import SimpleNamespace
+
+    def worker(timeout):
+        return (
+            SimpleNamespace(returncode=0, timed_out=False),
+            {"status": reported_status, "run_time_seconds": run_time},
+        )
+
+    row, _, _ = _timeout_run(monkeypatch, tmp_path, repo_root, timeout=1.0, worker=worker)
+    assert row["status"] == expected
+    assert bool(row["info"].get("exceeded_time_limit")) is exceeded
+    if expected == "time_limit" and reported_status != "time_limit":
+        assert row["objective_value"] is None
+        assert row["info"]["objective_before_timeout"] == 0.0
+    elif expected != "time_limit":
+        assert row["objective_value"] == 0.0
+        assert "objective_before_timeout" not in row["info"]

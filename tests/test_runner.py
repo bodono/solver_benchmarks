@@ -307,7 +307,7 @@ def test_resume_retries_worker_errors_without_duplicate_rows_or_lost_artifacts(
         stdout_path.write_text(f"{name} attempt {calls[name]}\n")
         stderr_path.write_text("original diagnostic\n")
         if name == "one_variable_eq" and calls[name] < 3:
-            return SimpleNamespace(returncode=1, timed_out=False)
+            return SimpleNamespace(returncode=1, stderr="", timed_out=False)
         record = ProblemResult(
             run_id=payload["run_id"],
             dataset=payload["dataset"],
@@ -399,7 +399,7 @@ def test_resume_planning_skip_preserves_pending_worker_error(
         stdout_path.write_text("attempt diagnostic")
         stderr_path.write_text("original failure")
         if fail:
-            return SimpleNamespace(returncode=1, timed_out=False)
+            return SimpleNamespace(returncode=1, stderr="", timed_out=False)
         record = ProblemResult(
             run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
             problem_kind=payload["problem_kind"], solver_id="recover", solver="recover",
@@ -1641,3 +1641,494 @@ def test_load_worker_result_records_malformed_schema_version_as_worker_error(
     assert result.error is not None
     assert "schema_version" in result.error
     assert "not an integer" in result.error
+
+
+def _fake_worker(statuses=None, calls=None):
+    """A ``_run_subprocess`` stand-in that records the problem it was asked to
+    solve and writes a worker result with ``statuses[problem]`` (default optimal)."""
+    statuses = statuses or {}
+
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        if calls is not None:
+            calls.append(payload["problem"])
+        status = statuses.get(payload["problem"], "optimal")
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"], status=status,
+            objective_value=0.0 if status == "optimal" else None, iterations=1,
+            run_time_seconds=0.01, artifact_dir=payload["artifacts_dir"],
+            error="cone 's' not supported." if status == "skipped_unsupported" else None,
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    return run
+
+
+def _events(run_dir: Path) -> list[dict]:
+    path = Path(run_dir) / "events.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def _synthetic_config(tmp_path: Path, **run):
+    return parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs"), **run},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+
+
+# --- one writer per run directory --------------------------------------------
+
+
+def _hold_lock(run_dir: Path, pid: str = "424242"):
+    import fcntl
+    import os
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(run_dir / ".bench.lock", os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    os.ftruncate(fd, 0)
+    os.write(fd, f"{pid}\n".encode())
+    return fd
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl locks")
+def test_a_run_directory_in_use_is_refused(monkeypatch, tmp_path: Path, repo_root: Path):
+    """Two `bench run` on one directory would solve everything twice into the
+    same artifact paths, and a results.jsonl rewrite in one would drop the
+    other's rows."""
+    import os
+
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    run_dir = tmp_path / "run"
+    fd = _hold_lock(run_dir)
+    try:
+        with pytest.raises(RuntimeError, match=r"in use by another bench run \(pid 424242\)") as raised:
+            run_benchmark(_synthetic_config(tmp_path), run_dir=run_dir, repo_root=repo_root)
+        assert str(run_dir.resolve()) in str(raised.value)
+        assert calls == []
+        assert not (run_dir / "results.jsonl").exists()
+
+        config_path = tmp_path / "cfg.yaml"
+        config_path.write_text("run: {dataset: synthetic_qp}\nsolvers:\n  - {id: osqp, solver: osqp}\n")
+        result = CliRunner().invoke(main, ["run", str(config_path), "--run-dir", str(run_dir)])
+        assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+        assert "in use by another bench run" in result.output
+    finally:
+        os.close(fd)
+    store = run_benchmark(_synthetic_config(tmp_path), run_dir=run_dir, repo_root=repo_root)
+    assert sorted(calls) == ["one_variable_eq", "one_variable_lp"]
+    assert store.results_parquet_path.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl locks")
+def test_the_run_directory_is_locked_only_while_the_run_lasts(monkeypatch, tmp_path: Path, repo_root: Path):
+    import fcntl
+    import os
+
+    from solver_benchmarks.analysis.derive import kkt_verify, merge_runs
+    from solver_benchmarks.core import runner
+
+    seen = []
+    fake = _fake_worker()
+
+    def worker(cmd, **kwargs):
+        lock = Path(json.loads(Path(cmd[-1]).read_text())["artifacts_dir"]).parents[3] / ".bench.lock"
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            seen.append("unlocked")
+        except BlockingIOError:
+            seen.append(lock.read_text().strip())
+        finally:
+            os.close(fd)
+        return fake(cmd, **kwargs)
+
+    monkeypatch.setattr(runner, "_run_subprocess", worker)
+    for run_dir in (tmp_path / "named", None):
+        seen.clear()
+        store = run_benchmark(_synthetic_config(tmp_path), run_dir=run_dir, repo_root=repo_root)
+        assert seen == [str(os.getpid())] * 2
+        os.close(_hold_lock(store.run_dir))  # released at the end of the run
+    kkt_verify(store.run_dir, tmp_path / "verified", tol=1e-6)
+    merge_runs([store.run_dir], tmp_path / "merged")
+    assert not (tmp_path / "verified" / ".bench.lock").exists()
+    assert not (tmp_path / "merged" / ".bench.lock").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl locks")
+def test_a_filesystem_without_locks_runs_with_a_warning(monkeypatch, tmp_path: Path, repo_root: Path):
+    import errno
+
+    from solver_benchmarks.core import runner
+
+    def no_locks(fd, operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    monkeypatch.setattr("fcntl.flock", no_locks)
+    store = run_benchmark(_synthetic_config(tmp_path), run_dir=tmp_path / "run", repo_root=repo_root)
+    assert store.results_parquet_path.exists()
+    warnings = [e for e in _events(store.run_dir) if e["level"] == "warning" and "lock" in e["message"]]
+    assert len(warnings) == 1
+
+
+# --- include / exclude names that match no problem ----------------------------
+
+
+def test_an_include_name_that_matches_no_problem_is_an_error(monkeypatch, tmp_path: Path, repo_root: Path):
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    for include in (["one_variable_eq", "One_Variable_LP"], ["one_variable_EQ"]):
+        with pytest.raises(RuntimeError, match="no problem named") as raised:
+            run_benchmark(_synthetic_config(tmp_path, include=include), run_dir=tmp_path / "run", repo_root=repo_root)
+        message = str(raised.value)
+        typo = include[-1]
+        assert repr(typo) in message
+        assert repr(typo.lower()) in message  # the suggestion
+        assert calls == []
+    assert not (tmp_path / "run" / "results.jsonl").exists()
+
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text(
+        "run: {dataset: synthetic_qp, include: [one_variable_eq, one_variabel_lp]}\n"
+        "solvers:\n  - {id: osqp, solver: osqp}\n"
+    )
+    result = CliRunner().invoke(main, ["run", str(config_path), "--run-dir", str(tmp_path / "cli")])
+    assert result.exit_code == 1 and isinstance(result.exception, SystemExit)
+    assert "did you mean 'one_variable_lp'" in result.output
+
+
+def test_include_names_are_matched_per_dataset_entry_and_across_datasets(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """A run-level include is shared by every dataset without its own: each
+    name must match in at least one of them. An entry's own include must
+    match in that dataset."""
+    from solver_benchmarks.core import runner
+    from solver_benchmarks.datasets.synthetic import SyntheticConeDataset
+
+    cone_problem = SyntheticConeDataset().list_problems()[0].name
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+
+    def config(datasets, **run):
+        return parse_run_config(
+            {
+                "run": {"datasets": datasets, "output_dir": str(tmp_path / "runs"), **run},
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+    run_benchmark(
+        config(["synthetic_qp", "synthetic_cone"], include=["one_variable_eq", cone_problem]),
+        run_dir=tmp_path / "ok", repo_root=repo_root,
+    )
+    assert sorted(calls) == sorted(["one_variable_eq", cone_problem])
+    with pytest.raises(RuntimeError, match="no_such_problem"):
+        run_benchmark(
+            config(["synthetic_qp", "synthetic_cone"], include=["one_variable_eq", "no_such_problem"]),
+            run_dir=tmp_path / "typo", repo_root=repo_root,
+        )
+    with pytest.raises(RuntimeError, match=f"synthetic_qp.*{cone_problem}"):
+        run_benchmark(
+            config([{"name": "synthetic_qp", "include": [cone_problem]}, "synthetic_cone"]),
+            run_dir=tmp_path / "entry", repo_root=repo_root,
+        )
+
+
+class _SizedDataset(Dataset):
+    dataset_id = "sized_fixture"
+    description = "Two problems, one of 5 MB."
+
+    def list_problems(self):
+        return [
+            ProblemSpec(dataset_id="sized_fixture", name="small", kind=QP, metadata={"size_bytes": 1000}),
+            ProblemSpec(dataset_id="sized_fixture", name="big", kind=QP, metadata={"size_bytes": 5_000_000}),
+        ]
+
+    def load_problem(self, name):  # pragma: no cover - the worker is stubbed
+        raise AssertionError
+
+
+def test_an_include_name_removed_by_max_size_mb_is_not_a_typo(monkeypatch, tmp_path: Path, repo_root: Path, capsys):
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    monkeypatch.setitem(dataset_registry.DATASETS, "sized_fixture", _SizedDataset)
+    config = parse_run_config(
+        {
+            "run": {"dataset": "sized_fixture", "dataset_options": {"max_size_mb": 1},
+                    "include": ["small", "big"], "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True)
+    assert calls == ["small"]
+    warnings = [e["message"] for e in _events(store.run_dir) if e["level"] == "warning"]
+    assert any("'big'" in message and "max_size_mb" in message for message in warnings), warnings
+    assert "max_size_mb" in capsys.readouterr().err
+
+
+class _DownloadableDataset(Dataset):
+    """Lists only the problems downloaded so far, like every remote dataset."""
+
+    dataset_id = "downloadable_fixture"
+    description = "One local problem out of many remote ones."
+    automatic_download = True
+
+    @property
+    def data_dir(self):
+        return self.problem_classes_dir / "downloadable_fixture"
+
+    def list_problems(self):
+        return [ProblemSpec(dataset_id="downloadable_fixture", name="local", kind=QP)]
+
+    def load_problem(self, name):  # pragma: no cover - the worker is stubbed
+        raise AssertionError
+
+
+def test_an_include_name_a_downloadable_dataset_does_not_list_is_a_warning(
+    monkeypatch, tmp_path: Path, repo_root: Path, capsys
+):
+    """A downloadable dataset lists what is local: a missing name may simply
+    not be downloaded yet, so it cannot be called a typo."""
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    monkeypatch.setitem(dataset_registry.DATASETS, "downloadable_fixture", _DownloadableDataset)
+    config = parse_run_config(
+        {
+            "run": {"dataset": "downloadable_fixture", "include": ["local", "remote_one"],
+                    "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True)
+    assert calls == ["local"]
+    warnings = [e["message"] for e in _events(store.run_dir) if e["level"] == "warning"]
+    assert any("'remote_one'" in message and "bench data prepare" in message for message in warnings), warnings
+    assert "'remote_one'" in capsys.readouterr().err
+
+
+def test_an_exclude_name_that_matches_no_problem_is_a_warning(monkeypatch, tmp_path: Path, repo_root: Path, capsys):
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    store = run_benchmark(
+        _synthetic_config(tmp_path, exclude=["One_Variable_LP"]),
+        run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True,
+    )
+    assert sorted(calls) == ["one_variable_eq", "one_variable_lp"]
+    warnings = [e["message"] for e in _events(store.run_dir) if e["level"] == "warning"]
+    assert any("'One_Variable_LP'" in message and "exclude" in message for message in warnings), warnings
+    assert "'One_Variable_LP'" in capsys.readouterr().err
+
+
+# --- run.fail_on_unsupported ---------------------------------------------------
+
+
+@pytest.mark.parametrize("parallelism", [1, 2])
+def test_fail_on_unsupported_fails_on_a_skip_the_adapter_reports(
+    monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int
+):
+    """ECOS, CVXOPT, SDPA, PDLP, Clarabel and cpo3 report problems they cannot
+    take (a cone type) from inside the worker."""
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner, "_run_subprocess", _fake_worker({"one_variable_eq": "skipped_unsupported"}, calls=calls)
+    )
+    with pytest.raises(RuntimeError, match="fail_on_unsupported") as raised:
+        run_benchmark(
+            _synthetic_config(tmp_path, fail_on_unsupported=True, parallelism=parallelism),
+            run_dir=tmp_path / "run", repo_root=repo_root,
+        )
+    assert "cone 's' not supported" in str(raised.value)
+    assert ".." not in str(raised.value)
+    rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
+    assert ("one_variable_eq", "skipped_unsupported") in [(r["problem"], r["status"]) for r in rows]
+    assert not (tmp_path / "run" / "results.parquet").exists()
+
+
+def test_fail_on_unsupported_fails_for_a_solver_that_is_not_installed(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    from solver_benchmarks.core import runner
+
+    class Missing(SolverAdapter):
+        solver_name = "missing_fixture"
+        supported_problem_kinds = {QP}
+
+        @classmethod
+        def is_available(cls):
+            return False
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover
+            raise AssertionError
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "missing_fixture", Missing)
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "fail_on_unsupported": True, "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}, {"id": "missing", "solver": "missing_fixture"}],
+        }
+    )
+    with pytest.raises(RuntimeError, match="missing_fixture.*unavailable"):
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert not (tmp_path / "run" / "results.jsonl").exists()
+
+
+# --- worker crash messages ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "returncode, stderr, expected",
+    [
+        (-9, "", ["SIGKILL", "possibly out of memory"]),
+        (-6, "loading\n\nFatal: out of memory allocating 12.4 GB\n\n", ["SIGABRT", "Fatal: out of memory allocating 12.4 GB"]),
+        (3, "Traceback (most recent call last):\n  ...\nImportError: libfoo.so\n", ["code 3", "ImportError: libfoo.so"]),
+        (0, "", ["without writing worker_result.json"]),
+    ],
+)
+def test_a_crashed_worker_row_says_why(monkeypatch, tmp_path: Path, repo_root: Path, returncode, stderr, expected):
+    from solver_benchmarks.core import runner
+
+    def crash(cmd, **kwargs):
+        return SimpleNamespace(returncode=returncode, stdout="", stderr=stderr, timed_out=False)
+
+    monkeypatch.setattr(runner, "_run_subprocess", crash)
+    store = run_benchmark(
+        _synthetic_config(tmp_path, include=["one_variable_eq"]), run_dir=tmp_path / "run", repo_root=repo_root
+    )
+    (row,) = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    assert row["status"] == "worker_error"
+    for text in expected:
+        assert text in row["error"]
+
+
+def test_a_crashed_worker_message_keeps_only_a_bounded_stderr_tail():
+    from solver_benchmarks.core.runner import _worker_exit_message
+
+    stderr = "".join(f"line {i} " + "x" * 300 + "\n" for i in range(50))
+    message = _worker_exit_message(1, stderr)
+    assert "line 49" in message and "line 40" not in message
+    assert len(message) < 800
+
+
+def test_fail_on_unsupported_fails_again_on_a_recorded_skip(monkeypatch, tmp_path: Path, repo_root: Path):
+    """A resumed run counts a recorded skip as complete; under the flag it
+    must fail every run, not only the one that recorded the skip, also when
+    the flag is turned on over skip rows recorded without it."""
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner, "_run_subprocess", _fake_worker({"one_variable_eq": "skipped_unsupported"}, calls=calls)
+    )
+    run_dir = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="fail_on_unsupported"):
+        run_benchmark(_synthetic_config(tmp_path, fail_on_unsupported=True), run_dir=run_dir, repo_root=repo_root)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="one_variable_eq.*skipped_unsupported.*cone 's' not supported"):
+            run_benchmark(_synthetic_config(tmp_path, fail_on_unsupported=True), run_dir=run_dir, repo_root=repo_root)
+        assert not (run_dir / "results.parquet").exists()
+
+    other = tmp_path / "other"
+    run_benchmark(_synthetic_config(tmp_path), run_dir=other, repo_root=repo_root)
+    assert (other / "results.parquet").exists()
+    with pytest.raises(RuntimeError, match="one_variable_eq.*skipped_unsupported"):
+        run_benchmark(_synthetic_config(tmp_path, fail_on_unsupported=True), run_dir=other, repo_root=repo_root)
+
+
+def _fake_sdplib(root: Path, names) -> Path:
+    import io
+    import tarfile
+
+    folder = root / "sdplib_data"
+    folder.mkdir(parents=True)
+    with tarfile.open(folder / "sdplib.tar", "w") as archive:
+        for name in names:
+            info = tarfile.TarInfo(f"sdplib/{name}.jld2")
+            info.size = 4
+            archive.addfile(info, io.BytesIO(b"fake"))
+    return root
+
+
+def test_a_mistyped_include_name_is_an_error_on_a_dataset_that_knows_all_its_names(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """SDPLIB lists every member of its archive and Kennington knows its
+    bundled set: a name outside the set is a typo, not a missing download.
+    A run-level include shared with such a dataset keeps another dataset's
+    typo an error too."""
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    data_root = _fake_sdplib(tmp_path / "data", ["truss1", "truss2", "hinf1"])
+
+    def config(datasets, **run):
+        return parse_run_config(
+            {
+                "run": {"datasets": datasets, "dataset_options": {"data_root": str(data_root)},
+                        "output_dir": str(tmp_path / "runs"), **run},
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+    with pytest.raises(RuntimeError, match=r"'Truss2' \(did you mean 'truss2'\?\)"):
+        run_benchmark(config(["sdplib"], include=["truss1", "Truss2"]), run_dir=tmp_path / "a", repo_root=repo_root)
+    with pytest.raises(RuntimeError, match="one_variable_EQ"):
+        run_benchmark(
+            config(["synthetic_qp", "sdplib"], include=["one_variable_EQ", "truss1"]),
+            run_dir=tmp_path / "b", repo_root=repo_root,
+        )
+
+    kennington = data_root / "kennington"
+    kennington.mkdir()
+    import shutil
+
+    shutil.copy(repo_root / "problem_classes" / "kennington" / "ken-07.mps.gz", kennington)
+    with pytest.raises(RuntimeError, match=r"'KEN-11' \(did you mean 'ken-11'\?\)"):
+        run_benchmark(config(["kennington"], include=["ken-07", "KEN-11"]), run_dir=tmp_path / "c", repo_root=repo_root)
+
+
+def test_a_known_name_that_is_not_local_yet_is_a_warning_with_a_command_that_applies(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    import shutil
+
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    data_root = tmp_path / "data"
+    (data_root / "kennington").mkdir(parents=True)
+    shutil.copy(repo_root / "problem_classes" / "kennington" / "ken-07.mps.gz", data_root / "kennington")
+    config = parse_run_config(
+        {
+            "run": {"dataset": "kennington", "dataset_options": {"data_root": str(data_root)},
+                    "include": ["ken-07", "ken-11"], "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert calls == ["ken-07"]
+    (warning,) = [e["message"] for e in _events(store.run_dir) if e["level"] == "warning"]
+    assert "'ken-11'" in warning
+    assert "bench data prepare kennington" in warning and "--problem ken-11" in warning
+    assert "DATASET" not in warning

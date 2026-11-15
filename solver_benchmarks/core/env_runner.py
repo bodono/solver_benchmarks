@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -136,6 +137,9 @@ def run_environment_matrix(
 # How long a child `bench run` gets to kill its workers after a SIGTERM
 # before it is killed itself.
 _CHILD_SHUTDOWN_SECONDS = 10.0
+# Tells a child `bench run` which matrix runner started it, so that it stops
+# when that runner dies (see cli.run_cmd).
+MATRIX_RUNNER_PID_ENV = "SOLVER_BENCHMARKS_MATRIX_RUNNER_PID"
 
 
 def _run_child(cmd: list[str], *, cwd: Path) -> None:
@@ -146,9 +150,12 @@ def _run_child(cmd: list[str], *, cwd: Path) -> None:
     SIGTERM and given time to kill its workers, which run in their own
     sessions; ``subprocess.run`` would SIGKILL it at once and leave them
     solving with no time limit. It is killed only if it does not exit in
-    time.
+    time. The child also gets this process's pid in its environment, so that
+    it stops the same way if this process is killed outright.
     """
-    process = subprocess.Popen(cmd, cwd=cwd)
+    process = subprocess.Popen(
+        cmd, cwd=cwd, env={**os.environ, MATRIX_RUNNER_PID_ENV: str(os.getpid())}
+    )
     try:
         returncode = process.wait()
     except BaseException:

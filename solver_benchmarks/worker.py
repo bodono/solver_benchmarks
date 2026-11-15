@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
+import sys
 import traceback
 from pathlib import Path
 
 from solver_benchmarks.core import status
+from solver_benchmarks.core.atomic import atomic_write_text
 from solver_benchmarks.core.environment import runtime_metadata
+from solver_benchmarks.core.parent_watch import watch_parent
 from solver_benchmarks.core.problem import CONE, QP, cone_dimensions, qp_dimensions
 from solver_benchmarks.core.result import ProblemResult, to_jsonable
-from solver_benchmarks.core.storage import atomic_write_text
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.solvers import get_solver
 
@@ -20,6 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--payload", required=True)
     args = parser.parse_args(argv)
+    _die_with_runner(_runner_pid())
     payload = json.loads(Path(args.payload).read_text())
     if payload.get("memory_limit_mb"):
         _limit_memory(payload["memory_limit_mb"])
@@ -28,6 +33,46 @@ def main(argv: list[str] | None = None) -> int:
     # Atomic write so the parent never observes a half-serialized record.
     atomic_write_text(output, json.dumps(result.to_record(), indent=2))
     return 0
+
+
+# Set by the runner in the worker's environment (runner.RUNNER_PID_ENV); the
+# module run by hand has none and does not watch its parent.
+_RUNNER_PID_ENV = "SOLVER_BENCHMARKS_RUNNER_PID"
+
+
+def _die_with_runner(runner_pid: int | None) -> str | None:
+    """Make this worker die when the runner that started it dies.
+
+    The worker runs in its own session, so neither a terminal hang-up nor
+    the runner's death reaches it, and the time limit is enforced by the
+    runner: a runner killed hard (SIGKILL, the OOM killer) would leave the
+    worker solving unsupervised. See ``parent_watch.watch_parent``: on
+    Linux the kernel sends SIGKILL when the runner dies, also while the
+    solver holds the GIL in a long C call (the runner starts each worker
+    from the thread that then waits for it, so that thread outlives the
+    worker); elsewhere, or behind a launcher, a daemon thread checks once a
+    second. Without ``runner_pid`` (no runner set it in the environment),
+    and on Windows, nothing is installed.
+    """
+    return watch_parent(runner_pid, signum=signal.SIGKILL, on_gone=lambda: _die(runner_pid))
+
+
+def _runner_pid() -> int | None:
+    try:
+        return int(os.environ[_RUNNER_PID_ENV])
+    except (KeyError, ValueError):
+        return None
+
+
+def _die(runner_pid: int | None) -> None:
+    """Say why, then kill this worker and the helpers in its process group."""
+    try:
+        print(f"worker: the runner (pid {runner_pid}) is gone; exiting", file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+    if hasattr(os, "killpg") and os.getpgrp() == os.getpid():
+        os.killpg(0, signal.SIGKILL)
+    os._exit(1)
 
 
 def _limit_memory(limit_mb: int) -> None:

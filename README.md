@@ -431,9 +431,14 @@ every core, so its timings are slower than in old runs); and limit stops and
 infeasibility certificates carry no `objective_value` in any conic adapter.
 
 Unsupported solver/problem combinations are skipped by default and recorded as
-`skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped.
+`skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped,
+and so is a problem whose cone types an adapter cannot take (ECOS on a PSD cone),
+which the adapter reports from the solve. A solver that is not installed has
+every one of its solves skipped the same way.
 
-To fail instead of skipping:
+To fail instead of skipping (a solver that is not installed then fails the run
+before anything is solved; a skip the adapter reports is recorded, then the run
+stops):
 
 ```yaml
 run:
@@ -480,6 +485,9 @@ solvers:
   - id: pdlp_default
     solver: pdlp
     settings:
+      # Equal to timeout_seconds: PDLP's own time-limit stops return slightly
+      # after 120 s, so `bench kkt-verify --promote` never promotes them. Set
+      # it below timeout_seconds (say 110) if those points should be eligible.
       time_limit_sec: 120
 ```
 
@@ -495,14 +503,14 @@ as YAML 1.2 and JSON read them:
 | `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `id`, `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
 | `run.output_dir` | Root directory for immutable runs. Relative paths are resolved under the repository root, not next to the config file. Defaults to `results`. |
 | `run.dataset_options` | Dataset-specific options, such as `subset: feasible`. Treated as defaults for entries in `datasets`. |
-| `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. |
-| `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. |
+| `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. Names are case-sensitive. A name that matches no problem fails the run with a suggestion, unless the dataset downloads or prepares its data (it may just not be local yet), which gets a warning; a name removed by `max_size_mb` gets a warning. |
+| `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. A name that matches no problem gets a warning. |
 | `run.parallelism` | Number of concurrent subprocess solves. |
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
-| `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout`. |
+| `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout` and its objective moved to `info.objective_before_timeout`. Every result returned after the limit, whatever its status, carries `info.exceeded_time_limit`, and `bench kkt-verify --promote` never promotes it. A solver stopped by its own time limit returns slightly after that limit, so when its limit equals `timeout_seconds` its time-limit stops are over the limit and are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. |
 | `run.auto_prepare_data` | If true, prepare the missing requested data before listing and solving: the problems `include` names, else those `dataset_options.subset` names (for the datasets whose subset takes problem names), else the dataset's small default subset. Problems already present are not requested again, and a failed preparation stops the run with an error naming the dataset. The details are under [Supported Datasets](#supported-datasets). |
-| `run.fail_on_unsupported` | If true, an unsupported solver/problem combination fails the run instead of being recorded as `skipped_unsupported` (see [Supported Solvers](#supported-solvers)). Default false. |
+| `run.fail_on_unsupported` | If true, an unsupported solver/problem combination fails the run instead of being recorded as `skipped_unsupported`: a problem kind the solver does not take, a problem the adapter reports it cannot take (the row is written, then the run stops), and a solver that is not installed (the run stops before solving anything). See [Supported Solvers](#supported-solvers). Default false. |
 | `run.worker_memory_limit_mb` | Optional cap, in MiB, on the data segment of each solve's worker process (`RLIMIT_DATA`, set in the worker before it loads the problem). On Linux this covers heap and anonymous `mmap` allocations, and the libraries a solver loads count against it too. macOS largely ignores the limit, and on Windows, which has no `resource` module, every solve fails when it is set. A solve that exceeds the limit is normally recorded as `worker_error` (a solver that catches the failed allocation itself may report its own error status instead), so set the limit well above the largest problem's needs. Integer >= 1; unset or null means no limit. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
@@ -606,6 +614,8 @@ Behavior:
   extend them per dataset.
 - Run-level `include` is used as a fallback only for datasets whose own
   `include` is unset, so per-dataset selections do not bleed across datasets.
+  Each of its names must match a problem in at least one of those datasets;
+  an entry's own `include` names must match in that dataset.
 - Run-level `exclude` is unioned with each entry's `exclude`.
 - Resume keys are `(dataset, problem, solver_id)` where `dataset` is the
   entry's `id`, so two datasets that share a problem name (e.g. `afiro` in
@@ -854,6 +864,10 @@ With `resume: false`, `bench run --run-dir` refuses a directory that already has
 results for the config's datasets and solvers instead of appending a second set
 of rows; start a new run directory instead.
 
+A run directory has one writer at a time: a run holds a lock on
+`<run_dir>/.bench.lock` until it ends, and a second `bench run` on the same
+directory fails at once, naming the process that holds it.
+
 Run only specific problems by editing `include`, or list problems first:
 
 ```bash
@@ -1076,7 +1090,7 @@ Run and analysis commands:
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
 | `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are. Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection, so `summary`, `missing` and `report` treat the merged directory like one run. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. |
-| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH` default `RUN_DIR_kkt<tol>` next to `RUN_DIR`, `--allow-missing` default false, `--promote` default false, `--overwrite` default false | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, PIQP, ProxQP, SDPA and the commercial adapters do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. At a strict `--tol` this favours adapters that record no certificate in infeasibility-heavy comparisons: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver. |
+| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH` default `RUN_DIR_kkt<tol>` next to `RUN_DIR`, `--allow-missing` default false, `--promote` default false, `--overwrite` default false | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, PIQP, ProxQP, SDPA and the commercial adapters do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. At a strict `--tol` this favours adapters that record no certificate in infeasibility-heavy comparisons: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, and the over-time-limit count where there is one. Both commands refuse an existing output directory unless `--overwrite`, and a source directory with neither `results.jsonl` nor `manifest.json`. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1150,8 +1164,8 @@ Files:
 
 Each solve runs in a subprocess. This gives:
 
-- Native solver crashes do not kill the main runner.
-- Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C, or a SIGTERM to `bench run` / `bench env run` (Slurm's `scancel`, `kill`, a CI job timeout), kills the running workers too, and a parallel run keeps the results that had already finished; a SIGTERM exits with status 143.
+- Native solver crashes do not kill the main runner. The `worker_error` row of a worker that died names the signal (SIGKILL usually means out of memory) and quotes the last lines of its stderr.
+- Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C, or a SIGTERM or SIGHUP to `bench run` / `bench env run` (Slurm's `scancel`, `kill`, a CI job timeout, a closed terminal or dropped ssh session), kills the running workers too, and a parallel run keeps the results that had already finished; a SIGTERM exits with status 143, a SIGHUP with 129. Under `nohup` the SIGHUP stays ignored. A runner killed outright (SIGKILL, the out-of-memory killer) takes its workers with it on Linux; on other POSIX systems they exit within about a second, or, while the solver holds Python's interpreter lock in a long native call, as soon as it releases it. On Windows workers are not tied to the runner. A `bench env run` killed outright stops the current environment's `bench run` as a SIGTERM would (on POSIX systems; at once on Linux, within about a second elsewhere), and that run kills its workers.
 - Solver stdout/stderr are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.

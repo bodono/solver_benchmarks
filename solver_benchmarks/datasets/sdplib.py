@@ -163,6 +163,13 @@ class SDPLIBDataset(Dataset):
                 ), 3)
         return [_with_expected(specs[k]) for k in sorted(specs) if self._in_subset(k)]
 
+    def known_problem_names(self) -> set[str] | None:
+        """The archive's members in the selected subset; unknown without the archive."""
+        if not self.tar_path.exists():
+            return None
+        self._check_options()
+        return {name for name in self._member_sizes() if self._in_subset(name)}
+
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
         assert spec.path is not None

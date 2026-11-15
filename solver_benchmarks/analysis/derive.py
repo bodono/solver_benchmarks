@@ -108,12 +108,36 @@ def _check_no_overlap(out_dir: Path, sources: Iterable[Path]) -> None:
     for src in sources:
         s = Path(src).resolve()
         if out == s or out in s.parents or s in out.parents:
-            raise ValueError(f"output directory {out_dir} overlaps source run {src}")
+            raise DeriveInputError(f"output directory {out_dir} overlaps source run {src}")
+
+
+class OutputExistsError(FileExistsError):
+    """The output directory exists and ``overwrite`` is false."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"{path} exists; pass overwrite=True to replace it")
+        self.path = path
+
+
+class DeriveInputError(ValueError):
+    """A source or output directory a derivation cannot use."""
 
 
 def _refuse_existing(out_dir: Path, overwrite: bool) -> None:
     if out_dir.exists() and not overwrite:
-        raise FileExistsError(f"{out_dir} exists; pass overwrite=True to replace it")
+        raise OutputExistsError(out_dir)
+
+
+def _check_is_run(run_dir: Path) -> None:
+    """Refuse a source that is not a run, rather than derive an empty run.
+
+    A run that planned no solves has a manifest but no results.jsonl; it is
+    accepted, with no rows.
+    """
+    if not ((run_dir / "results.jsonl").is_file() or (run_dir / "manifest.json").is_file()):
+        raise DeriveInputError(
+            f"{run_dir} is not a run directory: it has neither results.jsonl nor manifest.json"
+        )
 
 
 @contextmanager
@@ -160,6 +184,8 @@ def merge_runs(
     out = Path(out_dir)
     _check_no_overlap(out, sources)
     _refuse_existing(out, overwrite)
+    for src in sources:
+        _check_is_run(src)
     records: list[dict[str, Any]] = []
     seen: dict[tuple[Any, Any, Any], int] = {}
     per_source: list[dict[str, Any]] = []
@@ -352,6 +378,13 @@ def worst_relative_residual(
     return worst if complete else None
 
 
+def _returned_after_time_limit(row: dict[str, Any]) -> bool:
+    info = row.get("info")
+    if not isinstance(info, dict):
+        return False
+    return bool(info.get("exceeded_time_limit")) or info.get("status_before_timeout") is not None
+
+
 def kkt_verify(
     run_dir: str | Path,
     out_dir: str | Path,
@@ -393,7 +426,15 @@ def kkt_verify(
     returned point does pass the check, becomes ``optimal`` (its recorded
     time is what it took to produce that point). Success then means one
     thing for every solver: the returned point satisfies the KKT conditions
-    to ``tol``.
+    to ``tol``. A row returned after the run's time limit is never promoted
+    (the limit is every solver's budget): the runner marks it with
+    ``info.exceeded_time_limit``, or, in older runs, records a conclusion
+    reached after the limit as time_limit with ``info.status_before_timeout``.
+    It keeps its status, ``metadata.kkt_verify`` says why, and it is counted
+    under ``over_time_limit``. A solver stopped by its own time limit
+    returns slightly after it, so when that limit equals ``timeout_seconds``
+    its time-limit stops are never promoted; set the solver's limit below
+    ``timeout_seconds`` if those points should be eligible.
 
     Every solver in a comparison is held to the same ``tol`` regardless of
     what its own tolerance settings mean, which is what makes timings
@@ -404,11 +445,13 @@ def kkt_verify(
     out = Path(out_dir)
     _check_no_overlap(out, [src])
     _refuse_existing(out, overwrite)
+    _check_is_run(src)
     records, skipped = _read_jsonl(src / "results.jsonl")
     demoted: dict[str, int] = {}
     kept: dict[str, int] = {}
     missing: dict[str, int] = {}
     promoted: dict[str, int] = {}
+    over_time_limit: dict[str, int] = {}
     unverified: dict[str, int] = {}
     unverified_certificates: dict[str, int] = {}
     checked_fields: set[str] = set()
@@ -425,6 +468,10 @@ def kkt_verify(
         solver_id = str(row.get("solver_id"))
         row_status = row.get("status")
         if row_status in PROMOTABLE and promote:
+            if _returned_after_time_limit(row):
+                annotate(row, reason="returned after the time limit; not promoted")
+                count(over_time_limit, solver_id)
+                continue
             check = check_residuals(row, fields)
             checked_fields.update(check.checked)
             if check.complete and check.worst is not None and check.worst <= tol:
@@ -521,6 +568,7 @@ def kkt_verify(
         "kept": kept,
         "demoted": demoted,
         "promoted": promoted,
+        "over_time_limit": over_time_limit,
         "missing_residuals": missing,
         "unverified_cones": unverified,
         "unverified_certificates": unverified_certificates,
