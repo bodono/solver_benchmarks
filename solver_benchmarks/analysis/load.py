@@ -42,7 +42,11 @@ def _load_jsonl(jsonl: Path) -> pd.DataFrame:
 
 
 def solver_summary(run_dir: str | Path) -> pd.DataFrame:
-    df = load_results(run_dir)
+    return status_counts(load_results(run_dir))
+
+
+def status_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """Recorded rows per ``(solver_id, status)``."""
     if df.empty:
         return df
     grouped = (

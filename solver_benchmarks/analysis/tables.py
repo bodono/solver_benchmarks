@@ -13,18 +13,57 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
-from solver_benchmarks.analysis.profiles import deduplicate_for_pivot
+from solver_benchmarks.analysis.profiles import (
+    complete_results,
+    deduplicate_for_pivot,
+    profile_floor,
+)
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.datasets.base import filter_problem_specs_by_size
+
+# Status of a planned solve with no recorded result (see complete_results).
+NOT_ATTEMPTED = "not_attempted"
+
+
+def one_row_per_solve(
+    results: pd.DataFrame,
+    *,
+    success_statuses: set[str] | None = None,
+    metric: str | None = None,
+    expected: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The rows a comparison counts: one per ``(dataset, problem, solver)``.
+
+    Duplicated attempts (merged shards, a resume after a settings change)
+    resolve as in profiles and geomeans: a success beats a failure, then
+    the best ``metric``, then file order. With ``expected``, solves that
+    were planned but never recorded are added as ``not_attempted`` rows,
+    as the geomean and profile charge them (see ``complete_results``).
+    """
+    if expected is not None:
+        results = complete_results(results, expected=expected)
+    if results.empty or "problem" not in results or "solver_id" not in results:
+        return results
+    return deduplicate_for_pivot(results, _problem_keys(results), metric, success_statuses=success_statuses)
 
 
 def solver_metrics(
     results: pd.DataFrame,
     *,
     success_statuses: set[str] | None = None,
+    expected: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Per-solver counts, rates and run time / iteration statistics.
+
+    Counts are per solve (see :func:`one_row_per_solve`); ``completed`` is
+    the number of solves with a recorded result, and the rates are over
+    every solve compared, including planned ones never attempted when
+    ``expected`` is given. Totals cover every recorded solve; means,
+    medians and maxima only the successful ones, so fast failures do not
+    make a solver look fast.
+    """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     columns = [
@@ -43,6 +82,7 @@ def solver_metrics(
         "iterations_median",
         "iterations_max",
     ]
+    results = one_row_per_solve(results, success_statuses=success_statuses, expected=expected)
     if results.empty:
         return pd.DataFrame(columns=columns)
 
@@ -51,24 +91,27 @@ def solver_metrics(
         total = len(group)
         successful = solved_mask(group, success_statuses)
         success_count = int(successful.sum())
+        recorded = int(group["status"].ne(NOT_ATTEMPTED).sum())
         run_times = _numeric_column(group, "run_time_seconds")
         iterations = _numeric_column(group, "iterations")
+        success_times = _numeric_column(group[successful], "run_time_seconds")
+        success_iterations = _numeric_column(group[successful], "iterations")
         rows.append(
             {
                 "solver_id": solver_id,
-                "completed": int(total),
+                "completed": recorded,
                 "success_count": success_count,
                 "failure_count": int(total - success_count),
                 "success_rate": _rate(success_count, total),
                 "failure_rate": _rate(total - success_count, total),
                 "run_time_total_seconds": _sum(run_times),
-                "run_time_mean_seconds": _mean(run_times),
-                "run_time_median_seconds": _median(run_times),
-                "run_time_max_seconds": _max(run_times),
+                "run_time_mean_seconds": _mean(success_times),
+                "run_time_median_seconds": _median(success_times),
+                "run_time_max_seconds": _max(success_times),
                 "iterations_total": _sum(iterations),
-                "iterations_mean": _mean(iterations),
-                "iterations_median": _median(iterations),
-                "iterations_max": _max(iterations),
+                "iterations_mean": _mean(success_iterations),
+                "iterations_median": _median(success_iterations),
+                "iterations_max": _max(success_iterations),
             }
         )
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
@@ -79,13 +122,19 @@ def kkt_summary(
     *,
     success_statuses: set[str] | None = None,
 ) -> pd.DataFrame:
-    """Per-solver summary of KKT residuals on successful solves."""
+    """Per-solver summary of KKT residuals on successful optimality claims.
+
+    Certificates on problems known to be infeasible or unbounded are
+    successes too, but they carry certificate residuals, not these
+    (see ``kkt_certificate_summary``), so they are not counted here.
+    """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     residual_fields = [
         "primal_res_rel",
         "dual_res_rel",
         "comp_slack",
+        "comp_slack_rel",
         "primal_cone_res",
         "dual_cone_res",
         "duality_gap_rel",
@@ -100,7 +149,7 @@ def kkt_summary(
     if results.empty:
         return pd.DataFrame(columns=columns)
 
-    successful = results[solved_mask(results, success_statuses)]
+    successful = optimality_successes(results, success_statuses)
     if successful.empty:
         return pd.DataFrame(columns=columns)
 
@@ -136,14 +185,20 @@ def claimed_optimal_kkt_thresholds(
         "kkt.primal_res_rel",
         "kkt.dual_res_rel",
         "kkt.duality_gap_rel",
+        "kkt.dual_bound_res_rel",
+        "kkt.primal_cone_res_rel",
+        "kkt.dual_cone_res_rel",
     ),
     thresholds: tuple[float, ...] = (1.0e-10, 1.0e-8, 1.0e-6, 1.0e-4, 1.0e-2),
 ) -> pd.DataFrame:
     """Bucket claimed-optimal solves by their worst relative KKT residual.
 
     For each solver, computes the per-row maximum of the listed relative
-    residual columns on rows whose status indicates a solution is present,
-    then counts how many of those fall at or below each threshold. The
+    residual columns on rows whose status indicates a solution is present
+    (one row per solve), then counts how many of those fall at or below
+    each threshold. The default fields are the ones ``bench kkt-verify``
+    checks, so the buckets show what a verification at each threshold
+    would keep. The
     ``count_above_max`` column flags claims of optimality whose worst
     relative residual exceeds the loosest threshold — a quick way to spot
     solvers labelling dubious solutions as ``optimal``.
@@ -166,6 +221,7 @@ def claimed_optimal_kkt_thresholds(
     available_fields = [field for field in residual_fields if field in results]
     if not available_fields:
         return pd.DataFrame(columns=columns)
+    results = one_row_per_solve(results, success_statuses=success_statuses)
     claimed = results[results["status"].isin(success_statuses)].copy()
     if claimed.empty:
         return pd.DataFrame(columns=columns)
@@ -219,12 +275,13 @@ def difficulty_scaling(
 
     Bins are equal-population quantile buckets of ``size_field`` over the
     set of problems with finite sizes. Each row reports, for one
-    ``(solver, bin)`` pair, the bin's size range, the number of attempts,
+    ``(solver, bin)`` pair, the bin's size range, the number of solves,
     the number of successes, and the median / p95 of ``metric`` across
-    successful solves.
+    successful solves (columns ``median_<metric>`` and ``p95_<metric>``).
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
+    median_column, p95_column = f"median_{metric}", f"p95_{metric}"
     columns = [
         "solver_id",
         "size_bin",
@@ -232,13 +289,13 @@ def difficulty_scaling(
         "size_max",
         "problem_count",
         "success_count",
-        "median_time",
-        "p95_time",
+        median_column,
+        p95_column,
     ]
     if results.empty or size_field not in results or metric not in results:
         return pd.DataFrame(columns=columns)
 
-    frame = results.copy()
+    frame = one_row_per_solve(results, success_statuses=success_statuses, metric=metric).copy()
     frame[size_field] = pd.to_numeric(frame[size_field], errors="coerce")
     frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     sized = frame[np.isfinite(frame[size_field])]
@@ -267,10 +324,10 @@ def difficulty_scaling(
                 "size_max": float(sizes_in_bin.max()),
                 "problem_count": int(len(group)),
                 "success_count": int(len(successful)),
-                "median_time": float(success_metric.median())
+                median_column: float(success_metric.median())
                 if not success_metric.empty
                 else None,
-                "p95_time": float(success_metric.quantile(0.95))
+                p95_column: float(success_metric.quantile(0.95))
                 if not success_metric.empty
                 else None,
             }
@@ -311,6 +368,7 @@ def setup_solve_breakdown(
         or "solve_time_seconds" not in results
     ):
         return pd.DataFrame(columns=columns)
+    results = one_row_per_solve(results, success_statuses=success_statuses, metric="run_time_seconds")
     successful = results[solved_mask(results, success_statuses)].copy()
     if successful.empty:
         return pd.DataFrame(columns=columns)
@@ -412,7 +470,13 @@ def failure_rates(
     results: pd.DataFrame,
     *,
     success_statuses: set[str] | None = None,
+    expected: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Per-solver success and failure rates, one count per solve.
+
+    With ``expected``, planned solves that were never recorded count as
+    failures under the status ``not_attempted``, as in the geomean.
+    """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     columns = [
@@ -424,6 +488,7 @@ def failure_rates(
         "failure_rate",
         "statuses",
     ]
+    results = one_row_per_solve(results, success_statuses=success_statuses, expected=expected)
     if results.empty:
         return pd.DataFrame(columns=columns)
 
@@ -689,12 +754,9 @@ def pairwise_speedups(
     if results.empty or metric not in results:
         return pd.DataFrame(columns=columns)
 
-    successful = results[solved_mask(results, success_statuses)].copy()
-    successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
-    successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    successful = successful_metric_values(results, metric, success_statuses)
     keys = _problem_keys(successful)
     index = keys[0] if len(keys) == 1 else keys
-    successful = deduplicate_for_pivot(successful, keys, metric)
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -825,7 +887,7 @@ def objective_spreads(
     ).reset_index()
     return out.reindex(columns=columns).sort_values(
         ["relative_spread", "absolute_spread"], ascending=False
-    )
+    ).reset_index(drop=True)
 
 
 def slowest_solves(
@@ -852,7 +914,7 @@ def slowest_solves(
     frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     frame = frame[np.isfinite(frame[metric])]
     available = [column for column in columns if column in frame]
-    return frame.sort_values(metric, ascending=False)[available].head(limit)
+    return frame.sort_values(metric, ascending=False)[available].head(limit).reset_index(drop=True)
 
 
 def failures_with_successful_alternatives(
@@ -876,7 +938,7 @@ def failures_with_successful_alternatives(
     if results.empty:
         return pd.DataFrame(columns=columns)
 
-    frame = results.copy()
+    frame = one_row_per_solve(results, success_statuses=success_statuses, metric=metric).copy()
     if metric in frame:
         frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     solved = solved_mask(frame, success_statuses)
@@ -926,10 +988,8 @@ def status_matrix(results: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     keys = _problem_keys(results)
     index = keys[0] if len(keys) == 1 else keys
-    # Deterministic dedup before pivoting; if multiple rows exist for a
-    # (problem, solver_id) we keep the alphabetically-first status as a
-    # stable choice (since "status" itself is the value column there's
-    # no metric to sort on).
+    # One row per solve, resolved as everywhere else: a success beats a
+    # failure, then file order.
     deduped = deduplicate_for_pivot(results, keys)
     return deduped.pivot_table(
         index=index,
@@ -949,11 +1009,18 @@ def problem_solver_comparison(
         "iterations",
         "objective_value",
     ),
+    metric: str = "run_time_seconds",
 ) -> pd.DataFrame:
+    """One row per problem with each solver's fields side by side.
+
+    A duplicated solve shows the row profiles and geomeans count: the
+    success, then the best ``metric``.
+    """
     if results.empty:
         return pd.DataFrame()
 
     keys = _problem_keys(results)
+    results = deduplicate_for_pivot(results, keys, metric)
     output = (
         results[keys]
         .dropna(subset=["problem"])
@@ -981,7 +1048,6 @@ def problem_solver_comparison(
         solver_rows = (
             results.loc[results["solver_id"] == solver_id]
             .dropna(subset=["problem"])
-            .drop_duplicates(subset=keys)
             .set_index(keys)
         )
         for field in fields:
@@ -1097,12 +1163,9 @@ def performance_ratio_matrix(
         success_statuses = set(status.SOLUTION_PRESENT)
     if results.empty or metric not in results:
         return pd.DataFrame()
-    successful = results[solved_mask(results, success_statuses)].copy()
-    successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
-    successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    successful = successful_metric_values(results, metric, success_statuses)
     keys = _problem_keys(successful)
     index = keys[0] if len(keys) == 1 else keys
-    successful = deduplicate_for_pivot(successful, keys, metric)
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -1113,6 +1176,33 @@ def performance_ratio_matrix(
         return pivot
     best = pivot.min(axis=1)
     return pivot.divide(best, axis=0).sort_index()
+
+
+def successful_metric_values(
+    results: pd.DataFrame, metric: str, success_statuses: set[str]
+) -> pd.DataFrame:
+    """Successful solves with a usable ``metric``, one per solve, floored.
+
+    Ratio views share the profile's convention: values are floored at its
+    resolution (0.01 s for times, 1 iteration), so a solve in presolve
+    (0 iterations) or under the timer's resolution is a tie at the floor
+    rather than dropped or a huge ratio. Values that remain zero (metrics
+    without a floor) cannot form a ratio and are left out.
+    """
+    successful = results[solved_mask(results, success_statuses)].copy()
+    successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
+    successful = successful[np.isfinite(successful[metric]) & successful[metric].ge(0.0)]
+    successful[metric] = successful[metric].clip(lower=profile_floor(metric))
+    successful = successful[successful[metric] > 0.0]
+    return deduplicate_for_pivot(successful, _problem_keys(successful), metric, success_statuses=success_statuses)
+
+
+def optimality_successes(results: pd.DataFrame, success_statuses: set[str]) -> pd.DataFrame:
+    """Successful solves that claim optimality (not certificates), one per solve."""
+    results = one_row_per_solve(results, success_statuses=success_statuses)
+    if results.empty:
+        return results
+    return results[solved_mask(results, success_statuses) & results["status"].isin(success_statuses)]
 
 
 def safe_filename(value: str) -> str:

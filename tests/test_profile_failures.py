@@ -26,7 +26,7 @@ def test_all_failed_rows_and_missing_metrics_are_retained(penalty):
     assert (profile[["a", "b"]] == 0).all().all()
 
 
-@pytest.mark.parametrize("invalid", [None, np.nan, np.inf, -np.inf, -1.0, "not-a-time"])
+@pytest.mark.parametrize("invalid", [np.inf, -np.inf, -1.0, "not-a-time"])
 def test_invalid_success_metric_counts_as_failure(invalid):
     frame = pd.DataFrame([
         {"problem": "p", "solver_id": "a", "status": "optimal", "run_time_seconds": 2.0},
@@ -35,6 +35,24 @@ def test_invalid_success_metric_counts_as_failure(invalid):
     profile = performance_profile(frame, n_tau=3)
     assert (profile["a"] == 1).all()
     assert (profile["b"] == 0).all()
+
+
+@pytest.mark.parametrize("missing", [None, np.nan])
+def test_success_without_the_metric_is_not_scored_as_a_failure(missing):
+    # A solver that never reports the metric is left out of the comparison ...
+    frame = pd.DataFrame([
+        {"problem": "p", "solver_id": "a", "status": "optimal", "run_time_seconds": 2.0},
+        {"problem": "p", "solver_id": "b", "status": "optimal", "run_time_seconds": missing},
+    ])
+    profile = performance_profile(frame, n_tau=3)
+    assert list(profile.columns) == ["tau", "a"]
+    # ... while one that reports it elsewhere is charged for the gap.
+    frame = pd.concat([frame, pd.DataFrame([
+        {"problem": "q", "solver_id": "b", "status": "optimal", "run_time_seconds": 1.0},
+        {"problem": "q", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0},
+    ])], ignore_index=True)
+    profile = performance_profile(frame, n_tau=3, tau_max=100)
+    assert profile["b"].tolist() == [0.5, 0.5, 0.5]
 
 
 def test_zero_iterations_keep_positive_successes_finite_and_failures_infinite():

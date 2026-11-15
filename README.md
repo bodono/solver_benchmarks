@@ -971,8 +971,8 @@ Run and analysis commands:
 |---|---|---|
 | `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` (default: the current directory if it has `problem_classes`, else the checkout the package was installed from, as for the other commands), `--data-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. `--data-root` sets `data_root` for every dataset in the config. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
-| `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. |
-| `bench failures RUN_DIR` | none | Print success/failure rates by solver. Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
+| `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. Solver metrics count each `(dataset, problem, solver)` once (a duplicated solve counts as its successful attempt); run time and iteration totals cover every solve, means, medians and maxima the successful ones. |
+| `bench failures RUN_DIR` | none | Print success/failure rates by solver, one count per solve. Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. |
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
@@ -1188,26 +1188,36 @@ bench geomean results/<run_id> --success-only
 The default `bench geomean` output is a penalized shifted geometric mean for
 benchmark comparison, not a raw average runtime. Non-`optimal` statuses,
 including `optimal_inaccurate`, are assigned the failure penalty before the geometric
-mean is computed. Use `bench summary` for raw totals/means/medians, or
+mean is computed. Use `bench summary` for totals and success-only means/medians, or
 `bench geomean --success-only` for a geomean over successful solves only. The
 default failure penalty for time metrics is three times the manifest's
 `timeout_seconds`. A 300-second limit gives a 900-second penalty, a 900-second
-limit gives 2700 seconds, and an 1800-second limit gives 5400 seconds. The penalty
+limit gives 2700 seconds, and an 1800-second limit gives 5400 seconds. When
+solvers set their own `timeout_seconds`, the limit is the largest any solver of
+the run had (a solver allowed an hour can succeed after more than three times a
+60-second run limit, and failing must never cost less than succeeding); a run
+whose solvers all set one needs no run-level limit. The penalty
 does not depend on which solvers are compared or how slowly successful solves
-finished. `--max-value` on `geomean`, `plot`, and `report` supplies an explicit
+finished; the geomean warns when an explicit penalty is at or below a
+successful value. `--max-value` on `geomean`, `plot`, and `report` supplies an explicit
 penalty in the selected metric's units, preserved exactly as given.
 
 Merged runs use each dataset's limit from the embedded source manifests. A
 per-dataset table reports its fixed penalty in `max_value`. If a pooled table
 combines different limits, `max_value` is empty and `max_value_by_dataset` records
 the dataset-to-penalty mapping. Missing, unlimited, conflicting, or lost time
-limits require an explicit `--max-value`; the commands raise an error instead
-of inferring a penalty from observed results. Archived derived runs therefore
-need their source limits preserved in the manifest, or an explicit override.
+limits require an explicit `--max-value`; `bench geomean` raises an error instead
+of inferring a penalty from observed results, and `bench plot` and `bench report`
+leave out only the penalized time geomean (the report says why) and write
+everything else. Archived derived runs therefore need their source limits
+preserved in the manifest, or an explicit override.
 
 Iteration and KKT metrics retain fixed defaults in their own units: iterations
-use penalty `1e6` and shift `100`, while the supported relative KKT residuals use
-penalty `1` and shift `0`. Time metrics use shift `10`. `--success-only` requires
+use penalty `1e6` and shift `100`, while the supported KKT residuals
+(`kkt.primal_res_rel`, `kkt.dual_res_rel`, `kkt.duality_gap_rel`,
+`kkt.comp_slack_rel`, `kkt.comp_slack`) use penalty `1` and shift `1e-12`, so a
+residual that is exactly zero counts as `1e-12` instead of dragging the mean of
+logs towards the smallest float. Time metrics use shift `10`. `--success-only` requires
 no failure penalty or time limit. These rules select the cost of failures;
 campaign-specific status filtering and timeout grace rules remain separate.
 
@@ -1223,7 +1233,14 @@ retained solvers, whereas completion reports count only planned jobs.
 No-manifest analyses use the union of observed problems crossed with observed solvers. Python callers can
 pass `expected=` as a DataFrame of `dataset`, `problem`, and `solver_id` identities
 to include completely absent solvers or problems. Duplicate attempts contribute
-once per identity, using the best successful result, as in performance profiles.
+once per identity, using the best successful result, as in performance profiles;
+every per-solve table and plot of a report (solver metrics, failure rates, status
+matrix, cross-solver comparison, cactus, KKT tables) resolves them the same way.
+A solver that reports no value of the metric on any of its successful solves
+(several adapters never set `solve_time_seconds` or `setup_time_seconds`) is left
+out of profiles and geomeans on that metric with a warning, instead of having
+its solved problems scored as failures; a solver that reports it elsewhere is
+still charged for a success without a usable value.
 
 Generate PNG plots:
 
@@ -1252,7 +1269,7 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 - Objective-spread and slowest-solve tables.
 - Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
-- KKT-residual summaries (`kkt_summary.csv`, `kkt_certificate_summary.csv`) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack` / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile (fraction of problems whose worst residual is below tau).
+- KKT-residual summaries (`kkt_summary.csv` over successful optimality claims, `kkt_certificate_summary.csv` over certificates, `claimed_optimal_kkt_thresholds.csv` over the residuals `bench kkt-verify` checks) plus three KKT plots: per-solver boxplot of `primal_res_rel` / `dual_res_rel` / `comp_slack_rel` (`comp_slack` for records written before it existed) / `duality_gap_rel`, a problem-by-solver heatmap of those residuals, and a KKT-accuracy profile with one panel per residual showing, for each solver, the fraction of its successful solves whose residual is at most tau. Exact zeros are drawn at `1e-16`.
 - For multi-dataset runs, a `## By Dataset` section that re-emits the headline tables (solver metrics, failure rates, shifted geomean, KKT summary) sliced per dataset. The cross-dataset aggregates above the section remain the primary view.
 - An artifact index listing every CSV and plot written by the report command.
 
@@ -1286,7 +1303,8 @@ Status handling:
   Problems with no successes still have infinite ratios throughout.
 - Profiles floor time metrics at 0.01 seconds and iterations at 1 before taking
   ratios, so a zero best value does not hide positive successful values. Other
-  metrics retain exact ratios. Python callers can set `min_value` in metric
+  metrics retain exact ratios. The performance-ratio heatmap, pairwise speedups
+  and pairwise scatter apply the same floors. Python callers can set `min_value` in metric
   units, including 0 to disable the floor, and customize `success_statuses`
   and `max_value`.
 
