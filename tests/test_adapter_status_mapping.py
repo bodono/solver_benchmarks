@@ -305,3 +305,34 @@ def test_qtqp_adapter_reports_almost_solved_at_max_iter_as_max_iter(
     result = QTQPSolverAdapter({"max_iter": 10}).solve(ProblemData("t", "p", QP, qp), tmp_path)
     assert result.status == expected
     assert result.info["raw_status"] == "almost_solved"
+
+
+def test_proxqp_closest_primal_feasible_is_not_an_infeasibility_verdict(tmp_path):
+    # ProxSuite documents PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE as "the
+    # closest (in L2 sense) feasible problem is solved", and its sparse
+    # backend returns it for a feasible problem too, with the true solution.
+    # So it stays optimal_inaccurate (not primal_infeasible_inaccurate), and
+    # the KKT check of the returned point decides whether kkt-verify promotes.
+    pytest.importorskip("proxsuite")
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.solvers.proxqp_adapter import ProxQPSolverAdapter
+
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.ones(2),
+        "A": sp.eye(2, format="csc"),
+        "l": -5 * np.ones(2),
+        "u": 5 * np.ones(2),
+    }
+    settings = {
+        "verbose": False,
+        "primal_infeasibility_solving": True,
+        "check_duality_gap": False,
+    }
+    result = ProxQPSolverAdapter(settings).solve(ProblemData("t", "p", QP, qp), tmp_path)
+    assert result.info["status"].endswith("PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE")
+    assert result.status == status.OPTIMAL_INACCURATE
+    assert result.kkt["primal_res_rel"] < 1e-4 and result.kkt["dual_res_rel"] < 1e-4

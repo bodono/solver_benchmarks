@@ -184,6 +184,11 @@ def _map_proxqp_status(raw_status, proxsuite) -> str:
     proxqp = proxsuite.proxqp
     mapping = {
         proxqp.PROXQP_SOLVED: status.OPTIMAL,
+        # Only with primal_infeasibility_solving. ProxSuite documents it as
+        # "the closest (in L2 sense) feasible problem is solved", and its
+        # sparse backend returns it for feasible problems too, with their
+        # solution; it is not an infeasibility verdict. The KKT check of the
+        # returned point tells the two cases apart for kkt-verify.
         proxqp.PROXQP_SOLVED_CLOSEST_PRIMAL_FEASIBLE: status.OPTIMAL_INACCURATE,
         proxqp.PROXQP_MAX_ITER_REACHED: status.MAX_ITER_REACHED,
         proxqp.PROXQP_PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE,
