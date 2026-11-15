@@ -232,16 +232,21 @@ def _symmetric_hessian(p: sp.csc_matrix, path: Path) -> sp.csc_matrix:
     differently (some its upper triangle, some its lower, some all of it),
     so a triangle passed on as it is would be a different problem for each
     of them. A triangle is mirrored, as the QPLIB loader mirrors the
-    triangle QPLIB stores. A matrix that is symmetric to rounding is kept
-    as stored; one that is neither symmetric nor triangular does not say
-    which problem it means, and is rejected.
+    triangle QPLIB stores. A matrix that is symmetric to 1e-12 is kept as
+    stored, and one whose asymmetry is rounding-sized (at most 1e-8 of its
+    largest entry, as a numerically computed export can carry) is replaced
+    by its symmetric part (P + P')/2, which defines the same objective. One
+    that is neither symmetric nor triangular does not say which problem it
+    means, and is rejected.
     """
     if p.shape[0] != p.shape[1]:
         raise ValueError(f"{path.name}: P must be square, got shape {p.shape}")
     p = sp.csc_matrix(p)
     p.eliminate_zeros()
+    scale = max(1.0, float(abs(p).max())) if p.nnz else 1.0
     asymmetry = abs(p - p.T)
-    if asymmetry.nnz == 0 or asymmetry.max() <= 1e-12 * max(1.0, float(abs(p).max())):
+    largest = float(asymmetry.max()) if asymmetry.nnz else 0.0
+    if largest <= 1e-12 * scale:
         return p
     lower = sp.tril(p, -1)
     upper = sp.triu(p, 1)
@@ -249,6 +254,8 @@ def _symmetric_hessian(p: sp.csc_matrix, path: Path) -> sp.csc_matrix:
         return sp.csc_matrix(p + lower.T)
     if lower.nnz == 0:
         return sp.csc_matrix(p + upper.T)
+    if largest <= 1e-8 * scale:
+        return sp.csc_matrix((p + p.T) * 0.5)
     raise ValueError(
         f"{path.name}: P is neither symmetric nor triangular; store the full "
         "symmetric Hessian of 0.5 x'Px or one triangle of it"

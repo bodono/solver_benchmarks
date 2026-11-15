@@ -70,6 +70,18 @@ def test_npz_symmetric_and_diagonal_hessians_are_kept_as_stored(tmp_path: Path):
         np.testing.assert_array_equal(qp["P"].toarray(), matrix)
 
 
+def test_npz_hessian_with_rounding_asymmetry_is_symmetrized(tmp_path: Path):
+    """A numerically computed export can be symmetric only to rounding; its
+    symmetric part defines the same objective, so it loads."""
+    matrix = np.array([[2.0, 1.0], [1.0 + 1e-11, 2.0]])
+    path = tmp_path / "rounded.npz"
+    np.savez(path, P=matrix, q=np.ones(2))
+    qp, _ = read_mpc_qpbenchmark_npz(path)
+    p = qp["P"].toarray()
+    np.testing.assert_array_equal(p, p.T)
+    np.testing.assert_allclose(p, (matrix + matrix.T) / 2, rtol=0, atol=0)
+
+
 def test_npz_hessian_neither_symmetric_nor_triangular_is_rejected(tmp_path: Path):
     path = tmp_path / "bad.npz"
     np.savez(path, P=np.array([[2.0, 1.0], [3.0, 2.0]]), q=np.ones(2))
