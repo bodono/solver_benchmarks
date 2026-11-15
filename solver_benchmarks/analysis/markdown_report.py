@@ -10,9 +10,13 @@ from pathlib import Path
 import pandas as pd
 
 from solver_benchmarks import __version__ as BENCHMARK_VERSION
-from solver_benchmarks.analysis.load import load_results, solver_summary
-from solver_benchmarks.analysis.penalties import geomean_time_limits
-from solver_benchmarks.analysis.plots import write_analysis_plots
+from solver_benchmarks.analysis.load import load_results, status_counts
+from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
+from solver_benchmarks.analysis.plots import (
+    geomean_kwargs,
+    penalized_geomean_options,
+    write_analysis_plots,
+)
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 from solver_benchmarks.analysis.tables import (
     claimed_optimal_kkt_thresholds,
@@ -25,6 +29,7 @@ from solver_benchmarks.analysis.tables import (
     kkt_summary,
     missing_results,
     objective_spreads,
+    one_row_per_solve,
     pairwise_speedups,
     performance_ratio_matrix,
     problem_solver_comparison,
@@ -58,14 +63,16 @@ def write_run_report(
         return []
 
     expected = expected_results(run_dir, repo_root=repo_root)
-    geomean_options = {
-        "max_value": max_value,
-        "timeout_seconds": geomean_time_limits(run_dir, metric=metric, max_value=max_value),
-    }
+    # Without a recorded time limit only the penalized time geomean is left
+    # out (with a note); every other table and plot is still written.
+    geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
     outputs: list[Path] = []
+    # Every per-solve table resolves duplicated attempts the same way (the
+    # success, then the best metric); status counts and completion report
+    # the rows as recorded.
     tables = {
         **_solver_summary_tables(results, metric=metric, expected=expected, geomean_options=geomean_options),
-        "status_counts.csv": solver_summary(run_dir),
+        "status_counts.csv": status_counts(results),
         "completion.csv": completion_summary(run_dir, results, repo_root=repo_root),
         "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root),
         f"performance_profile_{metric}.csv": performance_profile(results, metric=metric, expected=expected),
@@ -74,7 +81,7 @@ def write_run_report(
             results,
             metric=metric,
         ),
-        "problem_solver_comparison.csv": problem_solver_comparison(results),
+        "problem_solver_comparison.csv": problem_solver_comparison(results, metric=metric),
         "objective_spreads.csv": objective_spreads(results),
         f"slowest_solves_{metric}.csv": slowest_solves(results, metric=metric),
         f"failures_with_successful_alternatives_{metric}.csv": (
@@ -121,7 +128,16 @@ def write_run_report(
         path = _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", table)
         if path is not None:
             outputs.append(path)
-    plot_outputs = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir, repo_root=repo_root, max_value=max_value)
+    plot_outputs = write_analysis_plots(
+        run_dir,
+        metric=metric,
+        output_dir=output_dir,
+        repo_root=repo_root,
+        max_value=max_value,
+        results=results,
+        expected=expected,
+        geomean_options=geomean_options,
+    )
     outputs.extend(plot_outputs)
     markdown = _render_markdown_report(
         run_dir=run_dir,
@@ -158,9 +174,14 @@ def _write_table(path: Path, table: pd.DataFrame) -> Path | None:
     if table.empty:
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
-    include_index = not isinstance(table.index, pd.RangeIndex)
-    table.to_csv(path, index=include_index)
+    table.to_csv(path, index=_has_meaningful_index(table))
     return path
+
+
+def _has_meaningful_index(table: pd.DataFrame) -> bool:
+    """Whether the index carries data (named, like the pivots keyed by
+    problem) rather than leftover row labels from sorting or filtering."""
+    return isinstance(table.index, pd.MultiIndex) or table.index.name is not None
 
 
 def _derived_report_tables(
@@ -248,6 +269,7 @@ def _render_markdown_report(
             metric=metric,
             results=results,
             tables=tables,
+            unavailable_penalty=(geomean_options or {}).get("unavailable_reason"),
         )
     )
     lines.extend(_render_completion_block(tables))
@@ -307,6 +329,7 @@ def _render_scope_block(
     metric: str,
     results: pd.DataFrame,
     tables: dict[str, pd.DataFrame],
+    unavailable_penalty: str | None = None,
 ) -> list[str]:
     lines: list[str] = []
     run_scope = _run_scope_table(
@@ -340,25 +363,38 @@ def _render_scope_block(
             headline,
             intro=(
                 "Sorted by penalized shifted geomean when available. Lower "
-                "geomean and median values are better; only accurate "
-                "`optimal` solves count as successes."
+                "geomean and median values are better. A solve succeeds with "
+                "an accurate `optimal`, or, on a problem known to be infeasible "
+                "or unbounded, with the matching infeasibility certificate (see "
+                "Known outcomes in the README). Counts and rates are per solve "
+                "and include planned solves never attempted (`not_attempted`); "
+                "median and maximum times and iterations cover successful "
+                "solves only."
             ),
             max_rows=50,
             max_cols=20,
             source_link="headline_solver_metrics.csv",
         )
     )
+    intro = (
+        "Failed and missing solves receive the fixed costs below. Time metrics use "
+        "three times each manifest time limit (the largest any solver of the run "
+        "had, counting per-solver limits) unless an explicit penalty overrides it. "
+        "Other metrics use their own fixed defaults. For pooled datasets with different "
+        "limits, the geomean CSV leaves scalar `max_value` empty and records the costs "
+        "in `max_value_by_dataset`. Solver selection does not change these costs."
+    )
+    if unavailable_penalty:
+        intro += (
+            f" The penalized `{metric}` geomean is omitted because the manifest records "
+            f"no usable time limit ({unavailable_penalty.rstrip('.')}); run "
+            "`bench report --max-value VALUE` to set the cost of a failure."
+        )
     lines.extend(
         _section_table(
             "Failure Penalties",
             tables.get("failure_penalties.csv", pd.DataFrame()),
-            intro=(
-                "Failed and missing solves receive the fixed costs below. Time metrics use "
-                "three times each manifest time limit unless an explicit penalty overrides it. "
-                "Other metrics use their own fixed defaults. For pooled datasets with different "
-                "limits, the geomean CSV leaves scalar `max_value` empty and records the costs "
-                "in `max_value_by_dataset`. Solver selection does not change these costs."
-            ),
+            intro=intro,
             source_link="failure_penalties.csv",
         )
     )
@@ -483,7 +519,7 @@ def _render_difficulty_scaling_block(
             source_link=f"difficulty_scaling_{metric}.csv",
             intro=(
                 "Problems are bucketed into equal-population quantile bins of "
-                "`metadata.n`. Each row reports a solver's median runtime on "
+                f"`metadata.n`. Each row reports a solver's median `{metric}` on "
                 "successful solves within that bucket; failures are not "
                 "averaged in."
             ),
@@ -810,16 +846,19 @@ def _solver_summary_tables(
     geomean_options: dict | None = None,
 ) -> dict[str, pd.DataFrame]:
     tables = {
-        "solver_metrics.csv": solver_metrics(results),
-        "failure_rates.csv": failure_rates(results),
-        f"shifted_geomean_{metric}.csv": shifted_geomean(results, metric=metric, expected=expected, **(geomean_options or {})),
-        f"shifted_geomean_{metric}_success_only.csv": shifted_geomean(
-            results,
-            metric=metric,
-            expected=expected,
-            penalize_failures=False,
-        ),
+        "solver_metrics.csv": solver_metrics(results, expected=expected),
+        "failure_rates.csv": failure_rates(results, expected=expected),
     }
+    if (geomean_options or {}).get("available", True):
+        tables[f"shifted_geomean_{metric}.csv"] = shifted_geomean(
+            results, metric=metric, expected=expected, **geomean_kwargs(geomean_options)
+        )
+    tables[f"shifted_geomean_{metric}_success_only.csv"] = shifted_geomean(
+        results,
+        metric=metric,
+        expected=expected,
+        penalize_failures=False,
+    )
     if metric != "iterations" and "iterations" in results:
         tables["shifted_geomean_iterations.csv"] = shifted_geomean(
             results,
@@ -968,8 +1007,8 @@ def _metric_scoped_sort(name: str, metric: str) -> list[tuple[str, bool]] | None
     if name == f"difficulty_scaling_{metric}.csv":
         return [
             ("size_bin", True),
-            ("median_time", True),
-            ("p95_time", True),
+            (f"median_{metric}", True),
+            (f"p95_{metric}", True),
             ("success_count", False),
             ("solver_id", True),
         ]
@@ -1347,8 +1386,11 @@ def _headline_solver_metric_columns(metric: str) -> list[str]:
 
 
 def _metric_aggregates(results: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """Median, total and maximum of ``metric`` over successful solves."""
     if results.empty or metric not in results or "solver_id" not in results:
         return pd.DataFrame()
+    results = one_row_per_solve(results, metric=metric)
+    results = results[solved_mask(results)]
     values = results[["solver_id", metric]].copy()
     values[metric] = pd.to_numeric(values[metric], errors="coerce")
     grouped = values.groupby("solver_id", dropna=False, observed=True)[metric]
@@ -1627,9 +1669,7 @@ def _dataframe_to_markdown(
     max_cols: int,
     source_link: str | None = None,
 ) -> list[str]:
-    frame = table.copy()
-    if not isinstance(frame.index, pd.RangeIndex):
-        frame = frame.reset_index()
+    frame = table.reset_index(drop=not _has_meaningful_index(table))
     total_rows = len(frame)
     total_cols = len(frame.columns)
     if total_rows > max_rows:

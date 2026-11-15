@@ -270,7 +270,7 @@ def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
     if summary.empty:
         click.echo("No results found.")
         return
-    metrics = solver_metrics(df)
+    metrics = solver_metrics(df, expected=expected_results(run_dir, repo_root=repo_root))
     if not metrics.empty:
         click.echo("Solver metrics:")
         click.echo(metrics.to_string(index=False))
@@ -285,9 +285,10 @@ def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
 
 @main.command("failures")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
-def failures_cmd(run_dir: Path) -> None:
+@click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+def failures_cmd(run_dir: Path, repo_root: Path | None) -> None:
     df = load_results(run_dir)
-    failures = failure_rates(df)
+    failures = failure_rates(df, expected=expected_results(run_dir, repo_root=repo_root))
     if failures.empty:
         click.echo("No results found.")
         return
@@ -389,6 +390,8 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
         f"{out_dir}: {summary['rows']} rows from {summary['sources']} runs"
         + (f", {summary['duplicate_keys']} duplicated keys" if summary["duplicate_keys"] else "")
     )
+    if summary.get("skipped_lines"):
+        click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     mixed = summary["mixed_forms"]
     if mixed:
         shown = ", ".join(mixed[:5]) + (", ..." if len(mixed) > 5 else "")
@@ -406,7 +409,10 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
 @click.option(
     "--allow-missing",
     is_flag=True,
-    help="Keep claimed-optimal rows that carry no KKT residuals (default: demote them).",
+    help=(
+        "Keep claimed-optimal rows that carry no KKT residuals (default: demote them). "
+        "Infeasibility claims without a checkable certificate are always kept, with a warning."
+    ),
 )
 @click.option(
     "--promote",
@@ -419,7 +425,11 @@ def kkt_verify_cmd(
 ) -> None:
     """Write a copy of RUN_DIR in which claimed-optimal solves whose
     independently computed relative KKT residuals exceed --tol are marked
-    optimal_inaccurate, so every solver is held to the same accuracy."""
+    optimal_inaccurate, and infeasibility claims whose scaled certificate
+    residual exceeds it the matching *_inaccurate status, so every solver
+    is held to the same accuracy. Infeasibility claims the harness cannot
+    check (no certificate recorded, or a cone it cannot project) are kept
+    and reported."""
     from solver_benchmarks.analysis.derive import kkt_verify
 
     out = output_dir or run_dir.parent / f"{run_dir.name}_kkt{tol:.0e}"
@@ -436,6 +446,19 @@ def kkt_verify_cmd(
             f"\tpromoted={summary['promoted'].get(solver_id, 0)}"
             f"\tno_residuals={summary['missing_residuals'].get(solver_id, 0)}"
         )
+    for key, what in (
+        ("unverified_cones", "rows whose cone distances could not be checked"),
+        ("unverified_certificates", "infeasibility claims whose certificate could not be checked"),
+    ):
+        unverified = summary.get(key) or {}
+        if unverified:
+            click.echo(
+                f"warning: kept {what}: "
+                + ", ".join(f"{solver_id}={count}" for solver_id, count in sorted(unverified.items())),
+                err=True,
+            )
+    if summary.get("skipped_lines"):
+        click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     click.echo(str(out))
 
 

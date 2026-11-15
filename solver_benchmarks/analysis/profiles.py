@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import json
+import logging
 from collections.abc import Mapping
 
 import numpy as np
@@ -11,8 +13,17 @@ import pandas as pd
 from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
 from solver_benchmarks.core import status
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_FAILURE_PENALTY = 1.0e3
 TIME_METRICS = frozenset({"run_time_seconds", "setup_time_seconds", "solve_time_seconds"})
+
+# Shift of the KKT residual geomeans. Residuals are often exactly zero (an
+# easy problem solved to roundoff); with no shift one zero sends the mean of
+# logs towards log(tiny float) and the geomean to ~1e-150. A shift of 1e-12
+# treats residuals below it as equally good, which is the resolution the
+# KKT accuracy plots use too.
+KKT_SHIFT = 1.0e-12
 
 # Fixed defaults for non-time failure penalties and metric-specific shifts.
 # Time geomeans require a declared limit or explicit penalty; historical time
@@ -23,10 +34,11 @@ _METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
     "setup_time_seconds": (1.0e3, 10.0),
     "solve_time_seconds": (1.0e3, 10.0),
     "iterations": (1.0e6, 100.0),
-    "kkt.primal_res_rel": (1.0, 0.0),
-    "kkt.dual_res_rel": (1.0, 0.0),
-    "kkt.duality_gap_rel": (1.0, 0.0),
-    "kkt.comp_slack": (1.0, 0.0),
+    "kkt.primal_res_rel": (1.0, KKT_SHIFT),
+    "kkt.dual_res_rel": (1.0, KKT_SHIFT),
+    "kkt.duality_gap_rel": (1.0, KKT_SHIFT),
+    "kkt.comp_slack_rel": (1.0, KKT_SHIFT),
+    "kkt.comp_slack": (1.0, KKT_SHIFT),
 }
 
 # Finite profile ratios need a positive resolution for metrics that can
@@ -38,6 +50,15 @@ _PROFILE_FLOORS = {
     "solve_time_seconds": 0.01,
     "iterations": 1.0,
 }
+
+
+def profile_floor(metric: str) -> float:
+    """Resolution below which values of ``metric`` count as equal (0 if none).
+
+    Every ratio view of a report (profile, ratio heatmap, pairwise speedups
+    and scatter) floors successful values here before dividing.
+    """
+    return _PROFILE_FLOORS.get(metric, 0.0)
 
 
 def metric_defaults(metric: str) -> tuple[float, float]:
@@ -72,12 +93,18 @@ def deduplicate_for_pivot(
     1s) when the same solver had both a failed and a retried row, and
     ``performance_profile`` then penalized the kept row as failed.
 
-    When ``metric`` is None or absent from the frame, the deduplication
-    falls back to ``keep="first"`` ordering.
+    When ``metric`` is None or absent from the frame, a successful row
+    still wins over a failed one, and otherwise the first row in file order
+    is kept. Every per-identity view of a report resolves duplicates this
+    way, so they agree on which attempt a duplicated solve stands for.
     """
     if success_statuses is None:
         success_statuses = set(status.SOLUTION_PRESENT)
     subset_keys = [*keys, "solver_id"]
+    if (metric is None or metric not in frame.columns) and "status" in frame.columns and not frame.empty:
+        failed = ~solved_mask(frame, success_statuses).to_numpy()
+        order = np.argsort(failed, kind="stable")
+        return frame.iloc[order].drop_duplicates(subset=subset_keys, keep="first")
     if metric is not None and metric in frame.columns:
         sortable = frame.assign(
             __metric_for_dedup=pd.to_numeric(frame[metric], errors="coerce"),
@@ -142,9 +169,10 @@ def performance_profile(
     if np.isnan(max_value) or max_value < 0:
         raise ValueError("max_value must be nonnegative and not NaN")
     if min_value is None:
-        min_value = _PROFILE_FLOORS.get(metric, 0.0)
+        min_value = profile_floor(metric)
     if not np.isfinite(min_value) or min_value < 0:
         raise ValueError("min_value must be finite and nonnegative")
+    results, expected = drop_solvers_without_metric(results, metric, success_statuses, expected=expected)
     results = complete_results(results, expected=expected)
     if results.empty:
         return pd.DataFrame()
@@ -205,6 +233,52 @@ def performance_profile(
     return pd.DataFrame(profile)
 
 
+def drop_solvers_without_metric(
+    results: pd.DataFrame,
+    metric: str,
+    success_statuses: set[str] | None = None,
+    *,
+    expected: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """Leave out solvers that report no value of ``metric`` on any success.
+
+    Several adapters never set ``solve_time_seconds`` or
+    ``setup_time_seconds``; scoring their solved problems as failures on
+    such a metric would rank a solver that solved everything with one that
+    solved nothing. A solver with at least one success and the metric
+    missing (null) on all of them is dropped from the comparison (and from
+    ``expected``) with a warning. A solver that does report the metric is
+    still charged for a success without a usable value (missing, negative
+    or not finite), so a solver cannot skip its hard problems by not
+    reporting them.
+    """
+    if results.empty or "solver_id" not in results or "status" not in results:
+        return results, expected
+    raw = results[metric] if metric in results else pd.Series(np.nan, index=results.index)
+    solved = solved_mask(results, success_statuses)
+    reported = solved & raw.notna()
+    by_solver = pd.DataFrame({"solver_id": results["solver_id"], "solved": solved, "reported": reported})
+    counts = by_solver.groupby("solver_id", observed=True)[["solved", "reported"]].sum()
+    silent = sorted(str(solver) for solver in counts.index[(counts["solved"] > 0) & (counts["reported"] == 0)])
+    if not silent:
+        return results, expected
+    _warn_once(
+        f"Leaving {', '.join(silent)} out of the {metric} comparison: "
+        "no successful solve reports a value for it"
+    )
+    keep = ~results["solver_id"].astype(str).isin(silent)
+    if expected is not None and "solver_id" in expected:
+        expected = expected[~expected["solver_id"].astype(str).isin(silent)]
+    return results[keep], expected
+
+
+@functools.lru_cache(maxsize=256)
+def _warn_once(message: str) -> None:
+    # A report computes the same comparison several times (tables, plots,
+    # per-dataset slices); say it once.
+    logger.warning(message)
+
+
 def complete_results(
     results: pd.DataFrame, *, expected: pd.DataFrame | None = None
 ) -> pd.DataFrame:
@@ -263,7 +337,10 @@ def shifted_geomean(
 ) -> pd.DataFrame:
     """Compute per-solver means over the expected comparison universe.
 
-    Missing solves receive the failure penalty. Supply ``expected`` with
+    Missing solves receive the failure penalty, as do successes without a
+    value of ``metric`` from a solver that reports it elsewhere; solvers
+    that never report it are left out (see
+    :func:`drop_solvers_without_metric`). Supply ``expected`` with
     problem/solver identities to include completely absent problems or solvers;
     otherwise the observed sets are crossed. Success-only means still omit
     failures, while their counts describe the same comparison universe.
@@ -281,6 +358,7 @@ def shifted_geomean(
         success_statuses = set(status.SOLUTION_PRESENT)
     if shift is None:
         _, shift = metric_defaults(metric)
+    results, expected = drop_solvers_without_metric(results, metric, success_statuses, expected=expected)
     results = complete_results(results, expected=expected)
     if "problem" in results:
         keys = ["dataset", "problem"] if "dataset" in results else ["problem"]
@@ -305,6 +383,11 @@ def shifted_geomean(
         max_by_dataset = None
         if penalize_failures:
             penalties = group["__failure_penalty"].to_numpy(dtype=float)
+            if np.any(values[successful] >= penalties[successful]):
+                _warn_once(
+                    f"{solver_id}: a successful solve's {metric} is at or above the failure "
+                    "penalty, so failing costs no more than succeeding; choose a larger penalty"
+                )
             values[~successful] = penalties[~successful]
             if len(np.unique(penalties)) == 1:
                 reported_max = float(penalties[0])

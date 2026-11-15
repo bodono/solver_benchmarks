@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 import scipy.sparse as sp
 
@@ -322,9 +324,9 @@ def test_box_cone_handling_does_not_double_advance_row_cursor():
     s = np.arange(5, dtype=float)
     y = np.arange(5, dtype=float) * -1.0
     s_proj, y_proj, unsupported = kkt._project_cones(cone, s, y)
-    assert unsupported == ["box"]
-    # The two zero rows project to zeros, then the 3-element box slice
-    # is left as-is. Output length must match the input.
+    assert unsupported == []
+    # The two zero rows project to zeros, then the 3-element box slice is
+    # projected onto the box cone. Output length must match the input.
     assert s_proj.size == 5
     assert y_proj.size == 5
 
@@ -337,7 +339,7 @@ def test_box_cone_with_only_bl_key():
     s = np.arange(4, dtype=float)
     y = np.arange(4, dtype=float)
     s_proj, y_proj, unsupported = kkt._project_cones(cone, s, y)
-    assert unsupported == ["box"]
+    assert unsupported == []
     assert s_proj.size == 4
     assert y_proj.size == 4
 
@@ -350,3 +352,379 @@ def test_box_cone_with_mismatched_bl_bu_sizes_marks_unsupported_safely():
     y = np.zeros(8, dtype=float)
     s_proj, y_proj, unsupported = kkt._project_cones(cone, s, y)
     assert "box" in unsupported
+
+
+# --- infeasibility certificates are held to a residual check, not a sign test ---
+
+
+def test_cone_primal_cert_outside_dual_cone_is_invalid():
+    # b'y < 0, but A'y is far from zero and y has a negative entry on an
+    # l-cone row, so y certifies nothing.
+    A = sp.csc_matrix(np.array([[1.0], [1.0]]))
+    cert = kkt.cone_primal_infeasibility_cert(A, np.array([1.0, 2.0]), {"l": 2}, np.array([-5.0, 1.0]))
+    assert cert["bty"] < 0
+    assert cert["dual_cone_res"] == 5.0
+    assert cert["valid"] is False
+    # scaled so that b'y = -1, the worst residual is |A'y| = 5/3
+    assert cert["cert_res"] == np.float64(5.0) / 3.0
+
+
+def test_cone_dual_cert_with_nonzero_px_is_invalid():
+    cert = kkt.cone_dual_infeasibility_cert(
+        sp.csc_matrix(np.array([[1.0]])), np.array([1.0]), sp.csc_matrix(np.array([[1.0]])), {"l": 1}, np.array([-1.0])
+    )
+    assert cert["qtx"] < 0 and cert["Px_inf"] == 1.0
+    assert cert["valid"] is False
+
+
+def test_qp_dual_cert_with_nonzero_px_is_invalid():
+    cert = kkt.qp_dual_infeasibility_cert(
+        sp.csc_matrix(np.array([[1.0]])),
+        np.array([1.0]),
+        sp.csc_matrix(np.array([[1.0]])),
+        np.array([-np.inf]),
+        np.array([np.inf]),
+        np.array([-1.0]),
+    )
+    assert cert["qtx"] < 0
+    assert cert["valid"] is False
+
+
+def test_certificates_pass_within_tolerance_and_fail_beyond_it():
+    # x = 0 (z) and x >= 1 (l): y = (1, 1) is exact; perturb A'y by 1e-9 and 1e-2.
+    A = sp.csc_matrix(np.array([[1.0], [-1.0]]))
+    b = np.array([0.0, -1.0])
+    for eps, valid in ((1e-9, True), (1e-2, False)):
+        cert = kkt.cone_primal_infeasibility_cert(A, b, {"z": 1, "l": 1}, np.array([1.0 + eps, 1.0]))
+        assert cert["valid"] is valid
+        assert np.isclose(cert["cert_res"], eps)
+        assert cert["cert_tol"] == kkt.CERT_TOL
+    # The tolerance is a parameter.
+    cert = kkt.cone_primal_infeasibility_cert(A, b, {"z": 1, "l": 1}, np.array([1.0 + 1e-6, 1.0]), tol=1e-8)
+    assert cert["valid"] is False and cert["cert_tol"] == 1e-8
+
+
+def test_qp_primal_cert_with_multiplier_on_infinite_bound_is_invalid():
+    # 1 <= x and a free row: feasible (x = 1). y = (-1, 1) has A'y = 0 and
+    # support -1 only because the free row's multiplier is ignored.
+    cert = kkt.qp_primal_infeasibility_cert(
+        sp.csc_matrix(np.array([[1.0], [1.0]])),
+        np.array([1.0, -np.inf]),
+        np.array([np.inf, np.inf]),
+        np.array([-1.0, 1.0]),
+    )
+    assert cert["Aty_inf"] == 0.0
+    assert cert["dual_bound_res"] == 1.0
+    assert cert["valid"] is False
+
+
+def test_qp_primal_cert_ignores_roundoff_on_infinite_bounds():
+    A = sp.csc_matrix(np.array([[1.0], [-1.0], [1.0]]))
+    l = np.array([1.0, -3.0, -np.inf])
+    u = np.array([2.0, -2.5, np.inf])
+    cert = kkt.qp_primal_infeasibility_cert(A, l, u, np.array([1.0, 1.0, 1e-12]))
+    assert cert["support"] < 0
+    assert cert["valid"] is True
+
+
+def test_certificate_cone_residual_is_unknown_for_unsupported_cones():
+    # A complex PSD block cannot be checked: report NaN and an unknown
+    # verdict instead of a clean zero.
+    A = sp.csc_matrix(np.zeros((4, 1)))
+    cert = kkt.cone_primal_infeasibility_cert(A, np.ones(4), {"cs": [2]}, -np.ones(4))
+    assert np.isnan(cert["dual_cone_res"])
+    assert cert["valid"] is None
+    assert cert["unsupported_cones"] == ["cs"]
+    cert = kkt.cone_dual_infeasibility_cert(sp.csc_matrix((1, 1)), np.array([-1.0]), A, {"cs": [2]}, np.ones(1))
+    assert np.isnan(cert["primal_cone_res"])
+    assert cert["valid"] is None
+
+
+def test_exp_cone_certificate_is_checked():
+    # y = (-1, -1, -1) is not in the dual exponential cone.
+    cert = kkt.cone_primal_infeasibility_cert(sp.csc_matrix(np.zeros((3, 1))), np.ones(3), {"ep": 1}, -np.ones(3))
+    assert cert["dual_cone_res"] > 0.1
+    assert cert["valid"] is False
+    assert "unsupported_cones" not in cert
+
+
+# --- cone primal residual includes the cone distance of s ---
+
+
+def test_cone_primal_residual_counts_slack_outside_cone():
+    # min x2 s.t. x >= 1 written as -x + s = -1, s >= 0. An adapter that
+    # passes s = b - Ax makes Ax + s - b vanish; the point x = (0.5, 1)
+    # violates x1 >= 1 and must show up in primal_res_rel.
+    A = sp.csc_matrix(-np.eye(2))
+    b = np.array([-1.0, -1.0])
+    x = np.array([0.5, 1.0])
+    res = kkt.cone_residuals(sp.csc_matrix((2, 2)), np.array([0.0, 1.0]), A, b, {"l": 2}, x, np.array([0.0, 1.0]), b - A @ x)
+    assert res["primal_eq_res"] == 0.0
+    assert res["primal_cone_res"] == 0.5
+    assert res["primal_res"] == 0.5
+    assert res["primal_res_rel"] == 0.25
+    assert res["dual_res_rel"] == 0.0 and res["duality_gap_rel"] == 0.0
+
+
+def test_cone_primal_residual_counts_equality_violation_through_zero_cone():
+    # s = b - Ax on an equality row: the zero-cone distance is |b - Ax|.
+    A = sp.csc_matrix(np.array([[1.0]]))
+    b = np.array([1.0])
+    x = np.array([0.9])
+    res = kkt.cone_residuals(sp.csc_matrix((1, 1)), np.array([0.0]), A, b, {"z": 1}, x, np.zeros(1), b - A @ x)
+    assert np.isclose(res["primal_res"], 0.1)
+
+
+# --- exponential, power and box cones ---
+
+
+def _exp_optimum():
+    # min t s.t. (1, 1, t) in K_exp, i.e. s = b - Ax with A = (0, 0, -1)', b = (1, 1, 0).
+    # Optimum t = e with dual y = (-e, 0, 1).
+    A = sp.csc_matrix(np.array([[0.0], [0.0], [-1.0]]))
+    b = np.array([1.0, 1.0, 0.0])
+    return A, b, np.array([np.e]), np.array([-np.e, 0.0, 1.0])
+
+
+def test_exp_cone_residuals_at_optimum_are_small():
+    A, b, x, y = _exp_optimum()
+    res = kkt.cone_residuals(sp.csc_matrix((1, 1)), np.array([1.0]), A, b, {"ep": 1}, x, y, b - A @ x)
+    assert "unsupported_cones" not in res
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel", "primal_cone_res_rel", "dual_cone_res_rel"):
+        assert res[field] < 1e-12, (field, res[field])
+    assert worst_relative_residual({"kkt": res}) < 1e-12
+
+
+def test_exp_cone_residuals_detect_slack_outside_cone():
+    A, b, _, y = _exp_optimum()
+    x = np.array([2.0])  # 1 * exp(1 / 1) = e > 2: s = (1, 1, 2) is outside K_exp
+    res = kkt.cone_residuals(sp.csc_matrix((1, 1)), np.array([1.0]), A, b, {"ep": 1}, x, y, b - A @ x)
+    assert res["primal_cone_res"] > 0.1
+
+
+def test_dual_exp_cone_block_swaps_the_roles_of_s_and_y():
+    # With an "ed" block, s must lie in K_exp* and y in K_exp.
+    s = np.array([-1.0, -1.0, 2.0])  # in K_exp*, not in K_exp
+    y = np.array([1.0, 1.0, 3.0])  # in K_exp, not in K_exp*
+    s_proj, y_proj, unsupported = kkt._project_cones({"ed": 1}, s, y)
+    assert unsupported == []
+    assert np.allclose(s_proj, s) and np.allclose(y_proj, y)
+    s_proj, y_proj, _ = kkt._project_cones({"ep": 1}, s, y)
+    assert not np.allclose(s_proj, s) and not np.allclose(y_proj, y)
+
+
+# Membership up to ``tol``: shift the point by ``tol`` along a direction
+# interior to the cone first. Testing the defining inequality directly is
+# ill-conditioned next to the faces (x^a or exp(r/s) with a tiny argument).
+def _in_exp(v, tol):
+    r, s, t = v[0] - tol, v[1] + tol, v[2] + tol
+    with np.errstate(over="ignore"):
+        return s > 0 and s * np.exp(r / s) <= t
+
+
+def _in_exp_dual(v, tol):
+    u, w_v, w = v[0] - tol, v[1] + tol, v[2] + tol
+    with np.errstate(over="ignore"):
+        return u < 0 and -u * np.exp(w_v / u) <= np.e * w
+
+
+def _in_pow(v, tol, a):
+    x, y, z = v[0] + tol, v[1] + tol, v[2]
+    return x >= 0 and y >= 0 and x**a * y ** (1 - a) >= abs(z) - tol
+
+
+def _in_pow_dual(v, tol, a):
+    u, w_v, w = v[0] + tol, v[1] + tol, v[2]
+    return u >= 0 and w_v >= 0 and (u / a) ** a * (w_v / (1 - a)) ** (1 - a) >= abs(w) - tol
+
+
+def _check_projection(v, p, in_cone, in_dual, tol=1e-7):
+    # Moreau: p = proj_K(v) iff p in K, p - v in K*, and p'(v - p) = 0.
+    scale = 1.0 + np.linalg.norm(v)
+    assert in_cone(p, tol * scale), (v, p)
+    assert in_dual(p - v, tol * scale), (v, p)
+    assert abs(p @ (v - p)) <= tol * scale**2, (v, p)
+
+
+def test_exp_cone_projection_satisfies_moreau_conditions():
+    rng = np.random.default_rng(0)
+    points = rng.normal(size=(400, 3)) * rng.choice([0.01, 1.0, 100.0], size=(400, 1))
+    points = np.vstack([points, [[1.0, 1.0, np.e], [0.0, 0.0, 0.0], [-1.0, 0.0, 2.0], [1.0, 0.0, 0.0],
+                                 [0.0, -1.0, 0.0], [-2.0, -3.0, 4.0], [3.0, -1.0, -2.0], [1e-9, 1.0, np.e]]])
+    projected = kkt._project_exp(points)
+    for v, p in zip(points, projected):
+        _check_projection(v, p, _in_exp, _in_exp_dual)
+    dual = kkt._project_exp_dual(points)
+    for v, p in zip(points, dual):
+        _check_projection(v, p, _in_exp_dual, _in_exp)
+
+
+def test_exp_cone_projection_of_a_row_does_not_depend_on_the_others():
+    # Each row stops iterating once it has converged, so projecting a large
+    # block costs what its rows need, and a row's result is the one it gets
+    # on its own.
+    rng = np.random.default_rng(2)
+    points = rng.normal(size=(300, 3)) * np.exp(3.0 * rng.normal(size=(300, 1)))
+    batch = kkt._project_exp(points)
+    single = np.vstack([kkt._project_exp(point[None, :]) for point in points])
+    np.testing.assert_array_equal(batch, single)
+
+
+def test_power_cone_projection_satisfies_moreau_conditions():
+    rng = np.random.default_rng(1)
+    points = rng.normal(size=(300, 3)) * rng.choice([0.01, 1.0, 100.0], size=(300, 1))
+    points = np.vstack([points, [[1.0, 1.0, 0.5], [-1.0, 2.0, 0.0], [0.0, 0.0, 0.0], [-1.0, -1.0, 0.1]]])
+    for a in (0.3, 0.5, 0.8):
+        in_cone = functools.partial(_in_pow, a=a)
+        in_dual = functools.partial(_in_pow_dual, a=a)
+        for v, p in zip(points, kkt._project_pow(points, a)):
+            _check_projection(v, p, in_cone, in_dual)
+        for v, p in zip(points, kkt._project_pow_dual(points, a)):
+            _check_projection(v, p, in_dual, in_cone)
+
+
+def test_power_cone_blocks_follow_the_sign_of_the_exponent():
+    s = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 0.0])
+    s_proj, _, unsupported = kkt._project_cones({"p": [0.5, -0.5]}, s, None)
+    assert unsupported == []
+    # (1, 1, 1): 1^0.5 1^0.5 = 1 >= |1|, so it is in K_0.5 but not in its dual
+    # ((1/0.5)^0.5 (1/0.5)^0.5 = 2 >= 1 also holds, so test a point that differs).
+    assert np.allclose(s_proj[:3], s[:3])
+    s = np.array([0.0, 0.0, 0.0, 0.2, 0.2, 0.3])  # 0.2^.5 0.2^.5 = 0.2 < 0.3 <= (0.4)^.5 (0.4)^.5
+    s_proj, _, _ = kkt._project_cones({"p": [0.5, -0.5]}, s, None)
+    assert np.allclose(s_proj[3:], s[3:])
+    s_proj, _, _ = kkt._project_cones({"p": [0.5, 0.5]}, s, None)
+    assert not np.allclose(s_proj[3:], s[3:])
+
+
+def _in_box(v, lo, hi, tol):
+    t, s = v[0], v[1:]
+    lower = np.full_like(s, -np.inf)
+    upper = np.full_like(s, np.inf)
+    lower[np.isfinite(lo)] = t * lo[np.isfinite(lo)]
+    upper[np.isfinite(hi)] = t * hi[np.isfinite(hi)]
+    return t >= -tol and np.all(s >= lower - tol) and np.all(s <= upper + tol)
+
+
+def _in_box_dual(v, lo, hi, tol):
+    # tau + min over z in [lo, hi] of sigma'z >= 0
+    tau, sigma = v[0], v[1:]
+    bound = np.where(sigma >= 0, lo, hi)
+    worst = np.zeros_like(sigma)
+    active = sigma != 0
+    worst[active] = sigma[active] * bound[active]
+    return tau + worst.sum() >= -tol
+
+
+def test_box_cone_projection_satisfies_moreau_conditions():
+    rng = np.random.default_rng(2)
+    lo = np.array([-1.0, 0.0, -np.inf, 2.0])
+    hi = np.array([1.0, np.inf, 3.0, 2.0])
+    points = rng.normal(size=(200, 5)) * rng.choice([0.01, 1.0, 10.0], size=(200, 1))
+    for v in points:
+        p = kkt._project_box(v, lo, hi)
+        _check_projection(v, p, lambda w, tol: _in_box(w, lo, hi, tol), lambda w, tol: _in_box_dual(w, lo, hi, tol))
+        d = kkt._project_box_dual(v, lo, hi)
+        _check_projection(v, d, lambda w, tol: _in_box_dual(w, lo, hi, tol), lambda w, tol: _in_box(w, lo, hi, tol))
+
+
+def test_box_cone_rows_are_checked():
+    cone = {"z": 1, "bl": [-1.0], "bu": [1.0]}
+    s = np.array([0.0, 1.0, 0.5])  # t = 1, -1 <= 0.5 <= 1: in the box cone
+    s_proj, _, unsupported = kkt._project_cones(cone, s, None)
+    assert unsupported == []
+    assert np.allclose(s_proj, s)
+    s_proj, _, _ = kkt._project_cones(cone, np.array([0.0, 1.0, 2.0]), None)
+    assert not np.allclose(s_proj, [0.0, 1.0, 2.0])
+
+
+# --- PSD projection ---
+
+
+def _reference_psd_projection(v, n):
+    mat = np.zeros((n, n))
+    idx = 0
+    for col in range(n):
+        for row in range(col, n):
+            val = v[idx] / (np.sqrt(2.0) if row != col else 1.0)
+            mat[row, col] = mat[col, row] = val
+            idx += 1
+    w, q = np.linalg.eigh(mat)
+    proj = (q * np.maximum(w, 0.0)) @ q.T
+    out = np.empty_like(v)
+    idx = 0
+    for col in range(n):
+        for row in range(col, n):
+            out[idx] = proj[row, col] * (np.sqrt(2.0) if row != col else 1.0)
+            idx += 1
+    return out
+
+
+def test_psd_projection_matches_elementwise_reference():
+    rng = np.random.default_rng(3)
+    for n in (1, 2, 5, 9):
+        v = rng.normal(size=n * (n + 1) // 2)
+        assert np.allclose(kkt._project_psd_triangle(v, n), _reference_psd_projection(v, n), atol=1e-12)
+
+
+def test_psd_residuals_with_nonfinite_iterate_are_nan_not_an_error():
+    n = 3
+    tri = n * (n + 1) // 2
+    A = sp.csc_matrix(np.zeros((tri, 1)))
+    b = np.zeros(tri)
+    res = kkt.cone_residuals(sp.csc_matrix((1, 1)), np.zeros(1), A, b, {"s": [n]}, np.zeros(1), np.full(tri, np.nan), b)
+    assert np.isnan(res["dual_cone_res"])
+    cert = kkt.cone_primal_infeasibility_cert(A, -np.ones(tri), {"s": [n]}, np.full(tri, np.nan))
+    assert np.isnan(cert["dual_cone_res"]) and cert["valid"] is not True
+
+
+def test_complementarity_has_a_scale_free_variant():
+    # The same LP optimum with the objective scaled by 1e6: comp_slack scales
+    # with it, comp_slack_rel does not.
+    A = sp.csc_matrix(np.array([[1.0]]))
+    for scale in (1.0, 1e6):
+        y = np.array([scale * (1.0 + 1e-9)])
+        res = kkt.cone_residuals(sp.csc_matrix((1, 1)), np.array([-scale]), A, np.array([1.0]), {"l": 1},
+                                 np.array([1.0]), y, np.array([1e-9]))
+        assert np.isclose(res["comp_slack_rel"], res["comp_slack"] / (1 + abs(res["primal_obj"]) + abs(res["dual_obj"])))
+        assert res["comp_slack_rel"] < 1e-9
+        qp = kkt.qp_residuals(sp.csc_matrix((1, 1)), np.array([-scale]), A, np.array([-np.inf]), np.array([1.0]),
+                              np.array([1.0 - 1e-9]), y)
+        assert qp["comp_slack_rel"] < 1e-9
+
+
+def test_power_cones_are_projected_per_exponent_not_per_cone(monkeypatch):
+    """Many power cones project in one vectorized call per distinct exponent,
+    with the same result as projecting each cone on its own (negative
+    exponents stand for dual cones; unsupported exponents are copied)."""
+    rng = np.random.default_rng(3)
+    powers = [0.3, -0.3, 0.7, 0.3, 1.5, -0.7, 0.3, 0.0]
+    s = rng.normal(size=3 * len(powers))
+    y = rng.normal(size=3 * len(powers))
+    expected_s, expected_y = [], []
+    for i, a in enumerate(powers):
+        si, yi = s[3 * i:3 * i + 3], y[3 * i:3 * i + 3]
+        if not 0.0 < abs(a) < 1.0:
+            expected_s.append(si)
+            expected_y.append(yi)
+        elif a > 0:
+            expected_s.append(kkt._project_pow(si, a).ravel())
+            expected_y.append(kkt._project_pow_dual(yi, a).ravel())
+        else:
+            expected_s.append(kkt._project_pow_dual(si, -a).ravel())
+            expected_y.append(kkt._project_pow(yi, -a).ravel())
+    calls = []
+    real = kkt._project_pow
+
+    def counting(v, a):
+        calls.append(a)
+        return real(v, a)
+
+    monkeypatch.setattr(kkt, "_project_pow", counting)
+    s_proj, y_proj, unsupported = kkt._project_cones({"p": powers}, s, y)
+    np.testing.assert_allclose(s_proj, np.concatenate(expected_s), rtol=0, atol=1e-12)
+    np.testing.assert_allclose(y_proj, np.concatenate(expected_y), rtol=0, atol=1e-12)
+    assert unsupported == ["p", "p"]
+    # distinct supported exponents: |a| in {0.3, 0.7}, signed {0.3, -0.3, 0.7, -0.7};
+    # each projection (primal and dual) calls _project_pow at most once per signed exponent
+    assert len(calls) <= 2 * 4

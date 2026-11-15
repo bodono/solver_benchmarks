@@ -22,6 +22,12 @@ def geomean_time_limits(
     Explicit penalties and success-only/non-time calculations need no manifest
     time limit. Merges retain the complete source manifests; their display
     config inherits one source's timeout and cannot describe mixed limits.
+
+    A run's limit is the largest one any of its solvers ran under: a
+    solver's own ``timeout_seconds`` where it sets one, the run's otherwise.
+    A solver allowed longer than the run limit can succeed after more than
+    three times the run limit, and a failure must never cost less than a
+    success. A run whose solvers all set their own limit needs no run limit.
     """
     if max_value is not None or not penalize_failures or metric not in TIME_METRICS:
         return None
@@ -33,13 +39,7 @@ def geomean_time_limits(
     distinct: set[float] = set()
     unnamed = False
     for config in leaves:
-        raw = config.get("timeout_seconds")
-        try:
-            limit = float(raw)
-        except (TypeError, ValueError):
-            raise ValueError("A manifest has no valid timeout_seconds; pass --max-value explicitly")
-        if isinstance(raw, bool) or not math.isfinite(limit) or limit <= 0:
-            raise ValueError("Manifest timeout_seconds must be positive and finite; pass --max-value explicitly")
+        limit = _largest_time_limit(config)
         distinct.add(limit)
         entries = manifest_dataset_entries(config)
         unnamed |= not bool(entries)
@@ -56,6 +56,24 @@ def geomean_time_limits(
     if not distinct or unnamed:
         raise ValueError("Cannot assign manifest time limits to datasets; pass --max-value explicitly")
     return limits
+
+
+def _largest_time_limit(config: dict) -> float:
+    """Largest effective time limit of the solvers of one run config."""
+    run_limit = config.get("timeout_seconds")
+    solvers = config.get("solvers") or []
+    raws = [solver.get("timeout_seconds") for solver in solvers if isinstance(solver, dict)]
+    raws = [raw if raw is not None else run_limit for raw in raws] or [run_limit]
+    limits = []
+    for raw in raws:
+        try:
+            limit = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError("A manifest has no valid timeout_seconds; pass --max-value explicitly")
+        if isinstance(raw, bool) or not math.isfinite(limit) or limit <= 0:
+            raise ValueError("Manifest timeout_seconds must be positive and finite; pass --max-value explicitly")
+        limits.append(limit)
+    return max(limits)
 
 
 def _source_configs(manifest: dict) -> list[dict]:

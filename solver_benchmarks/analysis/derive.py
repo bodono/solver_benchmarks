@@ -4,20 +4,30 @@ against the independent KKT residuals recorded with every solve.
 Both operations write a new run directory holding ``results.jsonl``, a
 ``manifest.json`` that records its provenance, and copies of the source
 config and events. Per-solve artifacts are not copied; result rows keep
-their original ``artifact_dir``.
+their original ``artifact_dir``. The directory is assembled next to its
+destination and moved into place at the end, so a failure leaves neither a
+partial directory nor a damaged earlier one.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import math
 import shutil
-from collections.abc import Iterable
+import tempfile
+import uuid
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from solver_benchmarks.analysis.kkt import certificate_check
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
+
+logger = logging.getLogger(__name__)
 
 KKT_FIELDS = ("primal_res_rel", "dual_res_rel", "duality_gap_rel")
 # QP-form records also carry the multipliers on absent bounds (one-sided and
@@ -38,19 +48,40 @@ CONE_FIELDS = ("primal_cone_res_rel", "dual_cone_res_rel")
 _CONE_FALLBACK = {"primal_cone_res_rel": "primal_cone_res", "dual_cone_res_rel": "dual_cone_res"}
 # Statuses that carry a returned point which may still pass the check.
 PROMOTABLE = {status.OPTIMAL_INACCURATE, status.MAX_ITER_REACHED, status.TIME_LIMIT}
+# Certificate statuses that count as a success, and what they become when
+# their certificate fails the check (see kkt.certificate_check).
+_CERTIFICATE_DEMOTION = {
+    status.PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE_INACCURATE,
+    status.DUAL_INFEASIBLE: status.DUAL_INFEASIBLE_INACCURATE,
+}
 _COPIED_FILES = ("run_config.yaml", "run_config.json", "events.jsonl")
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
+    """Records of a results file and the number of lines that did not parse.
+
+    A run killed mid-write leaves a torn last line; like ``load_results``,
+    skip it (with a warning) instead of refusing the whole run.
+    """
     records: list[dict[str, Any]] = []
+    skipped = 0
     if not path.exists():
-        return records
+        return records, skipped
     with path.open() as handle:
-        for line in handle:
+        for lineno, line in enumerate(handle, start=1):
             line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    return records
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                record = None
+            if not isinstance(record, dict):
+                skipped += 1
+                logger.warning("Skipping unparseable line %d in %s", lineno, path)
+                continue
+            records.append(record)
+    return records, skipped
 
 
 def _write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
@@ -80,12 +111,37 @@ def _check_no_overlap(out_dir: Path, sources: Iterable[Path]) -> None:
             raise ValueError(f"output directory {out_dir} overlaps source run {src}")
 
 
-def _prepare_out_dir(out_dir: Path, overwrite: bool) -> None:
-    if out_dir.exists():
-        if not overwrite:
-            raise FileExistsError(f"{out_dir} exists; pass overwrite=True to replace it")
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+def _refuse_existing(out_dir: Path, overwrite: bool) -> None:
+    if out_dir.exists() and not overwrite:
+        raise FileExistsError(f"{out_dir} exists; pass overwrite=True to replace it")
+
+
+@contextmanager
+def _staged_out_dir(out_dir: Path, overwrite: bool) -> Iterator[Path]:
+    """Yield an empty sibling directory that replaces ``out_dir`` on success.
+
+    On an exception the staging directory is removed and ``out_dir`` (if it
+    existed) is left as it was. The staging directory is made with a plain
+    ``mkdir`` under a unique name, not ``tempfile.mkdtemp``: it becomes the
+    output, so it must get the umask's permissions like any run directory
+    rather than mkdtemp's owner-only 0700.
+    """
+    _refuse_existing(out_dir, overwrite)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging = out_dir.parent / f".{out_dir.name}.{uuid.uuid4().hex}"
+    staging.mkdir()
+    try:
+        yield staging
+        if out_dir.exists():
+            retired = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}.old.", dir=out_dir.parent))
+            out_dir.rename(retired / out_dir.name)
+            staging.rename(out_dir)
+            shutil.rmtree(retired, ignore_errors=True)
+        else:
+            staging.rename(out_dir)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def merge_runs(
@@ -103,20 +159,24 @@ def merge_runs(
         raise ValueError("merge_runs needs at least one run directory")
     out = Path(out_dir)
     _check_no_overlap(out, sources)
-    _prepare_out_dir(out, overwrite)
+    _refuse_existing(out, overwrite)
     records: list[dict[str, Any]] = []
     seen: dict[tuple[Any, Any, Any], int] = {}
     per_source: list[dict[str, Any]] = []
+    skipped = 0
     for src in sources:
-        rows = _read_jsonl(src / "results.jsonl")
+        rows, src_skipped = _read_jsonl(src / "results.jsonl")
+        skipped += src_skipped
         for row in rows:
             key = (row.get("dataset"), row.get("problem"), row.get("solver_id"))
             seen[key] = seen.get(key, 0) + 1
         records.extend(rows)
-        per_source.append({"run_dir": str(src), "rows": len(rows)})
+        entry: dict[str, Any] = {"run_dir": str(src), "rows": len(rows)}
+        if src_skipped:
+            entry["skipped_lines"] = src_skipped
+        per_source.append(entry)
     duplicates = sum(1 for count in seen.values() if count > 1)
     mixed_forms = _problems_posed_in_several_forms(records)
-    _write_jsonl(out / "results.jsonl", records)
     manifests = [_read_manifest(src) for src in sources]
     manifest = json.loads(json.dumps(manifests[0])) if manifests else {}
     # Union the configured datasets and solvers across shards (by id) so
@@ -158,15 +218,18 @@ def merge_runs(
         "duplicate_keys": duplicates,
         "mixed_forms": mixed_forms,
     }
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    for name in _COPIED_FILES:
-        if (sources[0] / name).exists():
-            shutil.copy(sources[0] / name, out / name)
+    with _staged_out_dir(out, overwrite) as staging:
+        _write_jsonl(staging / "results.jsonl", records)
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        for name in _COPIED_FILES:
+            if (sources[0] / name).exists():
+                shutil.copy(sources[0] / name, staging / name)
     return {
         "rows": len(records),
         "sources": len(sources),
         "duplicate_keys": duplicates,
         "mixed_forms": mixed_forms,
+        "skipped_lines": skipped,
     }
 
 
@@ -214,18 +277,29 @@ def _union_dataset_entries(configs: Iterable[dict[str, Any]]) -> list[dict[str, 
     return list(merged.values())
 
 
-def residual_summary(
-    record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
-) -> tuple[float | None, bool]:
-    """Return ``(worst, complete)`` for the listed KKT residuals of a record.
+@dataclass
+class ResidualCheck:
+    """What a record's KKT residuals say for a set of wanted fields."""
 
-    ``worst`` is the largest finite residual among the wanted fields (None if
-    there is none) and ``complete`` says whether every wanted field was
-    present and finite. QP-form records also need the multipliers on absent
-    bounds to vanish (``QP_FIELDS``, when the record has them), and cone-form
-    records the cone distances (``CONE_FIELDS``, falling back to the absolute
-    distances of older records). The two are reported separately so that a
-    residual known to fail is never hidden by another one being missing.
+    worst: float | None = None
+    worst_field: str | None = None
+    checked: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing
+
+
+def check_residuals(record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS) -> ResidualCheck:
+    """Check the listed KKT residuals of a record, plus the form's extras.
+
+    QP-form records also need the multipliers on absent bounds to vanish
+    (``QP_FIELDS``, when the record has them), and cone-form records the
+    cone distances (``CONE_FIELDS``, falling back to the absolute distances
+    of older records), whatever ``fields`` lists. ``checked`` names every
+    field that was looked at, ``missing`` those absent or not finite, and
+    ``worst``/``worst_field`` the largest finite one.
     """
     kkt = record.get("kkt") or {}
     wanted = list(fields)
@@ -233,21 +307,36 @@ def residual_summary(
         wanted += [f for f in QP_FIELDS if f not in wanted and f in kkt]
     if kkt.get("form") == "cone" or any(f in kkt or _CONE_FALLBACK[f] in kkt for f in CONE_FIELDS):
         wanted += [f for f in CONE_FIELDS if f not in wanted]
-    worst: float | None = None
-    complete = True
-    for field in wanted:
-        value = kkt.get(field)
-        if value is None and field in _CONE_FALLBACK:
-            value = kkt.get(_CONE_FALLBACK[field])
+    result = ResidualCheck(checked=wanted)
+    for name in wanted:
+        value = kkt.get(name)
+        if value is None and name in _CONE_FALLBACK:
+            value = kkt.get(_CONE_FALLBACK[name])
         try:
             number = float(value) if value is not None else None
         except (TypeError, ValueError):
             number = None
         if number is None or not math.isfinite(number):
-            complete = False
+            result.missing.append(name)
             continue
-        worst = number if worst is None else max(worst, number)
-    return worst, complete
+        if result.worst is None or number > result.worst:
+            result.worst, result.worst_field = number, name
+    return result
+
+
+def residual_summary(
+    record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
+) -> tuple[float | None, bool]:
+    """Return ``(worst, complete)`` for the listed KKT residuals of a record.
+
+    ``worst`` is the largest finite residual among the wanted fields (None if
+    there is none) and ``complete`` says whether every wanted field was
+    present and finite (see :func:`check_residuals` for which fields are
+    wanted). The two are reported separately so that a residual known to
+    fail is never hidden by another one being missing.
+    """
+    check = check_residuals(record, fields)
+    return check.worst, check.complete
 
 
 def worst_relative_residual(
@@ -277,10 +366,27 @@ def kkt_verify(
 
     A row whose status says a solution is present keeps that status only if
     the worst of ``fields`` (relative residuals computed by the harness
-    from the returned point, independently of the solver's own report) is
-    at or below ``tol``. Otherwise it becomes ``optimal_inaccurate`` and
-    ``metadata.kkt_verify`` records why. Rows with no residuals recorded
-    are demoted too unless ``missing_is_failure`` is False.
+    from the returned point, independently of the solver's own report;
+    cone- and QP-form records always add their cone distances and bound
+    multipliers, see :func:`check_residuals`) is at or below ``tol``.
+    Otherwise it becomes ``optimal_inaccurate`` and ``metadata.kkt_verify``
+    records why, which fields were checked and which one failed. Claimed
+    optima with residuals missing are demoted too unless
+    ``missing_is_failure`` is False. A row whose only unknown residuals are the distances to cones the
+    harness cannot project (``kkt.unsupported_cones``) is kept when the rest
+    pass, with the reason recorded and counted under ``unverified_cones``.
+
+    Infeasibility certificates (``primal_infeasible``, ``dual_infeasible``)
+    are held to the same ``tol``: their largest residual once scaled so that
+    the certificate's objective term is −1 (``kkt.cert_res``, rebuilt for
+    older records) must be at or below it, or the row becomes the matching
+    ``*_inaccurate`` status. A certificate row in which nothing fails but
+    not everything is known (the adapter recorded no certificate, as
+    several return none, or the distance to a cone the harness cannot
+    project is unknown) is kept whatever ``missing_is_failure`` says: that
+    is a gap in the adapter or the checker, not in the solver's accuracy.
+    The reason is recorded and the row counted under
+    ``unverified_certificates``.
 
     With ``promote``, the converse also applies: a solve the solver itself
     reported as inaccurate, iteration-limited or time-limited, but whose
@@ -291,64 +397,114 @@ def kkt_verify(
 
     Every solver in a comparison is held to the same ``tol`` regardless of
     what its own tolerance settings mean, which is what makes timings
-    across solvers comparable.
+    across solvers comparable. Unparseable lines (a torn last line) are
+    skipped and counted under ``skipped_lines``.
     """
     src = Path(run_dir)
     out = Path(out_dir)
     _check_no_overlap(out, [src])
-    _prepare_out_dir(out, overwrite)
-    records = _read_jsonl(src / "results.jsonl")
+    _refuse_existing(out, overwrite)
+    records, skipped = _read_jsonl(src / "results.jsonl")
     demoted: dict[str, int] = {}
     kept: dict[str, int] = {}
     missing: dict[str, int] = {}
     promoted: dict[str, int] = {}
+    unverified: dict[str, int] = {}
+    unverified_certificates: dict[str, int] = {}
+    checked_fields: set[str] = set()
+
+    def count(tally: dict[str, int], solver_id: str) -> None:
+        tally[solver_id] = tally.get(solver_id, 0) + 1
+
+    def annotate(row: dict[str, Any], **details: Any) -> None:
+        metadata = row.setdefault("metadata", {}) or {}
+        metadata["kkt_verify"] = {"tol": tol, **details, "original_status": row["status"]}
+        row["metadata"] = metadata
+
     for row in records:
         solver_id = str(row.get("solver_id"))
-        if row.get("status") in PROMOTABLE and promote:
-            worst = worst_relative_residual(row, fields)
-            if worst is not None and worst <= tol:
-                metadata = row.setdefault("metadata", {}) or {}
-                metadata["kkt_verify"] = {
-                    "tol": tol,
-                    "fields": list(fields),
-                    "worst": worst,
-                    "original_status": row["status"],
-                    "reason": f"worst relative residual {worst:.3e} <= {tol:.1e}",
-                }
-                row["metadata"] = metadata
+        row_status = row.get("status")
+        if row_status in PROMOTABLE and promote:
+            check = check_residuals(row, fields)
+            checked_fields.update(check.checked)
+            if check.complete and check.worst is not None and check.worst <= tol:
+                annotate(
+                    row,
+                    fields=check.checked,
+                    worst=check.worst,
+                    worst_field=check.worst_field,
+                    reason=f"worst relative residual {check.worst:.3e} ({check.worst_field}) <= {tol:.1e}",
+                )
                 row["status"] = status.OPTIMAL
-                promoted[solver_id] = promoted.get(solver_id, 0) + 1
+                count(promoted, solver_id)
             continue
-        if row.get("status") not in status.SOLUTION_PRESENT:
+        if row_status in _CERTIFICATE_DEMOTION:
+            kkt = row.get("kkt") or {}
+            cert, complete = certificate_check(kkt)
+            checked_fields.add("cert_res")
+            if cert is not None and cert > tol:
+                reason = f"certificate residual {cert:.3e} > {tol:.1e}"
+                if not complete:
+                    reason += " (some residuals unknown)"
+                annotate(row, fields=["cert_res"], worst=cert, worst_field="cert_res", reason=reason)
+                row["status"] = _CERTIFICATE_DEMOTION[row_status]
+                count(demoted, solver_id)
+                continue
+            if not complete:
+                # Nothing fails, but not everything is known: the adapter
+                # recorded no certificate (several return none), or the
+                # distance to a cone the harness cannot project is unknown.
+                # Neither says anything about the solver's accuracy, so the
+                # row is kept, like an optimal row with such cones.
+                if cert is None:
+                    reason = "no certificate recorded"
+                else:
+                    cones = kkt.get("unsupported_cones")
+                    unknown = f"unsupported cones {sorted(cones)}" if cones else "some residuals unknown"
+                    reason = f"certificate not fully checked ({unknown}); known residuals <= {tol:.1e}"
+                annotate(row, fields=["cert_res"], worst=cert,
+                         worst_field=None if cert is None else "cert_res", reason=reason)
+                count(unverified_certificates, solver_id)
+            count(kept, solver_id)
             continue
-        worst, complete = residual_summary(row, fields)
+        if row_status not in status.SOLUTION_PRESENT:
+            continue
+        check = check_residuals(row, fields)
+        checked_fields.update(check.checked)
+        worst = check.worst
         if worst is not None and worst > tol:
             # A residual that demonstrably fails demotes the row even when
             # other residuals are missing and missing ones are tolerated.
-            reason = f"worst relative residual {worst:.3e} > {tol:.1e}"
-            if not complete:
+            reason = f"worst relative residual {worst:.3e} ({check.worst_field}) > {tol:.1e}"
+            if not check.complete:
                 reason += " (some residuals missing)"
-        elif not complete:
-            missing[solver_id] = missing.get(solver_id, 0) + 1
+        elif not check.complete:
+            unsupported = (row.get("kkt") or {}).get("unsupported_cones")
+            if unsupported and worst is not None and set(check.missing) <= set(CONE_FIELDS):
+                # The point passes every residual the harness could compute;
+                # the cone distances are unknown, not failed.
+                annotate(
+                    row,
+                    fields=check.checked,
+                    worst=worst,
+                    worst_field=check.worst_field,
+                    reason=f"cone distances not checked for unsupported cones {sorted(unsupported)}; "
+                    f"other residuals <= {tol:.1e}",
+                )
+                count(unverified, solver_id)
+                count(kept, solver_id)
+                continue
+            count(missing, solver_id)
             if not missing_is_failure:
-                kept[solver_id] = kept.get(solver_id, 0) + 1
+                count(kept, solver_id)
                 continue
             reason = "no KKT residuals recorded" if worst is None else "incomplete KKT residuals"
         else:
-            kept[solver_id] = kept.get(solver_id, 0) + 1
+            count(kept, solver_id)
             continue
-        metadata = row.setdefault("metadata", {}) or {}
-        metadata["kkt_verify"] = {
-            "tol": tol,
-            "fields": list(fields),
-            "worst": worst,
-            "original_status": row["status"],
-            "reason": reason,
-        }
-        row["metadata"] = metadata
+        annotate(row, fields=check.checked, worst=worst, worst_field=check.worst_field, reason=reason)
         row["status"] = status.OPTIMAL_INACCURATE
-        demoted[solver_id] = demoted.get(solver_id, 0) + 1
-    _write_jsonl(out / "results.jsonl", records)
+        count(demoted, solver_id)
     manifest = _read_manifest(src)
     # The input run's own provenance (merge sources and their manifests, the
     # per-source selections, earlier verifications) is kept in full: a
@@ -359,12 +515,16 @@ def kkt_verify(
         "source": str(src),
         "tol": tol,
         "fields": list(fields),
+        "checked_fields": sorted(checked_fields),
         "missing_is_failure": missing_is_failure,
         "promote": promote,
         "kept": kept,
         "demoted": demoted,
         "promoted": promoted,
         "missing_residuals": missing,
+        "unverified_cones": unverified,
+        "unverified_certificates": unverified_certificates,
+        "skipped_lines": skipped,
     }
     if prior:
         summary["source_derived"] = prior
@@ -372,8 +532,10 @@ def kkt_verify(
             if key in prior:
                 summary[key] = prior[key]
     manifest["derived"] = summary
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    for name in _COPIED_FILES:
-        if (src / name).exists():
-            shutil.copy(src / name, out / name)
+    with _staged_out_dir(out, overwrite) as staging:
+        _write_jsonl(staging / "results.jsonl", records)
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        for name in _COPIED_FILES:
+            if (src / name).exists():
+                shutil.copy(src / name, staging / name)
     return summary

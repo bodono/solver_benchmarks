@@ -222,7 +222,8 @@ def test_metric_defaults_dispatch_per_metric():
 
     assert metric_defaults("run_time_seconds") == (1.0e3, 10.0)
     assert metric_defaults("iterations") == (1.0e6, 100.0)
-    assert metric_defaults("kkt.primal_res_rel") == (1.0, 0.0)
+    # KKT residuals shift by 1e-12 so an exact zero cannot collapse the mean.
+    assert metric_defaults("kkt.primal_res_rel") == (1.0, 1.0e-12)
     # Unknown metrics fall back to the run-time-style defaults.
     assert metric_defaults("unknown_column") == (1.0e3, 10.0)
 
@@ -245,9 +246,8 @@ def test_shifted_geomean_does_not_clamp_subunit_kkt_residuals():
     """Pre-fix ``_shifted_geomean`` floored ``values + shift`` at 1.0,
     which silently clobbered any KKT residual below 1.0 — so two
     successful solves with residuals ``[1e-8, 1e-6]`` reported a
-    geomean of 1.0 regardless of magnitude. With ``shift=0`` and the
-    KKT defaults, the floor must be at the smallest positive float so
-    sub-unit residuals propagate through.
+    geomean of 1.0 regardless of magnitude. With the KKT defaults'
+    1e-12 shift, sub-unit residuals propagate through.
     """
     frame = pd.DataFrame(
         [
@@ -256,8 +256,8 @@ def test_shifted_geomean_does_not_clamp_subunit_kkt_residuals():
         ]
     )
     geomean = shifted_geomean(frame, metric="kkt.primal_res_rel")
-    # Expected: sqrt(1e-8 * 1e-6) = 1e-7 (with shift=0).
-    assert geomean.iloc[0]["kkt.primal_res_rel"] == pytest.approx(1e-7, rel=1e-9)
+    # Expected: sqrt(1e-8 * 1e-6) = 1e-7, up to the 1e-12 shift.
+    assert geomean.iloc[0]["kkt.primal_res_rel"] == pytest.approx(1e-7, rel=1e-3)
 
 
 def test_shifted_geomean_runtime_results_unchanged_by_floor_change():
@@ -521,14 +521,15 @@ def test_solver_metrics_include_runtime_and_iteration_aggregates():
 
     assert by_solver.loc["solver_a", "completed"] == 2
     assert by_solver.loc["solver_a", "success_count"] == 1
+    # Totals cover every solve; means, medians and maxima the successful ones.
     assert by_solver.loc["solver_a", "run_time_total_seconds"] == pytest.approx(10.0)
-    assert by_solver.loc["solver_a", "run_time_mean_seconds"] == pytest.approx(5.0)
-    assert by_solver.loc["solver_a", "run_time_median_seconds"] == pytest.approx(5.0)
-    assert by_solver.loc["solver_a", "run_time_max_seconds"] == pytest.approx(9.0)
+    assert by_solver.loc["solver_a", "run_time_mean_seconds"] == pytest.approx(1.0)
+    assert by_solver.loc["solver_a", "run_time_median_seconds"] == pytest.approx(1.0)
+    assert by_solver.loc["solver_a", "run_time_max_seconds"] == pytest.approx(1.0)
     assert by_solver.loc["solver_a", "iterations_total"] == pytest.approx(100.0)
-    assert by_solver.loc["solver_a", "iterations_mean"] == pytest.approx(50.0)
-    assert by_solver.loc["solver_a", "iterations_median"] == pytest.approx(50.0)
-    assert by_solver.loc["solver_a", "iterations_max"] == pytest.approx(90.0)
+    assert by_solver.loc["solver_a", "iterations_mean"] == pytest.approx(10.0)
+    assert by_solver.loc["solver_a", "iterations_median"] == pytest.approx(10.0)
+    assert by_solver.loc["solver_a", "iterations_max"] == pytest.approx(10.0)
 
 
 def test_pairwise_and_outlier_reports():
@@ -1040,7 +1041,7 @@ def test_difficulty_scaling_buckets_problems_by_size():
     assert table["success_count"].tolist() == [2, 2, 2, 2]
     # Smallest bucket median runtime should be smaller than the largest
     bins = table.set_index("size_bin")
-    assert bins.loc[0, "median_time"] < bins.loc[3, "median_time"]
+    assert bins.loc[0, "median_run_time_seconds"] < bins.loc[3, "median_run_time_seconds"]
 
 
 def test_difficulty_scaling_handles_missing_size_field():

@@ -144,6 +144,31 @@ def test_kkt_certificate_summary_handles_mix_of_valid_and_invalid():
     assert by_solver.loc["b", "infeasible_count"] == 1
     assert by_solver.loc["b", "cert_count"] == 0
     assert by_solver.loc["b", "cert_valid"] == 0
+    assert by_solver.loc["b", "cert_invalid"] == 0
+
+
+def test_kkt_certificate_summary_separates_unchecked_from_invalid_certificates():
+    frame = pd.DataFrame(
+        [
+            {"solver_id": "a", "status": "primal_infeasible", "kkt.certificate": "primal_infeasible",
+             "kkt.valid": True},
+            # a complex PSD block: the certificate is there but cannot be checked
+            {"solver_id": "a", "status": "primal_infeasible", "kkt.certificate": "primal_infeasible",
+             "kkt.valid": None},
+            {"solver_id": "a", "status": "dual_infeasible", "kkt.certificate": "dual_infeasible",
+             "kkt.valid": False},
+            {"solver_id": "highs", "status": "primal_infeasible", "kkt.certificate": None, "kkt.valid": None},
+        ]
+    )
+    by_solver = kkt_certificate_summary(frame).set_index("solver_id")
+    assert by_solver.loc["a", ["cert_count", "cert_valid", "cert_invalid", "cert_unknown"]].tolist() == [3, 1, 1, 1]
+    assert by_solver.loc["highs", ["infeasible_count", "cert_count", "cert_invalid", "cert_unknown"]].tolist() == [
+        1, 0, 0, 0]
+    # A run in which no adapter recorded a certificate has no kkt.valid
+    # column at all; its claims are still not invalid certificates.
+    only_highs = pd.DataFrame([{"solver_id": "highs", "status": "primal_infeasible"}])
+    row = kkt_certificate_summary(only_highs).set_index("solver_id").loc["highs"]
+    assert row[["infeasible_count", "cert_count", "cert_invalid"]].tolist() == [1, 0, 0]
 
 
 def test_kkt_summary_empty_frame_returns_empty_table():

@@ -30,7 +30,7 @@ from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.outcomes import success_mask as solved_mask
 from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.profiles import (
-    deduplicate_for_pivot,
+    TIME_METRICS,
     performance_profile,
     shifted_geomean,
 )
@@ -38,10 +38,14 @@ from solver_benchmarks.analysis.tables import (
     difficulty_scaling,
     expected_results,
     failure_rates,
+    one_row_per_solve,
+    optimality_successes,
     performance_ratio_matrix,
     setup_solve_breakdown,
     status_matrix,
+    successful_metric_values,
 )
+from solver_benchmarks.core import status as status_codes
 
 logger = logging.getLogger(__name__)
 
@@ -63,24 +67,36 @@ def write_analysis_plots(
     output_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
     max_value: float | None = None,
+    results: pd.DataFrame | None = None,
+    expected: pd.DataFrame | None = None,
+    geomean_options: dict | None = None,
 ) -> list[Path]:
+    """Write the analysis plots of a run.
+
+    ``results``, ``expected`` and ``geomean_options`` let a caller that has
+    them already (``bench report``) skip loading them again. Without a
+    usable time limit (and no ``max_value``) the penalized time geomean is
+    skipped with a warning; every other plot is still written.
+    """
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    results = load_results(run_dir)
+    if results is None:
+        results = load_results(run_dir)
     if results.empty:
         return []
 
-    expected = expected_results(run_dir, repo_root=repo_root)
-    geomean_options = {
-        "max_value": max_value,
-        "timeout_seconds": geomean_time_limits(run_dir, metric=metric, max_value=max_value),
-    }
+    if expected is None:
+        expected = expected_results(run_dir, repo_root=repo_root)
+    if geomean_options is None:
+        geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
     paths = [
         _write_performance_profile(results, output_dir, metric, expected=expected),
-        _write_shifted_geomean(results, output_dir, metric, expected=expected, geomean_options=geomean_options),
-        _write_failure_rates(results, output_dir),
+        _write_shifted_geomean(results, output_dir, metric, expected=expected, geomean_options=geomean_options)
+        if geomean_options.get("available", True)
+        else None,
+        _write_failure_rates(results, output_dir, expected=expected),
         _write_cactus(results, output_dir, metric),
         _write_pairwise_scatter(results, output_dir, metric),
         _write_performance_ratio_heatmap(results, output_dir, metric),
@@ -92,6 +108,30 @@ def write_analysis_plots(
         _write_setup_solve_breakdown(results, output_dir),
     ]
     return [path for path in paths if path is not None]
+
+
+def penalized_geomean_options(run_dir: Path, *, metric: str, max_value: float | None) -> dict:
+    """Penalty options for the penalized geomean of ``metric``.
+
+    ``available`` is False, with the reason under ``unavailable_reason``,
+    when ``metric`` is a time and the manifest records no usable limit and
+    no ``max_value`` was given: the penalized time geomean is then left out
+    rather than the whole report or plot set.
+    """
+    try:
+        limits = geomean_time_limits(run_dir, metric=metric, max_value=max_value)
+    except ValueError as exc:
+        if metric not in TIME_METRICS or max_value is not None:
+            raise
+        logger.warning("Skipping the penalized %s geomean: %s", metric, exc)
+        return {"max_value": None, "timeout_seconds": None, "available": False, "unavailable_reason": str(exc)}
+    return {"max_value": max_value, "timeout_seconds": limits, "available": True}
+
+
+def geomean_kwargs(options: dict | None) -> dict:
+    """The ``shifted_geomean`` keyword arguments within penalty options."""
+    options = options or {}
+    return {key: options[key] for key in ("max_value", "timeout_seconds") if key in options}
 
 
 def _write_performance_profile(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None) -> Path | None:
@@ -119,7 +159,7 @@ def _write_performance_profile(results, output_dir: Path, metric: str, *, expect
 
 
 def _write_shifted_geomean(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None, geomean_options: dict | None = None) -> Path | None:
-    geomean = shifted_geomean(results, metric=metric, expected=expected, **(geomean_options or {}))
+    geomean = shifted_geomean(results, metric=metric, expected=expected, **geomean_kwargs(geomean_options))
     if geomean.empty:
         return None
 
@@ -136,8 +176,8 @@ def _write_shifted_geomean(results, output_dir: Path, metric: str, *, expected: 
     return path
 
 
-def _write_failure_rates(results, output_dir: Path) -> Path | None:
-    failures = failure_rates(results)
+def _write_failure_rates(results, output_dir: Path, *, expected: pd.DataFrame | None = None) -> Path | None:
+    failures = failure_rates(results, expected=expected)
     if failures.empty:
         return None
 
@@ -164,7 +204,10 @@ def _unique_problem_count(results: pd.DataFrame) -> int:
 def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
     if metric not in results:
         return None
-    successful = results[solved_mask(results)].copy()
+    # One row per solve, as in the profile: duplicated attempts (merged
+    # shards, resumes) would otherwise each add a step past 1.0.
+    deduped = one_row_per_solve(results, metric=metric)
+    successful = deduped[solved_mask(deduped)].copy()
     successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
     # Keep zero-duration successes (instantly-solved problems) so the
     # cactus curve correctly counts them; previously a strict ``> 0``
@@ -213,13 +256,11 @@ def _write_cactus(results, output_dir: Path, metric: str) -> Path | None:
 def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | None:
     if metric not in results:
         return None
-    successful = results[solved_mask(results)].copy()
-    successful[metric] = pd.to_numeric(successful[metric], errors="coerce")
-    successful = successful[np.isfinite(successful[metric]) & (successful[metric] > 0.0)]
+    # Floored like the profile and the speedup table (see successful_metric_values).
+    successful = successful_metric_values(results, metric, set(status_codes.SOLUTION_PRESENT))
 
     keys = ["dataset", "problem"] if "dataset" in successful.columns else ["problem"]
     index = keys[0] if len(keys) == 1 else keys
-    successful = deduplicate_for_pivot(successful, keys, metric)
     pivot = successful.pivot_table(
         index=index,
         columns="solver_id",
@@ -313,7 +354,7 @@ def _write_status_heatmap(results, output_dir: Path) -> Path | None:
     # Use apply(map) instead of replace + astype: a stray cell whose
     # string form is not in `statuses` would otherwise leak through
     # replace() and crash astype(float). With map we get NaN for the
-    # unrecognized cell, which the colormap renders as `set_bad`.
+    # unrecognized cell, which the colormap renders in its bad color.
     encoding = {name: idx for idx, name in enumerate(statuses)}
     encoded = matrix.apply(lambda col: col.map(encoding)).astype(float)
 
@@ -357,8 +398,7 @@ def _write_performance_ratio_heatmap(
     fig_height = min(24, max(4, 0.12 * len(ratios.index)))
     fig_width = min(18, max(6, 1.8 * len(ratios.columns)))
     fig, ax = plt.subplots(figsize=(fig_width, fig_height), constrained_layout=True)
-    cmap = plt.get_cmap("viridis").copy()
-    cmap.set_bad("#e5e7eb")
+    cmap = plt.get_cmap("viridis").with_extremes(bad="#e5e7eb")
     image = ax.imshow(encoded, aspect="auto", cmap=cmap, interpolation="nearest")
     ax.set_xticks(np.arange(len(ratios.columns)))
     ax.set_xticklabels(ratios.columns, rotation=45, ha="right")
@@ -378,22 +418,54 @@ def _write_performance_ratio_heatmap(
     return path
 
 
+# Exact-zero residuals (an easy problem solved to roundoff) are drawn at this
+# floor on the log axes rather than dropped, the same floor in every KKT plot.
+_KKT_ZERO_FLOOR = 1.0e-16
+
+_KKT_RESIDUAL_FIELDS = (
+    ("kkt.primal_res_rel", "primal_res_rel"),
+    ("kkt.dual_res_rel", "dual_res_rel"),
+    ("kkt.comp_slack", "comp_slack"),
+    ("kkt.duality_gap_rel", "duality_gap_rel"),
+)
+
+
+def _kkt_fields(results: pd.DataFrame) -> list[tuple[str, str]]:
+    """Residual columns the KKT plots draw, in order.
+
+    Complementarity is drawn scaled (``comp_slack_rel``, on the same axis
+    as the other relative residuals) when the records carry it, and as the
+    absolute ``comp_slack`` for records written before it existed.
+    """
+    fields = list(_KKT_RESIDUAL_FIELDS)
+    if "kkt.comp_slack_rel" in results:
+        fields[2] = ("kkt.comp_slack_rel", "comp_slack_rel")
+    return [(col, label) for col, label in fields if col in results]
+
+
+def _kkt_plot_rows(results: pd.DataFrame) -> pd.DataFrame:
+    """Successful optimality claims, one per solve (certificates carry no
+    residuals of these kinds)."""
+    return optimality_successes(results, set(status_codes.SOLUTION_PRESENT))
+
+
+def _floored_residuals(values: pd.Series) -> np.ndarray:
+    values = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    values = values[np.isfinite(values) & (values >= 0.0)]
+    return np.maximum(values, _KKT_ZERO_FLOOR)
+
+
 def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
-    residual_fields = [
-        ("kkt.primal_res_rel", "primal_res_rel"),
-        ("kkt.dual_res_rel", "dual_res_rel"),
-        ("kkt.comp_slack", "comp_slack"),
-        ("kkt.duality_gap_rel", "duality_gap_rel"),
-    ]
-    available = [(col, label) for col, label in residual_fields if col in results]
+    available = _kkt_fields(results)
     if not available:
         return None
 
-    successful = results[solved_mask(results)].copy()
+    successful = _kkt_plot_rows(results)
     if successful.empty:
         return None
 
-    solver_ids = sorted(successful["solver_id"].dropna().unique())
+    groups = {str(solver_id): group for solver_id, group in successful.groupby("solver_id", observed=True)}
+    solver_ids = sorted(groups)
     if not solver_ids:
         return None
 
@@ -406,13 +478,10 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
         data = []
         labels = []
         for solver_id in solver_ids:
-            values = pd.to_numeric(
-                successful[successful["solver_id"] == solver_id][col], errors="coerce"
-            ).dropna()
-            values = values[np.isfinite(values) & (values > 0.0)]
-            if values.empty:
+            values = _floored_residuals(groups[solver_id][col])
+            if values.size == 0:
                 continue
-            data.append(np.log10(values.to_numpy()))
+            data.append(np.log10(values))
             labels.append(solver_id)
         if not data:
             ax.set_axis_off()
@@ -427,7 +496,7 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
             xs = rng.normal(idx + 1, 0.07, arr.size)
             ax.scatter(xs, arr, alpha=0.45, s=12, color="#1f77b4", edgecolors="none")
         ax.set_title(label)
-        ax.set_ylabel("log10(residual)")
+        ax.set_ylabel("log10(residual), zeros at -16")
         ax.grid(True, axis="y", alpha=0.25)
         for tick in ax.get_xticklabels():
             tick.set_rotation(30)
@@ -444,20 +513,12 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
     return path
 
 
-_KKT_RESIDUAL_FIELDS = (
-    ("kkt.primal_res_rel", "primal_res_rel"),
-    ("kkt.dual_res_rel", "dual_res_rel"),
-    ("kkt.comp_slack", "comp_slack"),
-    ("kkt.duality_gap_rel", "duality_gap_rel"),
-)
-
-
 def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
-    available = [(col, label) for col, label in _KKT_RESIDUAL_FIELDS if col in results]
+    available = _kkt_fields(results)
     if not available:
         return None
 
-    successful = results[solved_mask(results)].copy()
+    successful = _kkt_plot_rows(results).copy()
     if successful.empty:
         return None
 
@@ -466,10 +527,10 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
     pivot_index = keys[0] if len(keys) == 1 else keys
     for col, label in available:
         successful[col] = pd.to_numeric(successful[col], errors="coerce")
-        frame = successful[np.isfinite(successful[col]) & (successful[col] > 0.0)]
+        frame = successful[np.isfinite(successful[col]) & (successful[col] >= 0.0)]
         if frame.empty:
             continue
-        frame = deduplicate_for_pivot(frame, keys, col)
+        frame = frame.assign(**{col: frame[col].clip(lower=_KKT_ZERO_FLOOR)})
         pivot = frame.pivot_table(
             index=pivot_index,
             columns="solver_id",
@@ -495,8 +556,7 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
         constrained_layout=True,
         squeeze=False,
     )
-    cmap = plt.get_cmap("viridis").copy()
-    cmap.set_bad("#e5e7eb")
+    cmap = plt.get_cmap("viridis").with_extremes(bad="#e5e7eb")
     for ax, (label, pivot) in zip(axes.ravel(), pivots):
         encoded = np.log10(pivot.astype(float))
         image = ax.imshow(encoded, aspect="auto", cmap=cmap, interpolation="nearest")
@@ -510,7 +570,7 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
             ax.set_ylabel(f"{len(pivot.index)} problems")
         ax.set_title(label)
         cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label("log10(residual)")
+        cbar.set_label("log10(residual), zeros at -16")
 
     fig.suptitle("KKT Residual Heatmap (successful solves)")
     path = output_dir / "kkt_residual_heatmap.png"
@@ -520,15 +580,16 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
 
 
 def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
-    available = [(col, label) for col, label in _KKT_RESIDUAL_FIELDS if col in results]
+    available = _kkt_fields(results)
     if not available:
         return None
 
-    successful = results[solved_mask(results)].copy()
+    successful = _kkt_plot_rows(results)
     if successful.empty:
         return None
 
-    solver_ids = sorted(successful["solver_id"].dropna().unique())
+    groups = {str(solver_id): group for solver_id, group in successful.groupby("solver_id", observed=True)}
+    solver_ids = sorted(groups)
     if not solver_ids:
         return None
 
@@ -550,17 +611,11 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
     for ax, (col, label) in zip(axes.ravel(), available):
         per_solver = []
         for solver_id in solver_ids:
-            series = pd.to_numeric(
-                successful.loc[successful["solver_id"] == solver_id, col], errors="coerce"
-            )
-            series = series[np.isfinite(series)].to_numpy()
+            series = _floored_residuals(groups[solver_id][col])
             if series.size == 0:
                 continue
-            series = np.where(series <= 0.0, 1e-16, series)
-            denominator = float(series.size)
-            fractions = np.array(
-                [(series <= t).sum() / denominator for t in thresholds]
-            )
+            sorted_series = np.sort(series)
+            fractions = np.searchsorted(sorted_series, thresholds, side="right") / float(series.size)
             per_solver.append((solver_id, fractions))
         if not per_solver:
             ax.set_axis_off()
@@ -594,7 +649,8 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
     table = difficulty_scaling(results, metric=metric)
     if table.empty:
         return None
-    plottable = table.dropna(subset=["median_time"])
+    median_column = f"median_{metric}"
+    plottable = table.dropna(subset=[median_column])
     if plottable.empty:
         return None
 
@@ -605,7 +661,7 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
         midpoints = 0.5 * (ordered["size_min"] + ordered["size_max"])
         ax.plot(
             midpoints,
-            ordered["median_time"],
+            ordered[median_column],
             marker="o",
             linewidth=2,
             label=str(solver_id),
@@ -615,7 +671,7 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
         plt.close(fig)
         return None
     ax.set_xscale("log")
-    if (plottable["median_time"] > 0).any():
+    if (plottable[median_column] > 0).any():
         ax.set_yscale("log")
     ax.set_xlabel("Problem size (n)")
     ax.set_ylabel(f"Median {metric} (successes)")
