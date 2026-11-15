@@ -511,8 +511,8 @@ that is not positive, and a `max_iter` below 1. HiGHS's on/off options
 since YAML reads an unquoted `off` as `false`. Translated aliases are listed on
 the result's `info.settings_translated`.
 
-In the QP form `l <= A x <= u`, every adapter treats a bound with magnitude
-`>= 1e19` on the open side as infinite (the datasets write `+-1e20`, sometimes
+In the QP form `l <= A x <= u`, every adapter named above (MOSEK keeps its own
+`1e20` cutoff) treats a bound with magnitude `>= 1e19` on the open side as infinite (the datasets write `+-1e20`, sometimes
 with a few ULPs of error; the transform layer and the Maros-Meszaros and QPS
 readers use the same cutoff), and passes true infinities to its solver. Rows
 with no finite bound constrain nothing and are not passed to OSQP, PIQP,

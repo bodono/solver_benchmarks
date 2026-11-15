@@ -209,7 +209,10 @@ def _map_qtqp_status(raw_status, *, hit_iteration_limit: bool = False) -> str:
     qtqp returns ``almost_solved`` when it salvages its best iterate after
     running out of iterations or after a numerical breakdown. The first is a
     solve stopped by its iteration limit and is reported as such; the second
-    is an inaccurate solution.
+    is an inaccurate solution. qtqp also answers ``almost_solved`` when
+    ``max_iter`` is exactly the number of iterations the solve needs, so that
+    converged point is reported as ``max_iter_reached`` too (OSQP would say
+    optimal there); ``bench kkt-verify --promote`` recovers it.
     """
     if str(raw_status) == "almost_solved" and hit_iteration_limit:
         return status.MAX_ITER_REACHED
