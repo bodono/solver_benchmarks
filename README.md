@@ -342,7 +342,7 @@ Useful dataset options:
 | `libsvm_qp` | `gamma=<float>` | RBF kernel bandwidth; defaults to `1 / num_features`. |
 | `libsvm_qp` | `C=<float>` | SVM regularization upper bound on dual variables (default `1.0`). |
 | `libsvm_qp` | `risk_aversion=<float>` | Markowitz `λ` in the objective `½ w'Σw − λ μ'w` (default `1.0`). |
-| `libsvm_qp` | `max_samples=<int>` | Deterministically subsample to this many rows (default `200`). |
+| `libsvm_qp` | `max_samples=<int>` | Deterministically subsample to this many rows (default `200`): rows `0, k, 2k, ...` with `k = n // max_samples`, the first `max_samples` of them, so a file with fewer than twice that many rows contributes its first `max_samples` rows. |
 | `libsvm_qp` | `subset=default`, `all`, or comma-separated names | Filter to a subset of LIBSVM datasets. |
 
 ### Filtering by file size

@@ -472,9 +472,15 @@ def _subsample(
 ) -> tuple[sp.spmatrix, np.ndarray]:
     """Deterministically subsample to at most ``max_samples`` rows.
 
-    Selection is deterministic (every k-th row) rather than random so
-    repeat runs of the same dataset produce the same QP and the
-    benchmark's resume / cache-hash logic stays consistent.
+    Selection is deterministic rather than random so repeat runs of the
+    same dataset produce the same QP and the benchmark's resume /
+    cache-hash logic stays consistent. The rows kept are ``0, k, 2k, ...``
+    with ``k = n // max_samples``, the first ``max_samples`` of them: with
+    fewer than ``2 * max_samples`` rows (``k = 1``) that is the first
+    ``max_samples`` rows of the file, and in general the last
+    ``n - k * max_samples`` rows are never used. (Spreading the rows over
+    the whole file would change every default instance, so it is left as
+    it is.)
 
     Raises ``ValueError`` for ``max_samples < 1`` so a config typo
     like ``max_samples: 0`` surfaces immediately rather than as a
