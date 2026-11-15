@@ -1,4 +1,4 @@
-"""NVIDIA cuOpt adapter (GPU PDLP for LP and QP).
+"""NVIDIA cuOpt adapter (GPU solver: PDLP for LPs, barrier for QPs).
 
 cuOpt solves ``min c'x + (1/2) x'(Q + Q')x`` subject to
 ``cl <= A x <= cu`` and ``vl <= x <= vu`` on the GPU. The harness QP form
