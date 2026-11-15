@@ -104,13 +104,8 @@ class Cpo3SolverAdapter(SolverAdapter):
         return True
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
-        try:
-            import cpo3
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable(
-                "Install with the cpo3 extra (pip install cpo3) to use cpo3"
-            ) from exc
-
+        # Problems cpo3 cannot take are skipped before cpo3 is imported, so the
+        # skip does not depend on the installation.
         if problem.kind == QP:
             p, c, a, b, cone_dict = _qp_data(problem.qp)
         elif problem.kind == CONE:
@@ -123,6 +118,12 @@ class Cpo3SolverAdapter(SolverAdapter):
                 status=status.SKIPPED_UNSUPPORTED,
                 info={"reason": f"cpo3 does not support problem kind {problem.kind!r}"},
             )
+        try:
+            import cpo3
+        except ModuleNotFoundError as exc:
+            raise SolverUnavailable(
+                "Install with the cpo3 extra (pip install cpo3) to use cpo3"
+            ) from exc
 
         settings = settings_with_defaults(self.settings)
         time_limit = pop_time_limit(settings)
@@ -150,7 +151,6 @@ class Cpo3SolverAdapter(SolverAdapter):
         start = time.perf_counter()
         try:
             cpo3_problem = cpo3.Problem(P=p if p.nnz else None, c=c, A=a, b=b, cones=cones)
-            setup_elapsed = time.perf_counter() - start
             solution = cpo3.solve(cpo3_problem, settings=cpo3_settings)
         except RuntimeError as exc:  # numerical failures raise rather than returning a status
             elapsed = time.perf_counter() - start
@@ -190,7 +190,9 @@ class Cpo3SolverAdapter(SolverAdapter):
             else None,
             iterations=_maybe_int(getattr(info, "iters", None)),
             run_time_seconds=elapsed,
-            setup_time_seconds=setup_elapsed,
+            # cpo3 reports one elapsed time, presolve, equilibration and every
+            # factorization included, so there is no setup time comparable to
+            # OSQP's or PIQP's; presolve_time stays on info.
             solve_time_seconds=_maybe_float(getattr(info, "solve_time", None)),
             info=result_info,
             kkt=_compute_kkt(mapped, solution, p, c, a, b, cone_dict),

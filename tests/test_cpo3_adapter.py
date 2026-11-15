@@ -119,9 +119,82 @@ def test_cpo3_records_release_info_fields_and_timing():
     # Earlier report columns stay populated from the renamed counters.
     assert info["kkt_solves"] == info["primary_solves"]
     assert info["refinement_passes"] == info["refinement_solves"]
-    assert result.setup_time_seconds is not None and result.setup_time_seconds >= 0
+    assert result.setup_time_seconds is None
     assert result.solve_time_seconds is not None and result.solve_time_seconds >= 0
-    assert result.run_time_seconds >= result.setup_time_seconds
+    assert result.run_time_seconds >= 0
+
+
+def _mixed_qp(seed=0, m=30, n=40):
+    # Random convex QP with equality, one-sided and two-sided rows that
+    # cpo3's presolve cannot solve on its own.
+    rng = np.random.default_rng(seed)
+    a = sp.random(m, n, density=0.3, random_state=rng, format="csc")
+    x0 = rng.normal(size=n)
+    ax0 = a @ x0
+    l = ax0 - rng.uniform(0.1, 1.0, m)
+    u = ax0 + rng.uniform(0.1, 1.0, m)
+    l[:5] = u[:5] = ax0[:5]
+    l[5:15] = -np.inf
+    u[15:20] = np.inf
+    g = rng.normal(size=(n, n))
+    return {
+        "P": sp.csc_matrix(g @ g.T / n + 1e-2 * np.eye(n)),
+        "q": rng.normal(size=n),
+        "A": a,
+        "l": l,
+        "u": u,
+    }
+
+
+def test_cpo3_interior_point_path_matches_clarabel():
+    pytest.importorskip("cpo3")
+    pytest.importorskip("clarabel")
+    from solver_benchmarks.solvers.clarabel_adapter import ClarabelSolverAdapter
+
+    qp = _mixed_qp()
+    result = _adapter(presolve=False).solve(_problem("mixed", qp), Path(tempfile.mkdtemp()))
+    assert result.status == status.OPTIMAL, result.info
+    # The solve really ran interior-point iterations and factorizations.
+    assert result.iterations > 0
+    assert result.info["factorizations"] > 0 and result.info["primary_solves"] > 0
+    assert result.info["kkt_solves"] == result.info["primary_solves"] > 0
+    for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
+        assert result.kkt[field] < 1e-6, field
+    reference = ClarabelSolverAdapter({"verbose": False}).solve(
+        _problem("mixed", qp), Path(tempfile.mkdtemp())
+    )
+    assert reference.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-6, abs=1e-8)
+
+
+@pytest.mark.parametrize(
+    "lp, expected, certificate",
+    [
+        # x >= 1 and x <= 0
+        (
+            {"q": np.ones(1), "A": np.array([[1.0], [1.0]]),
+             "l": np.array([1.0, -np.inf]), "u": np.array([np.inf, 0.0])},
+            status.PRIMAL_INFEASIBLE,
+            "primal_infeasible",
+        ),
+        # min -x1 - x2 s.t. x1 - x2 <= 1, x >= 0
+        (
+            {"q": -np.ones(2), "A": np.array([[1.0, -1.0], [1.0, 0.0], [0.0, 1.0]]),
+             "l": np.array([-np.inf, 0.0, 0.0]), "u": np.array([1.0, np.inf, np.inf])},
+            status.DUAL_INFEASIBLE,
+            "dual_infeasible",
+        ),
+    ],
+)
+def test_cpo3_interior_point_certificates_without_presolve(lp, expected, certificate):
+    pytest.importorskip("cpo3")
+    n = lp["q"].size
+    qp = {"P": sp.csc_matrix((n, n)), "q": lp["q"], "A": sp.csc_matrix(lp["A"]),
+          "l": lp["l"], "u": lp["u"]}
+    result = _adapter(presolve=False).solve(_problem("cert", qp), Path(tempfile.mkdtemp()))
+    assert result.status == expected, result.info
+    assert result.iterations > 0
+    assert result.kkt["certificate"] == certificate and result.kkt["valid"]
 
 
 def test_cpo3_solves_cone_form_lp_with_zero_and_nonnegative_cones():

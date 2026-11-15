@@ -31,7 +31,9 @@ The `all` extra installs open-source solver dependencies declared by the package
 including QTQP, cpo3, SCS, OSQP, Clarabel, ECOS, CVXOPT, HiGHS, PIQP, OR-Tools/PDLP,
 PyYAML, and pytest. ProxQP and SDPA are included on Python versions where their
 wheels are available; currently they are skipped on Python 3.14 by dependency
-markers.
+markers. cpo3 publishes wheels for Linux x86-64, Windows x86-64 and macOS; on
+other platforms (e.g. Linux aarch64) pip builds it from source, which needs a
+Rust toolchain.
 
 Commercial solvers are optional and must be installed separately with valid licenses:
 
