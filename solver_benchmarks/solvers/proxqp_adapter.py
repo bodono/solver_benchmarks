@@ -141,8 +141,14 @@ def _duality_gap_settings(settings: dict, proxsuite) -> dict:
     off). The adapter enables the check and, unless given, sets its
     tolerances to the run's ``eps_abs`` / ``eps_rel`` (ProxQP's own defaults,
     1e-5 and 0, when those are not set), so a ProxQP "solved" means the gap
-    is closed to the same accuracy as the residuals. Returns what was used,
-    for ``info``.
+    is closed to the same accuracy as the residuals.
+
+    The gap is a difference of objective-sized terms, so an absolute-only
+    test (``eps_rel`` 0, ProxQP's default) cannot be met in double precision
+    once the objective is large: at ``eps_abs`` 1e-9, QSCAGR25 (objective
+    2e8) ran to ``max_iter`` and QPCBOEI1 ended in a false infeasibility. With
+    ``eps_rel`` 0, ``eps_abs`` is therefore also the gap's relative tolerance.
+    Returns what was used, for ``info``.
     """
     check = bool(settings.setdefault("check_duality_gap", True))
     if not check:
@@ -151,13 +157,21 @@ def _duality_gap_settings(settings: dict, proxsuite) -> dict:
     defaults = settings_class() if settings_class is not None else None
     default_abs = getattr(defaults, "eps_abs", _PROXQP_DEFAULT_EPS_ABS)
     default_rel = getattr(defaults, "eps_rel", _PROXQP_DEFAULT_EPS_REL)
-    settings.setdefault("eps_duality_gap_abs", float(settings.get("eps_abs", default_abs)))
-    settings.setdefault("eps_duality_gap_rel", float(settings.get("eps_rel", default_rel)))
+    eps_abs = float(_given(settings, "eps_abs", default_abs))
+    eps_rel = float(_given(settings, "eps_rel", default_rel))
+    settings.setdefault("eps_duality_gap_abs", eps_abs)
+    settings.setdefault("eps_duality_gap_rel", eps_rel if eps_rel > 0 else eps_abs)
     return {
         "check_duality_gap": True,
         "eps_duality_gap_abs": float(settings["eps_duality_gap_abs"]),
         "eps_duality_gap_rel": float(settings["eps_duality_gap_rel"]),
     }
+
+
+def _given(settings: dict, key: str, default):
+    """``settings[key]``, or ``default`` if it is absent or None (ProxQP's "unset")."""
+    value = settings.get(key)
+    return default if value is None else value
 
 
 def _is_number(value) -> bool:

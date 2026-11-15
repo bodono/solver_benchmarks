@@ -201,9 +201,10 @@ def test_proxqp_checks_the_duality_gap_by_default(tmp_path):
     assert result.status == status.OPTIMAL
     assert result.objective_value == pytest.approx(1.0, abs=1e-4)
     assert result.info["check_duality_gap"] is True
-    # Derived from ProxQP's own eps_abs / eps_rel defaults.
+    # Derived from ProxQP's own eps_abs / eps_rel defaults (1e-5 and 0); with
+    # eps_rel 0, eps_abs is the relative gap tolerance too.
     assert result.info["eps_duality_gap_abs"] == pytest.approx(1e-5)
-    assert result.info["eps_duality_gap_rel"] == 0.0
+    assert result.info["eps_duality_gap_rel"] == pytest.approx(1e-5)
 
 
 def test_proxqp_duality_gap_tolerances_follow_eps(tmp_path):
@@ -213,6 +214,22 @@ def test_proxqp_duality_gap_tolerances_follow_eps(tmp_path):
     result = _solve("proxqp", {"eps": 1e-8, "eps_duality_gap_rel": 1e-3}, tmp_path, _one_variable_lp())
     assert result.info["eps_duality_gap_abs"] == 1e-8
     assert result.info["eps_duality_gap_rel"] == 1e-3
+    # An explicit zero relative gap tolerance is kept.
+    result = _solve("proxqp", {"eps_abs": 1e-9, "eps_duality_gap_rel": 0.0}, tmp_path, _one_variable_lp())
+    assert result.info["eps_duality_gap_rel"] == 0.0
+
+
+@pytest.mark.parametrize("settings", [{"eps_abs": 1e-9}, {"eps_abs": 1e-9, "eps_rel": 0.0}])
+def test_proxqp_relative_gap_tolerance_falls_back_to_eps_abs(settings, tmp_path):
+    # An absolute-only gap test at 1e-9 is below double precision once the
+    # objective is large: Maros-Meszaros QSCAGR25 (objective 2e8) ran to
+    # max_iter and QPCBOEI1 ended "primal infeasible"; with the relative part
+    # at eps_abs both solve (QSCAGR25 in the 804 iterations it took without
+    # the gap check).
+    result = _solve("proxqp", settings, tmp_path, _one_variable_lp())
+    assert result.status == status.OPTIMAL
+    assert result.info["eps_duality_gap_abs"] == 1e-9
+    assert result.info["eps_duality_gap_rel"] == 1e-9
 
 
 def test_proxqp_duality_gap_check_can_be_turned_off(tmp_path):
