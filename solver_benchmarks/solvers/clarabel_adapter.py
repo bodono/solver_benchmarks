@@ -1,4 +1,17 @@
-"""Clarabel adapter."""
+"""Clarabel adapter.
+
+QPs are converted to zero / nonnegative cone form; cone problems pass through
+with their zero, nonnegative, second-order, PSD, exponential (``ep``) and
+power (``p`` with ``0 < alpha < 1``) cones. Clarabel's exponential cone is the
+canonical ``(x, y, z)`` with ``y exp(x / y) <= z`` and its power cone is
+``x^alpha y^(1 - alpha) >= |z|``, the same orientation as SCS, so those rows
+pass through unchanged. Dual exponential (``ed``) and dual power cones
+(``p`` with negative alpha) are skipped as unsupported.
+
+The harness aliases ``eps`` / ``eps_abs`` / ``eps_rel`` map onto ``tol_feas``,
+``tol_gap_abs`` and ``tol_gap_rel`` (recorded in ``info.settings_translated``);
+``max_iter`` and ``time_limit`` are Clarabel's own names.
+"""
 
 from __future__ import annotations
 
@@ -68,6 +81,7 @@ class ClarabelSolverAdapter(SolverAdapter):
         threads = pop_threads(normalized_settings)
         if time_limit is not None:
             normalized_settings["time_limit"] = float(time_limit)
+        translated = translate_settings(normalized_settings)
         settings = clarabel.DefaultSettings()
         threads_ignored = False
         if threads is not None and threads >= 1:
@@ -113,21 +127,66 @@ class ClarabelSolverAdapter(SolverAdapter):
             "r_dual": getattr(solution, "r_dual", None),
             "solve_time": getattr(solution, "solve_time", None),
         }
-        linear_info = solver.get_info().linsolver
-        for field in ("factorizations", "kkt_solves", "refinement_passes"):
-            value = getattr(linear_info, field, None)
-            if value is not None:
-                info[field] = value
+        info.update(_linear_solver_counters(solver))
         if threads_ignored:
             mark_threads_ignored(info, threads)
+        if translated:
+            info["settings_translated"] = translated
+        # Clarabel fills obj_val for every status; only a claimed solution
+        # has an objective (the KKT record keeps an iterate's primal_obj).
+        objective_present = mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(getattr(solution, "obj_val", None)),
+            objective_value=(
+                _maybe_float(getattr(solution, "obj_val", None)) if objective_present else None
+            ),
             iterations=_maybe_int(getattr(solution, "iterations", None)),
             run_time_seconds=elapsed,
             info=info,
             kkt=kkt_dict,
         )
+
+
+def translate_settings(settings: dict) -> dict:
+    """Map the harness aliases ``eps``, ``eps_abs``, ``eps_rel`` onto Clarabel's
+    names, in place, as the cpo3 and QTQP adapters do.
+
+    ``eps_abs`` (or ``eps``) supplies ``tol_feas`` and ``tol_gap_abs``,
+    ``eps_rel`` (or ``eps``) supplies ``tol_gap_rel``. An explicit native value
+    always wins, and only settings actually inserted are reported.
+    """
+    eps = settings.pop("eps", None)
+    eps_abs = settings.pop("eps_abs", eps)
+    eps_rel = settings.pop("eps_rel", eps)
+    translated: dict = {}
+    for key, value in (
+        ("tol_feas", eps_abs),
+        ("tol_gap_abs", eps_abs),
+        ("tol_gap_rel", eps_rel),
+    ):
+        if value is not None and key not in settings:
+            settings[key] = float(value)
+            translated[key] = float(value)
+    return translated
+
+
+def _linear_solver_counters(solver) -> dict:
+    """Factorization / KKT-solve counters, when the installed Clarabel has them.
+
+    ``DefaultSolver.get_info`` only exists from clarabel 0.11; older releases
+    allowed by the extra would otherwise lose a finished solve to an
+    AttributeError here.
+    """
+    get_info = getattr(solver, "get_info", None)
+    if get_info is None:
+        return {}
+    linear_info = getattr(get_info(), "linsolver", None)
+    counters: dict = {}
+    for field in ("factorizations", "kkt_solves", "refinement_passes"):
+        value = getattr(linear_info, field, None)
+        if value is not None:
+            counters[field] = value
+    return counters
 
 
 def _compute_kkt(mapped_status, solution, problem, p, q, a, b, cone_dict):
@@ -295,6 +354,35 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
                     keep_rows.extend(range(row, row + triangle_dim))
                     cone_dict.setdefault("s", []).append(dim)
                 row += triangle_dim
+            continue
+        if name == "ep":
+            # Same (x, y, z), y exp(x / y) <= z convention: rows pass through.
+            count = int(value)
+            if count:
+                cones.extend(clarabel.ExponentialConeT() for _ in range(count))
+                keep_rows.extend(range(row, row + 3 * count))
+                cone_dict["ep"] = cone_dict.get("ep", 0) + count
+            row += 3 * count
+            continue
+        if name == "p":
+            alphas = [float(alpha) for alpha in _as_list(value)]
+            dual = [alpha for alpha in alphas if not 0.0 < alpha < 1.0]
+            if dual:
+                # SCS encodes the dual power cone as a negative alpha;
+                # Clarabel's PowerConeT is the primal cone only.
+                return SolverResult(
+                    status=status.SKIPPED_UNSUPPORTED,
+                    info={
+                        "reason": (
+                            "Clarabel adapter supports power cones with 0 < alpha < 1 "
+                            f"only (got {dual!r})"
+                        )
+                    },
+                )
+            cones.extend(clarabel.PowerConeT(alpha) for alpha in alphas)
+            keep_rows.extend(range(row, row + 3 * len(alphas)))
+            cone_dict.setdefault("p", []).extend(alphas)
+            row += 3 * len(alphas)
             continue
         return SolverResult(
             status=status.SKIPPED_UNSUPPORTED,
