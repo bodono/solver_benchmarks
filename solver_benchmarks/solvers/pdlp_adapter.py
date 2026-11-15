@@ -33,7 +33,10 @@ from .base import (
     pop_time_limit,
     settings_with_defaults,
 )
+from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
+# The datasets' documented infinity sentinel. Bounds are normalized with the
+# shared cutoff in qp_split (|bound| >= 1e19 is infinite) before use.
 INF_BOUND = 1.0e20
 # Protobuf messages must be smaller than 2 GiB, including the request envelope.
 MAX_PROTOBUF_BYTES = (1 << 31) - 1
@@ -73,10 +76,7 @@ class PDLPSolverAdapter(SolverAdapter):
         # Count exactly the entries the builder will retain: COO duplicates may
         # merge on conversion, and fully unbounded QP rows are omitted entirely.
         a = qp["A"]
-        retained_rows = ~(
-            (np.asarray(qp["l"], dtype=float) <= -INF_BOUND)
-            & (np.asarray(qp["u"], dtype=float) >= INF_BOUND)
-        )
+        retained_rows = ~free_row_mask(qp["l"], qp["u"])
         if (
             sp.issparse(a) and a.format in {"csr", "csc"}
             and a.has_canonical_format and np.all(retained_rows)
@@ -90,9 +90,12 @@ class PDLPSolverAdapter(SolverAdapter):
         if oversized is not None:
             return oversized
         model = _build_lp_model_from_qp(dict(qp, A=a))
+        row_count = a.shape[0]
+        retained = np.flatnonzero(retained_rows)
 
         def compute_kkt(mapped_status, x, y):
-            return _qp_kkt(mapped_status, qp, x, y)
+            # PDLP's dual has one entry per retained row; free rows get zero.
+            return _qp_kkt(mapped_status, qp, x, scatter_rows(row_count, retained, y))
 
         return _solve_model(model, self.settings, artifacts_dir, compute_kkt)
 
@@ -168,8 +171,7 @@ def _build_lp_model_from_qp(qp: dict):
 
     a = sp.csr_matrix(qp["A"])
     q = np.asarray(qp["q"], dtype=float)
-    l = np.asarray(qp["l"], dtype=float)
-    u = np.asarray(qp["u"], dtype=float)
+    l, u = normalize_qp_bounds(qp["l"], qp["u"])
 
     model = linear_solver_pb2.MPModelProto()
     model.name = "solver_benchmarks_pdlp"
@@ -187,7 +189,7 @@ def _build_lp_model_from_qp(qp: dict):
     for row_index in range(a.shape[0]):
         lower = float(l[row_index])
         upper = float(u[row_index])
-        if lower <= -INF_BOUND and upper >= INF_BOUND:
+        if lower == -np.inf and upper == np.inf:
             continue
         constraint = linear_solver_pb2.MPConstraintProto(name=f"constraint_{row_index}")
         start = a.indptr[row_index]
@@ -199,8 +201,8 @@ def _build_lp_model_from_qp(qp: dict):
         # 0 for lower_bound and upper_bound, so a one-sided constraint
         # ``Ax <= u`` whose lower_bound we leave unset would silently
         # become ``0 <= Ax <= u`` instead of ``-inf <= Ax <= u``.
-        constraint.lower_bound = lower if lower > -INF_BOUND else -np.inf
-        constraint.upper_bound = upper if upper < INF_BOUND else np.inf
+        constraint.lower_bound = lower
+        constraint.upper_bound = upper
         model.constraint.append(constraint)
     return model
 
@@ -319,10 +321,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     y = -np.asarray(response.dual_value, dtype=float) if len(response.dual_value) else None
     kkt_dict = None
     if compute_kkt is not None and x is not None:
-        try:
-            kkt_dict = compute_kkt(mapped_status, x, y)
-        except Exception:
-            kkt_dict = None
+        kkt_dict = compute_kkt(mapped_status, x, y)
 
     info = {
         "termination_reason": solve_log_pb2.TerminationReason.Name(

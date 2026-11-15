@@ -20,6 +20,7 @@ from .base import (
     pop_time_limit,
     settings_with_defaults,
 )
+from .qp_split import normalize_qp_bounds
 
 
 class CPLEXSolverAdapter(SolverAdapter):
@@ -49,8 +50,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         q = np.asarray(qp["q"], dtype=float)
         p = sp.coo_matrix(qp["P"])
         a = sp.csr_matrix(qp["A"])
-        l = np.asarray(qp["l"], dtype=float)
-        u = np.asarray(qp["u"], dtype=float)
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
         n = int(qp.get("n", q.shape[0]))
         model = cplex.Cplex()
         # Always end() the model so the C-level state and license token

@@ -30,8 +30,7 @@ from .base import (
     pop_time_limit,
     settings_with_defaults,
 )
-
-INF_BOUND = 1.0e20
+from .qp_split import normalize_qp_bounds
 
 
 def _import_cuopt():
@@ -43,13 +42,6 @@ def _import_cuopt():
             "Install cuopt-cu12 (NVIDIA pip index) on a CUDA machine to use cuOpt"
         ) from exc
     return data_model, solver, solver_settings
-
-
-def _clean_bounds(v: np.ndarray) -> np.ndarray:
-    out = np.asarray(v, dtype=np.float64).copy()
-    out[out <= -INF_BOUND] = -np.inf
-    out[out >= INF_BOUND] = np.inf
-    return out
 
 
 def _termination_name(solution) -> str:
@@ -130,8 +122,7 @@ class CuOptSolverAdapter(SolverAdapter):
         p = sp.csc_matrix(qp["P"])
         a = sp.csr_matrix(qp["A"])
         q = np.asarray(qp["q"], dtype=np.float64)
-        l = _clean_bounds(qp["l"])
-        u = _clean_bounds(qp["u"])
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
         n = a.shape[1]
 
         model = data_model.DataModel()

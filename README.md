@@ -472,6 +472,26 @@ Solver output is verbose by default and is captured in each solve's
 quietly. To keep full solver output in the log files without printing it to the
 terminal, pass `--no-stream-output` to `bench run`.
 
+### Shared Solver Settings
+
+A few setting names mean the same thing for every adapter:
+
+- `time_limit` (or `time_limit_sec` / `time_limit_secs`): the solver's own
+  time limit in seconds. It must be a finite number greater than zero; `0` is
+  refused because solvers disagree on what it means (no limit for SCS, stop
+  before the first iteration for Clarabel, cpo3, HiGHS and PDLP, an invalid
+  setting for OSQP). Leave it out to run without a limit. Adapters whose solver
+  has no time limit record `time_limit_ignored` on the result's `info`.
+- `threads` (or `num_threads`): the solver's thread count, forwarded where the
+  solver has one and recorded as `threads_ignored` otherwise.
+
+In the QP form `l <= A x <= u`, every adapter treats a bound with magnitude
+`>= 1e19` on the open side as infinite (the datasets write `+-1e20`, sometimes
+with a few ULPs of error; the transform layer and the Maros-Meszaros and QPS
+readers use the same cutoff), and passes true infinities to its solver. Rows
+with no finite bound constrain nothing and are not passed to OSQP, PIQP,
+ProxQP, HiGHS, PDLP, Gurobi or CPLEX; their dual is reported as zero.
+
 ### Multi-Dataset Runs
 
 A single run can solve the same set of solver variants across several datasets.

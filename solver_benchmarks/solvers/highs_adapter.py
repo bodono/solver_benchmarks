@@ -19,6 +19,7 @@ from .base import (
     pop_threads,
     settings_with_defaults,
 )
+from .qp_split import free_row_mask, normalize_qp_bounds
 
 
 class HighsSolverAdapter(SolverAdapter):
@@ -43,8 +44,7 @@ class HighsSolverAdapter(SolverAdapter):
         p = sp.csc_matrix(qp["P"])
         q = np.asarray(qp["q"], dtype=float)
         a = sp.csr_matrix(qp["A"])
-        l = np.asarray(qp["l"], dtype=float)
-        u = np.asarray(qp["u"], dtype=float)
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
         n = int(qp.get("n", q.shape[0]))
         m = int(qp.get("m", a.shape[0]))
 
@@ -64,10 +64,10 @@ class HighsSolverAdapter(SolverAdapter):
             np.array([], dtype=np.int32),
             np.array([], dtype=float),
         )
-        row_lower = _highs_bounds(l, -inf)
-        row_upper = _highs_bounds(u, inf)
+        row_lower = np.where(np.isneginf(l), -inf, l)
+        row_upper = np.where(np.isposinf(u), inf, u)
         # Free rows can trigger heap corruption in HiPO 1.15.1.
-        keep = ~(np.isneginf(row_lower) & np.isposinf(row_upper))
+        keep = ~free_row_mask(l, u)
         a_highs = a[keep]
         solver.addRows(
             a_highs.shape[0],
@@ -168,15 +168,6 @@ def _configure_highs(solver, settings: dict) -> None:
                 pass
     for key, value in settings.items():
         solver.setOptionValue(key, value)
-
-
-def _highs_bounds(values, inf_value: float) -> np.ndarray:
-    bounds = np.asarray(values, dtype=float).copy()
-    if inf_value > 0:
-        bounds[bounds >= 1.0e20] = inf_value
-    else:
-        bounds[bounds <= -1.0e20] = inf_value
-    return bounds
 
 
 def _map_highs_status(model_status, highspy) -> str:

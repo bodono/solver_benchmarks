@@ -63,6 +63,12 @@ def pop_time_limit(settings: dict[str, Any]) -> float | None:
     If multiple aliases are set, the first non-None encountered (in the
     order of ``TIME_LIMIT_KEYS``) wins. All aliases are popped to keep
     later forwarding to the solver clean.
+
+    The limit must be a finite number of seconds greater than zero. Zero is
+    refused rather than forwarded because solvers disagree on what it means:
+    SCS reads it as "no limit", Clarabel, cpo3, HiGHS and PDLP stop before
+    the first iteration, and OSQP rejects it as an invalid setting. To run
+    without a limit, leave the setting out (or set it to null).
     """
     resolved: float | None = None
     for key in TIME_LIMIT_KEYS:
@@ -73,22 +79,22 @@ def pop_time_limit(settings: dict[str, Any]) -> float | None:
 
 
 def _coerce_time_limit(key: str, value: Any) -> float:
+    message = (
+        f"Setting {key!r} must be a finite positive number of seconds or null "
+        f"(got {value!r})"
+    )
     if isinstance(value, bool):
-        raise ValueError(
-            f"Setting {key!r} must be a finite non-negative number or null "
-            f"(got {value!r})"
-        )
+        raise ValueError(message)
     try:
         coerced = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Setting {key!r} must be a finite non-negative number or null "
-            f"(got {value!r})"
-        ) from exc
+        raise ValueError(message) from exc
     if not math.isfinite(coerced) or coerced < 0:
+        raise ValueError(message)
+    if coerced == 0:
         raise ValueError(
-            f"Setting {key!r} must be a finite non-negative number or null "
-            f"(got {value!r})"
+            f"{message}; a zero limit means 'no limit' to some solvers and 'stop "
+            "immediately' to others, so to run without a limit omit the setting"
         )
     return coerced
 

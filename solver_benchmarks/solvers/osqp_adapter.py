@@ -21,6 +21,7 @@ from .base import (
     pop_time_limit,
     settings_with_defaults,
 )
+from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
 
 class OSQPSolverAdapter(SolverAdapter):
@@ -53,10 +54,19 @@ class OSQPSolverAdapter(SolverAdapter):
         threads = pop_threads(settings)
         p = sp.csc_matrix(qp["P"])
         a = sp.csc_matrix(qp["A"])
+        # OSQP counts a bound as infinite only beyond OSQP_INFTY * MIN_SCALING
+        # (1e26), so the datasets' +-1e20 sentinel must become a true
+        # infinity here; otherwise it is a finite bound that slows the solve
+        # and breaks infeasibility detection. Rows with no finite bound are
+        # left out (they would still enter OSQP's scaling) and get a zero
+        # multiplier when the duals are mapped back.
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
+        kept = ~free_row_mask(l, u)
+        a_kept = a if kept.all() else a[np.flatnonzero(kept), :]
 
         solver = osqp.OSQP()
         start = time.perf_counter()
-        solver.setup(p, qp["q"], a, qp["l"], qp["u"], **settings)
+        solver.setup(p, qp["q"], a_kept, l[kept], u[kept], **settings)
         raw = solver.solve()
         elapsed = time.perf_counter() - start
 
@@ -97,7 +107,7 @@ class OSQPSolverAdapter(SolverAdapter):
             ]
             if hasattr(raw.info, key)
         }
-        kkt_dict = _compute_kkt(mapped, raw, qp, p, a)
+        kkt_dict = _compute_kkt(mapped, raw, qp, p, a, l, u, kept)
         mark_threads_ignored(info, threads)
         return SolverResult(
             status=mapped,
@@ -116,18 +126,17 @@ class OSQPSolverAdapter(SolverAdapter):
         )
 
 
-def _compute_kkt(mapped_status, raw, qp, p, a):
+def _compute_kkt(mapped_status, raw, qp, p, a, l, u, kept):
     q = np.asarray(qp["q"], dtype=float)
-    l = np.asarray(qp["l"], dtype=float)
-    u = np.asarray(qp["u"], dtype=float)
+    m = a.shape[0]
     if mapped_status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}:
         x = getattr(raw, "x", None)
-        y = getattr(raw, "y", None)
+        y = scatter_rows(m, kept, getattr(raw, "y", None))
         if x is None or y is None:
             return None
         return kkt.qp_residuals(p, q, a, l, u, x, y)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
-        cert = getattr(raw, "prim_inf_cert", None)
+        cert = scatter_rows(m, kept, getattr(raw, "prim_inf_cert", None))
         if cert is None:
             return None
         return kkt.qp_primal_infeasibility_cert(a, l, u, cert)

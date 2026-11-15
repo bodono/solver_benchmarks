@@ -21,6 +21,7 @@ from .base import (
     pop_time_limit,
     settings_with_defaults,
 )
+from .qp_split import normalize_qp_bounds
 
 
 class GurobiSolverAdapter(SolverAdapter):
@@ -47,8 +48,9 @@ class GurobiSolverAdapter(SolverAdapter):
         a_mat = sp.csr_matrix(qp["A"])
         n = int(qp.get("n", q.shape[0]))
         m = int(qp.get("m", a_mat.shape[0]))
-        lower = _finite_bounds(qp["l"], -grb.GRB.INFINITY, lower=True)
-        upper = _finite_bounds(qp["u"], grb.GRB.INFINITY, lower=False)
+        l, u = normalize_qp_bounds(qp["l"], qp["u"])
+        lower = np.where(np.isneginf(l), -grb.GRB.INFINITY, l)
+        upper = np.where(np.isposinf(u), grb.GRB.INFINITY, u)
 
         env = _create_environment(grb)
         try:
@@ -166,15 +168,6 @@ def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
         y[constraint_rows] = -duals
         return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
     return None
-
-
-def _finite_bounds(values, inf_value: float, *, lower: bool) -> np.ndarray:
-    arr = np.asarray(values, dtype=float).copy()
-    if lower:
-        arr[arr <= -1.0e20] = inf_value
-    else:
-        arr[arr >= 1.0e20] = inf_value
-    return arr
 
 
 def _configure_gurobi(model, settings: dict, grb) -> None:
