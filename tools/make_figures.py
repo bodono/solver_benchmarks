@@ -143,7 +143,7 @@ def problem_sizes(df: pd.DataFrame, size_lookup: SizeLookup | None = None) -> pd
         for key in sizes.index[sizes.isna()]:
             size = size_lookup(*key)
             if size is not None:
-                sizes[key] = float(size)
+                sizes.loc[key] = float(size)
     return sizes
 
 

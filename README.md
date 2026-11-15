@@ -1749,6 +1749,13 @@ Current tests cover:
 - CLI `summary`, `profile`, and `geomean` commands.
 - PDLP registration and clean skip behavior when unavailable or given non-LP data.
 - PDLP linear-cone handling for both `z` and `f` zero-cone keys.
+- cuOpt adapter conventions (objective mapping, dual sign, status names, option
+  forwarding) against a fake cuOpt, since CI has no GPU.
+- The campaign tools `tools/make_figures.py` and `tools/make_campaign.py`
+  against the analysis API they use.
+- Every solver variant of the maintained configs in `configs/` against the
+  installed solvers, and the README's CLI, config-field and solver tables
+  against the code.
 
 GitHub Actions runs additional matrix workflows that install each open-source
 solver in isolation and exercise its adapter via `scripts/ci_solver_smoke.py`,
