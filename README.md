@@ -978,6 +978,8 @@ Run and analysis commands:
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, and three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
+| `bench merge OUT_DIR RUN_DIR...` | `--overwrite` | Concatenate sharded runs into a new run directory; duplicated `(dataset, problem, solver)` rows are reported, not resolved. |
+| `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH`, `--allow-missing`, `--promote`, `--overwrite` | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Rows with nothing to check are demoted unless `--allow-missing`; rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD) are kept, with the reason recorded. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1165,8 +1167,15 @@ So a claimed optimum on an infeasible problem is a failure, and so is a
 certificate on a solvable one. Inaccurate certificates and the ambiguous
 `primal_or_dual_infeasible` never count, as `optimal_inaccurate` never counts,
 and a certificate the harness checked and found invalid (`kkt.valid` false) is
-a failure. Runs recorded before this field existed are scored the same way:
-the outcome is inferred from the dataset id, problem name and source path.
+a failure. The check scales the certificate so that its objective term (`b'y`,
+the support `u'y⁺ − l'y⁻` of the bounds, or `q'x`) is −1 and then requires
+its residuals to be at most `1e-3`: `A'y` with the distance of `y` to the dual
+cone (or the weight `y` puts on absent bounds), or `Px` with the distance of
+`−Ax` to the cone. `kkt.cert_res` records the largest. That default only
+rejects what is clearly not a certificate; `bench kkt-verify --tol` holds
+certificates to its own tolerance. Runs recorded before this field existed are
+scored the same way: the outcome is inferred from the dataset id, problem name
+and source path.
 
 Generate shifted geometric means:
 
@@ -1473,7 +1482,7 @@ Adapter expectations:
 - Use `is_available()` for optional dependency checks.
 - Keep solver adapter modules solver-specific rather than grouping unrelated adapters together.
 - Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states.
-- Populate `SolverResult.kkt` whenever the solver returned a primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) on `OPTIMAL` / `OPTIMAL_INACCURATE`, and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate. The KKT plots, summaries, and accuracy profile all read this field.
+- Populate `SolverResult.kkt` whenever the solver returned a primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) on `OPTIMAL` / `OPTIMAL_INACCURATE`, and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate. The KKT plots, summaries, and accuracy profile all read this field. `cone_residuals` projects onto every cone but complex PSD (zero, nonnegative, box, second-order, PSD, exponential and its dual, power and its dual), and its `primal_res` is the larger of `Ax + s − b` and the distance of `s` to the cone, so an adapter may pass `s = b − Ax`.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.

@@ -389,6 +389,8 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
         f"{out_dir}: {summary['rows']} rows from {summary['sources']} runs"
         + (f", {summary['duplicate_keys']} duplicated keys" if summary["duplicate_keys"] else "")
     )
+    if summary.get("skipped_lines"):
+        click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     mixed = summary["mixed_forms"]
     if mixed:
         shown = ", ".join(mixed[:5]) + (", ..." if len(mixed) > 5 else "")
@@ -436,6 +438,15 @@ def kkt_verify_cmd(
             f"\tpromoted={summary['promoted'].get(solver_id, 0)}"
             f"\tno_residuals={summary['missing_residuals'].get(solver_id, 0)}"
         )
+    unverified = summary.get("unverified_cones") or {}
+    if unverified:
+        click.echo(
+            "warning: kept rows whose cone distances could not be checked: "
+            + ", ".join(f"{solver_id}={count}" for solver_id, count in sorted(unverified.items())),
+            err=True,
+        )
+    if summary.get("skipped_lines"):
+        click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     click.echo(str(out))
 
 
