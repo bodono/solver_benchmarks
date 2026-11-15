@@ -860,10 +860,10 @@ def test_cvxopt_keeps_a_later_claim_when_coneqp_fails(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("settings, expected", [({}, "chol"), ({"kktsolver": "qr"}, "qr")])
-def test_cvxopt_conelp_uses_the_sparse_kkt_solver_for_soc_and_psd(settings, expected, tmp_path):
-    """conelp defaults to the dense 'qr' KKT solver on SOC / PSD cones (an
-    error after 490 s on DIMACS sched_50_50_scaled, 80 s with 'chol'); the
-    adapter passes coneqp's 'chol' unless kktsolver is set."""
+def test_cvxopt_conelp_uses_the_sparse_kkt_solver_for_soc(settings, expected, tmp_path):
+    """conelp defaults to the dense 'qr' KKT solver once there are second-
+    order cones (an error after 490 s on DIMACS sched_50_50_scaled, 80 s with
+    'chol'); the adapter passes coneqp's 'chol' unless kktsolver is set."""
     pytest.importorskip("cvxopt")
     import cvxopt.solvers as cs
 
@@ -885,6 +885,27 @@ def test_cvxopt_conelp_uses_the_sparse_kkt_solver_for_soc_and_psd(settings, expe
     assert result.info["kktsolver"] == expected
     assert result.status == status.OPTIMAL, result.info
     assert result.objective_value == pytest.approx(np.sqrt(2.0), abs=1e-6)
+
+
+def test_cvxopt_conelp_keeps_qr_for_psd_only_problems(tmp_path):
+    """With 'chol', conelp fails on SDPLIB control1 and hinf9, which its
+    default 'qr' solves, so a PSD-only problem keeps conelp's default."""
+    pytest.importorskip("cvxopt")
+    # min X00 + 2 X11 s.t. trace(X) = 1, X in S^2_+ (canonical col-major
+    # lower vec x = [X00, sqrt2 X10, X11]); optimum X = diag(1, 0), value 1.
+    sdp = {
+        "P": None,
+        "A": sp.csc_matrix(np.vstack([np.array([[1.0, 0.0, 1.0]]), -np.eye(3)])),
+        "b": np.array([1.0, 0.0, 0.0, 0.0]),
+        "q": np.array([1.0, 0.0, 2.0]),
+        "r": 0.0,
+        "cone": {"z": 1, "s": [2]},
+    }
+    result = _solve("cvxopt", CONE, sdp, {}, tmp_path)
+    assert result.status == status.OPTIMAL, result.info
+    assert result.objective_value == pytest.approx(1.0, abs=1e-6)
+    assert result.info["entry_point"] == "conelp"
+    assert "kktsolver" not in result.info
 
 
 def test_ecos_adapter_imports_its_linear_algebra_at_module_load():

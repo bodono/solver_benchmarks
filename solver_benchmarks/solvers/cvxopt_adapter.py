@@ -24,11 +24,13 @@ the claim stands unless ``coneqp`` finds a solution, in which case that
 solution is reported. Either way ``info["conelp_discarded_claim"]`` and
 ``info["coneqp_cross_check"]`` say what happened, and the time of both
 calls is reported, so a genuinely infeasible problem costs two solves.
-NETLIB shell stays a false claim (``coneqp`` fails on it, as before). For SOC
-/ PSD cones ``conelp`` would default to the dense ``qr`` KKT solver; the
-adapter passes the sparse ``chol`` that ``coneqp`` uses (``qr`` took DIMACS
-sched_50_50_scaled from 80 s to an error after 490 s) unless ``kktsolver``
-is set.
+NETLIB shell stays a false claim (``coneqp`` fails on it, as before). With
+second-order cones ``conelp`` would default to the dense ``qr`` KKT solver;
+the adapter passes the sparse ``chol`` that ``coneqp`` uses (``qr`` took
+DIMACS sched_50_50_scaled from 80 s to an error after 490 s) unless
+``kktsolver`` is set. PSD-only problems keep ``qr``: with ``chol``, ``conelp``
+fails on SDPLIB control1 and hinf9, which ``qr`` solves, though ``qr`` is
+slower and stops at ``maxiters`` on hinf1/6/14 and qap6/7.
 
 Problems with a quadratic objective go through ``cvxopt.solvers.coneqp``
 (the same form plus ``(1/2) x' P x``), which only ever reports ``optimal``
@@ -151,10 +153,12 @@ class CVXOPTSolverAdapter(SolverAdapter):
             kkt_dim = int(data["P"].size[0]) + int(data["A"].size[0])
             if kkt_dim <= CVXOPT_DENSE_LDL_MAX_DIM:
                 kktsolver = "ldl"
-        if kktsolver is None and entry_point == "conelp" and (dims["q"] or dims["s"]):
-            # conelp would default to the dense 'qr' KKT solver for SOC / PSD
-            # cones; keep the sparse 'chol' coneqp used (DIMACS
-            # sched_50_50_scaled: 80 s with chol, an error after 490 s with qr).
+        if kktsolver is None and entry_point == "conelp" and dims["q"]:
+            # conelp would default to the dense 'qr' KKT solver once there are
+            # second-order cones; keep the sparse 'chol' coneqp used (DIMACS
+            # sched_50_50_scaled: 80 s with chol, an error after 490 s with
+            # qr). PSD-only problems keep 'qr', which conelp solves better
+            # (SDPLIB control1 and hinf9 are solver_error with chol).
             kktsolver = "chol"
 
         def call(entry: str, kkt) -> dict:
