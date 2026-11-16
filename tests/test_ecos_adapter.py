@@ -336,6 +336,69 @@ def test_ecos_psd_square_root_drops_zero_eigenvalues():
     assert np.allclose(reconstructed, p.toarray())
 
 
+def _wide_spectrum_p(eigenvalues):
+    """A dense symmetric P with the given spectrum: every entry couples."""
+    rng = np.random.default_rng(0)
+    q, _ = np.linalg.qr(rng.normal(size=(len(eigenvalues), len(eigenvalues))))
+    p = (q * np.asarray(eigenvalues, dtype=float)) @ q.T
+    return 0.5 * (p + p.T), q
+
+
+def test_ecos_psd_square_root_keeps_curvature_of_a_wide_spectrum():
+    """Eigenvalues far below the largest are genuine curvature as long as
+    they are above round-off: R'R must reproduce P to round-off. A cut-off
+    of 1e-12 * lambda_max (100 here) dropped the 50 and the 1."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    p, _ = _wide_spectrum_p([1e14, 50.0, 1.0, 0.0])
+    r = _psd_square_root(sp.csc_matrix(p))
+    assert r.shape == (3, 4)  # rank 3: only the zero eigenvalue goes
+    n = p.shape[0]
+    assert np.abs((r.T @ r).toarray() - p).max() <= n * np.finfo(float).eps * np.abs(p).max()
+
+
+def test_ecos_psd_square_root_keeps_small_diagonal_only_rows():
+    """A diagonal-only row is exact; its curvature is kept however small it
+    is next to a coupled block elsewhere in P."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    p = np.zeros((3, 3))
+    p[:2, :2] = [[1e14, 1e13], [1e13, 1e14]]
+    p[2, 2] = 1e-3
+    r = _psd_square_root(sp.csc_matrix(p))
+    assert r.shape == (3, 3)
+    assert ((r.T @ r).toarray()[2, 2]) == pytest.approx(1e-3, rel=1e-15)
+
+
+def test_ecos_solves_a_qp_whose_hessian_spectrum_spans_1e14(tmp_path):
+    """With P's curvature 50 and 1 dropped, ECOS solved a relaxation and
+    reported it optimal. Equality constraints fix the directions of the
+    eigenvalues 1e14 and 0, so the optimum is known in closed form:
+    -1/2 * sum(c_i^2 / lambda_i) over the other two directions. (Clarabel
+    and PIQP stop at max_iter on this problem and CVXOPT is inaccurate, so
+    the closed form is the reference.)"""
+    pytest.importorskip("ecos")
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+    eigenvalues = np.array([1e14, 50.0, 1.0, 0.0])
+    p, basis = _wide_spectrum_p(eigenvalues)
+    c = np.array([0.0, 3.0, -2.0, 0.0])  # the objective in the eigenbasis
+    qp = {
+        "P": sp.csc_matrix(p),
+        "q": basis @ c,
+        "A": sp.csc_matrix(basis[:, [0, 3]].T),
+        "l": np.zeros(2),
+        "u": np.zeros(2),
+    }
+    expected = -0.5 * (c[1] ** 2 / eigenvalues[1] + c[2] ** 2 / eigenvalues[2])
+    result = ECOSSolverAdapter({"verbose": False}).solve(_make_qp_problem(qp), tmp_path)
+    assert result.status == status.OPTIMAL
+    # A residual of ECOS's feasibility tolerance in the 1e14 direction moves
+    # the objective by about 1e-4; the relaxation was off by far more (it
+    # was unbounded below: dual_infeasible).
+    assert result.objective_value == pytest.approx(expected, rel=1e-3)
+
+
 def test_ecos_psd_square_root_returns_none_for_nonsymmetric():
     """A non-symmetric ``P`` (within tolerance) is rejected — the
     adapter then surfaces SKIPPED_UNSUPPORTED to the caller."""
@@ -357,6 +420,15 @@ def test_ecos_psd_square_root_rejects_indefinite_p():
 
     indefinite = sp.csc_matrix(np.diag([1.0, -1.0]))
     assert _psd_square_root(indefinite) is None
+
+
+def test_ecos_psd_square_root_rejects_indefinite_p_with_a_wide_spectrum():
+    """Keeping more curvature does not admit negative curvature: a block
+    with eigenvalues 1e14 and -1e3 is still refused."""
+    from solver_benchmarks.solvers.ecos_adapter import _psd_square_root
+
+    p, _ = _wide_spectrum_p([1e14, 50.0, -1e3, 0.0])
+    assert _psd_square_root(sp.csc_matrix(p)) is None
 
 
 def test_ecos_psd_square_root_rejects_negative_definite_p():
@@ -718,3 +790,17 @@ def test_cone_to_ecos_skipped_when_p_present():
     # First element is the SolverResult sentinel for SKIPPED_UNSUPPORTED.
     assert data.status == status.SKIPPED_UNSUPPORTED
     assert dims is None and cone_dict is None
+
+
+def test_ecos_nitref_follows_the_integer_rule(tmp_path):
+    # ECOS took nitref: true as 1 and refused YAML's 2.0.
+    pytest.importorskip("ecos")
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+
+    problem = _make_qp_problem(_small_lp_in_qp_form())
+    result = ECOSSolverAdapter({"verbose": False, "nitref": 2.0}).solve(problem, tmp_path)
+    assert result.status == status.OPTIMAL
+    for value in (True, 1.5, "3", -1):
+        with pytest.raises(SolverConfigError, match="nitref"):
+            ECOSSolverAdapter({"verbose": False, "nitref": value}).solve(problem, tmp_path)

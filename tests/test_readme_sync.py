@@ -96,3 +96,25 @@ def test_readme_states_the_default_solver_verbosity():
     assert match.group(2) == str(DEFAULT_VERBOSE).lower()
     assert (match.group(1) == "verbosely") == DEFAULT_VERBOSE
     assert "verbose by default" not in README
+
+
+@pytest.mark.parametrize("field", ["solve_time_seconds", "setup_time_seconds"])
+def test_solve_times_table_says_which_adapters_record_each_time(field):
+    """The README's Solve Times table marks a time "not reported" exactly for
+    the adapters whose SolverResult never sets it."""
+    import inspect
+
+    from solver_benchmarks.solvers import get_solver
+
+    section = _section("### Solve Times")
+    header = next(line for line in section.splitlines() if line.startswith("| Solver |"))
+    column = [cell.strip() for cell in header.strip("|").split("|")].index(f"`{field}`")
+    rows = {}
+    for line in section.splitlines():
+        match = re.match(r"^\| `([a-z0-9_]+)` \|", line)
+        if match:
+            rows[match.group(1)] = [cell.strip() for cell in line.strip("|").split("|")][column]
+    assert sorted(rows) == list_solvers()
+    for name, cell in rows.items():
+        source = inspect.getsource(inspect.getmodule(get_solver(name)))
+        assert (cell != "not reported") == (f"{field}=" in source), name

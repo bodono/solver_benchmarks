@@ -25,17 +25,20 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     EPS_ALIASES,
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     coerce_int_setting,
     finite_point,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     refuse_settings,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     threads_or_default,
 )
 from .qp_split import normalize_qp_bounds
@@ -47,17 +50,15 @@ class GurobiSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import gurobipy  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("gurobipy")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import gurobipy as grb
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the gurobi extra to use GUROBI") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "gurobipy", "Install with the gurobi extra to use GUROBI", exc
+            ) from exc
 
         qp = problem.qp
         q = np.asarray(qp["q"], dtype=float)

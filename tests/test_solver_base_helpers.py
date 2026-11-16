@@ -11,11 +11,14 @@ from __future__ import annotations
 import pytest
 
 from solver_benchmarks.solvers.base import (
+    SolverConfigError,
     mark_threads_ignored,
     mark_time_limit_ignored,
     pop_threads,
     pop_time_limit,
     settings_with_defaults,
+    translate_eps_alias,
+    translate_tolerance_aliases,
 )
 
 
@@ -245,3 +248,184 @@ def test_threads_or_default():
     assert threads_or_default(None) == 1
     assert threads_or_default(0) == 0
     assert threads_or_default(8) == 8
+
+
+# --- Solver packages that are installed but do not import -------------------
+
+# The package each adapter imports first.
+_SOLVER_PACKAGES = {
+    "clarabel": "clarabel",
+    "cplex": "cplex",
+    "cpo3": "cpo3",
+    "cuopt": "cuopt",
+    "cvxopt": "cvxopt",
+    "ecos": "ecos",
+    "gurobi": "gurobipy",
+    "highs": "highspy",
+    "mosek": "mosek",
+    "osqp": "osqp",
+    "pdlp": "ortools",
+    "piqp": "piqp",
+    "proxqp": "proxsuite",
+    "qtqp": "qtqp",
+    "scs": "scs",
+    "sdpa": "sdpap",
+}
+
+# What a broken install raises: a missing shared library (ImportError), a
+# ctypes loader failing (OSError), and an installed package missing one of its
+# own dependencies (ModuleNotFoundError for another name).
+_BROKEN_IMPORTS = {
+    "ImportError": lambda: ImportError("libfoo.so.5: cannot open shared object file"),
+    "OSError": lambda: OSError("libfoo.so.5: wrong ELF class: ELFCLASS32"),
+    "missing dependency": lambda: ModuleNotFoundError(
+        "No module named 'some_dependency'", name="some_dependency"
+    ),
+}
+
+
+def _break_import(monkeypatch, package: str, error) -> None:
+    """Make ``import <package>`` (and its submodules) raise ``error()``."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == package or name.startswith(package + "."):
+            raise error()
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def _tiny_problem(solver_name: str):
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import CONE, QP, ProblemData
+
+    if solver_name == "sdpa":
+        cone = {
+            "P": None,
+            "q": np.array([1.0]),
+            "A": sp.csc_matrix([[-1.0]]),
+            "b": np.array([-1.0]),
+            "r": 0.0,
+            "cone": {"l": 1},
+        }
+        return ProblemData("test", "lp", CONE, cone)
+    qp = {
+        "P": sp.csc_matrix((1, 1)),
+        "q": np.array([1.0]),
+        "A": sp.csc_matrix([[1.0]]),
+        "l": np.array([1.0]),
+        "u": np.array([2.0]),
+    }
+    return ProblemData("test", "lp", QP, qp)
+
+
+def test_every_registered_solver_names_its_package():
+    from solver_benchmarks.solvers import list_solvers
+
+    assert sorted(_SOLVER_PACKAGES) == list_solvers()
+
+
+@pytest.mark.parametrize("error_kind", sorted(_BROKEN_IMPORTS))
+@pytest.mark.parametrize("solver_name", sorted(_SOLVER_PACKAGES))
+def test_solver_that_does_not_import_is_unavailable(
+    monkeypatch, tmp_path, solver_name, error_kind
+):
+    """An installed package that fails to load is not available (with a
+    warning naming the error), and a solve reports SolverUnavailable."""
+    from solver_benchmarks.solvers import get_solver
+    from solver_benchmarks.solvers.base import SolverImportWarning, SolverUnavailable
+
+    adapter_cls = get_solver(solver_name)
+    _break_import(monkeypatch, _SOLVER_PACKAGES[solver_name], _BROKEN_IMPORTS[error_kind])
+
+    with pytest.warns(SolverImportWarning, match="libfoo|some_dependency"):
+        assert adapter_cls.is_available() is False
+    with pytest.raises(SolverUnavailable, match="libfoo|some_dependency"):
+        adapter_cls({"verbose": False}).solve(_tiny_problem(solver_name), tmp_path)
+
+
+@pytest.mark.parametrize("solver_name", sorted(_SOLVER_PACKAGES))
+def test_solver_that_is_not_installed_is_unavailable_quietly(
+    monkeypatch, recwarn, solver_name
+):
+    from solver_benchmarks.solvers import get_solver
+    from solver_benchmarks.solvers.base import SolverImportWarning
+
+    package = _SOLVER_PACKAGES[solver_name]
+    _break_import(
+        monkeypatch,
+        package,
+        lambda: ModuleNotFoundError(f"No module named {package!r}", name=package),
+    )
+    assert get_solver(solver_name).is_available() is False
+    assert not [w for w in recwarn if issubclass(w.category, SolverImportWarning)]
+
+
+def _not_installed(monkeypatch, packages) -> None:
+    """Make every package in ``packages`` (and its submodules) not installed."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        top = name.split(".")[0]
+        if top in packages:
+            raise ModuleNotFoundError(f"No module named {top!r}", name=top)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_pdlp_without_ortools_or_protobuf_is_unavailable_quietly(monkeypatch, recwarn):
+    # Without the pdlp extra neither ortools nor protobuf (the 'google'
+    # package, which only ortools pulls in) is installed: that is a missing
+    # extra, not a broken install.
+    from solver_benchmarks.solvers import get_solver
+    from solver_benchmarks.solvers.base import SolverImportWarning
+
+    _not_installed(monkeypatch, {"ortools", "google"})
+    assert get_solver("pdlp").is_available() is False
+    assert not [w for w in recwarn if issubclass(w.category, SolverImportWarning)]
+
+
+def test_pdlp_with_ortools_but_no_protobuf_is_a_broken_install(monkeypatch):
+    from solver_benchmarks.solvers import get_solver
+    from solver_benchmarks.solvers.base import SolverImportWarning
+
+    pytest.importorskip("ortools")
+    _not_installed(monkeypatch, {"google"})
+    with pytest.warns(SolverImportWarning, match="google"):
+        assert get_solver("pdlp").is_available() is False
+
+
+def test_cli_list_solvers_shows_why_a_solver_does_not_import(monkeypatch):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    _break_import(monkeypatch, "ecos", _BROKEN_IMPORTS["ImportError"])
+    result = CliRunner().invoke(main, ["list", "solvers"])
+    assert result.exit_code == 0, result.output
+    line = next(line for line in result.output.splitlines() if line.startswith("ecos\t"))
+    name, availability, kinds = line.split("\t")
+    assert availability == (
+        "unavailable: ecos is installed but cannot be used "
+        "(ImportError: libfoo.so.5: cannot open shared object file)"
+    )
+    assert kinds == "cone,qp"
+
+
+@pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
+@pytest.mark.parametrize("value", [True, False])
+def test_tolerance_aliases_refuse_booleans_even_when_passed_through(alias, value):
+    # For a solver whose own names are eps_abs / eps_rel the value goes
+    # through unchanged, and a solver taking any number read true as 1.0.
+    with pytest.raises(SolverConfigError, match=alias):
+        translate_eps_alias({alias: value})
+    with pytest.raises(SolverConfigError, match=alias):
+        translate_tolerance_aliases({alias: value}, ("tol_feas",), ("tol_rel",))

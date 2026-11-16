@@ -10,16 +10,18 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    module_available,
     normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     threads_or_default,
     translate_eps_alias,
 )
@@ -38,17 +40,15 @@ class PIQPSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import piqp  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("piqp")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import piqp
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the piqp extra to use PIQP") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "piqp", "Install with the piqp extra to use PIQP", exc
+            ) from exc
 
         qp = problem.qp
         p, q, aeq, b, g, h_l, h_u, eq_idx, ineq_idx = split_qp_for_range_constraints(qp)

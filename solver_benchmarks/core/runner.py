@@ -149,7 +149,8 @@ def _run_benchmark(
         for solver_config in config.solvers:
             if solver_config.id not in available_solver_ids:
                 raise RuntimeError(
-                    f"Solver {solver_config.solver!r} is unavailable (not installed) and "
+                    f"Solver {solver_config.solver!r} is unavailable (not installed, or installed "
+                    "but it could not be loaded) and "
                     f"run.fail_on_unsupported is true, so {solver_config.id!r} is not "
                     "skipped: install it or remove it from the config."
                 )

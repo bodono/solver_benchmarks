@@ -28,18 +28,20 @@ from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dual
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     coerce_int_setting,
     finite_point,
     is_setting_type_error,
     mark_threads_ignored,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     translate_tolerance_aliases,
 )
 
@@ -61,7 +63,7 @@ def _scs_supports_num_threads() -> bool:
         return _SCS_NUM_THREADS_SUPPORTED
     try:
         import scs as _scs
-    except ModuleNotFoundError:
+    except IMPORT_ERRORS:
         _SCS_NUM_THREADS_SUPPORTED = False
         return False
     data = {
@@ -89,17 +91,13 @@ class SCSSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import scs  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("scs")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import scs
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the scs extra to use SCS") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed("scs", "Install with the scs extra to use SCS", exc) from exc
 
         settings = settings_with_defaults(self.settings)
         # Translate cross-adapter aliases. SCS' native time-limit knob
@@ -413,7 +411,7 @@ def _check_setting_values(settings: dict, translated: dict) -> None:
     if isinstance(linear_solver, str):
         try:
             import scs
-        except ModuleNotFoundError:  # pragma: no cover - solve() imported it
+        except IMPORT_ERRORS:  # pragma: no cover - solve() imported it
             return
         known = getattr(scs, "LinearSolver", None)
         if known is not None and linear_solver not in {member.value for member in known}:

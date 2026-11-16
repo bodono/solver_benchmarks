@@ -209,6 +209,16 @@ def test_options_are_forwarded_to_cuopt_parameters(install_cuopt, tmp_path: Path
     assert result.status == status.TIME_LIMIT
 
 
+@pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
+def test_boolean_tolerance_alias_is_refused(install_cuopt, tmp_path: Path, alias):
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    install_cuopt(_FakeSolution(_Termination.Optimal, [1.0], [1.0], 1.0))
+    problem = _problem(np.zeros((1, 1)), [1.0], np.eye(1), [1.0], [10.0])
+    with pytest.raises(SolverConfigError, match=alias):
+        CuOptSolverAdapter({"verbose": False, alias: True}).solve(problem, tmp_path)
+
+
 def test_unavailable_without_cuopt(monkeypatch):
     monkeypatch.setitem(sys.modules, "cuopt", None)
 

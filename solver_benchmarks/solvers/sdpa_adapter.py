@@ -55,17 +55,19 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     DEFAULT_THREADS,
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     coerce_int_setting,
     finite_point,
     mark_time_limit_ignored,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     translate_tolerance_aliases,
 )
 from .cone_layout import psd_triangle_to_full
@@ -77,17 +79,15 @@ class SDPASolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import sdpap  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("sdpap")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import sdpap
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the sdpa extra to use SDPA") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "sdpap", "Install with the sdpa extra to use SDPA", exc
+            ) from exc
 
         cone_problem = problem.cone
         p = cone_problem.get("P")
@@ -362,6 +362,14 @@ _SDPAP_FLOATS = (
     "zeroPoint",
 )
 _SDPAP_INTS = ("maxIteration", "numThreads", "mpfPrecision")
+# The values sdpa-python (sdpap.param) accepts for its method parameters; it
+# replaces any other value by its default with only a printed note.
+_SDPAP_CHOICES = {
+    "frvMethod": ("split", "elimination"),
+    "convMethod": ("LMI", "EQ"),
+    "domainMethod": ("none", "clique", "basis"),
+    "rangeMethod": ("none", "clique", "decomp"),
+}
 # Wide enough that SDPA's objective-bound stop (pUNBD / dUNBD) never fires
 # on a feasible, bounded problem; sdpa-python's defaults are -1e5 / 1e5.
 SDPA_LOWER_BOUND = -1.0e30
@@ -420,6 +428,11 @@ def _sdpa_options(
     for key in _SDPAP_INTS:
         if key in options:
             options[key] = _coerce_number(key, options[key], int, translated)
+    for key, choices in _SDPAP_CHOICES.items():
+        if key in options and options[key] not in choices:
+            raise SolverConfigError(
+                f"Invalid SDPA setting {key!r}={options[key]!r}: must be one of {list(choices)}"
+            )
     # A negative numThreads ends the process inside sdpa-python (0 works).
     if options.get("numThreads", 0) < 0:
         raise SolverConfigError(

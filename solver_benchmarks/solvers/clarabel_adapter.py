@@ -44,17 +44,20 @@ from solver_benchmarks.transforms.psd import (
 )
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     coerce_int_setting,
     finite_point,
     mark_threads_ignored,
+    module_available,
     normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     threads_or_default,
     translate_tolerance_aliases,
 )
@@ -66,17 +69,15 @@ class ClarabelSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import clarabel  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("clarabel")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import clarabel
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the clarabel extra to use Clarabel") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "clarabel", "Install with the clarabel extra to use Clarabel", exc
+            ) from exc
 
         if problem.kind == QP:
             p, q, a, b, cones, cone_dict = _qp_data(problem.qp, clarabel)
@@ -187,6 +188,9 @@ class ClarabelSolverAdapter(SolverAdapter):
             objective_value=reported_objective(mapped, getattr(solution, "obj_val", None)),
             iterations=_maybe_int(getattr(solution, "iterations", None)),
             run_time_seconds=elapsed,
+            # Clarabel reports one time, its setup (equilibration, KKT
+            # factorization set-up) included, and no separate setup time.
+            solve_time_seconds=_maybe_float(getattr(solution, "solve_time", None)),
             info=info,
             kkt=kkt_dict,
         )
@@ -339,6 +343,10 @@ def _map_clarabel_status(
 
 def _maybe_int(value):
     return None if value is None else int(value)
+
+
+def _maybe_float(value):
+    return None if value is None else float(value)
 
 
 def _qp_data(qp: dict, clarabel):

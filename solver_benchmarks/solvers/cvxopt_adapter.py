@@ -94,18 +94,20 @@ from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     coerce_int_setting,
     finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     translate_tolerance_aliases,
 )
 from .cone_layout import psd_triangle_to_full, qp_dual_in_native_order
@@ -122,18 +124,16 @@ class CVXOPTSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import cvxopt  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("cvxopt")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import cvxopt
             import cvxopt.solvers as cs
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the cvxopt extra to use CVXOPT") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "cvxopt", "Install with the cvxopt extra to use CVXOPT", exc
+            ) from exc
 
         settings = settings_with_defaults(self.settings)
         # CVXOPT does not expose a wall-clock time limit; record the

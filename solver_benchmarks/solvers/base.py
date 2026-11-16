@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import math
 import numbers
+import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,78 @@ from solver_benchmarks.core.result import SolverResult
 
 class SolverUnavailable(RuntimeError):
     pass
+
+
+class SolverImportWarning(UserWarning):
+    """A solver package is installed but cannot be imported.
+
+    Emitted by :func:`module_available` with the import error's text, so a
+    broken install (a native library that does not load, an ABI mismatch)
+    is reported instead of looking like a missing optional extra.
+    """
+
+
+# What importing a solver package raises when the package is installed but
+# does not load: ImportError (ModuleNotFoundError is a subclass) for a missing
+# shared library or dependency, OSError from ctypes loaders.
+IMPORT_ERRORS: tuple[type[BaseException], ...] = (ImportError, OSError)
+
+
+def _plainly_missing(name: str, exc: BaseException) -> bool:
+    """Whether ``exc`` only says package ``name`` is not installed."""
+    if not isinstance(exc, ModuleNotFoundError) or exc.name is None:
+        return False
+    top = name.split(".")[0]
+    return exc.name == top or exc.name == name
+
+
+def module_available(name: str, load: Callable[[], Any] | None = None) -> bool:
+    """``is_available()`` for an adapter whose solver is package ``name``.
+
+    Imports ``name`` (or calls ``load``, a function that imports what the
+    adapter needs and may raise ``SolverUnavailable``) and returns False when
+    that raises ImportError or OSError. A package that is simply not
+    installed returns False quietly; any other import failure (the package is
+    there but does not load) also emits a :class:`SolverImportWarning`
+    carrying the error, which ``bench list solvers`` prints.
+    """
+    try:
+        if load is None:
+            __import__(name)
+        else:
+            load()
+    except IMPORT_ERRORS as exc:
+        if not _plainly_missing(name, exc):
+            _warn_unloadable(name, exc)
+        return False
+    except SolverUnavailable as exc:
+        cause = exc.__cause__
+        if cause is None or not _plainly_missing(name, cause):
+            _warn_unloadable(name, exc)
+        return False
+    return True
+
+
+def _warn_unloadable(name: str, exc: BaseException) -> None:
+    text = " ".join(str(exc).split()) or type(exc).__name__
+    warnings.warn(
+        f"{name} is installed but cannot be used ({type(exc).__name__}: {text})",
+        SolverImportWarning,
+        stacklevel=3,
+    )
+
+
+def solver_import_failed(name: str, hint: str, exc: BaseException) -> SolverUnavailable:
+    """The ``SolverUnavailable`` for a solve whose import of package ``name``
+    raised ``exc`` (an ImportError or OSError).
+
+    ``hint`` says how to install the solver; the import error's text is added
+    unless the package is simply not installed.
+    """
+    if _plainly_missing(name, exc):
+        return SolverUnavailable(hint)
+    text = " ".join(str(exc).split())
+    return SolverUnavailable(f"{hint} (import failed: {type(exc).__name__}: {text})")
 
 
 class SolverConfigError(ValueError):
@@ -180,12 +254,16 @@ def translate_tolerance_aliases(
     when ``eps_abs: null``), and a solver name the config gives a non-null
     value always wins. For a solver whose own names are ``eps_abs`` /
     ``eps_rel`` an explicitly given value is passed through unchanged, for
-    the solver to validate. Returns the settings inserted from an alias,
-    for ``info["settings_translated"]``; a value that is not a number raises
-    ``SolverConfigError`` naming the alias.
+    the solver to validate, except that a boolean is refused here (solvers
+    that take any number read ``eps_abs: true`` as 1.0). Returns the settings
+    inserted from an alias, for ``info["settings_translated"]``; a value that
+    is not a number raises ``SolverConfigError`` naming the alias.
     """
     eps = settings.pop("eps", None)
     given = {"eps_abs": settings.pop("eps_abs", None), "eps_rel": settings.pop("eps_rel", None)}
+    for alias, value in (("eps", eps), *given.items()):
+        if isinstance(value, bool):
+            coerce_tolerance(alias, value)
     translated: dict[str, float] = {}
     for alias, keys in (("eps_abs", abs_keys), ("eps_rel", rel_keys)):
         source = alias if given[alias] is not None else "eps"
@@ -198,7 +276,7 @@ def translate_tolerance_aliases(
             if key == source:
                 settings[key] = value
                 continue
-            settings[key] = _coerce_tolerance(source, value)
+            settings[key] = coerce_tolerance(source, value)
             translated[key] = settings[key]
     return translated
 
@@ -212,7 +290,9 @@ def translate_eps_alias(settings: dict[str, Any]) -> dict[str, float]:
     return translate_tolerance_aliases(settings, ("eps_abs",), ("eps_rel",))
 
 
-def _coerce_tolerance(alias: str, value: Any) -> float:
+def coerce_tolerance(alias: str, value: Any) -> float:
+    """``value`` of tolerance setting ``alias`` as a float, else
+    ``SolverConfigError`` (a boolean or a non-number)."""
     if isinstance(value, bool):
         raise SolverConfigError(f"Setting {alias!r} must be a number (got {value!r})")
     try:

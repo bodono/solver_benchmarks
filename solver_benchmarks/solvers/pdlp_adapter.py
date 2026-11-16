@@ -27,12 +27,14 @@ from solver_benchmarks.core.problem import CONE, QP, ProblemData, cone_row_count
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     coerce_int_setting,
     coerce_time_limit,
     finite_point,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
@@ -52,11 +54,7 @@ class PDLPSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            _import_ortools()
-        except SolverUnavailable:
-            return False
-        return True
+        return module_available("ortools", _import_ortools)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         _import_ortools()
@@ -164,13 +162,15 @@ def _preflight_model_size(n: int, m: int, nnz: int) -> SolverResult | None:
 
 def _import_ortools() -> None:
     try:
-        import google.protobuf  # noqa: F401
+        # ortools first: protobuf ('google') comes with it, so without the
+        # pdlp extra the failure names ortools and reads as not installed.
         import ortools
         from ortools.linear_solver import linear_solver_pb2  # noqa: F401
         from ortools.pdlp import solve_log_pb2, solvers_pb2  # noqa: F401
 
         _import_model_builder_helper()
-    except ImportError as exc:
+        import google.protobuf  # noqa: F401
+    except IMPORT_ERRORS as exc:
         raise SolverUnavailable(
             "Install with the pdlp extra to use PDLP; "
             f"OR-Tools could not be imported ({exc})"
@@ -185,48 +185,56 @@ def _import_ortools() -> None:
 def _build_lp_model_from_qp(qp: dict):
     from ortools.linear_solver import linear_solver_pb2
 
-    a = sp.csr_matrix(qp["A"])
+    a = sp.csr_matrix(qp["A"], dtype=float)
     q = np.asarray(qp["q"], dtype=float)
     l, u = normalize_qp_bounds(qp["l"], qp["u"])
 
     model = linear_solver_pb2.MPModelProto()
     model.name = "solver_benchmarks_pdlp"
     model.objective_offset = 0.0
+    _add_free_variables(model, q)
 
-    for index, obj_coef in enumerate(q):
-        variable = linear_solver_pb2.MPVariableProto(
-            objective_coefficient=float(obj_coef),
-            lower_bound=-np.inf,
-            upper_bound=np.inf,
-            name=f"x_{index}",
-        )
-        model.variable.append(variable)
-
+    lowers = l.tolist()
+    uppers = u.tolist()
     for row_index in range(a.shape[0]):
-        lower = float(l[row_index])
-        upper = float(u[row_index])
+        lower = lowers[row_index]
+        upper = uppers[row_index]
         if lower == -np.inf and upper == np.inf:
             continue
-        constraint = linear_solver_pb2.MPConstraintProto(name=f"constraint_{row_index}")
-        start = a.indptr[row_index]
-        end = a.indptr[row_index + 1]
-        for nz_index in range(start, end):
-            constraint.var_index.append(int(a.indices[nz_index]))
-            constraint.coefficient.append(float(a.data[nz_index]))
+        constraint = model.constraint.add()
+        _set_row(constraint, a, row_index)
         # Always set BOTH bounds. MPConstraintProto's proto3 default is
         # 0 for lower_bound and upper_bound, so a one-sided constraint
         # ``Ax <= u`` whose lower_bound we leave unset would silently
         # become ``0 <= Ax <= u`` instead of ``-inf <= Ax <= u``.
         constraint.lower_bound = lower
         constraint.upper_bound = upper
-        model.constraint.append(constraint)
     return model
+
+
+# The model is built with one ``extend`` per row and no variable or constraint
+# names: appending entries one at a time and naming every entity took seconds
+# on large LPs (and names add about a fifth to the request PDLP is sent).
+
+
+def _add_free_variables(model, objective: np.ndarray) -> None:
+    for coefficient in objective.tolist():
+        model.variable.add(
+            objective_coefficient=coefficient, lower_bound=-np.inf, upper_bound=np.inf
+        )
+
+
+def _set_row(constraint, a: sp.csr_matrix, row_index: int) -> None:
+    start = a.indptr[row_index]
+    end = a.indptr[row_index + 1]
+    constraint.var_index.extend(a.indices[start:end].tolist())
+    constraint.coefficient.extend(a.data[start:end].tolist())
 
 
 def _build_lp_model_from_linear_cone(cone_problem: dict):
     from ortools.linear_solver import linear_solver_pb2
 
-    a = sp.csr_matrix(cone_problem["A"])
+    a = sp.csr_matrix(cone_problem["A"], dtype=float)
     b = np.asarray(cone_problem["b"], dtype=float)
     c = np.asarray(cone_problem["q"], dtype=float)
     cone = dict(cone_problem["cone"])
@@ -238,33 +246,21 @@ def _build_lp_model_from_linear_cone(cone_problem: dict):
     model = linear_solver_pb2.MPModelProto()
     model.name = "solver_benchmarks_pdlp_cone"
     model.objective_offset = 0.0
+    _add_free_variables(model, c)
 
-    for index, obj_coef in enumerate(c):
-        variable = linear_solver_pb2.MPVariableProto(
-            objective_coefficient=float(obj_coef),
-            lower_bound=-np.inf,
-            upper_bound=np.inf,
-            name=f"x_{index}",
-        )
-        model.variable.append(variable)
-
+    rhs = b.tolist()
     for row_index in range(a.shape[0]):
-        constraint = linear_solver_pb2.MPConstraintProto(name=f"constraint_{row_index}")
-        start = a.indptr[row_index]
-        end = a.indptr[row_index + 1]
-        for nz_index in range(start, end):
-            constraint.var_index.append(int(a.indices[nz_index]))
-            constraint.coefficient.append(float(a.data[nz_index]))
+        constraint = model.constraint.add()
+        _set_row(constraint, a, row_index)
         if row_index < zero_dim:
-            constraint.lower_bound = float(b[row_index])
-            constraint.upper_bound = float(b[row_index])
+            constraint.lower_bound = rhs[row_index]
+            constraint.upper_bound = rhs[row_index]
         else:
             # SCS-style data has A x + s = b, s >= 0, hence A x <= b.
             # Always set lower_bound explicitly so the proto3 default
             # of 0 cannot leak through and silently impose Ax >= 0.
             constraint.lower_bound = -np.inf
-            constraint.upper_bound = float(b[row_index])
-        model.constraint.append(constraint)
+            constraint.upper_bound = rhs[row_index]
     return model
 
 
@@ -285,6 +281,13 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     if time_limit is None and legacy_time_limit is not None:
         time_limit = coerce_time_limit("solver_time_limit_sec", legacy_time_limit)
     translated = translate_eps_alias(settings)
+    save_response = settings.pop("save_response", None)
+    if save_response is None:
+        save_response = False
+    elif not isinstance(save_response, bool):
+        raise SolverConfigError(
+            f"Setting 'save_response' must be true or false (got {save_response!r})"
+        )
 
     request = linear_solver_pb2.MPModelRequest(
         enable_internal_solver_output=verbose,
@@ -341,9 +344,20 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     elapsed = time.perf_counter() - start
 
     solve_log = solve_log_pb2.SolveLog.FromString(response.solver_specific_info)
+    x = np.asarray(response.variable_value, dtype=float) if len(response.variable_value) else None
+    # OR-Tools returns the dual negated relative to our QP sign convention
+    # (y_qp = λ_u − λ_l). Flip here so downstream KKT helpers see the right sign.
+    y = -np.asarray(response.dual_value, dtype=float) if len(response.dual_value) else None
+    primal_size = len(response.variable_value)
+    dual_size = len(response.dual_value)
     (artifacts_dir / "pdlp_solve_log.textproto").write_text(
         text_format.MessageToString(solve_log)
     )
+    if not save_response:
+        # The solution vectors as text cost seconds and tens of MB per solve
+        # on large LPs; the row keeps what the harness needs from them.
+        for field in ("variable_value", "dual_value", "reduced_cost"):
+            response.ClearField(field)
     (artifacts_dir / "pdlp_response.textproto").write_text(
         text_format.MessageToString(response)
     )
@@ -358,10 +372,6 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
             f"PDLP rejected a setting value in {given}: {solve_log.termination_string}"
         )
     mapped_status = _map_status(solve_log)
-    x = np.asarray(response.variable_value, dtype=float) if len(response.variable_value) else None
-    # OR-Tools returns the dual negated relative to our QP sign convention
-    # (y_qp = λ_u − λ_l). Flip here so downstream KKT helpers see the right sign.
-    y = -np.asarray(response.dual_value, dtype=float) if len(response.dual_value) else None
     kkt_dict = None
     if compute_kkt is not None and x is not None:
         kkt_dict = compute_kkt(mapped_status, x, y)
@@ -372,8 +382,8 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         "termination_reason": termination_reason,
         "termination_string": solve_log.termination_string,
         "solver_time_sec": getattr(solve_log, "solve_time_sec", None),
-        "primal_solution_size": len(response.variable_value),
-        "dual_solution_size": len(response.dual_value),
+        "primal_solution_size": primal_size,
+        "dual_solution_size": dual_size,
         # PDLP's own default is one thread; ``num_threads`` (from ``threads``
         # or parameters_text) is the count it ran with.
         "threads": int(parameters.num_threads),

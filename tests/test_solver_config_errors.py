@@ -103,6 +103,14 @@ def test_max_iter_follows_one_integer_rule(solver_name, tmp_path):
             _solve(solver_name, {"max_iter": value}, tmp_path)
 
 
+@pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
+@pytest.mark.parametrize("solver_name", _ADAPTERS)
+def test_boolean_tolerance_alias_is_a_config_error(solver_name, alias, tmp_path):
+    # OSQP, PIQP and PDLP took eps_abs: true as a tolerance of 1.0.
+    with pytest.raises(SolverConfigError, match=alias):
+        _solve(solver_name, {alias: True}, tmp_path)
+
+
 @pytest.mark.parametrize("value", [True, "2", 2.5])
 def test_threads_follow_the_integer_rule(value, tmp_path):
     with pytest.raises(SolverConfigError, match="threads"):

@@ -21,16 +21,19 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     EPS_ALIASES,
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
+    coerce_int_setting,
     finite_point,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     refuse_settings,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     threads_or_default,
 )
 from .qp_split import free_row_mask, normalize_qp_bounds
@@ -42,17 +45,15 @@ class HighsSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import highspy  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("highspy")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import highspy
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the highs extra to use HiGHS") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "highspy", "Install with the highs extra to use HiGHS", exc
+            ) from exc
 
         qp = problem.qp
         p = sp.csc_matrix(qp["P"])
@@ -201,6 +202,11 @@ def _configure_highs(solver, settings: dict) -> tuple[int, dict]:
     threads = threads_or_default(pop_threads(settings))
     _set_option(solver, "threads", threads)
     translated: dict = {}
+    # The native limits follow the shared integer rule (highspy refuses an
+    # integer-valued float such as YAML's 1e3 and parses a string).
+    for option in _ITERATION_LIMIT_OPTIONS:
+        if settings.get(option) is not None:
+            settings[option] = coerce_int_setting(option, settings[option], minimum=0)
     max_iter = pop_max_iter(settings, minimum=0)
     if max_iter is not None:
         for option in _ITERATION_LIMIT_OPTIONS:

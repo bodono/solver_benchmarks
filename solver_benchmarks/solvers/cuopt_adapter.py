@@ -32,15 +32,18 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
+    coerce_tolerance,
     finite_point,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
 )
 from .qp_split import normalize_qp_bounds
 
@@ -49,9 +52,9 @@ def _import_cuopt():
     try:
         from cuopt import linear_programming  # noqa: F401
         from cuopt.linear_programming import data_model, solver, solver_settings  # noqa: F401
-    except ImportError as exc:  # pragma: no cover - depends on GPU environment
-        raise SolverUnavailable(
-            "Install cuopt-cu12 (NVIDIA pip index) on a CUDA machine to use cuOpt"
+    except IMPORT_ERRORS as exc:
+        raise solver_import_failed(
+            "cuopt", "Install cuopt-cu12 (NVIDIA pip index) on a CUDA machine to use cuOpt", exc
         ) from exc
     return data_model, solver, solver_settings
 
@@ -111,11 +114,7 @@ class CuOptSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            _import_cuopt()
-        except SolverUnavailable:
-            return False
-        return True
+        return module_available("cuopt", _import_cuopt)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         data_model, solver, solver_settings = _import_cuopt()
@@ -127,6 +126,9 @@ class CuOptSolverAdapter(SolverAdapter):
         eps = settings.pop("eps", None)
         eps_abs = settings.pop("eps_abs", None)
         eps_rel = settings.pop("eps_rel", None)
+        for alias, value in (("eps", eps), ("eps_abs", eps_abs), ("eps_rel", eps_rel)):
+            if value is not None:
+                coerce_tolerance(alias, value)  # refuses a boolean or a non-number
         # cuOpt reports duals with the opposite sign to the harness QP form
         # (checked numerically on an active-bound LP); override with dual_sign.
         dual_sign = float(settings.pop("dual_sign", -1.0))

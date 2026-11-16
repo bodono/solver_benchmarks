@@ -44,7 +44,10 @@ def test_cli_list_solvers_marks_optional_extras():
     for line in result.output.strip().splitlines():
         parts = line.split("\t")
         assert len(parts) == 3
-        assert parts[1] in {"available", "missing optional extra"}
+        # A package that is installed but does not load is listed with why.
+        assert parts[1] in {"available", "missing optional extra"} or parts[1].startswith(
+            "unavailable: "
+        )
 
 
 def test_make_run_id_truncates_many_dataset_slug():

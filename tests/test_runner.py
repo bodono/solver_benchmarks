@@ -1992,7 +1992,10 @@ def test_fail_on_unsupported_fails_for_a_solver_that_is_not_installed(
             "solvers": [{"id": "osqp", "solver": "osqp"}, {"id": "missing", "solver": "missing_fixture"}],
         }
     )
-    with pytest.raises(RuntimeError, match="missing_fixture.*unavailable"):
+    # The same message covers a package that is installed but does not load.
+    with pytest.raises(
+        RuntimeError, match=r"missing_fixture.*unavailable \(not installed, or installed but"
+    ):
         run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
     assert not (tmp_path / "run" / "results.jsonl").exists()
 

@@ -57,6 +57,87 @@ def test_solver_failure_is_a_solver_error(solver_name, qp, tmp_path):
     assert result.objective_value is None and result.kkt is None
 
 
+@pytest.mark.parametrize("qp, error", [
+    (NONCONVEX, "OSQPException: 4 (non-convex problem)"),
+    (CROSSED_BOUNDS, "OSQPException: 1 (data validation)"),
+])
+def test_osqp_error_names_the_osqp_error_code(qp, error, tmp_path):
+    result = _solve("osqp", qp, tmp_path)
+    assert result.status == status.SOLVER_ERROR
+    assert result.info["error"] == error
+
+
+# min x0 + x1 s.t. x0 + x1 >= 1 and x0 + x1 <= -1: primal infeasible.
+_INFEASIBLE = {
+    "P": sp.csc_matrix((2, 2)),
+    "q": np.array([1.0, 1.0]),
+    "A": sp.csc_matrix([[1.0, 1.0], [1.0, 1.0]]),
+    "l": np.array([1.0, -np.inf]),
+    "u": np.array([np.inf, -1.0]),
+}
+
+
+@pytest.mark.filterwarnings(
+    "error:The default value of raise_error:PendingDeprecationWarning"
+)
+def test_osqp_solve_does_not_rely_on_the_raise_error_default(tmp_path):
+    # osqp 1.x warns that solve()'s raise_error default will become True,
+    # under which it raises for every status but "solved"; the adapter maps
+    # the statuses itself and passes raise_error=False.
+    result = _solve("osqp", _INFEASIBLE, tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+
+
+def test_osqp_raise_error_lookup_is_outside_the_timed_region(monkeypatch, tmp_path):
+    # run_time_seconds runs from before setup() to after solve(); the
+    # signature lookup for raise_error costs tens of microseconds, which on
+    # small problems is a tenth of OSQP's time.
+    pytest.importorskip("osqp")
+    import time
+    import types
+
+    from solver_benchmarks.solvers import osqp_adapter
+
+    events: list[str] = []
+    real_kwargs = osqp_adapter._solve_kwargs
+
+    def lookup(solver):
+        events.append("lookup")
+        return real_kwargs(solver)
+
+    def clock():
+        events.append("clock")
+        return time.perf_counter()
+
+    monkeypatch.setattr(osqp_adapter, "_solve_kwargs", lookup)
+    monkeypatch.setattr(osqp_adapter, "time", types.SimpleNamespace(perf_counter=clock))
+    result = _solve("osqp", _INFEASIBLE, tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert events[:2] == ["lookup", "clock"]
+    assert events.count("lookup") == 1
+
+
+@pytest.mark.parametrize("qp, settings, expected", [
+    (_INFEASIBLE, {}, status.PRIMAL_INFEASIBLE),
+    (NONCONVEX, {}, status.SOLVER_ERROR),
+    (_qp([1.0, 1.0], -np.ones(3), np.ones(3)), {"max_iter": 1}, status.MAX_ITER_REACHED),
+])
+def test_osqp_statuses_survive_a_raise_error_default_of_true(
+    monkeypatch, qp, settings, expected, tmp_path
+):
+    osqp = pytest.importorskip("osqp")
+    original = osqp.OSQP.solve
+    if "raise_error" not in __import__("inspect").signature(original).parameters:
+        pytest.skip("this osqp has no raise_error")
+
+    def solve_raising_by_default(self, raise_error=True):
+        return original(self, raise_error=raise_error)
+
+    monkeypatch.setattr(osqp.OSQP, "solve", solve_raising_by_default)
+    result = _solve("osqp", qp, tmp_path, settings)
+    assert result.status == expected
+
+
 def test_osqp_invalid_setting_value_still_raises(tmp_path):
     with pytest.raises(ValueError, match="OSQP rejected"):
         _solve("osqp", _qp([1.0, 1.0], -np.ones(3), np.ones(3)), tmp_path, {"eps_abs": -1.0})
