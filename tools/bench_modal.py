@@ -181,13 +181,14 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
     run_dir.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
+    # An empty OMP_NUM_THREADS counts as unset for the runner too.
+    env = dict(os.environ, OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS") or "4")
     t0 = time.time()
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
-        # The repository root is the image's checkout: the runner starts each
-        # worker there, and `python -m` puts the working directory first on
-        # sys.path, so problem_classes resolves to the shipped reader modules.
-        # Only the data comes from the volume.
+        # The repository root is the image's checkout: `python -m` puts the
+        # working directory first on sys.path, so `bench` imports the shipped
+        # solver_benchmarks and problem_classes, and the runner hands its
+        # workers those import roots. Only the data comes from the volume.
         proc = subprocess.Popen(
             [sys.executable, "-m", "solver_benchmarks.cli", "run", str(cfg), "--run-dir", str(run_dir),
              "--repo-root", "/root/repo", "--data-root", "/data/problem_classes", "--no-stream-output"],

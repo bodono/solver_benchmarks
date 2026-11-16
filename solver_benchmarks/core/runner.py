@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
+import importlib.util
 import itertools
 import json
 import logging
 import math
 import os
+import shutil
 import signal
+import site
 import subprocess
 import sys
+import sysconfig
+import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,7 +40,7 @@ from solver_benchmarks.core.data_prepare import (
     data_prepare_command,
     data_prepare_selection,
 )
-from solver_benchmarks.core.environment import runtime_metadata
+from solver_benchmarks.core.environment import THREAD_LIMIT_ENV_VARS, runtime_metadata
 from solver_benchmarks.core.problem import ProblemSpec
 from solver_benchmarks.core.result import ProblemResult
 from solver_benchmarks.core.storage import (
@@ -49,7 +55,12 @@ from solver_benchmarks.datasets.base import (
     filter_problem_specs_by_size,
 )
 from solver_benchmarks.solvers import get_solver
-from solver_benchmarks.solvers.base import CONFIG_ERROR_KIND, SolverConfigError
+from solver_benchmarks.solvers.base import (
+    CONFIG_ERROR_KIND,
+    SolverConfigError,
+    pop_threads,
+    threads_or_default,
+)
 
 # Bounds of the grace added on top of the configured timeout before the
 # worker is force-killed (see _subprocess_timeout). The grace covers worker
@@ -1241,7 +1252,11 @@ def _run_one(
         else None
     )
     subprocess_timeout = _subprocess_timeout(time_limit)
-    cmd = [sys.executable, "-m", "solver_benchmarks.worker", "--payload", str(payload_path)]
+    # -P: the working directory (the data root) is not put on sys.path; the
+    # worker imports this harness through harness_pythonpath().
+    cmd = [
+        sys.executable, "-P", "-m", "solver_benchmarks.worker", "--payload", str(payload_path)
+    ]
     _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
     completed = _run_subprocess(
         cmd,
@@ -1250,6 +1265,7 @@ def _run_one(
         stdout_path=artifacts_dir / "stdout.log",
         stderr_path=artifacts_dir / "stderr.log",
         stream_output=stream_solver_output,
+        env=worker_thread_environ(solver_config.settings),
     )
     if completed.timed_out:
         _emit_progress(stream_output, f"timeout {problem.name} with {solver_config.id}")
@@ -1613,6 +1629,93 @@ class _WorkerProcesses:
 _WORKERS = _WorkerProcesses()
 
 
+def worker_thread_environ(
+    settings: Mapping[str, Any] | None, environ: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """BLAS / OpenMP thread caps for the worker of a solver with ``settings``.
+
+    Every variable of THREAD_LIMIT_ENV_VARS is set to the solver's
+    ``threads`` setting, one when it is not set, as adapters size the
+    solver's own threads. That bounds the harness's KKT check
+    (``numpy.linalg.eigh`` per PSD block) and the BLAS of solvers without a
+    thread setting, which would otherwise start one thread per core in each
+    of ``run.parallelism`` workers. ``threads: 0`` (the solver's own choice)
+    sets none of them. If ``environ`` (default: this process's environment)
+    already sets any of them to a value that is not blank, the user is
+    managing the thread pools and none is set (an empty or whitespace-only
+    value counts as unset, as OpenBLAS and OpenMP read it): a mix of the
+    user's values and the runner's would leave one library on a different
+    count from another. An invalid ``threads``
+    is the adapter's to reject; the default applies meanwhile.
+    """
+    if environ is None:
+        environ = os.environ
+    if any((environ.get(name) or "").strip() for name in THREAD_LIMIT_ENV_VARS):
+        return {}
+    try:
+        threads = pop_threads(dict(settings or {}))
+    except SolverConfigError:
+        threads = None
+    count = threads_or_default(threads)
+    if count == 0:
+        return {}
+    return {name: str(count) for name in THREAD_LIMIT_ENV_VARS}
+
+
+def harness_pythonpath(inherited: str | None = None) -> str:
+    """PYTHONPATH for a child process that must run this harness's code.
+
+    The directories this process imports ``solver_benchmarks`` and
+    ``problem_classes`` from come first, then ``inherited``. Children are
+    started with ``python -P`` from the data root (``--repo-root``), so a
+    ``solver_benchmarks`` package or a module named like a standard one
+    there is not what they run. A site-packages directory is left out:
+    the child's interpreter finds its own installed packages, and an
+    environment of ``bench env run`` must use its own solver packages.
+
+    Empty entries of ``inherited`` are dropped: one means the working
+    directory, which ``-P`` does not remove and which in a child is the data
+    root. Relative entries are made absolute against this process's working
+    directory at the time the child is started.
+    """
+    roots = list(_harness_import_roots())
+    for entry in (inherited or "").split(os.pathsep):
+        if entry:
+            roots.append(os.path.abspath(entry))
+    return os.pathsep.join(roots)
+
+
+def harness_import_roots() -> tuple[str, ...]:
+    """The directories harness_pythonpath hands to children (none when this
+    process imports the harness from site-packages)."""
+    return _harness_import_roots()
+
+
+@functools.cache
+def _harness_import_roots() -> tuple[str, ...]:
+    site_dirs = set()
+    for directory in [
+        *site.getsitepackages(),
+        site.getusersitepackages(),
+        sysconfig.get_paths()["purelib"],
+        sysconfig.get_paths()["platlib"],
+    ]:
+        site_dirs.add(os.path.realpath(directory))
+    roots: list[str] = []
+    for package in ("solver_benchmarks", "problem_classes"):
+        module = sys.modules.get(package)
+        origin = getattr(module, "__file__", None)
+        if origin is None:
+            spec = importlib.util.find_spec(package)
+            origin = spec.origin if spec is not None else None
+        if origin is None:
+            continue
+        root = os.path.dirname(os.path.dirname(os.path.abspath(origin)))
+        if os.path.realpath(root) not in site_dirs and root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _run_subprocess(
     cmd: list[str],
     *,
@@ -1621,7 +1724,17 @@ def _run_subprocess(
     stdout_path: Path,
     stderr_path: Path,
     stream_output: bool,
+    env: Mapping[str, str] | None = None,
 ):
+    """Run one worker in its own process group, teeing its output to the logs.
+
+    ``env`` adds variables to the worker's environment (the thread caps).
+    The worker also gets the harness's import roots on PYTHONPATH and a
+    private temporary directory as TMPDIR / TEMP / TMP, which is removed
+    with everything in it once the worker's process group is gone, however
+    the worker ended: a worker killed while it holds a decompressed problem
+    file or a solver's scratch files leaves nothing behind.
+    """
     # Only a bounded tail of stderr stays in memory, to say why a worker
     # crashed: verbose solvers can print hundreds of MB, and the logs on disk
     # already hold everything.
@@ -1633,7 +1746,11 @@ def _run_subprocess(
     stderr_log = stderr_path.open("w", buffering=1, encoding="utf-8")
     threads: list[threading.Thread] = []
     process: subprocess.Popen | None = None
+    worker_tmp: str | None = None
     try:
+        # Under the temporary directory the runner itself uses (an
+        # inherited TMPDIR included).
+        worker_tmp = tempfile.mkdtemp(prefix="bench-worker-")
         # Run the worker in its own session/process group so we can kill
         # any helper processes the solver may have spawned.
         popen_kwargs: dict = {
@@ -1650,8 +1767,23 @@ def _run_subprocess(
             # drops the buffer: the log of a timed-out solve would lose the
             # iterations that explain the timeout.
             # The worker dies with this process (see worker._die_with_runner).
-            "env": {**os.environ, "PYTHONUNBUFFERED": "1", RUNNER_PID_ENV: str(os.getpid())},
+            "env": {
+                **os.environ,
+                **(env or {}),
+                "PYTHONUNBUFFERED": "1",
+                RUNNER_PID_ENV: str(os.getpid()),
+                "TMPDIR": worker_tmp,
+                "TEMP": worker_tmp,
+                "TMP": worker_tmp,
+            },
         }
+        pythonpath = harness_pythonpath(os.environ.get("PYTHONPATH"))
+        if pythonpath:
+            popen_kwargs["env"]["PYTHONPATH"] = pythonpath
+        else:
+            # An inherited value of separators only would put the data root
+            # (the working directory) back on the worker's sys.path.
+            popen_kwargs["env"].pop("PYTHONPATH", None)
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
         else:
@@ -1708,6 +1840,9 @@ def _run_subprocess(
             stderr_log.close()
         except OSError:
             pass
+        if worker_tmp is not None:
+            # The process group was killed on every path above.
+            shutil.rmtree(worker_tmp, ignore_errors=True)
     return SimpleNamespace(
         returncode=returncode,
         stderr="".join(stderr_tail),
@@ -1953,7 +2088,11 @@ def _metadata_with_environment(
         {
             "environment_id": environment_id,
             "environment_metadata": environment_metadata or {},
-            "runtime": runtime_metadata(solver_config.solver),
+            # The worker's thread variables, as worker_thread_environ sets them.
+            "runtime": runtime_metadata(
+                solver_config.solver,
+                environ={**os.environ, **worker_thread_environ(solver_config.settings)},
+            ),
         }
     )
     if resume_signature is not None:

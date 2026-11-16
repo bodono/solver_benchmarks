@@ -49,7 +49,7 @@ class _StubSolverAdapter(SolverAdapter):
         raise AssertionError("Subprocess is stubbed in this test")
 
 
-def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
     """Pretend to invoke the worker by reading the payload and writing
     a deterministic ProblemResult-shaped JSON next to it."""
     payload = json.loads(Path(cmd[-1]).read_text())
@@ -217,7 +217,7 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     # Names this test's sleepers, not those of a concurrent run of it.
     marker = f"bench-interrupt-test-{uuid.uuid4().hex}"
 
-    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         problem = json.loads(Path(cmd[-1]).read_text())["problem"]
         with lock:
             started.append(problem)
@@ -284,7 +284,7 @@ def test_sigterm_to_bench_run_kills_workers_and_keeps_finished_results(
     lock = threading.Lock()
     marker = f"bench-sigterm-test-{uuid.uuid4().hex}"
 
-    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         problem = json.loads(Path(cmd[-1]).read_text())["problem"]
         with lock:
             started.append(problem)

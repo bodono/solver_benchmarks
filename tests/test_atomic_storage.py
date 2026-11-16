@@ -348,7 +348,7 @@ def test_run_completes_when_parquet_cannot_be_written(tmp_path: Path, monkeypatc
 
     from solver_benchmarks.core.runner import run_benchmark
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         record = ProblemResult(
             run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],

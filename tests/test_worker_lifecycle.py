@@ -96,6 +96,8 @@ def _start_runner(tmp_path: Path, *, parallelism: int, ignore_sighup: bool = Fal
     env = _env()
     env["PYTHONPATH"] = env["PYTHONPATH"] + os.pathsep + str(site)
     env["BENCH_TEST_SLEEPY"] = "1"
+    # A runner killed outright cannot remove its workers' temporary directories.
+    env["TMPDIR"] = str(tmp_path)
 
     def preexec():
         # Set explicitly: pytest itself may run under nohup.
@@ -378,6 +380,8 @@ def test_a_matrix_child_dies_with_a_bench_env_run_killed_hard(tmp_path: Path):
     env = _env()
     env["PYTHONPATH"] = env["PYTHONPATH"] + os.pathsep + str(site)
     env["BENCH_TEST_SLEEPY"] = "1"
+    # A runner killed outright cannot remove its workers' temporary directories.
+    env["TMPDIR"] = str(tmp_path)
     child = [sys.executable, "-m", "solver_benchmarks.cli", "run", str(config),
              "--run-dir", str(tmp_path / "run"), "--no-stream-output"]
     matrix = textwrap.dedent(
@@ -421,3 +425,421 @@ def test_a_matrix_child_dies_with_a_bench_env_run_killed_hard(tmp_path: Path):
     finally:
         process.kill()
         _kill_leftovers(tmp_path, _PROBLEMS)
+
+
+# What the worker's environment holds: the BLAS / OpenMP thread caps, the
+# harness it imports and its temporary directory. ``envprobe`` reports them
+# from inside the worker; a sitecustomize on PYTHONPATH registers it there.
+_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+
+_ENVPROBE = textwrap.dedent(
+    """
+    import json, os, tempfile
+    import solver_benchmarks
+    from solver_benchmarks.core.result import SolverResult
+    from solver_benchmarks.solvers import registry
+    from solver_benchmarks.solvers.base import SolverAdapter
+
+    VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+
+    class EnvProbe(SolverAdapter):
+        solver_name = "envprobe"
+        supported_problem_kinds = {"qp", "cone"}
+
+        def solve(self, problem, artifacts_dir):
+            return SolverResult(
+                status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.0,
+                info={
+                    "env": {name: os.environ.get(name) for name in VARS},
+                    "harness": os.path.dirname(solver_benchmarks.__file__),
+                    "json": json.__file__,
+                    "tempdir": tempfile.gettempdir(),
+                },
+            )
+
+    registry.SOLVERS["envprobe"] = EnvProbe
+    """
+)
+
+
+@pytest.fixture
+def envprobe(tmp_path: Path, monkeypatch):
+    """Register ``envprobe`` here and in every worker this test starts."""
+    import importlib.util
+
+    site = tmp_path / "probe_site"
+    site.mkdir()
+    (site / "bench_envprobe.py").write_text(_ENVPROBE)
+    (site / "sitecustomize.py").write_text(
+        "import os\nif os.environ.get('BENCH_TEST_ENVPROBE'):\n    import bench_envprobe\n"
+    )
+    from solver_benchmarks.solvers import registry
+
+    # Loading the module registers envprobe; undone at teardown.
+    monkeypatch.setitem(registry.SOLVERS, "envprobe", None)
+    spec = importlib.util.spec_from_file_location("bench_envprobe_parent", site / "bench_envprobe.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(registry.SOLVERS, "envprobe", module.EnvProbe)
+    path = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", str(site) + (os.pathsep + path if path else ""))
+    monkeypatch.setenv("BENCH_TEST_ENVPROBE", "1")
+    for name in _THREAD_VARS:
+        monkeypatch.delenv(name, raising=False)
+    return site
+
+
+def _rows(store_or_dir) -> list[dict]:
+    import json
+
+    path = getattr(store_or_dir, "results_jsonl_path", None) or Path(store_or_dir) / "results.jsonl"
+    return [json.loads(line) for line in Path(path).read_text().splitlines()]
+
+
+def _caps(value):
+    return {name: value for name in _THREAD_VARS}
+
+
+_THREAD_CASES = [
+    ({}, {}, _caps("1")),
+    ({"threads": 2}, {}, _caps("2")),
+    ({"threads": 0}, {}, _caps(None)),
+    ({"threads": 2}, {"OMP_NUM_THREADS": "8"}, {**_caps(None), "OMP_NUM_THREADS": "8"}),
+    ({}, {"OPENBLAS_NUM_THREADS": "3"}, {**_caps(None), "OPENBLAS_NUM_THREADS": "3"}),
+    ({"threads": 2}, {"OMP_NUM_THREADS": ""}, _caps("2")),
+    ({"threads": 2}, {"OMP_NUM_THREADS": " "}, _caps("2")),
+    (
+        {"threads": 2},
+        {"OMP_NUM_THREADS": "", "OPENBLAS_NUM_THREADS": "3"},
+        {**_caps(None), "OMP_NUM_THREADS": "", "OPENBLAS_NUM_THREADS": "3"},
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "settings, exported, expected",
+    _THREAD_CASES,
+    ids=["default", "threads-2", "threads-0", "exported-omp", "exported-openblas", "exported-empty",
+         "exported-blank", "exported-empty-and-set"],
+)
+def test_the_runner_hands_the_worker_thread_caps(
+    monkeypatch, tmp_path: Path, settings, exported, expected
+):
+    """The BLAS / OpenMP pools of a worker follow the solver's `threads`
+    (one by default, none set for 0); if the user exported any of the four
+    variables, the runner sets none of them. The row records the values the
+    worker ran with, also when the runner writes the row itself (here: a
+    timeout)."""
+    from types import SimpleNamespace
+
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.runner import run_benchmark
+
+    for name in _THREAD_VARS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in exported.items():
+        monkeypatch.setenv(name, value)
+    handed = []
+
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+        handed.append(dict(env or {}))
+        return SimpleNamespace(returncode=-15, timed_out=True, stderr="")
+
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake)
+    config = parse_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"], "timeout_seconds": 5},
+         "solvers": [{"id": "s", "solver": "scs", "settings": settings}]}
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=REPO_ROOT)
+    user_managed = any(value.strip() for value in exported.values())
+    added = {} if user_managed else {name: value for name, value in expected.items() if value is not None}
+    assert handed == [added]
+    (row,) = _rows(store)
+    assert row["status"] == "time_limit"
+    assert row["metadata"]["runtime"]["thread_env"] == expected
+
+
+def test_a_worker_runs_with_the_thread_caps(envprobe, tmp_path: Path):
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.runner import run_benchmark
+
+    cases = {"default": {}, "two": {"threads": 2}, "solver_default": {"threads": 0}}
+    config = parse_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"]},
+         "solvers": [{"id": key, "solver": "envprobe", "settings": settings}
+                     for key, settings in cases.items()]}
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=REPO_ROOT)
+    rows = {row["solver_id"]: row for row in _rows(store)}
+    expected = {"default": _caps("1"), "two": _caps("2"), "solver_default": _caps(None)}
+    for key, caps in expected.items():
+        assert rows[key]["status"] == "optimal", rows[key]["error"]
+        assert rows[key]["info"]["env"] == caps
+        assert rows[key]["metadata"]["runtime"]["thread_env"] == caps
+
+
+_PLANTED = ["harness-copy", "stdlib-name"]
+
+
+def _planted_repo_root(tmp_path: Path, planted: str) -> tuple[Path, Path]:
+    """A data root holding another `solver_benchmarks`, or a stray json.py."""
+    root = tmp_path / "data_root"
+    marker = tmp_path / "planted_code_ran"
+    (root / "problem_classes").mkdir(parents=True)
+    if planted == "harness-copy":
+        (root / "solver_benchmarks").mkdir()
+        (root / "solver_benchmarks" / "__init__.py").write_text("")
+        for name in ("worker.py", "cli.py"):
+            (root / "solver_benchmarks" / name).write_text(
+                f"import pathlib, sys\npathlib.Path({str(marker)!r}).write_text('{name}')\nsys.exit(3)\n"
+            )
+        return root, marker
+    (root / "json.py").write_text(
+        f"import pathlib\npathlib.Path({str(marker)!r}).write_text('json.py')\n"
+        "raise ImportError('planted json.py')\n"
+    )
+    return root, marker
+
+
+# These two use a real solver: envprobe's sitecustomize would import the
+# harness and json before the worker's own imports.
+@pytest.mark.parametrize("planted", _PLANTED)
+def test_a_worker_does_not_import_code_from_the_data_root(tmp_path: Path, planted: str):
+    """--repo-root is where the data is; a harness copy or a module named like
+    a standard one there must not be what the workers run."""
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.runner import run_benchmark
+
+    root, marker = _planted_repo_root(tmp_path, planted)
+    config = parse_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"]},
+         "solvers": [{"id": "osqp", "solver": "osqp"}]}
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=root)
+    (row,) = _rows(store)
+    assert row["status"] == "optimal", row["error"]
+    assert not marker.exists(), marker.read_text()
+
+
+@pytest.mark.parametrize("planted", _PLANTED)
+def test_a_matrix_environment_does_not_import_code_from_the_data_root(tmp_path: Path, planted: str):
+    from solver_benchmarks.core.config import parse_environment_run_config
+    from solver_benchmarks.core.env_runner import run_environment_matrix
+
+    root, marker = _planted_repo_root(tmp_path, planted)
+    config = parse_environment_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"],
+                 "output_dir": str(tmp_path / "runs")},
+         "environments": [{"id": "here", "python": sys.executable,
+                           "solvers": [{"id": "osqp", "solver": "osqp"}]}]}
+    )
+    run_dir = run_environment_matrix(
+        config, run_dir=tmp_path / "matrix", repo_root=root, stream_output=False
+    )
+    (row,) = _rows(run_dir)
+    assert row["status"] == "optimal", row["error"]
+    assert not marker.exists(), marker.read_text()
+
+
+# A runner (and a `bench env run`) that imports the harness from a directory
+# it put on sys.path itself: neither PYTHONPATH, the working directory nor the
+# installed package points there, so the children find that code only through
+# the import roots the parent hands them.
+_ELSEWHERE_PARENT = textwrap.dedent(
+    """
+    import json, os, sys
+    harness, probe_site, root, out = sys.argv[1:5]
+    sys.path.insert(0, harness)
+    sys.path.insert(0, probe_site)
+    import bench_envprobe  # registers envprobe in this process
+    import solver_benchmarks
+    from solver_benchmarks.core.config import parse_environment_run_config, parse_run_config
+    from solver_benchmarks.core.env_runner import run_environment_matrix
+    from solver_benchmarks.core.runner import run_benchmark
+
+    assert solver_benchmarks.__file__.startswith(harness), solver_benchmarks.__file__
+    os.environ["PYTHONPATH"] = probe_site  # for the children's sitecustomize only
+    os.environ["BENCH_TEST_ENVPROBE"] = "1"
+    run = {"dataset": "synthetic_qp", "include": ["one_variable_eq"]}
+    solvers = [{"id": "probe", "solver": "envprobe"}]
+    run_benchmark(parse_run_config({"run": run, "solvers": solvers}),
+                  run_dir=os.path.join(out, "run"), repo_root=root)
+    run_environment_matrix(
+        parse_environment_run_config({"run": run, "environments": [
+            {"id": "here", "python": sys.executable, "solvers": solvers}]}),
+        run_dir=os.path.join(out, "matrix"), repo_root=root, stream_output=False)
+    """
+)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlinked harness copy")
+def test_children_run_the_harness_the_parent_imported(envprobe, tmp_path: Path):
+    harness = tmp_path / "harness_elsewhere"
+    harness.mkdir()
+    for package in ("solver_benchmarks", "problem_classes"):
+        (harness / package).symlink_to(REPO_ROOT / package, target_is_directory=True)
+    root = tmp_path / "data_root"
+    root.mkdir()
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    env.pop("BENCH_TEST_ENVPROBE", None)
+    completed = subprocess.run(
+        [sys.executable, "-c", _ELSEWHERE_PARENT, str(harness), str(envprobe), str(root), str(tmp_path)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300,
+    )
+    assert completed.returncode == 0, completed.stderr[-3000:]
+    for run_dir in ("run", "matrix"):
+        (row,) = _rows(tmp_path / run_dir)
+        assert row["status"] == "optimal", row["error"]
+        assert row["info"]["harness"] == str(harness / "solver_benchmarks"), run_dir
+
+
+def test_the_harness_pythonpath_keeps_the_inherited_one_and_skips_site_packages(monkeypatch):
+    """An inherited PYTHONPATH (bench_modal, a sitecustomize) stays, after the
+    harness; a site-packages directory is not put ahead of the standard
+    library, nor handed to a `bench env run` environment."""
+    import site
+
+    from solver_benchmarks.core import runner
+
+    roots = {str(REPO_ROOT)}
+    runner._harness_import_roots.cache_clear()
+    try:
+        assert set(runner.harness_pythonpath().split(os.pathsep)) == roots
+        assert runner.harness_pythonpath("/a" + os.pathsep + "/b").split(os.pathsep)[-2:] == ["/a", "/b"]
+        runner._harness_import_roots.cache_clear()
+        monkeypatch.setattr(site, "getsitepackages", lambda: [str(REPO_ROOT)])
+        assert runner.harness_pythonpath() == ""
+        assert runner.harness_pythonpath("/a") == "/a"
+    finally:
+        runner._harness_import_roots.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "inherited",
+    ["{sep}{extra}", "{extra}{sep}", "{extra}{sep}{sep}rel"],
+    ids=["leading-empty", "trailing-empty", "relative"],
+)
+def test_the_inherited_pythonpath_is_handed_on_without_the_working_directory(
+    monkeypatch, tmp_path: Path, inherited: str
+):
+    """An empty PYTHONPATH entry means the working directory, which is the
+    data root in a worker; a relative one is resolved against the runner's
+    working directory, as the runner's own sys.path did."""
+    from solver_benchmarks.core import runner
+
+    monkeypatch.chdir(tmp_path)
+    extra = str(tmp_path / "extra")
+    value = inherited.format(sep=os.pathsep, extra=extra)
+    entries = runner.harness_pythonpath(value).split(os.pathsep)
+    roots = list(runner._harness_import_roots())
+    expected = [extra, str(tmp_path / "rel")] if "rel" in inherited else [extra]
+    assert entries == roots + expected
+
+
+def test_an_empty_pythonpath_entry_does_not_put_the_data_root_on_the_worker_path(
+    monkeypatch, tmp_path: Path
+):
+    """`export PYTHONPATH=$PYTHONPATH:/dir` with PYTHONPATH unset gives a
+    leading empty entry; a json.py in the data root must still not run."""
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.runner import run_benchmark
+
+    root, marker = _planted_repo_root(tmp_path, "stdlib-name")
+    path = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep + str(tmp_path / "extra") + (os.pathsep + path if path else "")
+    )
+    config = parse_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"]},
+         "solvers": [{"id": "osqp", "solver": "osqp"}]}
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=root)
+    (row,) = _rows(store)
+    assert row["status"] == "optimal", row["error"]
+    assert not marker.exists(), marker.read_text()
+
+
+_NO_HANDOVER = "[bench env] no harness directory is handed to the environments"
+
+
+def test_bench_env_run_says_when_it_hands_over_no_harness(monkeypatch, tmp_path: Path, capsys):
+    """Imported from site-packages, `bench env run` hands no directory to the
+    environments; each runs the solver_benchmarks installed in it, and the
+    run says so once."""
+    from solver_benchmarks.core import env_runner, runner
+    from solver_benchmarks.core.config import parse_environment_run_config
+
+    monkeypatch.setattr(runner, "_harness_import_roots", lambda: ())
+    children = []
+    monkeypatch.setattr(env_runner, "_run_child", lambda cmd, cwd: children.append(cmd))
+    config = parse_environment_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"],
+                 "output_dir": str(tmp_path / "runs")},
+         "environments": [{"id": env_id, "python": sys.executable,
+                           "solvers": [{"id": f"osqp_{env_id}", "solver": "osqp"}]}
+                          for env_id in ("a", "b")]}
+    )
+    env_runner.run_environment_matrix(
+        config, run_dir=tmp_path / "matrix", repo_root=REPO_ROOT, stream_output=False
+    )
+    assert len(children) == 2
+    err = capsys.readouterr().err
+    assert err.count(_NO_HANDOVER) == 1, err
+    assert "each environment runs the solver_benchmarks installed in it" in err
+
+
+def test_bench_env_run_is_quiet_about_a_handed_over_harness(monkeypatch, tmp_path: Path, capsys):
+    from solver_benchmarks.core import env_runner
+    from solver_benchmarks.core.config import parse_environment_run_config
+
+    monkeypatch.setattr(env_runner, "_run_child", lambda cmd, cwd: None)
+    config = parse_environment_run_config(
+        {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"],
+                 "output_dir": str(tmp_path / "runs")},
+         "environments": [{"id": "here", "python": sys.executable,
+                           "solvers": [{"id": "osqp", "solver": "osqp"}]}]}
+    )
+    env_runner.run_environment_matrix(
+        config, run_dir=tmp_path / "matrix", repo_root=REPO_ROOT, stream_output=False
+    )
+    assert _NO_HANDOVER not in capsys.readouterr().err
+
+
+_SHOW_PYTHONPATH = "import os, sys; open(sys.argv[1], 'w').write(repr(os.environ.get('PYTHONPATH')))"
+
+
+@pytest.mark.parametrize("separators", [1, 2], ids=["sep", "sep-sep"])
+def test_a_separator_only_pythonpath_is_not_handed_to_a_worker(
+    monkeypatch, tmp_path: Path, separators: int
+):
+    """With no harness directory to hand over (site-packages install), an
+    inherited PYTHONPATH of only separators must not reach the worker: its
+    empty entries mean the working directory, the data root."""
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_harness_import_roots", lambda: ())
+    monkeypatch.setenv("PYTHONPATH", os.pathsep * separators)
+    seen = tmp_path / "seen"
+    result = runner._run_subprocess(
+        [sys.executable, "-c", _SHOW_PYTHONPATH, str(seen)],
+        cwd=tmp_path,
+        timeout=60.0,
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        stream_output=False,
+    )
+    assert result.returncode == 0
+    assert seen.read_text() == "None"
+
+
+@pytest.mark.parametrize("separators", [1, 2], ids=["sep", "sep-sep"])
+def test_a_separator_only_pythonpath_is_not_handed_to_a_matrix_child(
+    monkeypatch, tmp_path: Path, separators: int
+):
+    from solver_benchmarks.core import env_runner, runner
+
+    monkeypatch.setattr(runner, "_harness_import_roots", lambda: ())
+    monkeypatch.setenv("PYTHONPATH", os.pathsep * separators)
+    seen = tmp_path / "seen"
+    env_runner._run_child([sys.executable, "-c", _SHOW_PYTHONPATH, str(seen)], cwd=tmp_path)
+    assert seen.read_text() == "None"

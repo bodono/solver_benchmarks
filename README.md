@@ -497,6 +497,19 @@ infeasibility rows have no KKT record; PDLP skips cone problems with a nonzero
 `P` (it solved the LP without it); and data SCS, cpo3 or SDPA refuses is
 `solver_error` instead of a `worker_error` retried on resume.
 
+Comparing with runs recorded before the runner capped each worker's BLAS /
+OpenMP threads (see `threads` under
+[Shared Solver Settings](#shared-solver-settings)): at default settings,
+timings change for every solve path that goes through NumPy / SciPy's
+OpenBLAS, whatever the solver's own wheel bundles: Clarabel on PSD cones,
+QTQP, and ECOS on QPs with an off-diagonal `P` (the adapter's dense
+factorization of `P`, part of `run_time_seconds`); and for CVXOPT, SDPA and
+SCS builds linked to a threaded BLAS (the PyPI wheels of those three bundle a
+serial OpenBLAS). With `run.parallelism` above one, solves that returned in
+time but whose post-solve KKT check (PSD cones) ran past the kill deadline
+were recorded as `time_limit` with no KKT record; they now keep their own
+status.
+
 Unsupported solver/problem combinations are skipped by default and recorded as
 `skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped,
 and so is a problem whose cone types an adapter cannot take (ECOS on a PSD cone),
@@ -645,6 +658,23 @@ A few setting names mean the same thing for every adapter:
   set it (OSQP, ProxQP, QTQP, ECOS, CVXOPT, SCS without OpenMP), and a
   `threads` request there is recorded as `threads_ignored`. cuOpt, a GPU
   solver, forwards `threads` to `num_cpu_threads` only when it is set.
+  The runner caps the worker's BLAS / OpenMP pools to the same number: each
+  worker starts with `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+  `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` set to `threads` (one unless
+  set; `threads: 0` sets none of them). Export any of these four yourself
+  (with a value that is not blank; an empty or whitespace-only one counts
+  as unset) and the runner
+  leaves all of them alone, whatever `threads` says (the solver's own thread
+  option still follows `threads`); `tools/bench_modal.py` does this with
+  `OMP_NUM_THREADS`. This is what bounds the harness's own KKT check (an
+  eigenvalue decomposition per PSD block) and the BLAS inside solvers that
+  take no thread setting of their own; without it every one of
+  `run.parallelism` workers would start a BLAS thread per core. The cap
+  follows `threads` (or `num_threads`) only: a solver's native thread option
+  (Clarabel `max_threads`, SDPA `numThreads`) sizes the solver but not the
+  worker's BLAS / OpenMP pools, so use the shared setting to give BLAS more
+  threads. The values a solve ran with are on `metadata.runtime.thread_env`
+  (`null` for a variable that was not set).
 - `max_iter`: the iteration cap: an integer (an integer-valued number such as
   YAML's `1e3` is accepted; `true`, `1.5` or a string is refused), `null` for
   the solver's default. It goes under the solver's own name where it differs
@@ -1033,6 +1063,7 @@ Every result row records metadata under `metadata.runtime`:
 | `metadata.runtime.solver_package_versions` | Installed package versions relevant to the solver adapter, such as `{"osqp": "1.1.1"}`. |
 | `metadata.runtime.library_versions` | Installed numpy and scipy versions, which ship the BLAS/LAPACK most solvers use. |
 | `metadata.runtime.usable_cpu_count` | CPUs the solve subprocess may run on (its CPU affinity). |
+| `metadata.runtime.thread_env` | The solve subprocess's `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` (`null` when not set); see `threads` under [Shared Solver Settings](#shared-solver-settings). |
 | `metadata.environment_id` | Optional user-supplied environment label. |
 | `metadata.environment_metadata` | Optional user-supplied metadata, usually pinned solver versions or environment notes. |
 
@@ -1133,8 +1164,21 @@ bench env run configs/osqp_versions.yaml --run-dir results/osqp_version_compare
 
 `bench env run` deliberately does not create virtual environments. It runs the
 `install` commands you provide and then invokes each configured `python` with
-`python -m solver_benchmarks.cli run ...`. This keeps the benchmark independent
-of a specific environment manager. You can use `venv`, `uv`, conda, Docker, or
+`python -P -m solver_benchmarks.cli run ...`, so the interpreters must be
+Python 3.11 or newer (the `-P` flag). When `bench env run` itself imports
+`solver_benchmarks` and `problem_classes` from a checkout or a `PYTHONPATH`
+directory (an editable install, `python -m` from a clone), those directories
+come first on each environment's `PYTHONPATH`: every environment runs this
+harness's code with its own interpreter and installed packages (numpy, scipy,
+the solvers, and the harness's dependencies, which the `pip install -e .` in
+the examples installs). When `bench` is imported from site-packages nothing is
+handed over (the run prints a line saying so): each environment must have
+`solver_benchmarks` installed and runs that copy. An inherited `PYTHONPATH`
+follows on each environment's `PYTHONPATH`, with relative entries taken
+relative to the directory the command is run from; empty entries are
+dropped, so a package reachable only through one must be listed explicitly
+(`.` or an absolute path).
+This keeps the benchmark independent of a specific environment manager. You can use `venv`, `uv`, conda, Docker, or
 pre-existing paths.
 
 Install commands are executed directly, not through a shell. The runner expands
@@ -1319,6 +1363,8 @@ Each solve runs in a subprocess. This gives:
 
 - Native solver crashes do not kill the main runner. The `worker_error` row of a worker that died names the signal (SIGKILL usually means out of memory) and quotes the last lines of its stderr.
 - Timeouts are enforced per solve: the worker's whole process group is killed, so helper processes a solver started do not outlive it. Ctrl+C, or a SIGTERM or SIGHUP to `bench run` / `bench env run` (Slurm's `scancel`, `kill`, a CI job timeout, a closed terminal or dropped ssh session), kills the running workers too, and a parallel run keeps the results that had already finished; a SIGTERM exits with status 143, a SIGHUP with 129. Under `nohup` the SIGHUP stays ignored. A runner killed outright (SIGKILL, the out-of-memory killer) takes its workers with it on Linux; on other POSIX systems they exit within about a second, or, while the solver holds Python's interpreter lock in a long native call, as soon as it releases it. On Windows workers are not tied to the runner. A `bench env run` killed outright stops the current environment's `bench run` as a SIGTERM would (on POSIX systems; at once on Linux, within about a second elsewhere), and that run kills its workers.
+- Workers run the harness code `bench` itself runs: they start with `python -P` in the repository root (`--repo-root`, the data's location), so that directory is not on `sys.path`. When `bench` imports `solver_benchmarks` and `problem_classes` from a checkout or a `PYTHONPATH` directory (an editable install, `python -m` from a clone), those directories come first on the workers' `PYTHONPATH`; when it imports them from site-packages nothing is handed over, and the worker's interpreter finds the same site-packages. An inherited `PYTHONPATH` follows, without empty entries (which would mean the working directory) and with relative entries made absolute against the runner's working directory. A `solver_benchmarks` copy or a file named like a standard module (`json.py`) in the data root is not what runs.
+- Each worker has a private temporary directory (`TMPDIR`, `TEMP` and `TMP`) under the runner's own, removed with its contents once the worker's process group is gone, after a normal exit, a timeout or an interrupted run. A worker killed while it holds the decompressed copy of a `.mps.gz` file or a solver's scratch files leaves nothing behind. A runner killed outright (SIGKILL, the out-of-memory killer) cannot clean up: each live worker's `bench-worker-*` directory stays in the temporary directory and can be deleted by hand.
 - Solver stdout/stderr (from solvers set to `verbose: true`) are streamed live by the CLI and captured per problem and solver variant.
 - The exact worker payload is retained.
 - Completed solves are discoverable for resume.

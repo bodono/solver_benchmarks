@@ -100,6 +100,7 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
         stdout_path,
         stderr_path,
         stream_output,
+        env=None,
     ):
         subprocess_stream_flags.append(stream_output)
         payload = json.loads(Path(cmd[-1]).read_text())
@@ -213,6 +214,7 @@ def test_resume_progress_uses_total_expected_denominator(
         stdout_path,
         stderr_path,
         stream_output,
+        env=None,
     ):
         payload = json.loads(Path(cmd[-1]).read_text())
         subprocess_payloads.append(payload)
@@ -368,6 +370,7 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
         stdout_path,
         stderr_path,
         stream_output,
+        env=None,
     ):
         payload_path = Path(cmd[-1])
         payload = json.loads(payload_path.read_text())

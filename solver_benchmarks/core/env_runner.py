@@ -16,7 +16,11 @@ from solver_benchmarks.core.config import (
     resolve_data_roots,
     resolve_output_dir,
 )
-from solver_benchmarks.core.runner import refuse_to_rerun_into
+from solver_benchmarks.core.runner import (
+    harness_import_roots,
+    harness_pythonpath,
+    refuse_to_rerun_into,
+)
 from solver_benchmarks.core.storage import ResultStore, make_run_id
 from solver_benchmarks.datasets.base import default_repo_root
 
@@ -61,6 +65,13 @@ def run_environment_matrix(
     if source_config_path is not None:
         store.copy_source_config(source_config_path, name="environment_config")
 
+    if not harness_import_roots():
+        print(
+            "[bench env] no harness directory is handed to the environments "
+            "(solver_benchmarks is not imported from a checkout or a PYTHONPATH "
+            "directory): each environment runs the solver_benchmarks installed in it",
+            file=sys.stderr,
+        )
     failures: list[tuple[str, str]] = []
     for environment in config.environments:
         try:
@@ -89,8 +100,13 @@ def run_environment_matrix(
         child_path.write_text(
             json.dumps(child_config.to_manifest(), indent=2, default=str)
         )
+        # The environment's interpreter and installed solver packages run
+        # this harness's code: -P keeps the data root (the working
+        # directory) off sys.path and _run_child puts the harness first on
+        # PYTHONPATH.
         cmd = [
             environment.python,
+            "-P",
             "-m",
             "solver_benchmarks.cli",
             "run",
@@ -151,11 +167,19 @@ def _run_child(cmd: list[str], *, cwd: Path) -> None:
     sessions; ``subprocess.run`` would SIGKILL it at once and leave them
     solving with no time limit. It is killed only if it does not exit in
     time. The child also gets this process's pid in its environment, so that
-    it stops the same way if this process is killed outright.
+    it stops the same way if this process is killed outright, and the
+    directories this process imports the harness from first on its
+    PYTHONPATH (see runner.harness_pythonpath).
     """
-    process = subprocess.Popen(
-        cmd, cwd=cwd, env={**os.environ, MATRIX_RUNNER_PID_ENV: str(os.getpid())}
-    )
+    env = {**os.environ, MATRIX_RUNNER_PID_ENV: str(os.getpid())}
+    pythonpath = harness_pythonpath(os.environ.get("PYTHONPATH"))
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
+    else:
+        # Separators only would put the data root (the working directory)
+        # on the child's sys.path.
+        env.pop("PYTHONPATH", None)
+    process = subprocess.Popen(cmd, cwd=cwd, env=env)
     try:
         returncode = process.wait()
     except BaseException:
