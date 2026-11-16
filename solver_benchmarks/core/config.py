@@ -863,7 +863,7 @@ def _check_dataset_options(name: str, options: dict[str, Any]) -> None:
         validate(options)
 
 
-def _unknown_name_message(kind: str, name: str, known: dict[str, Any]) -> str:
+def _unknown_name_message(kind: str, name: str, known: Iterable[str]) -> str:
     close = close_names(name, known)
     suggestion = f" Did you mean {close[0]!r}?" if close else ""
     return (
@@ -1210,13 +1210,10 @@ def _signature_dataset_options(
 ) -> dict[str, Any]:
     """Dataset options as the dataset wants them hashed (see Dataset.signature_options)."""
     # Imported here: the dataset adapters import this package's core modules.
-    from solver_benchmarks.datasets.registry import get_dataset
+    from solver_benchmarks.datasets.registry import DATASETS, get_dataset
 
-    dataset_cls: type[Any] | None
-    try:
-        dataset_cls = get_dataset(name)
-    except KeyError:
-        dataset_cls = None
+    # An error importing the loader (a KeyError included) is raised as it is.
+    dataset_cls: type[Any] | None = get_dataset(name) if name in DATASETS else None
     hashed = dict(options)
     if not legacy:
         left_out = set(_LOCATION_OPTIONS)

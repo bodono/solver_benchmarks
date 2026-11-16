@@ -6,9 +6,8 @@ import os
 import platform
 import sys
 from collections.abc import Mapping
-from importlib import metadata
 
-from .system_info import _detect_cpu_model, usable_cpu_count
+from .system_info import _detect_cpu_model, _package_version, usable_cpu_count
 
 SOLVER_PACKAGES = {
     "clarabel": ("clarabel",),
@@ -88,10 +87,3 @@ def runtime_metadata(solver_name: str, environ: Mapping[str, str] | None = None)
             package: _package_version(package) for package in ("numpy", "scipy")
         },
     }
-
-
-def _package_version(package: str) -> str | None:
-    try:
-        return metadata.version(package)
-    except metadata.PackageNotFoundError:
-        return None

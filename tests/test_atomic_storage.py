@@ -112,6 +112,8 @@ def test_retry_replaces_compatible_worker_errors_and_supersedes_incompatible_row
 
     assert store.completed_keys(config=config) == {("synthetic_qp", "limited", "scs")}
     store.write_result(replace(failed, status="optimal", run_time_seconds=0.1))
+    # The replaced rows leave in the one rewrite at the end of the run.
+    store.retire_replaced_rows()
 
     rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
     assert len(rows) == 3
@@ -123,7 +125,7 @@ def test_retry_replaces_compatible_worker_errors_and_supersedes_incompatible_row
     assert [json.loads(line) for line in superseded] == [incompatible.to_record()]
 
 
-def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, monkeypatch):
+def test_a_failed_end_of_run_rewrite_loses_no_row(tmp_path: Path, monkeypatch):
     store = _make_store(tmp_path)
     failed = ProblemResult(
         run_id=store.run_id,
@@ -139,7 +141,8 @@ def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, mon
     )
     store.write_result(failed)
     assert store.completed_keys() == set()
-    original = store.results_jsonl_path.read_text()
+    store.write_result(replace(failed, status="optimal"))
+    written = store.results_jsonl_path.read_text()
 
     def fail_replace(*_args):
         raise OSError("simulated disk failure")
@@ -147,13 +150,64 @@ def test_retry_result_replace_failure_preserves_original_row(tmp_path: Path, mon
     with monkeypatch.context() as patcher:
         patcher.setattr("solver_benchmarks.core.storage.os.replace", fail_replace)
         with pytest.raises(OSError, match="simulated disk failure"):
-            store.write_result(replace(failed, status="optimal"))
-    assert store.results_jsonl_path.read_text() == original
+            store.retire_replaced_rows()
+    # Both rows stay: the error and the result that replaces it.
+    assert store.results_jsonl_path.read_text() == written
+    assert [json.loads(line)["status"] for line in written.splitlines()] == [
+        "worker_error", "optimal"
+    ]
 
-    # The pending replacement is still available after the interrupted write.
-    store.write_result(replace(failed, status="optimal"))
+    # The next resume counts the key complete and drops the stale error.
+    assert store.completed_keys() == {("synthetic_qp", "p", "scs")}
+    store.retire_replaced_rows()
     rows = store.results_jsonl_path.read_text().splitlines()
     assert len(rows) == 1 and json.loads(rows[0])["status"] == "optimal"
+
+
+def _identical_rows_store(tmp_path: Path, lines: list[str]) -> ResultStore:
+    store = _make_store(tmp_path)
+    store.results_jsonl_path.write_text("".join(line + "\n" for line in lines))
+    return store
+
+
+def _replaceable_rows(store: ResultStore) -> dict[str, ProblemResult]:
+    base = ProblemResult(
+        run_id=store.run_id, dataset="synthetic_qp", problem="p", problem_kind=QP,
+        solver_id="scs", solver="scs", status="worker_error", objective_value=None,
+        iterations=None, run_time_seconds=None,
+    )
+    return {
+        "skip": replace(base, status="skipped_unsupported",
+                        metadata={"skip_reason": "solver_unavailable"}),
+        "error": base,
+        "ok": replace(base, status="optimal", objective_value=0.0, iterations=1),
+    }
+
+
+@pytest.mark.parametrize("stale", ["skip", "error"])
+def test_an_identical_copy_that_is_the_latest_row_keeps_its_text(tmp_path: Path, stale: str):
+    """[skip, ok, skip]: the first copy has a later row, the second is the
+    latest row of its key. Rows are dropped by their text, so neither goes."""
+    probe = _make_store(tmp_path / "probe")
+    rows = {name: json.dumps(row.to_record(), sort_keys=True)
+            for name, row in _replaceable_rows(probe).items()}
+    lines = [rows[stale], rows["ok"], rows[stale]]
+    store = _identical_rows_store(tmp_path, lines)
+    store.completed_keys(available_solver_ids=set())
+    store.retire_replaced_rows()
+    assert store.results_jsonl_path.read_text().splitlines() == lines
+
+
+def test_a_skip_identical_to_the_skip_it_replaces_is_kept_once(tmp_path: Path):
+    # (A retried error is never identical: it records its retry count.)
+    store = _make_store(tmp_path)
+    row = _replaceable_rows(store)["skip"]
+    store.write_result(row)
+    assert store.completed_keys(available_solver_ids={"scs"}) == set()
+    store.write_result(replace(row))
+    store.retire_replaced_rows()
+    rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    assert rows == [row.to_record()]
 
 
 def test_legacy_retry_artifact_path_counts_toward_resume_limit(tmp_path: Path):
@@ -591,3 +645,148 @@ def test_atomic_write_stream_whose_temporary_vanished_without_a_target_fails(tmp
     with pytest.raises(FileNotFoundError):
         atomic_write_stream(target, stalled)
     assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# The reader while a resume writes: a torn tail, bad lines, merged runs.
+# ---------------------------------------------------------------------------
+
+
+def _reader_row(problem: str, status: str, run_id: str = "r") -> str:
+    return json.dumps({"run_id": run_id, "dataset": "d", "problem": problem, "solver_id": "s",
+                       "status": status, "metadata": {"resume_signature": "A"}})
+
+
+def _problems_and_statuses(frame) -> list[tuple[str, str]]:
+    return list(zip(frame["problem"], frame["status"]))
+
+
+def test_a_last_line_completed_during_the_first_read_is_not_read_past(tmp_path: Path, monkeypatch):
+    """The writer finishes the torn last row while the first read is at it:
+    the first read stops at the fragment, and so does the second, so no
+    frame holds the row without the first read having weighed it."""
+    import types
+
+    from solver_benchmarks.core import storage
+
+    path = tmp_path / "results.jsonl"
+    last = _reader_row("K", "optimal") + "\n"
+    path.write_text("".join(_reader_row(*row) + "\n" for row in (
+        ("J", "worker_error"), ("J", "optimal"), ("K", "worker_error"))) + last[:40])
+    completed = []
+
+    def loads(line, *args, **kwargs):
+        if not completed and not line.endswith(b"\n"):
+            completed.append(True)
+            with path.open("a") as handle:  # the writer's write() finishes now
+                handle.write(last[40:])
+        return json.loads(line, *args, **kwargs)
+
+    monkeypatch.setattr(storage, "json", types.SimpleNamespace(
+        loads=loads, dumps=json.dumps, JSONDecodeError=json.JSONDecodeError))
+    frame = storage.read_results_jsonl(path)
+    assert completed
+    assert _problems_and_statuses(frame) == [("J", "optimal"), ("K", "worker_error")]
+
+
+def test_a_last_line_completed_between_the_reads_is_cut_where_the_first_read_stopped(
+    tmp_path: Path, monkeypatch
+):
+    from solver_benchmarks.core import storage
+
+    path = tmp_path / "results.jsonl"
+    last = _reader_row("K", "optimal") + "\n"
+    path.write_text("".join(_reader_row(*row) + "\n" for row in (
+        ("J", "worker_error"), ("J", "optimal"), ("K", "worker_error"))) + last[:40])
+    first_read = storage._read_results_jsonl_chunked
+    reads = []
+
+    def read_then_complete(*args, **kwargs):
+        frame = first_read(*args, **kwargs)
+        if not reads:
+            with path.open("a") as handle:
+                handle.write(last[40:])
+        reads.append(kwargs)
+        return frame
+
+    monkeypatch.setattr(storage, "_read_results_jsonl_chunked", read_then_complete)
+    frame = storage.read_results_jsonl(path)
+    assert len(reads) == 2
+    assert _problems_and_statuses(frame) == [("J", "optimal"), ("K", "worker_error")]
+
+
+def test_a_bad_line_is_warned_about_once(tmp_path: Path, caplog):
+    from solver_benchmarks.core.storage import read_results_jsonl
+
+    path = tmp_path / "results.jsonl"
+    path.write_text("\n".join([
+        _reader_row("J", "worker_error"), "{not json", _reader_row("J", "optimal"),
+        "[1, 2]", _reader_row("K", "optimal"),
+    ]) + "\n")
+    with caplog.at_level("WARNING", logger="solver_benchmarks.core.storage"):
+        frame = read_results_jsonl(path)
+    assert _problems_and_statuses(frame) == [("J", "optimal"), ("K", "optimal")]
+    warnings = [record.getMessage() for record in caplog.records]
+    assert warnings == [f"Skipping unparseable line {n} in {path}" for n in (2, 4)]
+
+
+def test_a_line_that_is_not_utf8_is_skipped(tmp_path: Path, caplog):
+    from solver_benchmarks.core.storage import read_results_jsonl
+
+    path = tmp_path / "results.jsonl"
+    path.write_bytes(
+        (_reader_row("J", "optimal") + "\n").encode()
+        + b'{"problem": "\xff\xfe"}\n'
+        + (_reader_row("K", "optimal") + "\n").encode()
+    )
+    with caplog.at_level("WARNING", logger="solver_benchmarks.core.storage"):
+        frame = read_results_jsonl(path)
+    assert _problems_and_statuses(frame) == [("J", "optimal"), ("K", "optimal")]
+    assert [record.getMessage() for record in caplog.records] == [
+        f"Skipping unparseable line 2 in {path}"
+    ]
+
+
+@pytest.mark.parametrize("order", ["AB", "BA"])
+def test_rows_of_different_runs_never_replace_each_other(tmp_path: Path, order: str):
+    """A bench merge output holds the rows of several runs; a worker error of
+    one run next to a result of another is a duplicate merge reports, not a
+    replaced row."""
+    from solver_benchmarks.core.storage import read_results_jsonl
+
+    runs = {
+        "A": [_reader_row("J", "worker_error", "A"), _reader_row("K", "worker_error", "A")],
+        "B": [_reader_row("J", "optimal", "B"), _reader_row("K", "worker_error", "B")],
+    }
+    lines = runs[order[0]] + runs[order[1]]
+    path = tmp_path / "results.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    frame = read_results_jsonl(path)
+    assert len(frame) == 4
+    assert sorted(zip(frame["run_id"], frame["problem"], frame["status"])) == [
+        ("A", "J", "worker_error"), ("A", "K", "worker_error"),
+        ("B", "J", "optimal"), ("B", "K", "worker_error"),
+    ]
+
+
+def test_load_results_reads_the_jsonl_when_a_resume_removes_the_parquet(
+    tmp_path: Path, monkeypatch
+):
+    from solver_benchmarks.analysis import load
+
+    store = _make_store(tmp_path)
+    store.write_result(ProblemResult(
+        run_id=store.run_id, dataset="synthetic_qp", problem="p", problem_kind=QP,
+        solver_id="scs", solver="scs", status="optimal", objective_value=0.0,
+        iterations=1, run_time_seconds=0.01,
+    ))
+    store.write_parquet()
+    read_parquet = load.pd.read_parquet
+
+    def removed_meanwhile(path, *args, **kwargs):
+        Path(path).unlink()  # a resume starts between the check and the read
+        return read_parquet(path, *args, **kwargs)
+
+    monkeypatch.setattr(load.pd, "read_parquet", removed_meanwhile)
+    frame = load.load_results(store.run_dir)
+    assert list(zip(frame["problem"], frame["status"])) == [("p", "optimal")]

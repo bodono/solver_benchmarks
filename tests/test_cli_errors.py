@@ -199,3 +199,22 @@ def test_data_status_of_every_dataset_rejects_an_option_no_dataset_reads(repo_ro
     )
     assert result.exit_code == 1
     assert "No dataset reads the option 'subst' (did you mean 'subset'?)" in result.output
+
+
+def test_a_key_error_importing_a_dataset_loader_is_not_an_unknown_dataset(
+    monkeypatch, tmp_path
+):
+    """A bug in a loader module that raises KeyError at import is reported as
+    that error, not as a misspelled dataset name."""
+    (tmp_path / "broken_loader_module.py").write_text("{}['missing_setting']\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setitem(
+        dataset_registry.DATASETS._entries, "broken_loader", ("broken_loader_module", "Broken")
+    )
+    result = CliRunner().invoke(cli.main, ["list", "problems", "broken_loader"])
+    assert "Unknown dataset" not in result.output
+    assert isinstance(result.exception, KeyError)
+    assert result.exception.args == ("missing_setting",)
+
+    result = CliRunner().invoke(cli.main, ["list", "problems", "no_such_dataset"])
+    assert result.exit_code != 0 and "Unknown dataset 'no_such_dataset'" in result.output

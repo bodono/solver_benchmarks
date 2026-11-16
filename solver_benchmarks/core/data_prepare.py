@@ -35,12 +35,12 @@ def data_prepare_selection(
 
 
 def _subset_lists_problems(dataset_name: str) -> bool:
-    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.datasets import DATASETS, get_dataset
 
-    try:
-        return bool(getattr(get_dataset(dataset_name), "subset_lists_problems", False))
-    except KeyError:
+    # An error importing the loader (a KeyError included) is raised as it is.
+    if dataset_name not in DATASETS:
         return False
+    return bool(getattr(get_dataset(dataset_name), "subset_lists_problems", False))
 
 
 def data_prepare_command(

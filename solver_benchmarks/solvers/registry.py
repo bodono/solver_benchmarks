@@ -1,52 +1,50 @@
-"""Solver registry."""
+"""Solver registry.
+
+An adapter module is imported when its solver is first looked up, so a
+worker imports only the adapter it runs, and listing or validating solver
+names imports none.
+"""
 
 from __future__ import annotations
 
-from .base import SolverAdapter
-from .clarabel_adapter import ClarabelSolverAdapter
-from .cplex_adapter import CPLEXSolverAdapter
-from .cpo3_adapter import Cpo3SolverAdapter
-from .cuopt_adapter import CuOptSolverAdapter
-from .cvxopt_adapter import CVXOPTSolverAdapter
-from .ecos_adapter import ECOSSolverAdapter
-from .gurobi_adapter import GurobiSolverAdapter
-from .highs_adapter import HighsSolverAdapter
-from .mosek_adapter import MosekSolverAdapter
-from .osqp_adapter import OSQPSolverAdapter
-from .pdlp_adapter import PDLPSolverAdapter
-from .piqp_adapter import PIQPSolverAdapter
-from .proxqp_adapter import ProxQPSolverAdapter
-from .qtqp_adapter import QTQPSolverAdapter
-from .scs_adapter import SCSSolverAdapter
-from .sdpa_adapter import SDPASolverAdapter
+from solver_benchmarks.core.lazy_registry import LazyRegistry
 
-SOLVERS: dict[str, type[SolverAdapter]] = {
-    "clarabel": ClarabelSolverAdapter,
-    "cplex": CPLEXSolverAdapter,
-    "cpo3": Cpo3SolverAdapter,
-    "cvxopt": CVXOPTSolverAdapter,
-    "ecos": ECOSSolverAdapter,
-    "gurobi": GurobiSolverAdapter,
-    "highs": HighsSolverAdapter,
-    "mosek": MosekSolverAdapter,
-    "osqp": OSQPSolverAdapter,
-    "pdlp": PDLPSolverAdapter,
-    "cuopt": CuOptSolverAdapter,
-    "piqp": PIQPSolverAdapter,
-    "proxqp": ProxQPSolverAdapter,
-    "qtqp": QTQPSolverAdapter,
-    "sdpa": SDPASolverAdapter,
-    "scs": SCSSolverAdapter,
-}
+from .base import SolverAdapter
+
+
+def _adapter(module: str, cls: str) -> tuple[str, str]:
+    return f"{__package__}.{module}", cls
+
+
+SOLVERS: LazyRegistry[type[SolverAdapter]] = LazyRegistry(
+    {
+        "clarabel": _adapter("clarabel_adapter", "ClarabelSolverAdapter"),
+        "cplex": _adapter("cplex_adapter", "CPLEXSolverAdapter"),
+        "cpo3": _adapter("cpo3_adapter", "Cpo3SolverAdapter"),
+        "cvxopt": _adapter("cvxopt_adapter", "CVXOPTSolverAdapter"),
+        "ecos": _adapter("ecos_adapter", "ECOSSolverAdapter"),
+        "gurobi": _adapter("gurobi_adapter", "GurobiSolverAdapter"),
+        "highs": _adapter("highs_adapter", "HighsSolverAdapter"),
+        "mosek": _adapter("mosek_adapter", "MosekSolverAdapter"),
+        "osqp": _adapter("osqp_adapter", "OSQPSolverAdapter"),
+        "pdlp": _adapter("pdlp_adapter", "PDLPSolverAdapter"),
+        "cuopt": _adapter("cuopt_adapter", "CuOptSolverAdapter"),
+        "piqp": _adapter("piqp_adapter", "PIQPSolverAdapter"),
+        "proxqp": _adapter("proxqp_adapter", "ProxQPSolverAdapter"),
+        "qtqp": _adapter("qtqp_adapter", "QTQPSolverAdapter"),
+        "sdpa": _adapter("sdpa_adapter", "SDPASolverAdapter"),
+        "scs": _adapter("scs_adapter", "SCSSolverAdapter"),
+    }
+)
 
 
 def get_solver(name: str) -> type[SolverAdapter]:
     key = name.lower()
-    try:
-        return SOLVERS[key]
-    except KeyError as exc:
+    if key not in SOLVERS:
         available = ", ".join(sorted(SOLVERS))
-        raise KeyError(f"Unknown solver {name!r}. Available: {available}") from exc
+        raise KeyError(f"Unknown solver {name!r}. Available: {available}")
+    # An error importing the adapter (a KeyError included) is raised as it is.
+    return SOLVERS[key]
 
 
 def list_solvers() -> list[str]:

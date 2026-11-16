@@ -84,7 +84,12 @@ def test_system_metadata_includes_all_solver_distribution_versions(monkeypatch):
         return installed[package]
 
     monkeypatch.setattr(si.metadata, "version", version)
-    versions = si.system_metadata()["library_versions"]
+    # Versions are cached per process; look them up again under the fake.
+    si._package_version.cache_clear()
+    try:
+        versions = si.system_metadata()["library_versions"]
+    finally:
+        si._package_version.cache_clear()
     for package, expected in installed.items():
         assert versions[package] == expected
     assert set(versions) == {
@@ -93,6 +98,35 @@ def test_system_metadata_includes_all_solver_distribution_versions(monkeypatch):
     }
     assert versions["cplex"] is None
     assert versions["mosek"] is None
+
+
+def test_package_versions_are_read_once_per_process(monkeypatch):
+    """Every row the runner writes records versions (each planning skip too);
+    reading distribution metadata scans sys.path, so it happens once."""
+    from importlib import metadata
+
+    from solver_benchmarks.core import system_info as si
+    from solver_benchmarks.core.environment import runtime_metadata
+
+    lookups: list[str] = []
+    real_version = metadata.version
+
+    def version(package):
+        lookups.append(package)
+        return real_version(package)
+
+    monkeypatch.setattr(si.metadata, "version", version)
+    clear = getattr(si._package_version, "cache_clear", lambda: None)
+    clear()
+    try:
+        first = runtime_metadata("osqp")
+        for _ in range(4):
+            assert runtime_metadata("osqp") == first
+        si.system_metadata()
+    finally:
+        clear()
+    assert sorted(lookups) == sorted(set(lookups))
+    assert {"osqp", "numpy", "scipy"} <= set(lookups)
 
 
 def test_system_metadata_omits_hostname_by_default():

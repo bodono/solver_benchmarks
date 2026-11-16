@@ -11,12 +11,17 @@ from solver_benchmarks.core.storage import read_results_jsonl
 
 def load_results(run_dir: str | Path) -> pd.DataFrame:
     """The run's results: results.parquet when it is at least as new as
-    results.jsonl, else the jsonl (see ``read_results_jsonl``)."""
+    results.jsonl, else the jsonl (see ``read_results_jsonl``). A parquet a
+    starting resume removes while it is being looked at is not an error: the
+    jsonl is read instead."""
     run_dir = Path(run_dir)
     parquet = run_dir / "results.parquet"
     jsonl = run_dir / "results.jsonl"
-    if parquet.exists() and _parquet_is_current(parquet, jsonl):
-        return pd.read_parquet(parquet)
+    try:
+        if parquet.exists() and _parquet_is_current(parquet, jsonl):
+            return pd.read_parquet(parquet)
+    except FileNotFoundError:
+        pass
     if not jsonl.exists():
         return pd.DataFrame()
     return read_results_jsonl(jsonl)

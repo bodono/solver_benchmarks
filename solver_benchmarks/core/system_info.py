@@ -320,7 +320,14 @@ def _try_import(name: str):
         return None
 
 
+@functools.cache
 def _package_version(package: str) -> str | None:
+    """The installed version of ``package``, or None.
+
+    Cached: reading a distribution's metadata scans sys.path, and the
+    installed versions do not change while the process runs (the runner
+    records them on every row it writes, including each planning skip).
+    """
     try:
         return metadata.version(package)
     except metadata.PackageNotFoundError:
