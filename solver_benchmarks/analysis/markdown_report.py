@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import math
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -35,7 +36,7 @@ from solver_benchmarks.analysis.tables import (
     performance_ratio_matrix,
     problem_dimensions,
     problem_solver_comparison,
-    safe_filename,
+    report_file_names,
     setup_solve_breakdown,
     slowest_solves,
     solver_metrics,
@@ -136,16 +137,37 @@ def write_run_report(
         path = _write_table(output_dir / name, table)
         if path is not None:
             outputs.append(path)
+    # A folder of the older name rule emptied above goes too.
+    for prefix in _legacy_dataset_prefixes(dataset_entries):
+        try:
+            (output_dir / prefix).rmdir()
+        except OSError:
+            pass
+    # Names that carry a hash (ids sharing a slug) are labelled with their id
+    # in the artifact index.
+    artifact_labels = {
+        output_dir / prefix / name: f"dataset `{key}`"
+        for key, prefix in _per_dataset_artifact_prefixes(dataset_entries).items()
+        if "~" in prefix
+        for name in _PER_DATASET_TABLES
+    }
     solver_tables_dir = output_dir / "solver_problem_tables"
     solver_tables = solver_problem_tables(solves, dimensions=dimensions)
+    configured_solvers = set(_solver_name_by_id(config))
+    solver_file_names = report_file_names(set(solver_tables) | configured_solvers)
     for solver_id, table in solver_tables.items():
         table = _sort_solver_problem_table(table)
-        path = _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", table)
+        path = _write_table(solver_tables_dir / f"{solver_file_names[solver_id]}.csv", table)
         if path is not None:
             outputs.append(path)
-    # A configured solver with no rows now has no table; remove an earlier one.
-    for solver_id in set(_solver_name_by_id(config)) - set(solver_tables):
-        _write_table(solver_tables_dir / f"{safe_filename(solver_id)}.csv", pd.DataFrame())
+            if "~" in solver_file_names[solver_id]:
+                artifact_labels[path] = f"solver `{solver_id}`"
+    # A configured solver with no rows now has no table; remove an earlier one,
+    # and the table an earlier report wrote under the older name rule.
+    for solver_id in configured_solvers - set(solver_tables):
+        _write_table(solver_tables_dir / f"{solver_file_names[solver_id]}.csv", pd.DataFrame())
+    for name in _legacy_report_file_names(solver_file_names):
+        _write_table(solver_tables_dir / f"{name}.csv", pd.DataFrame())
     plot_outputs = write_analysis_plots(
         run_dir,
         metric=metric,
@@ -167,6 +189,7 @@ def write_run_report(
         plot_outputs=plot_outputs,
         artifact_outputs=outputs,
         geomean_options=geomean_options,
+        artifact_labels=artifact_labels,
     )
     # Write the rendered markdown once as both index.md (default
     # GitHub directory landing page) and README.md (rendered on web
@@ -248,8 +271,8 @@ def _derived_report_tables(
         "configured_solver_variants.csv": _configured_solvers_table(config),
         "runtime_environments.csv": _runtime_environments_table(results),
     }
-    for entry in dataset_entries:
-        prefix = _per_dataset_artifact_prefix(entry)
+    prefixes = _per_dataset_artifact_prefixes(dataset_entries)
+    for prefix in [*prefixes.values(), *_legacy_dataset_prefixes(dataset_entries)]:
         for name in _PER_DATASET_TABLES:
             derived[f"{prefix}/{name}"] = pd.DataFrame()
     if len(dataset_entries) > 1 and "dataset" in results.columns:
@@ -277,6 +300,7 @@ def _render_markdown_report(
     plot_outputs: list[Path],
     artifact_outputs: list[Path],
     geomean_options: dict | None = None,
+    artifact_labels: dict[Path, str] | None = None,
 ) -> str:
     """Compose the per-section render helpers.
 
@@ -313,7 +337,7 @@ def _render_markdown_report(
     if len(dataset_entries) > 1 and "dataset" in results.columns:
         lines.extend(_per_dataset_breakdown(dataset_entries, derived_tables))
     lines.extend(_render_provenance_block(run_dir, manifest, results, config=config))
-    lines.extend(_render_artifact_index_block(output_dir, artifact_outputs))
+    lines.extend(_render_artifact_index_block(output_dir, artifact_outputs, artifact_labels))
     return "\n".join(lines)
 
 
@@ -747,11 +771,15 @@ def _render_provenance_block(
 
 
 def _render_artifact_index_block(
-    output_dir: Path, artifact_outputs: list[Path]
+    output_dir: Path, artifact_outputs: list[Path], labels: dict[Path, str] | None = None
 ) -> list[str]:
+    """One link per written file; ``labels`` names the id of a file whose
+    name carries a hash (see ``report_file_names``)."""
     lines: list[str] = ["## Artifact Index", ""]
+    labels = labels or {}
     for output in sorted(set(artifact_outputs)):
-        lines.append(f"- [{_relative(output, output_dir)}]({_relative(output, output_dir)})")
+        label = f" ({labels[output]})" if output in labels else ""
+        lines.append(f"- [{_relative(output, output_dir)}]({_relative(output, output_dir)}){label}")
     lines.append("")
     return lines
 
@@ -774,7 +802,7 @@ def _per_dataset_breakdown(
     ]
     for entry in dataset_entries:
         label = _dataset_display_label(entry)
-        artifact_prefix = _per_dataset_artifact_prefix(entry)
+        artifact_prefix = _per_dataset_artifact_prefix(entry, dataset_entries)
         headline_table = derived_tables.get(f"{artifact_prefix}/headline_solver_metrics.csv", pd.DataFrame())
         kkt_summary_table = derived_tables.get(f"{artifact_prefix}/kkt_summary.csv", pd.DataFrame())
         if headline_table.empty and kkt_summary_table.empty:
@@ -821,7 +849,7 @@ def _per_dataset_report_tables(
         subset_expected = expected[expected["dataset"] == entry["id"]] if expected is not None else None
         if subset.empty and (subset_expected is None or subset_expected.empty):
             continue
-        artifact_prefix = _per_dataset_artifact_prefix(entry)
+        artifact_prefix = _per_dataset_artifact_prefix(entry, dataset_entries)
         subset_tables = _subset_solver_summary_tables(subset, metric=metric, expected=subset_expected, geomean_options=geomean_options)
         tables[f"{artifact_prefix}/failure_penalties.csv"] = _failure_penalty_table(subset_tables, metric)
         tables[f"{artifact_prefix}/headline_solver_metrics.csv"] = _headline_solver_metrics(
@@ -838,9 +866,39 @@ def _per_dataset_report_tables(
     return tables
 
 
-def _per_dataset_artifact_prefix(entry: dict) -> str:
-    dataset_id = str(entry.get("id") or _dataset_display_label(entry))
-    return f"by_dataset/{safe_filename(dataset_id)}"
+def _dataset_key(entry: dict) -> str:
+    return str(entry.get("id") or _dataset_display_label(entry))
+
+
+def _per_dataset_artifact_prefixes(dataset_entries: list[dict]) -> dict[str, str]:
+    """``by_dataset/<name>`` of each dataset, named by :func:`report_file_names`."""
+    names = report_file_names(_dataset_key(entry) for entry in dataset_entries)
+    return {key: f"by_dataset/{name}" for key, name in names.items()}
+
+
+def _per_dataset_artifact_prefix(entry: dict, dataset_entries: list[dict]) -> str:
+    return _per_dataset_artifact_prefixes(dataset_entries)[_dataset_key(entry)]
+
+
+def _legacy_dataset_prefixes(dataset_entries: list[dict]) -> list[str]:
+    """``by_dataset/<name>`` folders of the older name rule that are no current folder."""
+    prefixes = _per_dataset_artifact_prefixes(dataset_entries)
+    names = {key: prefix.split("/", 1)[1] for key, prefix in prefixes.items()}
+    return [f"by_dataset/{name}" for name in _legacy_report_file_names(names)]
+
+
+def _legacy_report_file_names(names: dict[str, str]) -> list[str]:
+    """Names the older rule (every character outside ``[A-Za-z0-9_.-]``
+    becomes ``-``) gives the ids in ``names`` (id -> current name), where
+    that is no current name, so the report can remove files written under
+    them. Compared case-insensitively, as on macOS and Windows."""
+    current = {name.lower() for name in names.values()}
+    legacy = set()
+    for value in names:
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip("-") or "value"
+        if name.lower() not in current:
+            legacy.add(name)
+    return sorted(legacy)
 
 
 def _subset_solver_summary_tables(
@@ -1297,7 +1355,7 @@ def _headline_solver_metrics(
     if not geomean.empty:
         solver_ids = pd.Index(geomean["solver_id"]).union(pd.Index(table["solver_id"]))
         table = table.set_index("solver_id").reindex(solver_ids).rename_axis("solver_id").reset_index()
-        for count in ("completed", "success_count", "failure_count"):
+        for count in ("total", "completed", "success_count", "failure_count"):
             if count in table:
                 table[count] = table[count].fillna(0).astype(int)
     solver_names = _solver_name_by_id(config)
@@ -1391,6 +1449,7 @@ def _headline_solver_metric_columns(metric: str) -> list[str]:
         )
     columns.extend(
         [
+            "total",
             "completed",
             "success_count",
             "failure_count",
@@ -1528,11 +1587,19 @@ def _system_summary_lines(manifest: dict) -> list[str]:
         rows.append(("CPU model", str(cpu_model)))
     logical = cpu.get("logical_count")
     physical = cpu.get("physical_count")
+    # The CPUs this run could use (affinity, Slurm, a container cpuset),
+    # recorded since the field existed.
+    usable = cpu.get("usable_count")
     if logical or physical:
+        cores = None
         if physical and logical and physical != logical:
-            rows.append(("CPU cores", f"{physical} physical / {logical} logical"))
+            cores = f"{physical} physical / {logical} logical"
         elif logical:
-            rows.append(("CPU cores", f"{logical} logical"))
+            cores = f"{logical} logical"
+        if cores is not None:
+            if usable:
+                cores += f", {usable} usable by this run"
+            rows.append(("CPU cores", cores))
     max_freq = cpu.get("max_frequency_mhz")
     if max_freq:
         rows.append(("CPU max frequency", f"{float(max_freq):.0f} MHz"))

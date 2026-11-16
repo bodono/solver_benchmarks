@@ -1142,7 +1142,7 @@ Run and analysis commands:
 |---|---|---|
 | `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` (default: the current directory if it has `problem_classes`, else the checkout the package was installed from, as for the other commands), `--data-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. `--data-root` sets the `data_root` dataset option of every dataset in the config: the directory used in place of `problem_classes/`, holding each dataset's `*_data` folder. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
-| `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. Solver metrics count each `(dataset, problem, solver)` once (a duplicated solve counts as its successful attempt); run time and iteration totals cover every solve, means, medians and maxima the successful ones. |
+| `bench summary RUN_DIR` | `--repo-root PATH` | Print solver metrics, status counts, and run completion information. Solver metrics count each `(dataset, problem, solver)` once (a duplicated solve counts as its successful attempt); `total` is the number of solves the success and failure counts and rates are over (planned solves never recorded included), `completed` the number with a recorded result; run time and iteration totals cover every solve, means, medians and maxima the successful ones. |
 | `bench failures RUN_DIR` | `--repo-root PATH` | Print success/failure rates by solver, one count per solve. Planned solves with no recorded row count as `not_attempted` failures, as in the report (`bench summary` counts them the same way). Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
 | `bench missing RUN_DIR` | `--repo-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters. |
 | `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--repo-root PATH` | Write Dolan-More performance profile data to `performance_profile_<metric>.csv`. Solves the manifest planned but the run did not record count as failures; `--repo-root` locates the dataset directories used to list them. |
@@ -1282,12 +1282,15 @@ written by `bench kkt-verify` or `bench merge`):
 | Field | Value |
 | --- | --- |
 | CPU model | Apple M4 |
-| CPU cores | 10 logical |
+| CPU cores | 10 logical, 10 usable by this run |
 | Total RAM | 16.0 GiB |
 | OS | macOS-26.3.1-arm64-arm-64bit |
 | Python | 3.12.8 |
 | Libraries | numpy 2.4.2, pandas 3.0.0, pyarrow 23.0.1, scipy 1.16.3 |
 ```
+
+When the manifest records `cpu.usable_count`, the `CPU cores` row ends with the
+number of CPUs the run could use, e.g. `64 physical / 128 logical, 4 usable by this run`.
 
 Per-row results also carry `metadata.runtime.cpu_model` so heterogeneous runs
 (multiple environments / hosts in one matrix) can be told apart row-by-row.
@@ -1453,13 +1456,13 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 
 - A generated Markdown report at `index.md`, mirrored to `README.md`, that presents run metadata, completion, solver metrics, status counts, plots, diagnostics, provenance (including the captured `### System` block — CPU model, cores, RAM, OS, library versions), and links to the full CSV artifacts in a single document.
 - Solver-level metrics, status counts, failure rates, completion, and missing results.
-- Dolan-More performance-profile CSVs and plots.
+- Dolan-More performance-profile CSVs and plots. In the profile, cactus, KKT-accuracy and difficulty-scaling plots each solver has one colour and line style (and marker), the same in every plot of the run: ten colours, then the same colours dashed, dash-dotted and dotted, so up to 40 solvers look different.
 - Cactus plots showing the fraction of problems solved under each time/iteration budget, over the same problems as the performance profile (planned solves never recorded included) and with values floored at the profile's resolution (0.01 s, one iteration).
 - A difficulty-scaling table and plot: problems in equal-population bins of `metadata.n`, each sized from any of its rows that recorded it (a solve killed at the time limit or lost to a worker crash records no dimensions), with the solves of problems no row sized in a row with an empty `size_bin`.
 - Pairwise scatter plots for problems solved by both solvers.
 - Pairwise speedup tables with wins/losses/ties and largest wins.
 - A per-problem cross-solver table, `problem_solver_comparison.csv`, with columns such as `qtqp_default__status`, `qtqp_default__run_time_seconds`, and `qtqp_default__iterations`.
-- Per-solver problem tables under `solver_problem_tables/`, with rows as problems and columns for status, runtime, iterations, objective, artifact path, and problem dimensions when available.
+- Per-solver problem tables under `solver_problem_tables/`, with rows as problems and columns for status, runtime, iterations, objective, artifact path, and problem dimensions when available. Per-solver files and per-dataset `by_dataset/` folders are named like the run's artifact directories (`solver_problem_tables/scs__scale=1e+06.csv`); ids that would still share a name (compared case-insensitively) each get `~` and the first 8 hex digits of the id's SHA-256 appended instead, and the artifact index names the id of each such file.
 - Objective-spread and slowest-solve tables.
 - Failures-with-successful-alternatives tables, listing problems where one solver failed but at least one other solver succeeded.
 - Status and performance-ratio heatmaps.
@@ -1472,10 +1475,14 @@ bench report results/<run_id> --metric iterations --output-dir reports/my_run
 The report owns the file names it writes: re-running `bench report` with the same
 `--metric` into the same directory removes a table, plot or `by_dataset/` file of
 an earlier report that the new one no longer writes (for example
-`missing_results.csv` once the run is complete), and the `solver_problem_tables/`
-file of a configured solver that now has no rows. Files of another metric, and
-files of datasets or solvers no longer in the manifest, are not tracked and stay;
-other files in the directory are left alone. `bench plot` does the same for its
+`missing_results.csv` once the run is complete), the `solver_problem_tables/`
+file of a configured solver that now has no rows, and the per-solver and
+per-dataset files an earlier report wrote under the older name rule (`+`, `=` and
+other characters outside `[A-Za-z0-9_.-]` replaced by `-`), together with such a
+`by_dataset/` folder once it is empty. Files of another metric, and files of
+datasets or solvers no longer in the manifest, are not tracked and stay (unless
+the file's name is the older-rule name of a current id); other files in the
+directory are left alone. `bench plot` does the same for its
 plot names of the metric.
 
 Programmatic use:

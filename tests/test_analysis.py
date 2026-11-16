@@ -822,6 +822,31 @@ def test_inaccurate_statuses_are_not_successful_by_default():
     assert values["inaccurate"] == pytest.approx(100.0)
 
 
+def test_cli_summary_loads_the_results_once(tmp_path: Path, monkeypatch):
+    import solver_benchmarks.analysis.load as load_module
+    import solver_benchmarks.cli as cli_module
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text(json.dumps({"run_id": "run", "config": {}}))
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in _analysis_frame().to_dict("records"):
+            handle.write(json.dumps(record) + "\n")
+    calls = []
+    original = load_module.load_results
+
+    def counting(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(load_module, "load_results", counting)
+    monkeypatch.setattr(cli_module, "load_results", counting)
+    result = CliRunner().invoke(main, ["summary", str(run_dir)])
+    assert result.exit_code == 0, result.output
+    assert "Status counts" in result.output and "solver_a" in result.output
+    assert len(calls) == 1
+
+
 def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

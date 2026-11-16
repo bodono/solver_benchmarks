@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from pathlib import Path
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+from solver_benchmarks.core.storage import read_results_jsonl
 
 
 def load_results(run_dir: str | Path) -> pd.DataFrame:
+    """The run's results: results.parquet when it is at least as new as
+    results.jsonl, else the jsonl (see ``read_results_jsonl``)."""
     run_dir = Path(run_dir)
     parquet = run_dir / "results.parquet"
     jsonl = run_dir / "results.jsonl"
@@ -19,26 +19,13 @@ def load_results(run_dir: str | Path) -> pd.DataFrame:
         return pd.read_parquet(parquet)
     if not jsonl.exists():
         return pd.DataFrame()
-    return _load_jsonl(jsonl)
+    return read_results_jsonl(jsonl)
 
 
 def _parquet_is_current(parquet: Path, jsonl: Path) -> bool:
     if not jsonl.exists():
         return True
     return parquet.stat().st_mtime_ns >= jsonl.stat().st_mtime_ns
-
-
-def _load_jsonl(jsonl: Path) -> pd.DataFrame:
-    records = []
-    with jsonl.open() as handle:
-        for lineno, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                logger.warning("Skipping unparseable line %d in %s", lineno, jsonl)
-    return pd.json_normalize(records)
 
 
 def solver_summary(run_dir: str | Path) -> pd.DataFrame:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
-import re
+from collections.abc import Iterable
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from solver_benchmarks.analysis.profiles import (
     profile_floor,
 )
 from solver_benchmarks.core import status
-from solver_benchmarks.core.config import manifest_dataset_entries
+from solver_benchmarks.core.config import manifest_dataset_entries, slugify
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.datasets.base import NoBundledDataError, filter_problem_specs_by_size
 
@@ -64,10 +65,11 @@ def solver_metrics(
     """Per-solver counts, rates and run time / iteration statistics.
 
     Counts are per solve (see :func:`one_row_per_solve`, which resolves a
-    duplicated solve by ``metric`` as the profile does); ``completed`` is
-    the number of solves with a recorded result, and the rates are over
-    every solve compared, including planned ones never attempted when
-    ``expected`` is given. Totals cover every recorded solve; means,
+    duplicated solve by ``metric`` as the profile does); ``total`` is the
+    number of solves compared, which the rates are over: every recorded
+    solve plus, when ``expected`` is given, the planned ones never
+    attempted, so ``success_count + failure_count == total``. ``completed``
+    is the number of solves with a recorded result. Totals cover every recorded solve; means,
     medians and maxima only the successful ones, so fast failures do not
     make a solver look fast.
     """
@@ -75,6 +77,7 @@ def solver_metrics(
         success_statuses = set(status.SOLUTION_PRESENT)
     columns = [
         "solver_id",
+        "total",
         "completed",
         "success_count",
         "failure_count",
@@ -106,6 +109,7 @@ def solver_metrics(
         rows.append(
             {
                 "solver_id": solver_id,
+                "total": int(total),
                 "completed": recorded,
                 "success_count": success_count,
                 "failure_count": int(total - success_count),
@@ -1268,9 +1272,29 @@ def optimality_successes(
     return results[solved_mask(results, success_statuses) & results["status"].isin(success_statuses)]
 
 
-def safe_filename(value: str) -> str:
-    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
-    return value.strip("-") or "value"
+def report_file_names(ids: Iterable[str]) -> dict[str, str]:
+    """The report file name (without extension) of each solver or dataset id.
+
+    A name is the id's artifact-directory slug (``core.config.slugify``,
+    which keeps ``+`` and ``=``, so ``x=1e-06`` and ``x=1e+06`` differ).
+    Ids whose slugs still coincide, compared case-insensitively as on macOS
+    and Windows file systems (merged runs, dataset ids, ids the config check
+    never saw), all get ``<slug>~<first 8 hex digits of the id's SHA-256>``
+    instead, so none overwrites another. ``~`` is outside the slug
+    alphabet, so such a name cannot coincide with a plain slug, and each
+    id's name does not depend on the order of ``ids``.
+    """
+    unique = sorted(set(ids))
+    groups: dict[str, list[str]] = {}
+    for value in unique:
+        groups.setdefault(slugify(value).lower(), []).append(value)
+    names = {}
+    for value in unique:
+        slug = slugify(value)
+        if len(groups[slug.lower()]) > 1:
+            slug = f"{slug}~{hashlib.sha256(value.encode()).hexdigest()[:8]}"
+        names[value] = slug
+    return names
 
 
 def _empty_pairwise_row(solver_a: str, solver_b: str, *, has_dataset: bool = False) -> dict:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from solver_benchmarks.analysis.load import load_results, solver_summary
+from solver_benchmarks.analysis.load import load_results, status_counts
 from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.penalties import geomean_time_limits
 from solver_benchmarks.analysis.plots import write_analysis_plots
@@ -359,7 +359,7 @@ def env_run_cmd(
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
     df = load_results(run_dir)
-    summary = solver_summary(run_dir)
+    summary = status_counts(df)
     if summary.empty:
         click.echo("No results found.")
         return

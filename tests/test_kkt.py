@@ -312,6 +312,99 @@ def test_soc_projection_boundary_case():
     assert abs(rest_norm - 2.5) < 1e-12  # lies on boundary
 
 
+def _soc_blocks_per_block(dims, v):
+    """The per-block reference: ``_project_soc`` on each block in turn."""
+    parts, row = [], 0
+    for dim in dims:
+        parts.append(kkt._project_soc(v[row:row + dim]))
+        row += dim
+    return np.concatenate(parts)
+
+
+def _soc_test_vector(rng, dims):
+    """Blocks inside the cone, inside the polar cone and in between, plus
+    zero vectors and blocks on both boundaries, at several scales."""
+    parts = []
+    for i, dim in enumerate(dims):
+        x = rng.standard_normal(dim - 1) * 10.0 ** rng.integers(-8, 9)
+        norm = float(np.linalg.norm(x))
+        regime = i % 6
+        if regime == 0:
+            head = norm * (1.0 + rng.random()) + rng.random()  # inside K
+        elif regime == 1:
+            head = -norm * (1.0 + rng.random()) - rng.random()  # inside the polar cone
+        elif regime == 2:
+            head = norm * (2.0 * rng.random() - 1.0)  # in between
+        elif regime == 3:
+            head, x = 0.0, np.zeros(dim - 1)  # zero vector
+        elif regime == 4:
+            head = norm  # on the boundary of K
+        else:
+            head = -norm  # on the boundary of the polar cone
+        parts.append(np.concatenate([[head], x]))
+    return np.concatenate(parts)
+
+
+def test_soc_projection_batched_equals_per_block_bit_for_bit():
+    rng = np.random.default_rng(7)
+    dims = (
+        [1] * 7 + [2] * 13 + [3] * 50 + [4] * 31 + [5] + [3] * 4 + [2]
+        + [17] * 9 + [200] * 6 + [1] + [1000] * 2 + [3]
+    )
+    for _ in range(5):
+        s = _soc_test_vector(rng, dims)
+        y = _soc_test_vector(rng, dims)
+        s_proj, y_proj, unsupported = kkt._project_cones({"q": dims}, s, y)
+        assert unsupported == []
+        np.testing.assert_array_equal(s_proj, _soc_blocks_per_block(dims, s))
+        np.testing.assert_array_equal(y_proj, _soc_blocks_per_block(dims, y))
+
+
+def test_soc_projection_batched_handles_nan_and_inf_like_per_block():
+    dims = [3] * 8 + [1] * 4
+    with np.errstate(invalid="ignore", over="ignore"):
+        s = np.array([
+            np.nan, 1.0, 2.0,  0.0, np.nan, 1.0,  np.inf, 1.0, 2.0,  -np.inf, 1.0, 2.0,
+            1.0, np.inf, 0.0,  np.inf, np.inf, 0.0,  -np.inf, np.inf, 1.0,  1e200, 1e200, 1e200,
+            np.nan, np.inf, -np.inf, 0.0,
+        ])
+        s_proj, _, _ = kkt._project_cones({"q": dims, "l": 0}, s, None)
+        reference = _soc_blocks_per_block(dims, s)
+    np.testing.assert_array_equal(s_proj, reference)
+
+
+def test_soc_projection_projects_equal_sized_blocks_together(monkeypatch):
+    calls = []
+    original = kkt._project_soc
+    monkeypatch.setattr(kkt, "_project_soc", lambda v: calls.append(v.size) or original(v))
+    dims = [3] * 1000 + [4] * 1000 + [5]
+    s = np.random.default_rng(0).standard_normal(sum(dims))
+    s_proj, y_proj, _ = kkt._project_cones({"q": dims}, s, s)
+    # Only the lone block of size 5 goes through the per-block path, for s and y.
+    assert calls == [5, 5]
+    np.testing.assert_array_equal(s_proj, _soc_blocks_per_block(dims, s))
+    np.testing.assert_array_equal(y_proj, s_proj)
+
+
+def test_soc_projection_short_runs_stay_per_block(monkeypatch):
+    calls = []
+    original = kkt._project_soc
+    monkeypatch.setattr(kkt, "_project_soc", lambda v: calls.append(v.size) or original(v))
+    dims = [3] * 4 + [2] * 5
+    s = np.random.default_rng(1).standard_normal(sum(dims))
+    s_proj, _, _ = kkt._project_cones({"q": dims}, s, None)
+    assert calls == [3, 3, 3, 3]
+    np.testing.assert_array_equal(s_proj, _soc_blocks_per_block(dims, s))
+
+
+def test_soc_projection_of_empty_blocks_keeps_alignment():
+    # Rows: the nonnegative block first, then the second-order cones.
+    s = np.array([1.0, -3.0, 0.0, 4.0, 2.0])
+    s_proj, _, _ = kkt._project_cones({"q": [0, 0, 1, 3, 0], "l": 1}, s, None)
+    head = 0.5 * np.sqrt(20.0)
+    np.testing.assert_allclose(s_proj, [1.0, 0.0, head, 4.0 * head / np.sqrt(20.0), 2.0 * head / np.sqrt(20.0)])
+
+
 def test_box_cone_handling_does_not_double_advance_row_cursor():
     """A cone dict with both ``bl`` and ``bu`` keys present must consume
     the box slot exactly once; otherwise downstream slices get
