@@ -11,7 +11,7 @@ from pathlib import Path
 
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 
-from .base import Dataset
+from .base import Dataset, normalize_name_subset
 from .mpc_qpbenchmark import read_mpc_qpbenchmark_npz
 
 CUTEST_QP_DEFAULT_SUBSET = (
@@ -28,6 +28,9 @@ class CUTEstQPDataset(Dataset):
     data_source = "manual export from a local CUTEst/SIF installation"
     data_patterns = ("*.npz",)
     prepare_command = "python scripts/prepare_cutest_qp.py"
+    subset_lists_problems = True
+    option_names = frozenset({"subset"})
+    selection_options = frozenset({"subset"})
 
     @property
     def folder(self) -> Path:
@@ -55,6 +58,9 @@ class CUTEstQPDataset(Dataset):
                 )
             )
         return specs
+
+    def requested_problem_names(self) -> set[str] | None:
+        return _normalize_subset(self.options.get("subset"))
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -84,7 +90,8 @@ class CUTEstQPDataset(Dataset):
         """
         subset = _normalize_subset(self.options.get("subset"))
         if problem_names:
-            requested: list[str] | None = list(problem_names)
+            # Read like the subset option: ``HS35.npz`` is the problem HS35.
+            requested: list[str] | None = sorted(_normalize_subset(list(problem_names)) or ())
         elif subset is not None and not all_problems:
             requested = [name for name in CUTEST_QP_DEFAULT_SUBSET if name in subset]
             requested += sorted(subset - set(requested))
@@ -110,13 +117,7 @@ class CUTEstQPDataset(Dataset):
 
 def _normalize_subset(value) -> set[str] | None:
     """``None``/``"all"``: no filter; ``"default"``: the curated names; else names."""
-    if value is None or value == "all":
-        return None
-    if value == "default":
-        return set(CUTEST_QP_DEFAULT_SUBSET)
-    if isinstance(value, str):
-        return {item.strip().removesuffix(".npz") for item in value.split(",") if item.strip()}
-    return {str(item).removesuffix(".npz") for item in value}
+    return normalize_name_subset(value, default=CUTEST_QP_DEFAULT_SUBSET, strip_suffixes=(".npz",))
 
 
 def _write_export_readme(folder: Path) -> None:

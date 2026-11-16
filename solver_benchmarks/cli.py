@@ -30,6 +30,7 @@ from solver_benchmarks.analysis.tables import (
 )
 from solver_benchmarks.core.config import (
     DatasetConfig,
+    close_names,
     load_environment_run_config,
     load_run_config,
     unknown_name_message,
@@ -42,6 +43,7 @@ from solver_benchmarks.core.env_runner import MATRIX_RUNNER_PID_ENV, run_environ
 from solver_benchmarks.core.parent_watch import watch_parent
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.datasets import get_dataset, list_datasets
+from solver_benchmarks.datasets.base import GENERIC_OPTIONS
 from solver_benchmarks.solvers import get_solver, list_solvers
 
 
@@ -134,16 +136,30 @@ def data_status_cmd(
 ) -> None:
     names = [dataset] if dataset else list_datasets()
     parsed_options = _parse_options(options)
+    if not dataset:
+        _check_some_dataset_reads(parsed_options)
     for name in names:
         dataset_cls = _dataset_class(name)
-        with _dataset_errors(name):
-            dataset_obj = dataset_cls(repo_root=repo_root, **parsed_options)
-            status = dataset_obj.data_status()
+        dataset_options = parsed_options if dataset else _options_taken_by(dataset_cls, parsed_options)
+        if not dataset and dataset_options:
+            # Over every dataset, one that rejects the value it was given is
+            # left out with a note, and the table goes on.
+            try:
+                dataset_obj = dataset_cls(repo_root=repo_root, **dataset_options)
+                status = dataset_obj.data_status()
+            except (RuntimeError, OSError, ValueError) as exc:
+                first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                click.echo(f"note: {name} skipped: {first_line}", err=True)
+                continue
+        else:
+            with _dataset_errors(name):
+                dataset_obj = dataset_cls(repo_root=repo_root, **dataset_options)
+                status = dataset_obj.data_status()
         marker = "available" if status.available else "missing"
         path = str(status.data_dir) if status.data_dir is not None else ""
         command = (
             data_prepare_command(
-                DatasetConfig(name=name, dataset_options=parsed_options),
+                DatasetConfig(name=name, dataset_options=dataset_options),
                 repo_root=repo_root,
             )
             if getattr(dataset_obj, "automatic_download", False)
@@ -153,6 +169,49 @@ def data_status_cmd(
             f"{status.dataset}\t{marker}\t{status.problem_count}\t"
             f"{path}\t{status.source}\t{command}\t{status.message}"
         )
+
+
+def _check_some_dataset_reads(options: dict) -> None:
+    """For a status over every dataset: an option no dataset reads is an error."""
+    read: set[str] = set()
+    unchecked = False
+    for name in list_datasets():
+        reads = getattr(get_dataset(name), "options_it_reads", None)
+        if reads is None:
+            unchecked = True
+            continue
+        read |= set(reads(options))
+    unread = sorted(set(options) - read)
+    if unread and not unchecked:
+        known: set[str] = set(GENERIC_OPTIONS)
+        for name in list_datasets():
+            known |= set(getattr(get_dataset(name), "option_names", None) or ())
+        described = []
+        for key in unread:
+            close = close_names(key, known)
+            described.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+        raise click.ClickException(f"No dataset reads the option {', '.join(described)}.")
+
+
+def _options_taken_by(dataset_cls, options: dict) -> dict:
+    """For a status over every dataset: the options this one reads and accepts.
+
+    ``--option subset=all`` then applies to the datasets with that subset
+    and leaves the others as they are.
+    """
+    reads = getattr(dataset_cls, "options_it_reads", None)
+    taken = dict(options) if reads is None else reads(options)
+    validate = getattr(dataset_cls, "validate_options", None)
+    if validate is None:
+        return taken
+    accepted = {}
+    for key, value in taken.items():
+        try:
+            validate({key: value})
+        except ValueError:
+            continue
+        accepted[key] = value
+    return accepted
 
 
 @data_group.command("prepare")

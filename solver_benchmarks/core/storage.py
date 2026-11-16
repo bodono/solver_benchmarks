@@ -59,35 +59,60 @@ SKIP_SOLVER_UNAVAILABLE = "solver_unavailable"
 _LEGACY_UNAVAILABLE_SKIP = re.compile(r"Solver .+ is unavailable; skipping ")
 
 
-# Manifest key mapping each resume signature in the form earlier releases
-# computed (``solve_signature(..., legacy=True)``, which also hashed data_root
-# and max_size_mb) to the current signature of the same solve. Rows those
-# releases wrote carry the legacy form, and the only record of the location
-# options behind it is the manifest they left, which the next run overwrites.
-# So the first run of this release in such a directory derives the mapping
-# from that manifest's config, and every later manifest carries it forward:
-# the old rows keep counting after data_root or max_size_mb changes.
+# Manifest key mapping each resume signature in a form earlier releases
+# computed to the current signature of the same solve. The first such form
+# (``solve_signature(..., legacy=True)``) also hashed data_root and
+# max_size_mb; the second (``legacy_selection=True``) still hashed the
+# options that only select a dataset's problems, such as ``subset``. Rows
+# those releases wrote carry their form, and the only record of the options
+# behind it is the manifest they left, which the next run overwrites. So the
+# first run of this release in such a directory derives the mapping from that
+# manifest's config, and every later manifest carries it forward: the old
+# rows keep counting after data_root, max_size_mb or a subset changes.
 LEGACY_SIGNATURES_KEY = "legacy_resume_signatures"
 
 
 def legacy_signature_aliases(manifest: dict[str, Any] | None) -> dict[str, str]:
-    """Return ``{legacy signature: current signature}`` for a run's manifest."""
+    """Return ``{legacy signature: current signature}`` for a run's manifest.
+
+    A manifest without the key was written by a release that computed the
+    first legacy form: its rows carry that form of its config. A manifest
+    with the key may have been written by a release that computed the
+    second form: its rows carry that form of its config, and the values of
+    its mapping are in that form too. Both are mapped to the current form of
+    the manifest's config. For a manifest this release wrote, the mapping
+    gains an entry from the earlier form of its config, which no row carries:
+    harmless, and simpler than telling the manifests apart.
+    """
     if not manifest:
         return {}
     recorded = manifest.get(LEGACY_SIGNATURES_KEY)
-    if isinstance(recorded, dict):
-        return {str(legacy): str(current) for legacy, current in recorded.items()}
-    # Written by an earlier release: its rows carry its config's legacy form.
     config = manifest.get("config")
     if not isinstance(config, dict):
+        if isinstance(recorded, dict):
+            return {str(legacy): str(current) for legacy, current in recorded.items()}
         return {}
     try:
-        legacy = manifest_solve_signatures(config, legacy=True)
         current = manifest_solve_signatures(config)
+        if isinstance(recorded, dict):
+            selection = manifest_solve_signatures(config, legacy_selection=True)
+        else:
+            legacy = manifest_solve_signatures(config, legacy=True)
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         logger.warning("Could not derive resume signatures from the manifest config: %s", exc)
+        if isinstance(recorded, dict):
+            return {str(legacy): str(current) for legacy, current in recorded.items()}
         return {}
-    return {legacy[key]: current[key] for key in current}
+    if not isinstance(recorded, dict):
+        return {legacy[key]: current[key] for key in current}
+    renamed = {
+        selection[key]: current[key] for key in current if selection[key] != current[key]
+    }
+    aliases = {
+        str(legacy): renamed.get(str(value), str(value)) for legacy, value in recorded.items()
+    }
+    aliases.update(renamed)
+    return aliases
 
 
 def _previous_solve_signatures(
@@ -108,6 +133,7 @@ def _is_resume_compatible(
     legacy_signature: str,
     legacy_aliases: dict[str, str],
     previous_signature: str | None,
+    selection_signature: str | None = None,
 ) -> bool:
     metadata = record.get("metadata")
     if isinstance(metadata, dict):
@@ -115,7 +141,7 @@ def _is_resume_compatible(
         if recorded_signature is not None:
             recorded_signature = str(recorded_signature)
             return (
-                recorded_signature in (current_signature, legacy_signature)
+                recorded_signature in (current_signature, legacy_signature, selection_signature)
                 or legacy_aliases.get(recorded_signature) == current_signature
             )
     return previous_signature == current_signature
@@ -321,8 +347,9 @@ class ResultStore:
         When ``config`` is supplied, only rows whose solve signature is
         compatible with the current dataset/solver definition are treated
         as complete. A recorded signature is compatible when it equals the
-        current one, the one earlier releases computed for the same config
-        (``solve_signature(..., legacy=True)``), or a legacy signature that
+        current one, one of those earlier releases computed for the same
+        config (``solve_signature(..., legacy=True)`` or
+        ``legacy_selection=True``), or a legacy signature that
         ``previous_manifest`` maps to the current one (see
         ``legacy_signature_aliases``). Legacy rows without an embedded
         signature are checked against ``previous_manifest`` when available.
@@ -349,6 +376,9 @@ class ResultStore:
             return set()
         current_signatures = solve_signatures(config) if config is not None else None
         legacy_signatures = solve_signatures(config, legacy=True) if config is not None else {}
+        selection_signatures = (
+            solve_signatures(config, legacy_selection=True) if config is not None else {}
+        )
         previous_signatures = _previous_solve_signatures(previous_manifest)
         legacy_aliases = legacy_signature_aliases(previous_manifest)
         keys: set[tuple[str, str, str]] = set()
@@ -391,6 +421,7 @@ class ResultStore:
                         legacy_signature=legacy_signatures[signature_key],
                         legacy_aliases=legacy_aliases,
                         previous_signature=previous_signature,
+                        selection_signature=selection_signatures[signature_key],
                     ):
                         self._superseded_rows.setdefault(key, set()).add(line.strip())
                         continue

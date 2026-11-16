@@ -11,7 +11,7 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.dc_opf import dc_opf_lp
 
-from .base import Dataset, atomic_write_bytes, loadmat
+from .base import Dataset, atomic_write_bytes, loadmat, normalize_name_subset
 
 MATPOWER_REVISION = "d295273485e88127d8b582927cfa0c54e5ce7279"
 MATPOWER_BASE_URL = (
@@ -36,6 +36,12 @@ class DCOPFDataset(Dataset):
     data_patterns = ("*.mat",)
     prepare_command = "python scripts/prepare_dc_opf.py"
     automatic_download = True
+    # A single-string subset is not taken for a case name when choosing what
+    # to prepare: ``feasible`` and ``infeasible`` are classes. Preparation
+    # reads the subset itself instead.
+    subset_lists_problems = False
+    option_names = frozenset({"subset"})
+    selection_options = frozenset({"subset"})
 
     @property
     def data_dir(self) -> Path:
@@ -66,6 +72,12 @@ class DCOPFDataset(Dataset):
             for path in sorted(self.data_dir.glob("*.mat"))
             if subset is None or path.stem in subset
         ]
+
+    def requested_problem_names(self) -> set[str] | None:
+        selection = self.options.get("subset")
+        if isinstance(selection, str) and selection in ("feasible", "infeasible"):
+            return None
+        return _normalize_subset(selection)
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -152,8 +164,4 @@ def load_matpower_case(path: Path) -> dict:
 
 
 def _normalize_subset(value) -> set[str] | None:
-    if value is None or value == "all":
-        return None
-    if isinstance(value, str):
-        return {item.strip() for item in value.split(",") if item.strip()}
-    return {str(item) for item in value}
+    return normalize_name_subset(value)

@@ -153,7 +153,9 @@ def _run_benchmark(
                     "skipped: install it or remove it from the config."
                 )
     listings = _list_datasets(config, repo_root)
-    filter_warnings = _check_filter_names(config, listings, repo_root=repo_root)
+    filter_warnings = _check_filter_names(
+        config, listings, repo_root=repo_root, prepare_data_command=prepare_data_command
+    )
     store = ResultStore.create(config, run_dir=run_dir)
     if run_dir is None:
         lock.acquire(store.run_dir)
@@ -456,13 +458,18 @@ def _may_have_problem(dataset: Any, listed: list[ProblemSpec], name: str) -> boo
     """Whether ``dataset`` may have a problem ``name`` it does not list.
 
     A dataset that knows every name it can list (``known_problem_names``)
-    answers from that set. Otherwise, datasets that download or prepare their
-    data list only what is present, so they cannot tell a misspelled name
-    from one not downloaded yet; nor can a dataset with no data listed at all.
+    answers from that set, and one whose options select problems by name
+    (``requested_problem_names``) cannot list a name outside them. Otherwise,
+    datasets that download or prepare their data list only what is present,
+    so they cannot tell a misspelled name from one not downloaded yet; nor
+    can a dataset with no data listed at all.
     """
     known = dataset.known_problem_names() if hasattr(dataset, "known_problem_names") else None
     if known is not None:
         return name in known
+    requested = _requested_names(dataset)
+    if requested is not None and name not in requested:
+        return False
     if not listed:
         return True
     if getattr(dataset, "automatic_download", False) or getattr(dataset, "prepare_command", None):
@@ -476,17 +483,36 @@ def _check_filter_names(
     listings: list[tuple[DatasetConfig, Any, list[ProblemSpec]]],
     *,
     repo_root: Path,
+    prepare_data_command: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Raise for ``include`` names that match no problem; warn about the rest.
+    """Check the problems a config asks for by name against the listings.
 
-    A dataset entry's own ``include`` must match in that dataset, and the
-    run-level ``include`` in at least one of the datasets it applies to. A
-    name a dataset may have without listing it (see ``_may_have_problem``)
-    gets a warning instead; a dataset with no data at all gets the
-    missing-data error later. ``exclude`` names that match nothing are
-    warnings. Returns the warnings as ``(message, event fields)``.
+    The names asked for are a dataset entry's ``include``, the run-level
+    ``include`` (which must match in at least one of the datasets it applies
+    to) and the names the dataset's ``subset`` option asks for
+    (``Dataset.requested_problem_names``). A name a dataset cannot have (see
+    ``_may_have_problem``) raises, with suggestions. A name it may have but
+    does not list is missing data: for a dataset that downloads its data
+    automatically that is an error naming the problems and how to prepare
+    them; otherwise a warning naming the dataset's prepare command. A dataset
+    with nothing listed at all gets the missing-data error later. ``exclude``
+    names that match nothing are warnings. Returns the warnings as
+    ``(message, event fields)``.
     """
     warnings: list[tuple[str, dict[str, Any]]] = []
+    # Per dataset id: the requested names it may have but does not list, and
+    # per name the names to suggest for it (none for a subset name: the
+    # subset asks for it by that name).
+    missing: dict[str, tuple[DatasetConfig, Any, list[str], dict[str, set[str]]]] = {}
+
+    def add_missing(
+        dataset_config: DatasetConfig, dataset: Any, names: list[str], suggestions: set[str]
+    ) -> None:
+        entry = missing.setdefault(str(dataset_config.id), (dataset_config, dataset, [], {}))
+        entry[2].extend(name for name in names if name not in entry[2])
+        for name in names:
+            entry[3].setdefault(name, set()).update(suggestions)
+
     run_include = list(config.include)
     run_include_datasets: list[tuple[DatasetConfig, Any, list[ProblemSpec]]] = []
     run_exclude_known: set[str] = set()
@@ -494,26 +520,37 @@ def _check_filter_names(
     for dataset_config, dataset, listed in listings:
         known = {problem.name for problem in listed}
         any_listed = any_listed or bool(listed)
+        suggestions = known | _known_names(dataset)
+        requested = _requested_names(dataset)
+        include, exclude = config.effective_filters(dataset_config)
+        # Only the subset names the run would solve: those include and
+        # exclude keep, as preparation prepares.
+        unmatched_subset = sorted(
+            name
+            for name in set(requested or ()) - known
+            if (not include or name in include) and name not in exclude
+        )
+        typos = [name for name in unmatched_subset if not _may_have_problem(dataset, listed, name)]
+        if typos:
+            raise RuntimeError(
+                f"Dataset {dataset_config.id!r} has no problem named "
+                f"{_described(typos, suggestions)} (its subset option). "
+                f"`bench list problems {dataset_config.name}` lists its problems."
+            )
+        if unmatched_subset and listed:
+            add_missing(dataset_config, dataset, unmatched_subset, set())
         if dataset_config.include:
             unmatched = [name for name in dataset_config.include if name not in known]
-            suggestions = known | _known_names(dataset)
             typos = [name for name in unmatched if not _may_have_problem(dataset, listed, name)]
             if typos:
                 raise RuntimeError(
                     f"Dataset {dataset_config.id!r} has no problem named "
                     f"{_described(typos, suggestions)} (its include list). "
                     f"`bench list problems {dataset_config.name}` lists its problems."
+                    + _outside_subset_hint(dataset_config, dataset, typos)
                 )
             if unmatched and listed:
-                warnings.append(
-                    (
-                        f"Dataset {dataset_config.id!r} does not have "
-                        f"{_described(unmatched, suggestions)} locally: not prepared yet, "
-                        "or misspelled."
-                        + _prepare_advice(dataset_config, dataset, unmatched, repo_root),
-                        {"dataset": dataset_config.id, "problems": unmatched},
-                    )
-                )
+                add_missing(dataset_config, dataset, unmatched, suggestions)
         elif run_include:
             run_include_datasets.append((dataset_config, dataset, listed))
         unmatched_exclude = [name for name in dataset_config.exclude if name not in known]
@@ -542,20 +579,62 @@ def _check_filter_names(
             raise RuntimeError(
                 f"run.include: no problem named {_described(typos, suggestions)} in {where}. "
                 "`bench list problems DATASET` lists a dataset's problems."
-            )
-        if unmatched and known:
-            advice = "".join(
-                _prepare_advice(dataset_config, dataset, maybe, repo_root)
-                for dataset_config, dataset, listed in run_include_datasets
-                if (maybe := [name for name in unmatched if _may_have_problem(dataset, listed, name)])
-            )
-            warnings.append(
-                (
-                    f"run.include: {_described(unmatched, suggestions)} not found locally in "
-                    f"{where}: not prepared yet, or misspelled.{advice}",
-                    {"problems": unmatched},
+                + "".join(
+                    _outside_subset_hint(dataset_config, dataset, typos)
+                    for dataset_config, dataset, _ in run_include_datasets
                 )
             )
+        if unmatched and known:
+            ambiguous = []
+            for name in unmatched:
+                holders = [
+                    (dataset_config, dataset)
+                    for dataset_config, dataset, listed in run_include_datasets
+                    if _may_have_problem(dataset, listed, name)
+                ]
+                # Missing data only where every dataset that may have the
+                # name can download it; otherwise it may need a manual step.
+                if all(getattr(dataset, "automatic_download", False) for _, dataset in holders):
+                    for dataset_config, dataset in holders:
+                        add_missing(dataset_config, dataset, [name], suggestions)
+                else:
+                    ambiguous.append(name)
+            if ambiguous:
+                advice = "".join(
+                    _prepare_advice(dataset_config, dataset, maybe, repo_root)
+                    for dataset_config, dataset, listed in run_include_datasets
+                    if (maybe := [name for name in ambiguous if _may_have_problem(dataset, listed, name)])
+                )
+                warnings.append(
+                    (
+                        f"run.include: {_described(ambiguous, suggestions)} not found locally in "
+                        f"{where}: not prepared yet, or misspelled.{advice}",
+                        {"problems": ambiguous},
+                    )
+                )
+    errors = []
+    for dataset_config, dataset, names, suggested in missing.values():
+        if getattr(dataset, "automatic_download", False):
+            errors.append(
+                _missing_problems_message(
+                    dataset_config,
+                    names,
+                    suggested,
+                    repo_root=repo_root,
+                    prepare_data_command=prepare_data_command,
+                )
+            )
+        else:
+            warnings.append(
+                (
+                    f"Dataset {dataset_config.id!r} does not have {_described_each(names, suggested)} "
+                    "locally: not prepared yet, or misspelled; they are not solved."
+                    + _prepare_advice(dataset_config, dataset, names, repo_root),
+                    {"dataset": dataset_config.id, "problems": names},
+                )
+            )
+    if errors:
+        raise RuntimeError("\n".join(errors))
     unmatched = [name for name in config.exclude if name not in run_exclude_known]
     if unmatched and any_listed:
         warnings.append(
@@ -566,6 +645,60 @@ def _check_filter_names(
             )
         )
     return warnings
+
+
+def _missing_problems_message(
+    dataset_config: DatasetConfig,
+    names: list[str],
+    suggestions: dict[str, set[str]],
+    *,
+    repo_root: Path,
+    prepare_data_command: str | None,
+) -> str:
+    """The error for requested problems a downloadable dataset does not have locally."""
+    lines = [
+        f"Dataset {dataset_config.id!r} ({dataset_config.name!r}) does not have the requested "
+        f"problem{'s' if len(names) > 1 else ''} {_described_each(names, suggestions)} locally: "
+        "not downloaded yet, or misspelled.",
+        "Prepare the requested dataset data with:",
+        "  " + data_prepare_command(dataset_config, problem_names=names, repo_root=repo_root),
+    ]
+    if prepare_data_command:
+        lines.extend(
+            ["Or rerun this benchmark with data preparation enabled:", f"  {prepare_data_command}"]
+        )
+    else:
+        lines.append("Or rerun with --prepare-data (run.auto_prepare_data: true).")
+    return "\n".join(lines)
+
+
+def _requested_names(dataset: Any) -> set[str] | None:
+    hook = getattr(dataset, "requested_problem_names", None)
+    return hook() if hook is not None else None
+
+
+def _outside_subset_hint(dataset_config: DatasetConfig, dataset: Any, names: list[str]) -> str:
+    """How to select ``names`` that the dataset's name subset leaves out, or nothing."""
+    requested = _requested_names(dataset)
+    if requested is None:
+        return ""
+    outside = [name for name in names if name not in requested]
+    if not outside:
+        return ""
+    to_subset = getattr(dataset, "subset_name", None)
+    entries = sorted({to_subset(name) if to_subset is not None else name for name in outside})
+    them = "it" if len(outside) == 1 else "them"
+    if dataset_config.dataset_options.get("subset") is None:
+        return (
+            f" {_quoted(outside)} {'is' if len(outside) == 1 else 'are'} not in the dataset's "
+            f"default subset, which is what it lists without a `subset` option: set "
+            f"dataset_options.subset to select {them} (subset: {', '.join(entries)}, with any "
+            "other problems you want)."
+        )
+    return (
+        f" {_quoted(outside)} {'is' if len(outside) == 1 else 'are'} outside "
+        f"dataset_options.subset: add {', '.join(entries)} to it to select {them}."
+    )
 
 
 def _known_names(dataset: Any) -> set[str]:
@@ -595,6 +728,10 @@ def _described(names: list[str], known: set[str]) -> str:
         close = close_names(name, known)
         parts.append(f"{name!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
     return ", ".join(parts)
+
+
+def _described_each(names: list[str], suggestions: dict[str, set[str]]) -> str:
+    return ", ".join(_described([name], suggestions.get(name, set())) for name in names)
 
 
 def _quoted(names: Iterable[str]) -> str:
@@ -690,7 +827,8 @@ def _write_parquet(store: ResultStore) -> None:
 def _prepare_data(dataset: Any, config: RunConfig, dataset_config: DatasetConfig) -> None:
     """Prepare the requested data that is not present yet.
 
-    Problems already listed locally are not requested again: a dataset's
+    Problems already listed locally, and problems the run excludes, are not
+    requested. Listed ones are not requested again because a dataset's
     problem names are not always its download names (libsvm_qp lists
     ``svm_dual_<name>``), so asking for a bundled problem could request a
     URL that does not exist. A failure is raised as RuntimeError naming the
@@ -699,7 +837,9 @@ def _prepare_data(dataset: Any, config: RunConfig, dataset_config: DatasetConfig
     problem_names, all_problems = data_prepare_selection(config, dataset_config)
     if problem_names and not all_problems:
         listed = {problem.name for problem in dataset.list_problems()}
-        problem_names = [name for name in problem_names if name not in listed]
+        # Nor are the problems the run excludes: it would not solve them.
+        _, exclude = config.effective_filters(dataset_config)
+        problem_names = [name for name in problem_names if name not in listed and name not in exclude]
         if not problem_names:
             return
     try:

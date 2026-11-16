@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import difflib
 import gzip
 import io
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import scipy.io
 
@@ -65,6 +67,15 @@ class DatasetDataStatus:
     message: str
 
 
+# Options every dataset accepts: where its files are, and a size cap on the
+# problems listed (see ``Dataset.visible_problems``).
+GENERIC_OPTIONS = frozenset({"data_root", "max_size_mb"})
+
+
+class NoBundledDataError(ValueError):
+    """The dataset's files would be in the checkout, and this install has none."""
+
+
 class Dataset(ABC):
     dataset_id: str
     description: str
@@ -76,20 +87,108 @@ class Dataset(ABC):
     # string or a list), apart from the reserved values "all" and "default";
     # a single name then selects that one problem for preparation.
     subset_lists_problems: bool = False
+    # The dataset-specific option names the dataset reads, besides
+    # ``GENERIC_OPTIONS``. Any other name is rejected (``validate_options``).
+    # None, for an adapter that does not declare them, accepts any name. A
+    # subclass that reads more options extends its parent's set.
+    option_names: ClassVar[frozenset[str] | None] = None
+    # The options that only choose which of the dataset's problems are
+    # listed and never change a problem that is solved. They stay out of the
+    # resume signature (see ``solver_benchmarks.core.config``), so widening
+    # a subset keeps the results already recorded.
+    selection_options: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, repo_root: str | Path | None = None, **options: Any):
+        self.validate_options(options)
+        self._set_up(repo_root, options)
+
+    def _set_up(self, repo_root: str | Path | None, options: dict[str, Any]) -> None:
         self.repo_root = Path(repo_root).resolve() if repo_root else default_repo_root()
         self.options = options
+
+    @classmethod
+    def from_recorded_options(
+        cls, repo_root: str | Path | None = None, options: dict[str, Any] | None = None
+    ) -> Dataset:
+        """The dataset with options recorded in a run's manifest, unchecked.
+
+        A run directory written before the options were validated may hold
+        names or values the constructor now rejects; the dataset ignored them
+        when the run was made, and it ignores them here, so reading the run
+        never fails on them. Configs, the CLI and the worker use the
+        constructor, which checks. A subclass that defines its own
+        ``__init__`` is built with it instead (override ``_set_up`` to be
+        read unchecked).
+        """
+        if cls.__init__ is not Dataset.__init__:
+            # A subclass with its own constructor may set more up there.
+            return cls(repo_root=repo_root, **dict(options or {}))
+        dataset = cls.__new__(cls)
+        dataset._set_up(repo_root, dict(options or {}))
+        return dataset
+
+    @classmethod
+    def validate_options(cls, options: dict[str, Any]) -> None:
+        """Raise ValueError for an option name the dataset does not read.
+
+        The message suggests the closest known name. A dataset overrides
+        this to check option values as well, calling this first.
+        """
+        if cls.option_names is None:
+            return
+        known = sorted(GENERIC_OPTIONS | cls.option_names)
+        unknown = sorted(str(key) for key in options if str(key) not in known)
+        if not unknown:
+            return
+        described = []
+        for key in unknown:
+            close = difflib.get_close_matches(key, known, n=1)
+            if not close:
+                lowered = [name for name in known if name.lower() == key.lower()]
+                close = lowered[:1]
+            described.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+        raise ValueError(
+            f"Unknown dataset option{'s' if len(unknown) > 1 else ''} for "
+            f"{cls.dataset_id!r}: {', '.join(described)}. "
+            f"Known options: {', '.join(known)}."
+        )
+
+    @classmethod
+    def options_it_reads(cls, options: dict[str, Any]) -> dict[str, Any]:
+        """The entries of ``options`` whose names the dataset reads (all of
+        them for an adapter that does not declare its option names)."""
+        if cls.option_names is None:
+            return dict(options)
+        known = GENERIC_OPTIONS | cls.option_names
+        return {key: value for key, value in options.items() if key in known}
 
     @classmethod
     def signature_options(cls, options: dict[str, Any]) -> dict[str, Any]:
         """The dataset options as they enter a run's resume signature.
 
-        By default, the options as given. A dataset overrides this when the
-        meaning of an absent option has changed, so that results recorded
-        under the old meaning are not taken for results of the new one.
+        Called with the options left once the generic location options and
+        the dataset's ``selection_options`` are taken out. By default, those
+        options as given. A dataset overrides this when the meaning of an
+        absent option has changed, so that results recorded under the old
+        meaning are not taken for results of the new one.
         """
         return dict(options)
+
+    def subset_name(self, problem_name: str) -> str:
+        """The name that selects ``problem_name`` in the ``subset`` option."""
+        return problem_name
+
+    def requested_problem_names(self) -> set[str] | None:
+        """The problem names the ``subset`` option asks for.
+
+        None when the dataset has no name subset or the subset is not a list
+        of names (no subset, ``all``, a feasibility class). The names are
+        problem names as ``list_problems`` gives them: every name whose file
+        is not present, and those whose file is present that the listing
+        lists (a dataset with other filters leaves out the names they
+        exclude). A requested name that is not listed is therefore missing.
+        """
+        return None
 
     @abstractmethod
     def list_problems(self) -> list[ProblemSpec]:
@@ -184,7 +283,7 @@ class Dataset(ABC):
             return Path(explicit).resolve()
         path = self.repo_root / "problem_classes"
         if not path.is_dir() and _installed_checkout() is None:
-            raise ValueError(
+            raise NoBundledDataError(
                 f"{path} does not exist, and this install of solver_benchmarks has no bundled "
                 "data: the data ships with the repository. Install with `pip install -e .` from "
                 "a clone, or pass --repo-root naming a checkout or --data-root naming a data "
@@ -251,3 +350,79 @@ def default_repo_root() -> Path:
     if (cwd / "problem_classes").is_dir():
         return cwd
     return _installed_checkout() or cwd
+
+
+def normalize_name_subset(
+    value: Any,
+    *,
+    default: Iterable[str] | None = None,
+    strip_suffixes: tuple[str, ...] = (),
+) -> set[str] | None:
+    """The problem names a ``subset`` option names, or None for no filter.
+
+    ``None`` and ``"all"``: no filter. ``"default"``: the names in
+    ``default`` (when the dataset has a default subset). A string is a
+    comma-separated list of names; a list, tuple or set holds one name per
+    item; any other value, such as the integer YAML makes of ``subset: 8790``,
+    is the single name ``str(value)``. Each name is stripped of surrounding
+    blanks and of the first of ``strip_suffixes`` it ends with.
+    """
+    if value is None or value == "all":
+        return None
+    if value == "default" and default is not None:
+        return set(default)
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        items = [str(item) for item in value]
+    else:
+        items = [str(value)]
+    names = set()
+    for item in items:
+        name = item.strip()
+        if not name:
+            continue
+        for suffix in strip_suffixes:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        names.add(name)
+    return names
+
+
+def group_problem_files(
+    folder: Path, suffixes: tuple[str, str]
+) -> dict[str, tuple[Path, dict[str, int]]]:
+    """The problem files of ``folder`` with a plain and a gzipped suffix.
+
+    ``suffixes`` is ``(plain, gzipped)``, such as ``(".mat", ".mat.gz")``.
+    Returns, per problem name, the path to read, the plain copy when both
+    are present, and the size metadata for the size filter: ``size_bytes``,
+    the size of the smaller copy, so a problem stored both ways is filtered
+    as if only its compressed copy were there.
+    """
+    plain_suffix, gz_suffix = suffixes
+    candidates: dict[str, list[Path]] = {}
+    for path in sorted(folder.iterdir()):
+        if path.name.endswith(gz_suffix):
+            name = path.name[: -len(gz_suffix)]
+        elif path.name.endswith(plain_suffix):
+            name = path.name[: -len(plain_suffix)]
+        else:
+            continue
+        candidates.setdefault(name, []).append(path)
+    grouped = {}
+    for name, paths in sorted(candidates.items()):
+        preferred = next((path for path in paths if not path.name.endswith(gz_suffix)), paths[0])
+        grouped[name] = (preferred, _smallest_size_metadata(paths))
+    return grouped
+
+
+def _smallest_size_metadata(paths: list[Path]) -> dict[str, int]:
+    sizes = []
+    for path in paths:
+        try:
+            sizes.append(int(path.stat().st_size))
+        except OSError:
+            pass
+    return {"size_bytes": min(sizes)} if sizes else {}

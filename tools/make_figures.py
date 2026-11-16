@@ -186,7 +186,14 @@ def registry_size_lookup(run_dir: str | Path, repo_root: str | Path | None = Non
             return None
         try:
             if dataset not in datasets:
-                datasets[dataset] = get_dataset(entry["name"])(repo_root=repo_root, **entry["dataset_options"])
+                # Options the run recorded: read as the run did, unchecked.
+                dataset_cls = get_dataset(entry["name"])
+                from_recorded = getattr(dataset_cls, "from_recorded_options", None)
+                datasets[dataset] = (
+                    from_recorded(repo_root=repo_root, options=entry["dataset_options"])
+                    if from_recorded is not None
+                    else dataset_cls(repo_root=repo_root, **entry["dataset_options"])
+                )
             data = datasets[dataset].load_problem(problem)
             dims = qp_dimensions(data.qp) if data.kind == QP else cone_dimensions(data.cone)
         except Exception as exc:  # a size is optional: report it and go on

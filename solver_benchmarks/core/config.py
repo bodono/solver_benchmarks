@@ -223,8 +223,9 @@ def load_environment_run_config(path: str | Path) -> EnvironmentRunConfig:
 def parse_run_config(raw: dict[str, Any]) -> RunConfig:
     """Parse and validate a run config mapping.
 
-    Unknown keys, unregistered solver or dataset names and ids that would
-    share an artifact directory raise ValueError. Empty (null) sections
+    Unknown keys, unregistered solver or dataset names, dataset options the
+    dataset does not read and ids that would share an artifact directory
+    raise ValueError. Empty (null) sections
     count as empty. Relative paths stay relative: the runner resolves
     ``output_dir`` and ``data_root`` against the repository root.
     """
@@ -410,6 +411,7 @@ def _parse_datasets(raw: dict[str, Any], run: dict[str, Any]) -> list[DatasetCon
         dict(_mapping(run.get("dataset_options", raw.get("dataset_options")), "dataset_options"))
     )
     _check_registered_dataset(str(single_name))
+    _check_dataset_options(str(single_name), dataset_options)
     return [
         DatasetConfig(
             name=str(single_name),
@@ -443,11 +445,14 @@ def _parse_dataset_entries(
     seen_ids: set[str] = set()
     seen_names_no_id: set[str] = set()
     seen_slugs: dict[str, str] = {}
+    # Run-level defaults go to the listed datasets that read them; one that
+    # no listed dataset reads is an error (below).
+    defaults_taken: set[str] = set()
     for entry in items:
         explicit_id: str | None = None
+        entry_options: dict[str, Any] = {}
         if isinstance(entry, str):
             name = entry
-            dataset_options: dict[str, Any] = dict(default_options)
             include: list[str] = []
             exclude: list[str] = []
         elif isinstance(entry, dict):
@@ -462,10 +467,6 @@ def _parse_dataset_entries(
             entry_options = _canonicalize(
                 dict(_mapping(entry.get("dataset_options"), f"dataset {name!r} dataset_options"))
             )
-            dataset_options = {
-                **default_options,
-                **entry_options,
-            }
             include = _listify(entry.get("include", []))
             exclude = _listify(entry.get("exclude", []))
         else:
@@ -474,6 +475,10 @@ def _parse_dataset_entries(
             )
         name = str(name)
         _check_registered_dataset(name)
+        defaults = _defaults_read_by(name, default_options)
+        defaults_taken |= set(defaults)
+        dataset_options = {**defaults, **entry_options}
+        _check_dataset_options(name, dataset_options)
         entry_id = explicit_id if explicit_id is not None else name
         if entry_id in seen_ids:
             if explicit_id is None:
@@ -504,7 +509,36 @@ def _parse_dataset_entries(
                 id=explicit_id,
             )
         )
+    unused = sorted(set(default_options) - defaults_taken)
+    if unused:
+        names = {str(entry.name) for entry in parsed}
+        readable = set().union(*(_all_options(name) for name in names))
+        described = []
+        for key in unused:
+            close = close_names(key, readable)
+            described.append(f"{key!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+        raise ValueError(
+            f"run.dataset_options: {', '.join(described)} "
+            f"{'is' if len(unused) == 1 else 'are'} not an option of any listed dataset "
+            f"({', '.join(sorted(names))}). Run-level dataset options are defaults for "
+            "the listed datasets that read them."
+        )
     return parsed
+
+
+def _all_options(name: str) -> set[str]:
+    from solver_benchmarks.datasets.base import GENERIC_OPTIONS
+    from solver_benchmarks.datasets.registry import DATASETS
+
+    return set(GENERIC_OPTIONS | (getattr(DATASETS[name], "option_names", None) or frozenset()))
+
+
+def _defaults_read_by(name: str, default_options: dict[str, Any]) -> dict[str, Any]:
+    """The run-level default options that dataset ``name`` reads."""
+    from solver_benchmarks.datasets.registry import DATASETS
+
+    reads = getattr(DATASETS[name], "options_it_reads", None)
+    return dict(default_options) if reads is None else reads(default_options)
 
 
 def _parse_solver_entries(items: Any, *, context: str) -> list[SolverConfig]:
@@ -820,6 +854,15 @@ def unknown_name_message(kind: str, name: str, known: Iterable[str]) -> str:
     return _unknown_name_message(kind, name, {key: None for key in known})
 
 
+def _check_dataset_options(name: str, options: dict[str, Any]) -> None:
+    """Raise ValueError for an option the dataset does not read (see Dataset.validate_options)."""
+    from solver_benchmarks.datasets.registry import DATASETS
+
+    validate = getattr(DATASETS[name], "validate_options", None)
+    if validate is not None:
+        validate(options)
+
+
 def _unknown_name_message(kind: str, name: str, known: dict[str, Any]) -> str:
     close = close_names(name, known)
     suggestion = f" Did you mean {close[0]!r}?" if close else ""
@@ -1038,7 +1081,10 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
 # Dataset options that only say where a dataset's files are or which of its
 # problems are listed. They never change a problem that is solved, so they
 # stay out of the resume signature: pointing --data-root at a copy of the data
-# or raising a size cap does not invalidate results already recorded.
+# or raising a size cap does not invalidate results already recorded. Each
+# dataset adds the options that only select its problems
+# (``Dataset.selection_options``, such as ``subset``), so widening a subset
+# does not invalidate them either.
 _LOCATION_OPTIONS = frozenset({"data_root", "max_size_mb"})
 
 
@@ -1048,18 +1094,22 @@ def solve_signature(
     solver: SolverConfig,
     *,
     legacy: bool = False,
+    legacy_selection: bool = False,
 ) -> str:
     """Return the resume identity for one dataset/solver solve family.
 
     The signature intentionally ignores run bookkeeping fields such as
-    name, output_dir, parallelism, resume, and reporting flags, and the
-    dataset options in ``_LOCATION_OPTIONS``. It covers the pieces that can
-    change the actual mathematical problem or solver behavior for an
-    already-planned ``(dataset, problem, solver_id)`` row.
+    name, output_dir, parallelism, resume, and reporting flags, the
+    dataset options in ``_LOCATION_OPTIONS`` and the dataset's selection
+    options. It covers the pieces that can change the actual mathematical
+    problem or solver behavior for an already-planned
+    ``(dataset, problem, solver_id)`` row.
 
-    ``legacy=True`` returns the signature as earlier releases computed it,
-    with the location options hashed too. Rows those releases wrote carry
-    it, so resume accepts either form.
+    Earlier releases computed it in two other forms, and rows they wrote
+    carry those, so resume accepts all three. ``legacy=True`` returns the
+    first form, which hashed every dataset option, the location options
+    included. ``legacy_selection=True`` returns the second, which left out
+    the location options but hashed the selection options.
     """
     return _solve_signature(
         dataset_id=str(dataset.id),
@@ -1070,21 +1120,24 @@ def solve_signature(
         settings=solver.settings,
         effective_timeout=_effective_timeout(config, solver),
         legacy=legacy,
+        legacy_selection=legacy_selection,
     )
 
 
 def solve_signatures(
-    config: RunConfig, *, legacy: bool = False
+    config: RunConfig, *, legacy: bool = False, legacy_selection: bool = False
 ) -> dict[tuple[str, str], str]:
     return {
-        (str(dataset.id), solver.id): solve_signature(config, dataset, solver, legacy=legacy)
+        (str(dataset.id), solver.id): solve_signature(
+            config, dataset, solver, legacy=legacy, legacy_selection=legacy_selection
+        )
         for dataset in config.datasets
         for solver in config.solvers
     }
 
 
 def manifest_solve_signatures(
-    config: dict[str, Any], *, legacy: bool = False
+    config: dict[str, Any], *, legacy: bool = False, legacy_selection: bool = False
 ) -> dict[tuple[str, str], str]:
     """Return solve signatures for a manifest ``config`` payload.
 
@@ -1108,6 +1161,7 @@ def manifest_solve_signatures(
                     solver_timeout if solver_timeout is not None else run_timeout
                 ),
                 legacy=legacy,
+                legacy_selection=legacy_selection,
             )
     return signatures
 
@@ -1122,6 +1176,7 @@ def _solve_signature(
     settings: dict[str, Any],
     effective_timeout: Any,
     legacy: bool,
+    legacy_selection: bool = False,
 ) -> str:
     return _stable_digest(
         {
@@ -1129,7 +1184,10 @@ def _solve_signature(
                 "id": dataset_id,
                 "name": dataset_name,
                 "dataset_options": _signature_dataset_options(
-                    dataset_name, dataset_options, legacy=legacy
+                    dataset_name,
+                    dataset_options,
+                    legacy=legacy,
+                    legacy_selection=legacy_selection,
                 ),
             },
             "solver": {
@@ -1144,19 +1202,36 @@ def _solve_signature(
 
 
 def _signature_dataset_options(
-    name: str, options: dict[str, Any], *, legacy: bool = False
+    name: str,
+    options: dict[str, Any],
+    *,
+    legacy: bool = False,
+    legacy_selection: bool = False,
 ) -> dict[str, Any]:
     """Dataset options as the dataset wants them hashed (see Dataset.signature_options)."""
     # Imported here: the dataset adapters import this package's core modules.
     from solver_benchmarks.datasets.registry import get_dataset
 
-    hashed = dict(options)
-    if not legacy:
-        for key in _LOCATION_OPTIONS:
-            hashed.pop(key, None)
+    dataset_cls: type[Any] | None
     try:
         dataset_cls = get_dataset(name)
     except KeyError:
+        dataset_cls = None
+    hashed = dict(options)
+    if not legacy:
+        left_out = set(_LOCATION_OPTIONS)
+        if not legacy_selection:
+            left_out |= set(getattr(dataset_cls, "selection_options", ()))
+            # Names the dataset does not read. A config cannot hold them any
+            # more, but a run directory written before options were checked
+            # can, and the dataset ignored them: the rows its manifest maps to
+            # this form then stay complete once the option is removed.
+            read = getattr(dataset_cls, "option_names", None)
+            if read is not None:
+                left_out |= {key for key in hashed if key not in read}
+        for key in left_out:
+            hashed.pop(key, None)
+    if dataset_cls is None:
         return hashed
     # Registered adapters need not derive from Dataset; one without the hook
     # hashes its options as given.

@@ -15,7 +15,7 @@ import scipy.sparse as sp
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.cones import INF_BOUND
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, normalize_name_subset
 
 # The data are read from a fixed commit, as the DC OPF cases are, so that
 # two preparations at different times fetch the same problems under the
@@ -40,6 +40,9 @@ class MPCQPBenchmarkDataset(Dataset):
     data_patterns = ("*.npz",)
     prepare_command = "python scripts/prepare_mpc_qpbenchmark.py"
     automatic_download = True
+    subset_lists_problems = True
+    option_names = frozenset({"subset"})
+    selection_options = frozenset({"subset"})
 
     @property
     def folder(self) -> Path:
@@ -72,6 +75,9 @@ class MPCQPBenchmarkDataset(Dataset):
                 )
             )
         return specs
+
+    def requested_problem_names(self) -> set[str] | None:
+        return _normalize_subset(self.options.get("subset"))
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -121,11 +127,19 @@ def read_mpc_qpbenchmark_npz(path: Path) -> tuple[dict, dict]:
     ``G``, ``h``, ``A``, ``b``, ``lb`` and ``ub`` are optional; a missing
     key and a ``None`` placeholder mean the same. Arrays are numeric; the
     file is read without unpickling anything but ``None`` placeholders.
+
+    The arrays must fit together: with ``n`` the length of ``q``, ``P`` is
+    ``n x n``, ``G`` and ``A`` have ``n`` columns (a 1-D array is one row),
+    ``h`` and ``b`` are present with one entry per row of ``G`` and ``A``,
+    and ``lb`` and ``ub`` have ``n`` entries. A ValueError names the file
+    and the array that does not fit.
     """
     data = _load_npz_arrays(path)
     p = _symmetric_hessian(sp.csc_matrix(np.asarray(data["P"], dtype=float)), path)
     q = np.asarray(data["q"], dtype=float).reshape(-1)
     n = q.size
+    if p.shape != (n, n):
+        raise ValueError(f"{path.name}: P has shape {p.shape} but q has {n} entries")
 
     rows = []
     lower = []
@@ -134,15 +148,17 @@ def read_mpc_qpbenchmark_npz(path: Path) -> tuple[dict, dict]:
     g = _optional_array(data, "G")
     h = _optional_array(data, "h")
     if g is not None:
-        rows.append(sp.csc_matrix(np.asarray(g, dtype=float)))
-        upper.append(np.asarray(h, dtype=float).reshape(-1))
-        lower.append(np.full(rows[-1].shape[0], -INF_BOUND))
+        g_rows = _constraint_rows(g, "G", n, path)
+        rows.append(g_rows)
+        upper.append(_right_hand_side(h, "h", "G", g_rows.shape[0], path))
+        lower.append(np.full(g_rows.shape[0], -INF_BOUND))
 
     aeq = _optional_array(data, "A")
     beq = _optional_array(data, "b")
     if aeq is not None:
-        rows.append(sp.csc_matrix(np.asarray(aeq, dtype=float)))
-        eq_rhs = np.asarray(beq, dtype=float).reshape(-1)
+        a_rows = _constraint_rows(aeq, "A", n, path)
+        rows.append(a_rows)
+        eq_rhs = _right_hand_side(beq, "b", "A", a_rows.shape[0], path)
         lower.append(eq_rhs)
         upper.append(eq_rhs)
 
@@ -151,14 +167,10 @@ def read_mpc_qpbenchmark_npz(path: Path) -> tuple[dict, dict]:
     if lb is not None or ub is not None:
         rows.append(sp.eye(n, format="csc"))
         lower.append(
-            np.asarray(lb, dtype=float).reshape(-1)
-            if lb is not None
-            else np.full(n, -INF_BOUND)
+            _variable_bound(lb, "lb", n, path) if lb is not None else np.full(n, -INF_BOUND)
         )
         upper.append(
-            np.asarray(ub, dtype=float).reshape(-1)
-            if ub is not None
-            else np.full(n, INF_BOUND)
+            _variable_bound(ub, "ub", n, path) if ub is not None else np.full(n, INF_BOUND)
         )
 
     if rows:
@@ -222,6 +234,34 @@ def download_mpc_qpbenchmark_problem(name: str, folder: Path) -> Path:
 
 def _optional_array(data: dict, key: str):
     return data.get(key)
+
+
+def _constraint_rows(value, key: str, n: int, path: Path) -> sp.csc_matrix:
+    matrix = sp.csc_matrix(np.asarray(value, dtype=float))
+    if matrix.shape[1] != n:
+        raise ValueError(
+            f"{path.name}: {key} has shape {matrix.shape} but q has {n} entries "
+            f"({key} needs {n} columns)"
+        )
+    return matrix
+
+
+def _right_hand_side(value, key: str, matrix_key: str, rows: int, path: Path) -> np.ndarray:
+    if value is None:
+        raise ValueError(f"{path.name}: {matrix_key} is given without {key}")
+    vector = np.asarray(value, dtype=float).reshape(-1)
+    if vector.size != rows:
+        raise ValueError(
+            f"{path.name}: {key} has {vector.size} entries but {matrix_key} has {rows} rows"
+        )
+    return vector
+
+
+def _variable_bound(value, key: str, n: int, path: Path) -> np.ndarray:
+    vector = np.asarray(value, dtype=float).reshape(-1)
+    if vector.size != n:
+        raise ValueError(f"{path.name}: {key} has {vector.size} entries but q has {n}")
+    return vector
 
 
 def _symmetric_hessian(p: sp.csc_matrix, path: Path) -> sp.csc_matrix:
@@ -332,13 +372,9 @@ def _ndarray_reconstruct():
 
 
 def _normalize_subset(value) -> set[str] | None:
-    if value is None or value == "all":
-        return None
-    if value == "default":
-        return set(MPC_QPBENCHMARK_DEFAULT_SUBSET)
-    if isinstance(value, str):
-        return {item.strip().removesuffix(".npz") for item in value.split(",") if item.strip()}
-    return {str(item).removesuffix(".npz") for item in value}
+    return normalize_name_subset(
+        value, default=MPC_QPBENCHMARK_DEFAULT_SUBSET, strip_suffixes=(".npz",)
+    )
 
 
 def _family(name: str) -> str:

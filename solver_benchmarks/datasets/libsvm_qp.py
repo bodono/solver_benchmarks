@@ -46,7 +46,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes, validate_gzip_payload
+from .base import Dataset, atomic_write_bytes, normalize_name_subset, validate_gzip_payload
 
 LIBSVM_BASE_URL = (
     "https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/binary"
@@ -65,6 +65,8 @@ LIBSVM_DEFAULT_SUBSET: dict[str, str] = {
     "ionosphere": "ionosphere_scale",
     "german-numer": "german.numer",
 }
+# The two QP shapes; a problem is named ``<kind>_<LIBSVM dataset name>``.
+LIBSVM_KINDS = ("svm_dual", "markowitz")
 
 
 class LibsvmQPDataset(Dataset):
@@ -77,8 +79,8 @@ class LibsvmQPDataset(Dataset):
         C: SVM regularization upper bound. Default 1.0.
         max_samples: subsample rows to at most this many. Default 200
             (keeps the dense kernel matrix small enough for IPM).
-        subset: comma-separated list of LIBSVM dataset names, or a
-            list. Default ``LIBSVM_DEFAULT_SUBSET``.
+        subset: comma-separated list of LIBSVM dataset names, a list, or
+            a single name. Default ``LIBSVM_DEFAULT_SUBSET``.
         risk_aversion: Markowitz λ (objective is ``½ w'Σ w − λ μ' w``).
             Default 1.0. Markowitz-only.
     """
@@ -97,6 +99,10 @@ class LibsvmQPDataset(Dataset):
     prepare_command = "python scripts/prepare_libsvm_qp.py"
     automatic_download = True
     subset_lists_problems = True
+    option_names = frozenset(
+        {"kind", "kernel", "gamma", "C", "max_samples", "subset", "risk_aversion"}
+    )
+    selection_options = frozenset({"subset"})
 
     @property
     def folder(self) -> Path:
@@ -110,11 +116,7 @@ class LibsvmQPDataset(Dataset):
         if not self.folder.is_dir():
             return []
         subset = _normalize_subset(self.options.get("subset"))
-        kind = str(self.options.get("kind", "svm_dual"))
-        if kind not in ("svm_dual", "markowitz"):
-            raise ValueError(
-                f"Unknown libsvm_qp kind {kind!r}. Use 'svm_dual' or 'markowitz'."
-            )
+        kind = self._kind()
         specs: list[ProblemSpec] = []
         for libsvm_name in sorted(subset):
             path = self.folder / f"{libsvm_name}.libsvm"
@@ -139,6 +141,23 @@ class LibsvmQPDataset(Dataset):
                 )
             )
         return specs
+
+    def _kind(self) -> str:
+        kind = str(self.options.get("kind", "svm_dual"))
+        if kind not in LIBSVM_KINDS:
+            raise ValueError(
+                f"Unknown libsvm_qp kind {kind!r}. Use 'svm_dual' or 'markowitz'."
+            )
+        return kind
+
+    def subset_name(self, problem_name: str) -> str:
+        return _libsvm_dataset_name(problem_name)
+
+    def requested_problem_names(self) -> set[str] | None:
+        """``<kind>_<name>`` for each LIBSVM data set the subset names (the
+        default subset when it names none)."""
+        kind = self._kind()
+        return {f"{kind}_{name}" for name in _normalize_subset(self.options.get("subset"))}
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -182,7 +201,9 @@ class LibsvmQPDataset(Dataset):
         all_problems: bool = False,
     ) -> None:
         if problem_names:
-            names = list(problem_names)
+            # Problem names (``svm_dual_a1a``, from ``include``) stand for
+            # their data set (``a1a``); data set names pass as they are.
+            names = sorted({_libsvm_dataset_name(name) for name in problem_names})
         elif all_problems:
             # No "all" remote enumeration; we restrict to the default
             # curated subset since LIBSVM hosts hundreds of datasets,
@@ -504,10 +525,16 @@ def _subsample(
 
 
 def _normalize_subset(value: Any) -> set[str]:
-    if value is None or value == "default":
-        return set(LIBSVM_DEFAULT_SUBSET)
-    if value == "all":
-        return set(LIBSVM_DEFAULT_SUBSET)  # only the curated subset is supported.
-    if isinstance(value, str):
-        return {item.strip() for item in value.split(",") if item.strip()}
-    return {str(item) for item in value}
+    # None, "default" and "all" are the curated subset: only it is supported.
+    names = normalize_name_subset(value, default=LIBSVM_DEFAULT_SUBSET)
+    return set(LIBSVM_DEFAULT_SUBSET) if names is None else names
+
+
+def _libsvm_dataset_name(name: str) -> str:
+    """The LIBSVM data set a problem name stands for: ``svm_dual_a1a`` and
+    ``markowitz_a1a`` stand for ``a1a``; any other name is a data set name."""
+    for kind in LIBSVM_KINDS:
+        prefix = f"{kind}_"
+        if name.startswith(prefix) and len(name) > len(prefix):
+            return name[len(prefix):]
+    return name

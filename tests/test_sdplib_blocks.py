@@ -329,12 +329,12 @@ def test_original_file_records_its_form_and_has_no_merged_form(repo_root: Path, 
         get_dataset("sdplib")(**kwargs, blocks="merged").load_problem("tiny")
 
 
-def _signature(dataset_options: dict) -> str:
+def _signature(dataset_options: dict, **form) -> str:
     config = parse_run_config({
         "run": {"dataset": "sdplib", "dataset_options": dataset_options},
         "solvers": [{"id": "scs", "solver": "scs"}],
     })
-    return solve_signature(config, config.datasets[0], config.solvers[0])
+    return solve_signature(config, config.datasets[0], config.solvers[0], **form)
 
 
 def test_resume_signature_separates_the_two_forms():
@@ -345,18 +345,26 @@ def test_resume_signature_separates_the_two_forms():
         "solvers": [{"id": "scs", "solver": "scs"}],
     })
     dataset, solver = config.datasets[0], config.solvers[0]
-    before_the_change = _stable_digest(
-        {
-            "dataset": {"id": dataset.id, "name": dataset.name, "dataset_options": {"subset": "all"}},
-            "solver": {
-                "id": solver.id, "solver": solver.solver, "settings": solver.settings,
-                "effective_timeout_seconds": None,
+
+    def digest(dataset_options):
+        return _stable_digest(
+            {
+                "dataset": {"id": dataset.id, "name": dataset.name, "dataset_options": dataset_options},
+                "solver": {
+                    "id": solver.id, "solver": solver.solver, "settings": solver.settings,
+                    "effective_timeout_seconds": None,
+                },
             },
-        },
-        length=24,
-    )
-    assert _signature({"subset": "all", "blocks": "merged"}) == before_the_change
-    assert _signature({"subset": "all"}) != before_the_change
+            length=24,
+        )
+
+    # Those rows' signatures hashed ``subset`` too; resume accepts that
+    # earlier form (``legacy_selection``). ``subset`` now stays out.
+    before_the_change = digest({"subset": "all"})
+    assert _signature({"subset": "all", "blocks": "merged"}, legacy_selection=True) == before_the_change
+    assert _signature({"subset": "all"}, legacy_selection=True) != before_the_change
+    assert _signature({"subset": "all", "blocks": "merged"}) == digest({})
+    assert _signature({"subset": "all"}) != digest({})
     assert _signature({"subset": "all"}) == _signature({"subset": "all", "blocks": "declared"})
 
 

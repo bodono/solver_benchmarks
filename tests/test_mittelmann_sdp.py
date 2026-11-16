@@ -485,12 +485,16 @@ def test_normalize_subset_accepts_comma_string_and_list():
     assert _normalize_subset(["trto3", "rose13"]) == {"trto3", "rose13"}
 
 
-def test_sdpa_name_recognizes_dat_s_extensions(tmp_path: Path):
-    from solver_benchmarks.datasets.mittelmann_sdp import _sdpa_name
+def test_listing_recognizes_dat_s_extensions(tmp_path: Path):
+    folder = tmp_path / "mittelmann_sdp_data"
+    folder.mkdir()
+    for name in ("trto3.dat-s", "G40mc.dat-s.gz", "not_an_sdp.txt"):
+        (folder / name).write_text("")
+    from solver_benchmarks.datasets import get_dataset
 
-    assert _sdpa_name(tmp_path / "trto3.dat-s") == "trto3"
-    assert _sdpa_name(tmp_path / "G40mc.dat-s.gz") == "G40mc"
-    assert _sdpa_name(tmp_path / "not_an_sdp.txt") is None
+    dataset = get_dataset("mittelmann_sdp")(repo_root=tmp_path, data_root=tmp_path)
+
+    assert [spec.name for spec in dataset.list_problems()] == ["G40mc", "trto3"]
 
 
 def test_download_mittelmann_sdp_retries_primary_timeout(monkeypatch, tmp_path: Path):

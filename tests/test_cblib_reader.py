@@ -321,11 +321,17 @@ def test_listing_skips_an_unreadable_file_with_a_warning(tmp_path: Path):
     (folder / "tiny.cbf").write_text(_TINY_CBF)
     (folder / "broken.cbf.gz").write_bytes(gzip.compress(_TINY_CBF.encode())[:12])
     (folder / "garbled.cbf").write_text("VER\n3\nVAR\nx y\n")
+    # An intact gzip header over a damaged deflate stream raises zlib.error,
+    # which is neither an OSError nor a ValueError.
+    header = gzip.compress(_TINY_CBF.encode())[:10]
+    (folder / "damaged.cbf.gz").write_bytes(header + b"\x07" + b"\x00" * 20)
 
-    with pytest.warns(UserWarning, match="broken.cbf.gz"):
+    with pytest.warns(UserWarning) as caught:
         specs = _dataset(tmp_path).list_problems()
 
     assert [spec.name for spec in specs] == ["tiny"]
+    messages = " ".join(str(warning.message) for warning in caught)
+    assert "broken.cbf.gz" in messages and "damaged.cbf.gz" in messages
 
 
 def test_plain_and_gzipped_copies_are_one_problem(tmp_path: Path):
@@ -342,9 +348,35 @@ def test_plain_and_gzipped_copies_are_one_problem(tmp_path: Path):
     ]
 
 
+def test_a_plain_and_gzipped_pair_is_filtered_by_the_smaller_copy(tmp_path: Path):
+    folder = _cblib_folder(tmp_path)
+    padded = _TINY_CBF + "# padding\n" * 5000
+    (folder / "tiny.cbf").write_text(padded)
+    (folder / "tiny.cbf.gz").write_bytes(gzip.compress(padded.encode()))
+    gz_size = (folder / "tiny.cbf.gz").stat().st_size
+    dataset = _dataset(tmp_path, max_size_mb=0.01)
+
+    (spec,) = dataset.visible_problems()
+    assert spec.path == folder / "tiny.cbf"
+    assert spec.metadata["size_bytes"] == gz_size
+    assert dataset.load_problem("tiny").metadata["size_bytes"] == gz_size
+
+
 def test_loading_an_unreadable_file_reports_why(tmp_path: Path):
     folder = _cblib_folder(tmp_path)
     (folder / "broken.cbf.gz").write_bytes(gzip.compress(_TINY_CBF.encode())[:12])
 
     with pytest.raises(EOFError):
         _dataset(tmp_path).load_problem("broken")
+
+
+def test_requested_names_leave_out_present_files_the_listing_filters(tmp_path: Path):
+    folder = _cblib_folder(tmp_path)
+    (folder / "lp.cbf").write_text(_TINY_CBF)  # linear only
+    (folder / "psd.cbf").write_text("VER\n3\nPSDVAR\n1\n2\n")  # unsupported
+    dataset = _dataset(tmp_path, subset="lp,psd,absent", subset_kind="socp")
+
+    assert dataset.list_problems() == []
+    # On disk but filtered out: not missing. Not on disk: requested.
+    assert dataset.requested_problem_names() == {"absent"}
+    assert _dataset(tmp_path, subset="lp,psd,absent").requested_problem_names() == {"lp", "absent"}

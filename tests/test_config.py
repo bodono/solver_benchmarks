@@ -10,7 +10,21 @@ from solver_benchmarks.core.config import (
     parse_run_config,
     resolve_output_dir,
 )
+from solver_benchmarks.datasets import registry as dataset_registry
+from solver_benchmarks.datasets.synthetic import SyntheticQPDataset
 from solver_benchmarks.solvers.base import settings_with_defaults
+
+
+class _AnyOptionsDataset(SyntheticQPDataset):
+    """An adapter that does not declare its option names, so any are accepted."""
+
+    option_names = None
+
+
+@pytest.fixture
+def any_options_dataset(monkeypatch):
+    monkeypatch.setitem(dataset_registry.DATASETS, "any_options_qp", _AnyOptionsDataset)
+    return "any_options_qp"
 
 
 def test_parse_run_config_supports_multiple_solver_variants(tmp_path: Path):
@@ -397,7 +411,7 @@ def test_parse_run_config_accepts_datasets_list_of_mappings(tmp_path: Path):
                 "datasets": [
                     {
                         "name": "netlib",
-                        "dataset_options": {"variant": "feasible"},
+                        "dataset_options": {"subset": "feasible"},
                         "include": ["afiro"],
                     },
                     {
@@ -413,7 +427,7 @@ def test_parse_run_config_accepts_datasets_list_of_mappings(tmp_path: Path):
 
     netlib, synthetic = config.datasets
     assert netlib.name == "netlib"
-    assert netlib.dataset_options == {"variant": "feasible"}
+    assert netlib.dataset_options == {"subset": "feasible"}
     assert netlib.include == ["afiro"]
     assert synthetic.exclude == ["one_variable_lp"]
     # Run-level include is empty so synthetic falls through to no include filter.
@@ -492,18 +506,47 @@ def test_legacy_dataset_options_apply_as_default_for_datasets_list(tmp_path: Pat
                     {"name": "netlib"},
                     {
                         "name": "maros_meszaros",
-                        "dataset_options": {"override": "yes"},
+                        "dataset_options": {"max_size_mb": 5.0},
                     },
                 ],
-                "dataset_options": {"shared": "value"},
+                "dataset_options": {"data_root": "shared"},
                 "output_dir": str(tmp_path / "runs"),
             },
             "solvers": [{"id": "scs", "solver": "scs"}],
         }
     )
     netlib, maros = config.datasets
-    assert netlib.dataset_options == {"shared": "value"}
-    assert maros.dataset_options == {"shared": "value", "override": "yes"}
+    assert netlib.dataset_options == {"data_root": "shared"}
+    assert maros.dataset_options == {"data_root": "shared", "max_size_mb": 5.0}
+
+
+def test_a_run_level_default_goes_to_the_datasets_that_read_it(tmp_path: Path):
+    config = parse_run_config(
+        {
+            "run": {
+                "datasets": ["netlib", {"name": "maros_meszaros", "dataset_options": {"max_size_mb": 1}}],
+                "dataset_options": {"subset": "feasible", "data_root": "shared"},
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    netlib, maros = config.datasets
+    assert netlib.dataset_options == {"subset": "feasible", "data_root": "shared"}
+    assert maros.dataset_options == {"data_root": "shared", "max_size_mb": 1}
+
+
+def test_a_run_level_default_no_listed_dataset_reads_is_an_error(tmp_path: Path):
+    with pytest.raises(ValueError, match="'kernal' \\(did you mean 'kernel'\\?\\) is not an option of any listed dataset"):
+        parse_run_config(
+            {
+                "run": {
+                    "datasets": ["netlib", "libsvm_qp"],
+                    "dataset_options": {"kernal": "rbf"},
+                },
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
 
 
 def test_manifest_dataset_entries_handles_legacy_and_new_shapes():
@@ -799,7 +842,9 @@ def test_path_settings_serialize_through_manifest_round_trip(tmp_path: Path):
     assert forwarded["outdir"] == "/tmp/some/path"
 
 
-def test_path_dataset_options_serialize_through_manifest_round_trip(tmp_path: Path):
+def test_path_dataset_options_serialize_through_manifest_round_trip(
+    tmp_path: Path, any_options_dataset: str
+):
     """Path values inside ``dataset_options`` must canonicalize to str
     at parse time, mirroring the solver-settings fix.
 
@@ -817,7 +862,7 @@ def test_path_dataset_options_serialize_through_manifest_round_trip(tmp_path: Pa
     config = parse_run_config(
         {
             "run": {
-                "dataset": "synthetic_qp",
+                "dataset": any_options_dataset,
                 "output_dir": str(tmp_path / "runs"),
                 "dataset_options": {
                     "data_root": Path("/tmp/data"),
@@ -838,7 +883,7 @@ def test_path_dataset_options_serialize_through_manifest_round_trip(tmp_path: Pa
 
 
 def test_path_dataset_options_serialize_through_manifest_in_datasets_list(
-    tmp_path: Path,
+    tmp_path: Path, any_options_dataset: str
 ):
     """The same canonicalization must apply to ``run.datasets: [...]``
     entries: both the run-level default ``dataset_options`` and the
@@ -856,7 +901,7 @@ def test_path_dataset_options_serialize_through_manifest_in_datasets_list(
                 "dataset_options": {"global_root": Path("/g")},
                 "datasets": [
                     {
-                        "name": "synthetic_qp",
+                        "name": any_options_dataset,
                         "dataset_options": {"local_root": Path("/l")},
                     }
                 ],

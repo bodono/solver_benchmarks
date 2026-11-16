@@ -21,7 +21,7 @@ from solver_benchmarks.analysis.profiles import (
 from solver_benchmarks.core import status
 from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.datasets import get_dataset
-from solver_benchmarks.datasets.base import filter_problem_specs_by_size
+from solver_benchmarks.datasets.base import NoBundledDataError, filter_problem_specs_by_size
 
 # Status of a planned solve with no recorded result (see complete_results).
 NOT_ATTEMPTED = "not_attempted"
@@ -1339,17 +1339,27 @@ def _expected_by_dataset(
     for entry in manifest_dataset_entries(config):
         include = set(entry.get("include") or [])
         exclude = set(entry.get("exclude") or [])
+        options = entry.get("dataset_options", {})
         dataset_cls = get_dataset(entry["name"])
-        dataset = dataset_cls(
-            repo_root=repo_root,
-            **entry.get("dataset_options", {}),
+        # The options are the ones the run recorded: read them as the run
+        # did, without the checks a new config gets.
+        from_recorded = getattr(dataset_cls, "from_recorded_options", None)
+        dataset = (
+            from_recorded(repo_root=repo_root, options=options)
+            if from_recorded is not None
+            else dataset_cls(repo_root=repo_root, **options)
         )
-        data_dir = getattr(dataset, "data_dir", None)
-        if (include and entry.get("dataset_options", {}).get("max_size_mb") is None
-                and data_dir is not None and not data_dir.exists()):
+        try:
+            data_dir = getattr(dataset, "data_dir", None)
+            data_missing = data_dir is not None and not data_dir.exists()
+            specs = [] if data_missing else dataset.list_problems()
+        except NoBundledDataError:
+            # An install without the checkout's data, and no data root given:
+            # the data is missing, as when its directory is absent.
+            data_missing, specs = True, []
+        if data_missing and include and options.get("max_size_mb") is None:
             expected[entry["id"]] = include - exclude
             continue
-        specs = dataset.list_problems()
         problems = [problem.name for problem in specs]
         if include:
             problems = [name for name in problems if name in include]

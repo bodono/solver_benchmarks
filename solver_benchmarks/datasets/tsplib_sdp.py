@@ -34,7 +34,13 @@ import numpy as np
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.maxcut_sdp import maxcut_sdp_cone_problem
 
-from .base import Dataset, atomic_write_bytes, validate_gzip_payload
+from .base import (
+    Dataset,
+    atomic_write_bytes,
+    group_problem_files,
+    normalize_name_subset,
+    validate_gzip_payload,
+)
 
 TSPLIB_BASE_URL = "https://raw.githubusercontent.com/mastqe/tsplib/master"
 
@@ -73,6 +79,9 @@ class TSPLIBSDPDataset(Dataset):
     data_patterns = ("*.tsp", "*.tsp.gz")
     prepare_command = "python scripts/prepare_tsplib_sdp.py"
     automatic_download = True
+    subset_lists_problems = True
+    option_names = frozenset({"subset"})
+    selection_options = frozenset({"subset"})
 
     @property
     def folder(self) -> Path:
@@ -87,19 +96,12 @@ class TSPLIBSDPDataset(Dataset):
             return []
         subset = _normalize_subset(self.options.get("subset"))
         specs: list[ProblemSpec] = []
-        paths: dict[str, Path] = {}
-        for path in sorted(self.folder.iterdir()):
-            name = _tsplib_name(path)
-            if name is None:
-                continue
+        # A plain copy beside the download (say, gunzipped to look at it) is
+        # the same problem, read from the plain file and filtered by size as
+        # the smaller copy.
+        for name, (path, size) in group_problem_files(self.folder, (".tsp", ".tsp.gz")).items():
             if subset is not None and name not in subset:
                 continue
-            # A plain copy beside the download (say, gunzipped to look at
-            # it) is the same problem, read from the plain file.
-            existing = paths.get(name)
-            if existing is None or (existing.name.endswith(".gz") and not path.name.endswith(".gz")):
-                paths[name] = path
-        for name, path in sorted(paths.items()):
             specs.append(
                 ProblemSpec(
                     dataset_id=self.dataset_id,
@@ -109,10 +111,14 @@ class TSPLIBSDPDataset(Dataset):
                     metadata={
                         "source": str(path),
                         "format": "tsplib-maxcut-sdp",
+                        **size,
                     },
                 )
             )
         return specs
+
+    def requested_problem_names(self) -> set[str] | None:
+        return _normalize_subset(self.options.get("subset"))
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -428,19 +434,5 @@ def _explicit_expected_count(dim: int, fmt: str) -> int:
     raise ValueError(f"Unsupported TSPLIB EDGE_WEIGHT_FORMAT {fmt!r}.")
 
 
-def _tsplib_name(path: Path) -> str | None:
-    if path.name.endswith(".tsp.gz"):
-        return path.name[: -len(".tsp.gz")]
-    if path.name.endswith(".tsp"):
-        return path.name[: -len(".tsp")]
-    return None
-
-
 def _normalize_subset(value) -> set[str] | None:
-    if value is None or value == "all":
-        return None
-    if value == "default":
-        return set(TSPLIB_DEFAULT_SUBSET)
-    if isinstance(value, str):
-        return {item.strip() for item in value.split(",") if item.strip()}
-    return {str(item) for item in value}
+    return normalize_name_subset(value, default=TSPLIB_DEFAULT_SUBSET)

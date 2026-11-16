@@ -33,7 +33,13 @@ from solver_benchmarks.transforms.sdpa import (
     sdpa_to_cone_problem,
 )
 
-from .base import Dataset, atomic_write_bytes, validate_gzip_payload
+from .base import (
+    Dataset,
+    atomic_write_bytes,
+    group_problem_files,
+    normalize_name_subset,
+    validate_gzip_payload,
+)
 
 MITTELMANN_SDP_BASE_URL = "https://plato.asu.edu/ftp/sdp"
 KOCVARA_SDP_BASE_URL = "https://web.mat.bham.ac.uk/kocvara/pennon/problems"
@@ -82,6 +88,8 @@ class MittelmannSDPDataset(Dataset):
     prepare_command = "python scripts/prepare_mittelmann_sdp.py"
     automatic_download = True
     subset_lists_problems = True
+    option_names = frozenset({"subset"})
+    selection_options = frozenset({"subset"})
 
     @property
     def folder(self) -> Path:
@@ -96,19 +104,12 @@ class MittelmannSDPDataset(Dataset):
             return []
         subset = _normalize_subset(self.options.get("subset"))
         specs: list[ProblemSpec] = []
-        paths: dict[str, Path] = {}
-        for path in sorted(self.folder.iterdir()):
-            name = _sdpa_name(path)
-            if name is None:
-                continue
+        # A plain copy beside the download (say, gunzipped to look at it) is
+        # the same problem, read from the plain file and filtered by size as
+        # the smaller copy.
+        for name, (path, size) in group_problem_files(self.folder, (".dat-s", ".dat-s.gz")).items():
             if subset is not None and name not in subset:
                 continue
-            # A plain copy beside the download (say, gunzipped to look at
-            # it) is the same problem, read from the plain file.
-            existing = paths.get(name)
-            if existing is None or (existing.name.endswith(".gz") and not path.name.endswith(".gz")):
-                paths[name] = path
-        for name, path in sorted(paths.items()):
             specs.append(
                 ProblemSpec(
                     dataset_id=self.dataset_id,
@@ -118,10 +119,14 @@ class MittelmannSDPDataset(Dataset):
                     metadata={
                         "source": str(path),
                         "format": "sdpa-s",
+                        **size,
                     },
                 )
             )
         return specs
+
+    def requested_problem_names(self) -> set[str] | None:
+        return _normalize_subset(self.options.get("subset"))
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -240,15 +245,6 @@ def _kocvara_archive_filename(name: str) -> str | None:
     return None
 
 
-def _sdpa_name(path: Path) -> str | None:
-    """Return the problem name for an SDPA file path."""
-    if path.name.endswith(".dat-s.gz"):
-        return path.name[: -len(".dat-s.gz")]
-    if path.name.endswith(".dat-s"):
-        return path.name[: -len(".dat-s")]
-    return None
-
-
 def _normalize_subset(value) -> set[str] | None:
     """Normalize the ``subset`` option for ``list_problems``.
 
@@ -257,10 +253,4 @@ def _normalize_subset(value) -> set[str] | None:
     config-file expectations remain consistent across datasets.
     ``"default"`` is the curated default subset, as for CBLIB.
     """
-    if value is None or value == "all":
-        return None
-    if value == "default":
-        return set(MITTELMANN_SDP_DEFAULT_SUBSET)
-    if isinstance(value, str):
-        return {item.strip() for item in value.split(",") if item.strip()}
-    return {str(item) for item in value}
+    return normalize_name_subset(value, default=MITTELMANN_SDP_DEFAULT_SUBSET)
