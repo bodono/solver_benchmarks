@@ -217,6 +217,50 @@ def test_run_subprocess_returns_only_a_bounded_tail(tmp_path: Path):
     assert 0 < len(tail) <= 1000 and tail[-1] == "iter 19999"
 
 
+@pytest.fixture
+def system_tmp(tmp_path: Path, monkeypatch) -> Path:
+    """The runner's temporary directory, set the usual way (TMPDIR)."""
+    import tempfile
+
+    directory = tmp_path / "system_tmp"
+    directory.mkdir()
+    monkeypatch.setenv("TMPDIR", str(directory))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    return directory
+
+
+_TEMP_FILE_WORKER = (
+    "import os, sys, tempfile, time\n"
+    "fd, path = tempfile.mkstemp(suffix='.mps')\n"
+    "os.write(fd, b'decompressed model')\n"
+    "print(path, flush=True)\n"
+    "time.sleep(float(sys.argv[1]))\n"
+)
+
+
+@pytest.mark.parametrize("sleep, timeout", [(60.0, 3.0), (0.0, 30.0)], ids=["killed", "normal-exit"])
+def test_a_worker_temporary_files_are_removed_with_it(system_tmp: Path, tmp_path: Path, sleep, timeout):
+    """Each worker gets a private TMPDIR under the runner's, removed once its
+    process group is gone: a worker killed while it holds a decompressed
+    .mps copy leaves nothing behind."""
+    script = tmp_path / "temp_writer.py"
+    script.write_text(_TEMP_FILE_WORKER)
+    result = _run_subprocess(
+        [sys.executable, str(script), str(sleep)],
+        cwd=tmp_path,
+        timeout=timeout,
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        stream_output=False,
+    )
+    assert result.timed_out is (sleep > timeout)
+    written = Path((tmp_path / "stdout.log").read_text().strip())
+    assert written.parent.parent == system_tmp, written
+    assert not written.exists()
+    assert list(system_tmp.iterdir()) == []
+
+
+
 class _OneProblemDataset:
     def __init__(self, repo_root=None, **options):
         pass
@@ -246,7 +290,7 @@ def _timeout_run(monkeypatch, tmp_path: Path, repo_root: Path, *, timeout, worke
 
     seen = {}
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         seen["timeout"] = timeout
         seen["settings"] = payload["solver"]["settings"]

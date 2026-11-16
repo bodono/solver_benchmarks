@@ -313,6 +313,61 @@ def test_bench_modal_runs_from_the_image_checkout_with_data_from_the_volume(benc
     assert result["exit"] == 0
 
 
+def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tmp_path, monkeypatch):
+    """bench_modal exports OMP_NUM_THREADS for the shard's `bench run`; the
+    runner then leaves all four BLAS / OpenMP variables alone, so a worker
+    sees exactly what bench_modal set (no OpenBLAS cap of 1 next to OpenMP's 4)."""
+    from solver_benchmarks.core import runner
+
+    thread_vars = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+    for name in thread_vars:
+        monkeypatch.delenv(name, raising=False)
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, cmd, **kwargs):
+            calls.append(kwargs)
+
+        def wait(self, timeout=None):
+            return 0
+
+    real_popen = bench_modal.subprocess.Popen
+    monkeypatch.setattr(bench_modal.subprocess, "Popen", FakeProcess)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(bench_modal, "Path", lambda p: tmp_path / str(p).lstrip("/"))
+    monkeypatch.setattr(bench_modal.results_vol, "commit", lambda: None)
+    bench_modal._run("camp", "shard", "run: {}\n")
+    # The same subprocess module starts the worker below.
+    monkeypatch.setattr(bench_modal.subprocess, "Popen", real_popen)
+    (kwargs,) = calls
+    shard_env = kwargs["env"]
+    assert shard_env["OMP_NUM_THREADS"] == "4"
+
+    # The shard's runner, with that environment, starts a worker.
+    for name, value in shard_env.items():
+        monkeypatch.setenv(name, value)
+    script = tmp_path / "show_threads.py"
+    script.write_text(
+        "import json, os\n"
+        f"print(json.dumps({{name: os.environ.get(name) for name in {thread_vars!r}}}))\n"
+    )
+    result = runner._run_subprocess(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        timeout=60.0,
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        stream_output=False,
+        env=runner.worker_thread_environ({"threads": 2}),
+    )
+    assert result.returncode == 0
+    seen = json.loads((tmp_path / "stdout.log").read_text())
+    assert seen == {name: shard_env.get(name) for name in thread_vars}
+    assert seen["OMP_NUM_THREADS"] == "4" and seen["OPENBLAS_NUM_THREADS"] is None
+
+
 def test_bench_modal_installs_the_highspy_the_pdlp_extra_allows(bench_modal):
     import tomllib
 

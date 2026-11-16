@@ -89,7 +89,7 @@ def test_resume_reuses_legacy_rows_when_solve_signature_is_compatible(
 
     calls: list[str] = []
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         calls.append(payload["solver"]["id"])
         artifact_dir = Path(payload["artifacts_dir"])
@@ -199,7 +199,7 @@ def test_resume_supersedes_legacy_rows_when_solver_settings_change(
 
     calls: list[dict] = []
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         calls.append(payload["solver"])
         artifact_dir = Path(payload["artifacts_dir"])
@@ -300,7 +300,7 @@ def test_resume_retries_worker_errors_without_duplicate_rows_or_lost_artifacts(
 
     calls: dict[str, int] = {}
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         name = payload["problem"]
         calls[name] = calls.get(name, 0) + 1
@@ -393,7 +393,7 @@ def test_resume_planning_skip_preserves_pending_worker_error(
     calls = []
     fail = True
 
-    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         calls.append(payload["problem"])
         stdout_path.write_text("attempt diagnostic")
@@ -446,7 +446,7 @@ def test_resume_caps_deterministic_worker_errors_and_can_extend_budget(
 
     calls = []
 
-    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         calls.append(payload["problem"])
         record = ProblemResult(
@@ -1223,7 +1223,7 @@ def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path, rep
     monkeypatch.setitem(solver_registry.SOLVERS, "stub", _StubSolver)
 
     def _fake_run_subprocess(
-        cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output
+        cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None
     ):
         from types import SimpleNamespace
 
@@ -1363,7 +1363,7 @@ def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatc
     monkeypatch.setitem(dataset_registry.DATASETS, "configurable", _ConfigurableDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "stub", _StubSolver)
 
-    def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         from types import SimpleNamespace
 
         payload_path = Path(cmd[-1])
@@ -1648,7 +1648,7 @@ def _fake_worker(statuses=None, calls=None):
     solve and writes a worker result with ``statuses[problem]`` (default optimal)."""
     statuses = statuses or {}
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         if calls is not None:
             calls.append(payload["problem"])
@@ -2622,7 +2622,7 @@ def _scripted_config_errors(monkeypatch, outcomes: dict, *, error: str, hold_fir
 
     done = {problem: threading.Event() for problem in outcomes}
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         problem = payload["problem"]
         kind = outcomes.get(problem, "ok")
@@ -2751,7 +2751,7 @@ def test_a_rejected_solver_starts_few_workers_in_a_parallel_run(monkeypatch, tmp
     def rejection_recorded() -> bool:
         return events.exists() and "rejected its settings" in events.read_text()
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         with lock:
             started.append(payload["problem"])

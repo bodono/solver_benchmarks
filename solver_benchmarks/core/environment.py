@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
+from collections.abc import Mapping
 from importlib import metadata
 
 from .system_info import _detect_cpu_model, usable_cpu_count
@@ -28,13 +29,26 @@ SOLVER_PACKAGES = {
     "sdpa": ("sdpa-python",),
 }
 
+# Environment variables that size the thread pools of the OpenMP runtime and
+# of the BLAS / LAPACK libraries (OpenBLAS, MKL, Apple Accelerate) behind
+# numpy, scipy and most solvers. The runner sets them for each worker (see
+# runner.worker_thread_environ) and every row records their values.
+THREAD_LIMIT_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
 
-def runtime_metadata(solver_name: str) -> dict:
+
+def runtime_metadata(solver_name: str, environ: Mapping[str, str] | None = None) -> dict:
     """Per-solve runtime metadata.
 
     Captures Python / OS / CPU-model fields, the CPUs the solve may use,
-    and the installed versions of the solver's backing package(s) and of
-    NumPy and SciPy. System-level snapshots
+    the BLAS / OpenMP thread variables of ``environ`` (default: this
+    process's environment, which in a worker is what the runner gave it;
+    ``None`` for a variable that is not set), and the installed versions
+    of the solver's backing package(s) and of NumPy and SciPy. System-level snapshots
     (memory, full CPU detail) are captured *once* per run in the
     manifest's ``system`` block — duplicating them here would bloat
     every results row without adding signal. The CPU model is the
@@ -54,6 +68,8 @@ def runtime_metadata(solver_name: str) -> dict:
     # ``manifest["system"]["python_executable_full"]`` only when
     # ``system_metadata(include_full_python_path=True)`` is requested.
     short_executable = os.path.basename(sys.executable) if sys.executable else None
+    if environ is None:
+        environ = os.environ
     return {
         "python_executable": short_executable,
         "python_version": platform.python_version(),
@@ -63,6 +79,7 @@ def runtime_metadata(solver_name: str) -> dict:
         "processor": platform.processor(),
         "cpu_model": _detect_cpu_model(),
         "usable_cpu_count": usable_cpu_count(),
+        "thread_env": {name: environ.get(name) for name in THREAD_LIMIT_ENV_VARS},
         "solver_package_versions": package_versions,
         # The BLAS/LAPACK behind most solvers ships with these, and in an
         # environment matrix each environment can have its own builds; the

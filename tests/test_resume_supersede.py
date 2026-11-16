@@ -62,7 +62,7 @@ def fake_worker(monkeypatch):
     calls: list[dict] = []
     outcome = {"status": "optimal", "run_time_seconds": 0.01}
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         calls.append(payload)
         stdout_path.write_text(f"attempt {len(calls)}\n")

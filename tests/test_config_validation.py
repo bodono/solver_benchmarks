@@ -282,7 +282,7 @@ def test_relative_data_root_resolves_against_the_repo_root(monkeypatch, tmp_path
 
     payloads = []
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         payloads.append(payload)
         record = ProblemResult(
@@ -313,7 +313,7 @@ def test_run_finds_bundled_data_from_outside_the_repository(
 
     seen = {}
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         seen["cwd"] = cwd
         record = ProblemResult(
