@@ -498,6 +498,59 @@ def test_a_resume_keeps_the_run_id_so_readers_pair_its_rows(
     assert sorted(zip(frame["problem"], frame["status"])) == [("p1", "optimal"), ("p2", "optimal")]
 
 
+@pytest.mark.parametrize("move", ["rename", "copy"])
+def test_a_renamed_run_directory_keeps_its_run_id(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path, move: str
+):
+    """The rows a resume writes into a renamed (or copied) run directory carry
+    the run id of the rows they replace, so readers still pair them."""
+    import shutil
+
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    config = _config(tmp_path)
+    fake_worker.outcome.update(status="worker_error", run_time_seconds=None)
+    store = run_benchmark(config, run_dir=tmp_path / "run_2026-11-16_12-00-00_UTC",
+                          repo_root=repo_root)
+    original = store.run_id
+    moved = tmp_path / "renamed"
+    if move == "rename":
+        store.run_dir.rename(moved)
+    else:
+        shutil.copytree(store.run_dir, moved)
+
+    # The retries succeed; the run is killed before its end-of-run rewrite.
+    fake_worker.outcome.update(status="optimal", run_time_seconds=0.01)
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", lambda store: None)
+    resumed = run_benchmark(config, run_dir=moved, repo_root=repo_root)
+
+    assert resumed.run_id == original
+    rows = _rows(moved / "results.jsonl")
+    assert len(rows) == 4 and {row["run_id"] for row in rows} == {original}
+    assert json.loads((moved / "manifest.json").read_text())["run_id"] == original
+    frame = load_results(moved)
+    assert sorted(zip(frame["problem"], frame["status"])) == [("p1", "optimal"), ("p2", "optimal")]
+    result = CliRunner().invoke(main, ["summary", str(moved), "--repo-root", str(repo_root)])
+    assert result.exit_code == 0, result.output
+    completion = result.output.split("Completion:")[1].splitlines()[2].split()
+    assert completion[-2:] == ["0", "True"]
+
+
+def test_a_run_directory_with_a_torn_manifest_resumes_under_its_name(
+    fake_worker, tmp_path: Path, repo_root: Path
+):
+    config = _config(tmp_path)
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    store.manifest_path.write_text(store.manifest_path.read_text()[:50])  # torn
+
+    resumed = run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert resumed.run_id == "run"
+    assert json.loads(store.manifest_path.read_text())["run_id"] == "run"
+    assert len(fake_worker.calls) == 2  # the rows still count
+
+
 def test_unsupported_kind_skips_stay_complete(fake_worker, monkeypatch, tmp_path: Path,
                                               repo_root: Path):
     config = _config(tmp_path)

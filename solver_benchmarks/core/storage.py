@@ -303,7 +303,13 @@ class ResultStore:
                     suffix += 1
         else:
             root = Path(run_dir).resolve()
-            run_id = root.name
+            # A run directory keeps the run id it was created with, also after
+            # it is renamed or copied: the rows a resume writes must carry the
+            # run id of the rows they replace (see ReplacedRows.reader_key).
+            # Without a readable manifest the directory's name is the run id.
+            existing = cls.read_manifest(root)
+            recorded = existing.get("run_id") if existing is not None else None
+            run_id = recorded if isinstance(recorded, str) and recorded else root.name
             root.mkdir(parents=True, exist_ok=True)
         store = cls(root, run_id)
         store.write_manifest(config)
@@ -331,14 +337,18 @@ class ResultStore:
 
     @staticmethod
     def read_manifest(run_dir: str | Path) -> dict[str, Any] | None:
+        """The run's manifest, or None when it is missing, torn or not an object."""
         path = Path(run_dir).resolve() / "manifest.json"
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
+            manifest = json.loads(path.read_text())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            manifest = None
+        if not isinstance(manifest, dict):
             logger.warning("Could not parse existing manifest %s", path)
             return None
+        return manifest
 
     def write_manifest(self, config: RunConfig) -> None:
         manifest = {
@@ -347,8 +357,9 @@ class ResultStore:
             "config": config.to_manifest(),
             "system": system_metadata(),
         }
-        if self.manifest_path.exists():
-            existing = json.loads(self.manifest_path.read_text())
+        # A torn manifest (a run killed while writing it) is written anew.
+        existing = self.read_manifest(self.run_dir)
+        if existing is not None:
             manifest["created_at_utc"] = existing.get(
                 "created_at_utc", manifest["created_at_utc"]
             )

@@ -1735,6 +1735,23 @@ def test_the_progress_reason_has_no_control_characters(error, suffix):
     assert _solver_error_reason(result) == suffix
 
 
+def test_a_worker_result_that_is_not_utf8_is_a_worker_error(tmp_path: Path):
+    from solver_benchmarks.core.config import DatasetConfig, SolverConfig
+    from solver_benchmarks.core.runner import _load_worker_result
+
+    path = tmp_path / "worker_result.json"
+    path.write_bytes(b'{"status": "\xff\xfe"}')
+    result = _load_worker_result(
+        path, store=ResultStore(run_id="r", run_dir=tmp_path),
+        dataset_config=DatasetConfig(name="synthetic_qp", id="d"),
+        problem=ProblemSpec(dataset_id="d", name="p", kind=QP),
+        solver_config=SolverConfig(id="s", solver="scs"), artifacts_dir=tmp_path,
+        environment_id=None, environment_metadata=None,
+    )
+    assert result.status == "worker_error"
+    assert result.error.startswith("Could not read worker_result.json: 'utf-8' codec")
+
+
 @pytest.mark.parametrize("text", ["[1, 2]", '"x"', "null", "3"])
 def test_a_worker_result_that_is_not_an_object_is_a_worker_error(tmp_path: Path, text: str):
     from solver_benchmarks.core.config import DatasetConfig, SolverConfig

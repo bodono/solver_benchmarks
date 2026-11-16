@@ -1538,7 +1538,7 @@ def _load_worker_result(
     record: dict | None = None
     try:
         text = path.read_text()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         error = f"Could not read worker_result.json: {exc}"
     else:
         try:

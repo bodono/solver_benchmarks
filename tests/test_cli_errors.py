@@ -218,3 +218,14 @@ def test_a_key_error_importing_a_dataset_loader_is_not_an_unknown_dataset(
 
     result = CliRunner().invoke(cli.main, ["list", "problems", "no_such_dataset"])
     assert result.exit_code != 0 and "Unknown dataset 'no_such_dataset'" in result.output
+
+    # The other callers that test the name report the loader's error too.
+    from solver_benchmarks.core.config import _signature_dataset_options
+    from solver_benchmarks.core.data_prepare import _subset_lists_problems
+
+    for call in (lambda: _signature_dataset_options("broken_loader", {}),
+                 lambda: _subset_lists_problems("broken_loader")):
+        with pytest.raises(KeyError) as excinfo:
+            call()
+        assert excinfo.value.args == ("missing_setting",)
+    assert _subset_lists_problems("no_such_dataset") is False
