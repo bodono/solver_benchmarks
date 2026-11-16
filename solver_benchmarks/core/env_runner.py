@@ -208,8 +208,12 @@ def _install_environment(
     stream_output: bool,
 ) -> None:
     for command in environment.install:
-        formatted = command.format(python=environment.python, repo_root=repo_root)
-        cmd = shlex.split(formatted)
+        # Tokenize first, then substitute, so a python path or repository root
+        # with a space or a quote stays one argument.
+        cmd = [
+            token.format(python=environment.python, repo_root=repo_root)
+            for token in shlex.split(command)
+        ]
         if stream_output:
-            print(f"[bench env] install {environment.id}: {formatted}", file=sys.stderr)
+            print(f"[bench env] install {environment.id}: {shlex.join(cmd)}", file=sys.stderr)
         subprocess.run(cmd, cwd=repo_root, check=True)

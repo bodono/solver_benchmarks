@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import threading
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -166,6 +167,68 @@ def _is_unavailable_skip(record: dict[str, Any]) -> bool:
     return bool(_LEGACY_UNAVAILABLE_SKIP.match(str(record.get("error") or "")))
 
 
+def _is_replaceable(record: dict[str, Any]) -> bool:
+    """A worker-error row or a skip written while the solver was not installed.
+
+    Resume solves such a key again, and the row the new attempt writes
+    replaces it (see ``ReplacedRows``).
+    """
+    return record.get("status") == status.WORKER_ERROR or _is_unavailable_skip(record)
+
+
+class ReplacedRows:
+    """Finds the rows of results.jsonl that a later row has replaced.
+
+    A run appends the result of a retried worker error or of a recovered
+    unavailable skip next to the row it replaces and drops that row in its
+    end-of-run rewrite (``ResultStore.retire_replaced_rows``). Until then (and
+    for good if the run is killed first) both rows are in the file: a
+    replaceable row followed by a later row of its key is not a result.
+    ``ResultStore.completed_keys`` uses this with ``(dataset, problem,
+    solver_id)`` over the rows compatible with the current config; readers
+    (``read_results_jsonl``, ``replaced_positions``) key rows by
+    ``reader_key``, which adds the row's resume signature and run id, so
+    rows solved under other settings are left alone, and so are rows of
+    different runs in a ``bench merge`` output (a resume keeps its run
+    directory's run id).
+    """
+
+    def __init__(self) -> None:
+        self._last: dict[Any, Any] = {}
+
+    def observe(self, key: Any, record: dict[str, Any], ident: Any) -> Any | None:
+        """Note the row ``ident`` of ``key`` (in file order); return the
+        identifier of the earlier row it replaces, if any."""
+        earlier = self._last.pop(key, None)
+        if _is_replaceable(record):
+            self._last[key] = ident
+        return earlier
+
+    @staticmethod
+    def reader_key(record: dict[str, Any]) -> tuple[str, str, str, str, str | None]:
+        metadata = record.get("metadata")
+        signature = metadata.get("resume_signature") if isinstance(metadata, dict) else None
+        return (
+            str(record.get("run_id")),
+            str(record.get("dataset", "")),
+            str(record.get("problem")),
+            str(record.get("solver_id")),
+            None if signature is None else str(signature),
+        )
+
+
+def replaced_positions(records: Iterable[dict[str, Any]]) -> set[int]:
+    """Positions of the rows in ``records`` (results.jsonl order) that a later
+    row of the same solve and resume signature replaced (see ``ReplacedRows``)."""
+    replaced = ReplacedRows()
+    positions: set[int] = set()
+    for position, record in enumerate(records):
+        earlier = replaced.observe(ReplacedRows.reader_key(record), record, position)
+        if earlier is not None:
+            positions.add(earlier)
+    return positions
+
+
 def _append_line(path: Path, line: str) -> None:
     """Append ``line`` to ``path``, starting a new line after a torn one.
 
@@ -211,6 +274,13 @@ class ResultStore:
     _replaced_rows: set[str] = field(
         default_factory=set, init=False, repr=False, compare=False
     )
+    # Retry and unavailable rows whose replacement is already in
+    # results.jsonl, and those a run stopped before that rewrite left next to
+    # a later row of their key. They are dropped in the same rewrite (a retry
+    # row's copy is in its retry directory's previous_results.jsonl).
+    _stale_rows: set[str] = field(
+        default_factory=set, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def create(cls, config: RunConfig, run_dir: str | Path | None = None) -> ResultStore:
@@ -233,7 +303,13 @@ class ResultStore:
                     suffix += 1
         else:
             root = Path(run_dir).resolve()
-            run_id = root.name
+            # A run directory keeps the run id it was created with, also after
+            # it is renamed or copied: the rows a resume writes must carry the
+            # run id of the rows they replace (see ReplacedRows.reader_key).
+            # Without a readable manifest the directory's name is the run id.
+            existing = cls.read_manifest(root)
+            recorded = existing.get("run_id") if existing is not None else None
+            run_id = recorded if isinstance(recorded, str) and recorded else root.name
             root.mkdir(parents=True, exist_ok=True)
         store = cls(root, run_id)
         store.write_manifest(config)
@@ -261,14 +337,18 @@ class ResultStore:
 
     @staticmethod
     def read_manifest(run_dir: str | Path) -> dict[str, Any] | None:
+        """The run's manifest, or None when it is missing, torn or not an object."""
         path = Path(run_dir).resolve() / "manifest.json"
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
+            manifest = json.loads(path.read_text())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            manifest = None
+        if not isinstance(manifest, dict):
             logger.warning("Could not parse existing manifest %s", path)
             return None
+        return manifest
 
     def write_manifest(self, config: RunConfig) -> None:
         manifest = {
@@ -277,8 +357,9 @@ class ResultStore:
             "config": config.to_manifest(),
             "system": system_metadata(),
         }
-        if self.manifest_path.exists():
-            existing = json.loads(self.manifest_path.read_text())
+        # A torn manifest (a run killed while writing it) is written anew.
+        existing = self.read_manifest(self.run_dir)
+        if existing is not None:
             manifest["created_at_utc"] = existing.get(
                 "created_at_utc", manifest["created_at_utc"]
             )
@@ -373,14 +454,19 @@ class ResultStore:
         (default two). This also bounds repeated deterministic exceptions
         reported as ``worker_error``. Skips written because a solver was not
         installed are not complete for a solver in ``available_solver_ids``.
-        Rows remain until atomically replaced; ``problem_solver_dir``
-        preserves the previous attempt's artifacts.
+        Rows remain until their replacement is written; ``problem_solver_dir``
+        preserves the previous attempt's artifacts. A worker-error or
+        unavailable-skip row followed by a later compatible row of its key
+        was replaced by a run that stopped before ``retire_replaced_rows``;
+        it is dropped in this run's ``retire_replaced_rows`` (it does not
+        change which keys are complete).
         """
         self._retry_rows.clear()
         self._retry_counts.clear()
         self._superseded_rows.clear()
         self._unavailable_rows.clear()
         self._replaced_rows.clear()
+        self._stale_rows.clear()
         max_retries = config.max_worker_error_retries if config is not None else 2
         if not self.results_jsonl_path.exists():
             return set()
@@ -392,6 +478,11 @@ class ResultStore:
         previous_signatures = _previous_solve_signatures(previous_manifest)
         legacy_aliases = legacy_signature_aliases(previous_manifest)
         keys: set[tuple[str, str, str]] = set()
+        # Replaced worker-error / unavailable-skip rows, and how often each
+        # such row occurs and is followed by a later row.
+        replaced = ReplacedRows()
+        occurrences: Counter[str] = Counter()
+        followed: Counter[str] = Counter()
         with self.results_jsonl_path.open() as handle:
             for lineno, line in enumerate(handle, start=1):
                 if not line.strip():
@@ -435,6 +526,11 @@ class ResultStore:
                     ):
                         self._superseded_rows.setdefault(key, set()).add(line.strip())
                         continue
+                earlier = replaced.observe(key, record, line.strip())
+                if earlier is not None:
+                    followed[earlier] += 1
+                if _is_replaceable(record):
+                    occurrences[line.strip()] += 1
                 if (
                     available_solver_ids is not None
                     and key[2] in available_solver_ids
@@ -484,6 +580,11 @@ class ResultStore:
             self._retry_rows.pop(key, None)
             self._retry_counts.pop(key, None)
             self._unavailable_rows.pop(key, None)
+        # A row whose every copy has a later row of its key is stale; an
+        # identical copy that is still the latest row of its key keeps it.
+        self._stale_rows = {
+            row for row, count in followed.items() if count == occurrences[row]
+        }
         return keys
 
     def has_pending_retry(self, dataset: str, problem: str, solver_id: str) -> bool:
@@ -533,37 +634,40 @@ class ResultStore:
             atomic_write_text(artifact_dir / "result.json", json.dumps(record, indent=2))
         line = json.dumps(record, sort_keys=True) + "\n"
         with self._write_lock:
-            superseded = self._superseded_rows.get(key, set())
-            previous_rows = self._retry_rows.get(key, set()) | self._unavailable_rows.get(
-                key, set()
-            )
-            if previous_rows:
-                # A retry or a recovered skip replaces its row at once: if the
-                # run stopped before the end, the next resume could not tell
-                # the stale row from a result.
-                self._replace_rows(previous_rows | superseded, superseded=superseded, line=line)
+            # The rows this result replaces stay until retire_replaced_rows
+            # rewrites the file once for the whole run. If the run stops
+            # before that, the next resume recognises them again: a
+            # superseded row by its signature, a retry or unavailable row
+            # by the later row of its key (see completed_keys).
+            self._replaced_rows |= self._superseded_rows.get(key, set())
+            replaced = self._retry_rows.get(key, set()) | self._unavailable_rows.get(key, set())
+            if line.strip() in replaced:
+                # The new row is the replaced row, text for text: it is
+                # already in the file, and dropping the old row by its text
+                # would drop the new one too.
+                replaced = replaced - {line.strip()}
             else:
-                # A superseded row is recognised again on the next resume, so
-                # its move can wait for retire_replaced_rows.
                 _append_line(self.results_jsonl_path, line)
-                self._replaced_rows |= superseded
+            self._stale_rows |= replaced
             for pending in (self._retry_rows, self._superseded_rows, self._unavailable_rows):
                 pending.pop(key, None)
             self._retry_counts.pop(key, None)
 
     def retire_replaced_rows(self) -> int:
-        """Move superseded rows replaced during this run to results.superseded.jsonl.
+        """Remove the rows replaced during this run from results.jsonl.
 
-        One rewrite of results.jsonl for the whole run. A run that stops
-        before calling this leaves both rows of such a key in results.jsonl;
-        the next resume moves the superseded one out. Returns the number of
-        rows moved.
+        One rewrite of results.jsonl for the whole run: superseded rows move
+        to results.superseded.jsonl, stale retry and unavailable rows are
+        dropped. A run that stops before calling this leaves both rows of
+        such a key in results.jsonl; the next resume removes the replaced
+        one. Returns the number of rows moved to results.superseded.jsonl.
         """
         with self._write_lock:
-            rows, self._replaced_rows = self._replaced_rows, set()
-            if rows:
-                self._replace_rows(rows, superseded=rows, line="")
-        return len(rows)
+            superseded, self._replaced_rows = self._replaced_rows, set()
+            stale, self._stale_rows = self._stale_rows, set()
+            if superseded or stale:
+                self._replace_rows(superseded | stale, superseded=superseded, line="")
+        return len(superseded)
 
     def _replace_rows(self, rows: set[str], *, superseded: set[str], line: str) -> None:
         """Atomically drop ``rows`` from results.jsonl and append ``line``.
@@ -634,22 +738,66 @@ def read_results_jsonl(path: str | Path, *, chunk_lines: int = _JSONL_CHUNK_LINE
     an empty frame. Where that pandas conversion is missing or has another
     signature, the records are normalized in one go instead (the same frame,
     with the memory of all records at once).
+
+    Rows a later row replaced are left out (see ``ReplacedRows``): a
+    worker-error or unavailable-skip row followed by a row of the same solve
+    and resume signature, which a resume appends next to it and drops only at
+    the end of the run. The frame is the one the file gives once they are
+    dropped; when there are any, the file is read a second time without them.
     """
     path = Path(path)
-    if _convert_object_array is not None:
-        try:
-            return _read_results_jsonl_chunked(path, chunk_lines)
-        except TypeError:
-            # The internal conversion's signature changed in this pandas.
-            pass
-    return pd.json_normalize(list(_parsed_records(path)))
+    # One open file for both reads: a resume appending rows or replacing the
+    # file meanwhile changes neither what the first read saw nor the second.
+    with path.open("rb") as handle:
+        if _convert_object_array is not None:
+            try:
+                replaced: set[int] = set()
+                seen = _ReadExtent()
+                frame = _read_results_jsonl_chunked(
+                    path, handle, chunk_lines, replaced=replaced, extent=seen
+                )
+                if replaced:
+                    del frame  # not held while the file is read again
+                    return _read_results_jsonl_chunked(
+                        path, handle, chunk_lines,
+                        skip=frozenset(replaced), extent=_ReadExtent(limit=seen.end),
+                        warn=False,  # the first read warned about bad lines
+                    )
+                return frame
+            except TypeError:
+                # The internal conversion's signature changed in this pandas.
+                pass
+        records = list(_parsed_records(path, handle))
+    stale = replaced_positions(records)
+    return pd.json_normalize([record for i, record in enumerate(records) if i not in stale])
 
 
-def _read_results_jsonl_chunked(path: Path, chunk_lines: int) -> pd.DataFrame:
+@dataclass
+class _ReadExtent:
+    """How far a read of results.jsonl goes: up to ``limit`` bytes (all when
+    None); ``end`` is where it stopped."""
+
+    limit: int | None = None
+    end: int = 0
+
+
+def _read_results_jsonl_chunked(
+    path: Path,
+    handle: Any,
+    chunk_lines: int,
+    *,
+    replaced: set[int] | None = None,
+    skip: frozenset[int] = frozenset(),
+    extent: _ReadExtent | None = None,
+    warn: bool = True,
+) -> pd.DataFrame:
     assert _convert_object_array is not None
     columns: dict[str, list[np.ndarray]] = {}
     rows = 0
-    for chunk in _batched(_parsed_records(path), chunk_lines):
+    records = _parsed_records(
+        path, handle, replaced=replaced, skip=skip, extent=extent, warn=warn
+    )
+    for chunk in _batched(records, chunk_lines):
         # Missing keys are NaN, as in a frame built from all records at once.
         frame = pd.DataFrame([_flatten_record(record) for record in chunk], dtype=object)
         size = len(chunk)
@@ -674,19 +822,53 @@ def _read_results_jsonl_chunked(path: Path, chunk_lines: int) -> pd.DataFrame:
     return pd.DataFrame(data, index=pd.RangeIndex(rows))
 
 
-def _parsed_records(path: Path) -> Iterator[dict[str, Any]]:
-    with path.open() as handle:
-        for lineno, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                record = None
-            if not isinstance(record, dict):
+def _parsed_records(
+    path: Path,
+    handle: Any,
+    *,
+    replaced: set[int] | None = None,
+    skip: frozenset[int] = frozenset(),
+    extent: _ReadExtent | None = None,
+    warn: bool = True,
+) -> Iterator[dict[str, Any]]:
+    """The records of ``handle`` (``path`` opened in binary mode), from its
+    start and within ``extent``, without the lines in ``skip``; the line
+    numbers of rows a later row replaced are added to ``replaced``.
+
+    Nothing past a line without a newline is read: it is the last line, or
+    one a writer is still appending, and the rest of it would be a second
+    fragment, or a whole row a later read sees and this one did not."""
+    tracker = ReplacedRows()
+    limit = extent.limit if extent is not None else None
+    offset = 0
+    torn = False
+    handle.seek(0)
+    for lineno, line in enumerate(handle, start=1):
+        if torn:
+            break
+        if limit is not None:
+            if offset >= limit:
+                break
+            line = line[: limit - offset]
+        offset += len(line)
+        torn = not line.endswith(b"\n")
+        if lineno in skip or not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            record = None
+        if not isinstance(record, dict):
+            if warn:
                 logger.warning("Skipping unparseable line %d in %s", lineno, path)
-                continue
-            yield record
+            continue
+        if replaced is not None:
+            earlier = tracker.observe(ReplacedRows.reader_key(record), record, lineno)
+            if earlier is not None:
+                replaced.add(earlier)
+        yield record
+    if extent is not None:
+        extent.end = offset
 
 
 def _batched(items: Iterable[Any], size: int) -> Iterator[list[Any]]:

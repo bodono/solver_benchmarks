@@ -14,9 +14,7 @@ from pathlib import Path
 import click
 
 from solver_benchmarks.analysis.load import load_results, status_counts
-from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.penalties import geomean_time_limits
-from solver_benchmarks.analysis.plots import write_analysis_plots
 from solver_benchmarks.analysis.profiles import (
     performance_profile,
     shifted_geomean,
@@ -116,10 +114,11 @@ def list_problems_cmd(
 
 def _dataset_class(name: str):
     """The registered dataset ``name``; a misspelled name is a click error."""
-    try:
-        return get_dataset(name)
-    except KeyError:
-        raise click.ClickException(unknown_name_message("dataset", name, list_datasets())) from None
+    # A membership test, not ``except KeyError``: an error importing the
+    # loader (a KeyError included) is reported as itself.
+    if name not in list_datasets():
+        raise click.ClickException(unknown_name_message("dataset", name, list_datasets()))
+    return get_dataset(name)
 
 
 @contextlib.contextmanager
@@ -509,6 +508,9 @@ def plot_cmd(
     max_value: float | None,
     data_root: Path | None,
 ) -> None:
+    # Imported here: matplotlib costs every other command a second at start-up.
+    from solver_benchmarks.analysis.plots import write_analysis_plots
+
     try:
         paths = write_analysis_plots(
             run_dir,
@@ -660,6 +662,10 @@ def report_cmd(
     max_value: float | None,
     data_root: Path | None,
 ) -> None:
+    # Imported here: it loads matplotlib, which costs every other command a
+    # second at start-up.
+    from solver_benchmarks.analysis.markdown_report import write_run_report
+
     try:
         paths = write_run_report(
             run_dir,

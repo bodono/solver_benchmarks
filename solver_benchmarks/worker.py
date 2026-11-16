@@ -114,6 +114,10 @@ def run_payload(payload: dict) -> ProblemResult:
         error = None
         if solver_result.status == status.SKIPPED_UNSUPPORTED:
             error = str(solver_result.info.get("reason", "Unsupported solve"))
+        elif solver_result.status == status.SOLVER_ERROR and solver_result.info.get("error"):
+            # Adapters put the reason of a solver_error on info["error"]; the
+            # row's error field is what reports show.
+            error = str(solver_result.info["error"])
         kkt = to_jsonable(solver_result.kkt) if solver_result.kkt else None
         point_objective = _point_objective(problem, kkt)
         if point_objective is not None:

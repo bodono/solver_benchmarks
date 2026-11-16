@@ -510,6 +510,10 @@ time but whose post-solve KKT check (PSD cones) ran past the kill deadline
 were recorded as `time_limit` with no KKT record; they now keep their own
 status.
 
+A `solver_error` row carries the reason the adapter gives (`info.error`) in its
+`error` field, the column report tables show; rows recorded before that have it
+only under `info`.
+
 Unsupported solver/problem combinations are skipped by default and recorded as
 `skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped,
 and so is a problem whose cone types an adapter cannot take (ECOS on a PSD cone),
@@ -994,8 +998,15 @@ Resuming on a host without the solver leaves pending errors and retry budgets
 unchanged. Problems skipped because the solver was not installed (their rows
 carry `metadata.skip_reason: solver_unavailable`) are solved on the first resume
 where it is; skips the adapter reports for an unsupported problem stay final. A
-retry atomically replaces
-the compatible error rows, so reports count one result for that solve. Previous
+retry, or the solve of such a skip, appends its row, and the error or skip rows
+it replaced are dropped from `results.jsonl` in the same end-of-run rewrite;
+after a crash that skips that step, the next resume drops them. Until then
+the readers (`load_results`, so `bench summary`, `failures`, `report` and the
+other analysis commands, and `bench merge` / `kkt-verify`) leave out a
+`worker_error` or `solver_unavailable` skip row that a later row of the same
+run id, solve and resume signature follows, so they count one result for that
+solve while a resume runs and after it was killed (in a `bench merge` output,
+rows of runs with different run ids are never paired this way). Previous
 logs and solver artifacts remain intact; new artifacts go into a `retry-N`
 subdirectory containing a `previous_results.jsonl` snapshot of the replaced
 errors. New solver variants or newly included problems are appended.
@@ -1034,9 +1045,20 @@ With `resume: false`, `bench run --run-dir` refuses a directory that already has
 results for the config's datasets and solvers instead of appending a second set
 of rows; start a new run directory instead.
 
+A run directory keeps the run id it was created with (recorded in its
+`manifest.json`), also when it is renamed or copied: a resume into it writes
+rows under that run id, not under the directory's new name. Without a readable
+manifest the directory's name is the run id.
+
 A run directory has one writer at a time: a run holds a lock on
 `<run_dir>/.bench.lock` until it ends, and a second `bench run` on the same
 directory fails at once, naming the process that holds it.
+
+A run that fails or is interrupted while planning its solves (a dataset
+without local data, a solver `run.fail_on_unsupported` does not let it skip,
+Ctrl+C) removes the run directory it created, timestamped or named by
+`--run-dir`, and the empty directories it created to hold it; a directory that
+existed before the run is never removed.
 
 Run only specific problems by editing `include`, or list problems first:
 
@@ -1181,9 +1203,10 @@ dropped, so a package reachable only through one must be listed explicitly
 This keeps the benchmark independent of a specific environment manager. You can use `venv`, `uv`, conda, Docker, or
 pre-existing paths.
 
-Install commands are executed directly, not through a shell. The runner expands
-`{python}` to the environment's configured Python executable and `{repo_root}` to
-the repository root, then tokenizes the command with shell-like quoting. If you
+Install commands are executed directly, not through a shell. The runner
+tokenizes the command with shell-like quoting, then expands `{python}` to the
+environment's configured Python executable and `{repo_root}` to the repository
+root in each token, so a path containing spaces stays one argument. If you
 need shell features such as `&&`, redirects, or environment-variable expansion,
 wrap them explicitly, for example `bash -lc 'source setup.sh && pip install ...'`.
 The final run manifest records the union of all environment solver variants, so
@@ -1284,7 +1307,7 @@ Run and analysis commands:
 | `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH`, `--data-root PATH` | Write shifted geometric means into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH` | Write PNG plots for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile), a setup-vs-solve time breakdown (`setup_solve_breakdown.png`), and a difficulty-scaling plot of the metric by problem size (`difficulty_scaling_<metric>.png`). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report. |
-| `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are. Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection, so `summary`, `missing` and `report` treat the merged directory like one run. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. `--overwrite` replaces only an empty directory or a run written by `bench merge` / `bench kkt-verify` (its manifest has `derived`); a base run directory, a file or a directory of other files is refused. |
+| `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are, except a `worker_error` or `solver_unavailable` skip row that a later row of the same run id, solve and resume signature replaced (an input whose resume is running or was killed). Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection, so `summary`, `missing` and `report` treat the merged directory like one run. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. `--overwrite` replaces only an empty directory or a run written by `bench merge` / `bench kkt-verify` (its manifest has `derived`); a base run directory, a file or a directory of other files is refused. |
 | `bench kkt-verify RUN_DIR` | `--tol VALUE` required, `--output-dir PATH` default `RUN_DIR_kkt<tol>` next to `RUN_DIR`, `--allow-missing` default false, `--promote` default false, `--overwrite` default false | Write a copy of the run in which every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed `--tol` becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it becomes the matching `*_inaccurate` status. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, cuOpt and the commercial adapters, Gurobi, CPLEX and MOSEK, do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with the reason in `metadata.kkt_verify` and a warning that counts them by solver. At a strict `--tol` this favours adapters that record no certificate in infeasibility-heavy comparisons: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. `--promote` turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, and `primal_infeasible_inaccurate` / `dual_infeasible_inaccurate` rows whose certificate is fully checked and passes into `primal_infeasible` / `dual_infeasible`, as it does an iteration- or time-limited row whose record holds such a certificate instead of a point (OSQP's inaccurate certificates) (never when the certificate is missing or only partly checked), except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. A row promoted to `optimal` without an `objective_value` (adapters report one only for a solution) takes the objective of its returned point, which the worker records as `kkt.primal_obj_reported` (constant term and maximisation applied, as for `objective_value`); `metadata.kkt_verify.objective_from` says so. Rows of runs recorded before that field existed stay without an objective. A certificate promoted at a `--tol` above `1e-3` can still be scored a failure, because scoring uses the certificate check recorded at `1e-3` (`kkt.valid`). Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, and the over-time-limit count where there is one. Both commands refuse an existing output directory unless `--overwrite`, which replaces only an empty directory or an earlier derived run, never a base run or other files; a source directory with neither `results.jsonl` nor `manifest.json`; and a `manifest.json` that is not valid JSON. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
@@ -1728,10 +1751,18 @@ class MyDataset(Dataset):
         return ProblemData(self.dataset_id, name, QP, qp)
 ```
 
-Register it in `solver_benchmarks/datasets/registry.py`:
+Register it in `solver_benchmarks/datasets/registry.py` by module and class name
+(say it is in `solver_benchmarks/datasets/my_dataset.py`), as an entry of the
+`DATASETS` table there; the module is imported when the dataset is first looked
+up, so a worker imports only the loader it reads from:
 
 ```python
-DATASETS["my_dataset"] = MyDataset
+DATASETS: LazyRegistry[type[Dataset]] = LazyRegistry(
+    {
+        ...
+        "my_dataset": _loader("my_dataset", "MyDataset"),
+    }
+)
 ```
 
 QP convention:
@@ -1853,11 +1884,23 @@ class MySolverAdapter(SolverAdapter):
         )
 ```
 
-Register it in `solver_benchmarks/solvers/registry.py`:
+Register it in `solver_benchmarks/solvers/registry.py` by module and class name
+(say it is in `solver_benchmarks/solvers/my_solver_adapter.py`), as an entry of
+the `SOLVERS` table there; the module is imported when the solver is first looked
+up, so a worker imports only the adapter it runs (do not import the adapter in
+`registry.py`):
 
 ```python
-SOLVERS["my_solver"] = MySolverAdapter
+SOLVERS: LazyRegistry[type[SolverAdapter]] = LazyRegistry(
+    {
+        ...
+        "my_solver": _adapter("my_solver_adapter", "MySolverAdapter"),
+    }
+)
 ```
+
+Tests and scripts can still register a class directly with
+`SOLVERS["my_solver"] = MySolverAdapter` (or `monkeypatch.setitem`).
 
 Adapter expectations:
 

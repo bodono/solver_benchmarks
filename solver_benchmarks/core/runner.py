@@ -99,13 +99,18 @@ def run_benchmark(
 
     A run directory has one writer at a time: the run holds an exclusive
     lock on ``<run_dir>/.bench.lock`` from start to finish, and a second run
-    on the same directory fails at once (see :class:`_RunDirLock`).
+    on the same directory fails at once (see :class:`_RunDirLock`). When
+    planning fails (missing data, a solver that may not be skipped), a run
+    directory this call created is removed again, so no directory holding
+    only a manifest is left behind; one that existed before is kept.
     """
     lock = _RunDirLock()
+    new_dir = _NewRunDir()
     try:
         return _run_benchmark(
             config,
             lock=lock,
+            new_dir=new_dir,
             run_dir=run_dir,
             repo_root=repo_root,
             stream_output=stream_output,
@@ -115,14 +120,48 @@ def run_benchmark(
             prepare_data_command=prepare_data_command,
             source_config_path=source_config_path,
         )
+    except BaseException:  # Ctrl+C in planning too
+        new_dir.remove_if_unplanned()
+        raise
     finally:
         lock.release()
+
+
+@dataclasses.dataclass
+class _NewRunDir:
+    """The run directory a call created, until its solves are planned, and
+    the directories above it the call created for it (innermost first)."""
+
+    path: Path | None = None
+    parents: list[Path] = dataclasses.field(default_factory=list)
+    planned: bool = False
+
+    def remove_if_unplanned(self) -> None:
+        if self.path is None or self.planned:
+            return
+        shutil.rmtree(self.path, ignore_errors=True)
+        for parent in self.parents:
+            try:
+                parent.rmdir()  # only while empty
+            except OSError:
+                break
+
+
+def _missing_dirs(path: Path) -> list[Path]:
+    """``path`` and its ancestors that do not exist yet, innermost first."""
+    missing = []
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            break
+        missing.append(candidate)
+    return missing
 
 
 def _run_benchmark(
     config: RunConfig,
     *,
     lock: _RunDirLock,
+    new_dir: _NewRunDir,
     run_dir: str | Path | None,
     repo_root: str | Path | None,
     stream_output: bool,
@@ -142,8 +181,16 @@ def _run_benchmark(
         stream_solver_output = stream_output
     if run_dir is not None:
         run_dir = Path(run_dir).resolve()
-        run_dir.mkdir(parents=True, exist_ok=True)
+        missing = _missing_dirs(run_dir)
+        try:
+            run_dir.mkdir(parents=True)
+            created = True
+        except FileExistsError:
+            created = False
         lock.acquire(run_dir)
+        if created:
+            new_dir.path = run_dir
+            new_dir.parents = missing[1:]
     if run_dir is not None and not config.resume:
         refuse_to_rerun_into(run_dir, config)
     previous_manifest = (
@@ -169,8 +216,11 @@ def _run_benchmark(
     filter_warnings = _check_filter_names(
         config, listings, repo_root=repo_root, prepare_data_command=prepare_data_command
     )
+    missing_output_dirs = _missing_dirs(Path(config.output_dir)) if run_dir is None else []
     store = ResultStore.create(config, run_dir=run_dir)
     if run_dir is None:
+        new_dir.path = store.run_dir
+        new_dir.parents = missing_output_dirs
         lock.acquire(store.run_dir)
     if lock.warning is not None:
         store.append_event("warning", lock.warning)
@@ -329,6 +379,7 @@ def _run_benchmark(
                     skipped_during_planning += 1
                     continue
                 tasks.append((dataset_config, problem, solver_config))
+    new_dir.planned = True
 
     parallelism = max(1, int(config.parallelism))
     progress = _ProgressReporter(
@@ -883,20 +934,21 @@ def _config_error_reason(result: ProblemResult) -> str | None:
 
 
 def _retire_replaced_rows(store: ResultStore) -> None:
-    """Move the superseded rows replaced during the run out of results.jsonl.
+    """Remove the rows replaced during the run from results.jsonl.
 
-    A failure is logged, not raised: the rows stay next to their
-    replacements, and the next resume moves them.
+    Superseded rows move to results.superseded.jsonl; replaced retry and
+    unavailable-skip rows are dropped. A failure is logged, not raised: the
+    rows stay next to their replacements, and the next resume removes them.
     """
     try:
         retired = store.retire_replaced_rows()
     except Exception as exc:  # noqa: BLE001 - logged; the next resume retries.
-        logger.warning("Could not move superseded rows out of %s: %s",
+        logger.warning("Could not remove replaced rows from %s: %s",
                        store.results_jsonl_path, exc)
         store.append_event(
             "error",
-            "Could not move superseded rows to results.superseded.jsonl; "
-            "the next resume moves them",
+            "Could not remove replaced rows from results.jsonl; "
+            "the next resume removes them",
             error=f"{type(exc).__name__}: {exc}",
         )
         return
@@ -1313,7 +1365,8 @@ def _run_one(
         _apply_time_limit(result, time_limit)
         _emit_progress(
             stream_output,
-            f"finished {problem.name} with {solver_config.id}: {result.status}",
+            f"finished {problem.name} with {solver_config.id}: {result.status}"
+            + _solver_error_reason(result),
         )
         return result
     if not _WORKERS.aborting():
@@ -1485,13 +1538,21 @@ def _load_worker_result(
     record: dict | None = None
     try:
         text = path.read_text()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         error = f"Could not read worker_result.json: {exc}"
     else:
         try:
-            record = json.loads(text)
+            parsed = json.loads(text)
         except json.JSONDecodeError as exc:
             error = f"Could not parse worker_result.json: {exc}"
+        else:
+            if isinstance(parsed, dict):
+                record = parsed
+            else:
+                error = (
+                    "worker_result.json did not hold a result object "
+                    f"(it held {type(parsed).__name__} {text.strip()[:60]})"
+                )
     if record is not None:
         known = {field.name for field in dataclasses.fields(ProblemResult)}
         unknown = set(record) - known
@@ -1538,6 +1599,26 @@ def _load_worker_result(
             resume_signature=resume_signature,
         ),
     )
+
+
+# Characters of a solver_error's reason the progress line quotes.
+_PROGRESS_REASON_CHARS = 200
+
+
+def _solver_error_reason(result: ProblemResult) -> str:
+    """`` (reason)`` for a solver_error row with an error text, else empty.
+
+    Whitespace runs become one space and other characters a terminal would
+    act on (escape sequences, bell, backspace) become ``?``."""
+    if result.status != status.SOLVER_ERROR or not result.error:
+        return ""
+    reason = " ".join(str(result.error).split())
+    reason = "".join(char if char.isprintable() else "?" for char in reason)
+    if not reason:
+        return ""
+    if len(reason) > _PROGRESS_REASON_CHARS:
+        reason = reason[: _PROGRESS_REASON_CHARS - 3] + "..."
+    return f" ({reason})"
 
 
 def _emit_progress(enabled: bool, message: str) -> None:

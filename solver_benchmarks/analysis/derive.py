@@ -72,8 +72,15 @@ def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
     """Records of a results file and the number of lines that did not parse.
 
     A run killed mid-write leaves a torn last line; like ``load_results``,
-    skip it (with a warning) instead of refusing the whole run.
+    skip it (with a warning) instead of refusing the whole run. Also like
+    ``load_results``, rows a later row replaced (a retried worker error or a
+    recovered unavailable skip, which a resume drops only at its end) are left
+    out, so a derived run never carries them.
     """
+    # Imported here: storage imports pandas, which the workers that import
+    # this module (the MOSEK adapter) do not need.
+    from solver_benchmarks.core.storage import replaced_positions
+
     records: list[dict[str, Any]] = []
     skipped = 0
     if not path.exists():
@@ -92,6 +99,9 @@ def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
                 logger.warning("Skipping unparseable line %d in %s", lineno, path)
                 continue
             records.append(record)
+    replaced = replaced_positions(records)
+    if replaced:
+        records = [record for i, record in enumerate(records) if i not in replaced]
     return records, skipped
 
 

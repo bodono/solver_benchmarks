@@ -10,6 +10,8 @@ keep counting, also after those options change.
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -346,6 +348,209 @@ def test_unavailable_skips_from_older_releases_are_recognised(
     assert [row["status"] for row in _rows(store.results_jsonl_path)] == ["optimal"] * 2
 
 
+def _count_rewrites(monkeypatch) -> list[int]:
+    rewrites: list[int] = []
+    original_replace = ResultStore._replace_rows
+
+    def counting_replace(self, rows, *, superseded, line):
+        rewrites.append(len(rows))
+        return original_replace(self, rows, superseded=superseded, line=line)
+
+    monkeypatch.setattr(ResultStore, "_replace_rows", counting_replace)
+    return rewrites
+
+
+@pytest.mark.parametrize("replaced", ["worker_error", "unavailable_skip"])
+def test_replacing_many_retry_or_skip_rows_rewrites_results_once(
+    fake_worker, monkeypatch, tmp_path: Path, replaced: str
+):
+    config = _config(tmp_path)
+    signature = solve_signature(config, config.datasets[0], config.solvers[0])
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    problems = [f"q{i:02d}" for i in range(40)]
+
+    def result(problem, status, **metadata):
+        return ProblemResult(
+            run_id=store.run_id, dataset="resume_fixture", problem=problem, problem_kind=QP,
+            solver_id="s", solver="toggle", status=status, objective_value=None,
+            iterations=None, run_time_seconds=None,
+            metadata={"resume_signature": signature, **metadata},
+        )
+
+    for problem in problems:
+        if replaced == "worker_error":
+            store.write_result(result(problem, "worker_error"))
+        else:
+            store.write_result(result(problem, "skipped_unsupported",
+                                      skip_reason="solver_unavailable"))
+    assert store.completed_keys(config=config, available_solver_ids={"s"}) == set()
+
+    rewrites = _count_rewrites(monkeypatch)
+    for problem in problems:
+        store.write_result(result(problem, "optimal"))
+    assert rewrites == []  # each result is appended
+    store.retire_replaced_rows()
+    assert rewrites == [len(problems)]  # one rewrite drops every replaced row
+    rows = _rows(store.results_jsonl_path)
+    assert [row["problem"] for row in rows] == problems
+    assert {row["status"] for row in rows} == {"optimal"}
+    assert not store.superseded_jsonl_path.exists()
+
+
+@pytest.mark.parametrize("available_on_resume", [True, False])
+def test_a_resume_drops_skip_rows_a_stopped_run_left_next_to_their_results(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path, available_on_resume: bool
+):
+    config = _config(tmp_path)
+    _ToggleSolver.available = False
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+
+    # Killed after the results were written, before the end-of-run rewrite.
+    _ToggleSolver.available = True
+    retire = runner_module._retire_replaced_rows
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", lambda store: None)
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", retire)
+    assert len(fake_worker.calls) == 2
+
+    _ToggleSolver.available = available_on_resume
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    rows = _rows(store.results_jsonl_path)
+    assert len(fake_worker.calls) == 2
+    assert sorted((row["problem"], row["status"]) for row in rows) == [
+        ("p1", "optimal"), ("p2", "optimal")
+    ]
+
+
+def test_a_resume_drops_error_rows_a_stopped_run_left_next_to_their_retries(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path
+):
+    config = _config(tmp_path)
+    fake_worker.outcome.update(status="worker_error", run_time_seconds=None)
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    errors = _rows(store.results_jsonl_path)
+
+    retire = runner_module._retire_replaced_rows
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", lambda store: None)
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)  # second errors
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", retire)
+
+    fake_worker.outcome.update(status="optimal", run_time_seconds=0.01)
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    rows = _rows(store.results_jsonl_path)
+    assert len(fake_worker.calls) == 6
+    assert [(row["status"], row["metadata"]["worker_error_retries"]) for row in rows] == [
+        ("optimal", 2), ("optimal", 2)
+    ]
+    # Every dropped error row is kept in a retry directory.
+    kept = {
+        line
+        for path in store.run_dir.glob("problems/**/previous_results.jsonl")
+        for line in path.read_text().splitlines()
+    }
+    assert {json.dumps(row, sort_keys=True) for row in errors} <= kept
+
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert len(fake_worker.calls) == 6 and _rows(store.results_jsonl_path) == rows
+
+
+def test_a_resume_drops_error_rows_a_stopped_successful_retry_left(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path
+):
+    config = _config(tmp_path)
+    fake_worker.outcome.update(status="worker_error", run_time_seconds=None)
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+
+    # The retries succeed; the run is killed before its end-of-run rewrite.
+    fake_worker.outcome.update(status="optimal", run_time_seconds=0.01)
+    retire = runner_module._retire_replaced_rows
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", lambda store: None)
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", retire)
+    assert [row["status"] for row in _rows(store.results_jsonl_path)] == [
+        "worker_error", "worker_error", "optimal", "optimal"
+    ]
+
+    run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert len(fake_worker.calls) == 4  # nothing solved again
+    rows = _rows(store.results_jsonl_path)
+    assert sorted((row["problem"], row["status"]) for row in rows) == [
+        ("p1", "optimal"), ("p2", "optimal")
+    ]
+
+
+def test_a_resume_keeps_the_run_id_so_readers_pair_its_rows(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """Readers pair a replaced row with its replacement only within one run
+    id; the rows a resume appends carry the run directory's run id."""
+    config = _config(tmp_path)
+    fake_worker.outcome.update(status="worker_error", run_time_seconds=None)
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    fake_worker.outcome.update(status="optimal", run_time_seconds=0.01)
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", lambda store: None)
+    resumed = run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+
+    rows = _rows(store.results_jsonl_path)
+    assert len(rows) == 4 and resumed.run_id == store.run_id
+    assert {row["run_id"] for row in rows} == {store.run_id}
+    frame = load_results(store.run_dir)
+    assert sorted(zip(frame["problem"], frame["status"])) == [("p1", "optimal"), ("p2", "optimal")]
+
+
+@pytest.mark.parametrize("move", ["rename", "copy"])
+def test_a_renamed_run_directory_keeps_its_run_id(
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path, move: str
+):
+    """The rows a resume writes into a renamed (or copied) run directory carry
+    the run id of the rows they replace, so readers still pair them."""
+    import shutil
+
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    config = _config(tmp_path)
+    fake_worker.outcome.update(status="worker_error", run_time_seconds=None)
+    store = run_benchmark(config, run_dir=tmp_path / "run_2026-11-16_12-00-00_UTC",
+                          repo_root=repo_root)
+    original = store.run_id
+    moved = tmp_path / "renamed"
+    if move == "rename":
+        store.run_dir.rename(moved)
+    else:
+        shutil.copytree(store.run_dir, moved)
+
+    # The retries succeed; the run is killed before its end-of-run rewrite.
+    fake_worker.outcome.update(status="optimal", run_time_seconds=0.01)
+    monkeypatch.setattr(runner_module, "_retire_replaced_rows", lambda store: None)
+    resumed = run_benchmark(config, run_dir=moved, repo_root=repo_root)
+
+    assert resumed.run_id == original
+    rows = _rows(moved / "results.jsonl")
+    assert len(rows) == 4 and {row["run_id"] for row in rows} == {original}
+    assert json.loads((moved / "manifest.json").read_text())["run_id"] == original
+    frame = load_results(moved)
+    assert sorted(zip(frame["problem"], frame["status"])) == [("p1", "optimal"), ("p2", "optimal")]
+    result = CliRunner().invoke(main, ["summary", str(moved), "--repo-root", str(repo_root)])
+    assert result.exit_code == 0, result.output
+    completion = result.output.split("Completion:")[1].splitlines()[2].split()
+    assert completion[-2:] == ["0", "True"]
+
+
+def test_a_run_directory_with_a_torn_manifest_resumes_under_its_name(
+    fake_worker, tmp_path: Path, repo_root: Path
+):
+    config = _config(tmp_path)
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    store.manifest_path.write_text(store.manifest_path.read_text()[:50])  # torn
+
+    resumed = run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
+    assert resumed.run_id == "run"
+    assert json.loads(store.manifest_path.read_text())["run_id"] == "run"
+    assert len(fake_worker.calls) == 2  # the rows still count
+
+
 def test_unsupported_kind_skips_stay_complete(fake_worker, monkeypatch, tmp_path: Path,
                                               repo_root: Path):
     config = _config(tmp_path)
@@ -618,3 +823,167 @@ def test_correcting_a_typo_to_an_option_that_changes_the_problem_supersedes(
 
     assert _solved(subset_dataset.calls) == ["p1"]
     assert len(_rows(store.run_dir / "results.superseded.jsonl")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Readers while replaced rows are still in results.jsonl (a resume running, or
+# killed before its end-of-run rewrite).
+# ---------------------------------------------------------------------------
+
+
+def _pair_run_dirs(tmp_path: Path) -> tuple[Path, Path]:
+    """A run directory holding replaced rows next to their replacements, and
+    the same directory as the end-of-run rewrite leaves it."""
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "timeout_seconds": 10},
+            "solvers": [{"id": "s", "solver": "scs"}, {"id": "t", "solver": "osqp"}],
+        }
+    )
+    signature = {
+        solver.id: solve_signature(config, config.datasets[0], solver) for solver in config.solvers
+    }
+
+    def row(problem, solver_id, status, signature_of=None, **metadata):
+        solved = status == "optimal"
+        return ProblemResult(
+            run_id="r", dataset="synthetic_qp", problem=problem, problem_kind=QP,
+            solver_id=solver_id, solver={"s": "scs", "t": "osqp"}[solver_id], status=status,
+            objective_value=1.0 if solved else None, iterations=5 if solved else None,
+            run_time_seconds=0.01 if solved else None,
+            error=None if solved else f"{status} of {problem}",
+            metadata={"resume_signature": signature_of or signature[solver_id], **metadata},
+        ).to_record()
+
+    rows = [
+        (row("one_variable_eq", "s", "worker_error"), True),
+        (row("one_variable_lp", "s", "skipped_unsupported", skip_reason="solver_unavailable"), True),
+        # Solved under other settings: superseded handling, not replacement.
+        (row("one_variable_eq", "t", "worker_error", signature_of="older-settings"), False),
+        (row("one_variable_lp", "t", "optimal"), False),
+        (row("one_variable_eq", "s", "optimal"), False),
+        (row("one_variable_lp", "s", "worker_error"), False),
+        (row("one_variable_eq", "t", "optimal"), False),
+    ]
+    dirs = []
+    for name, keep_replaced in (("with_pairs", True), ("rewritten", False)):
+        store = ResultStore.create(config, run_dir=tmp_path / name)
+        store.results_jsonl_path.write_text(
+            "".join(json.dumps(record, sort_keys=True) + "\n"
+                    for record, replaced in rows if keep_replaced or not replaced)
+        )
+        dirs.append(store.run_dir)
+    return dirs[0], dirs[1]
+
+
+def test_load_results_leaves_out_replaced_rows(tmp_path: Path, monkeypatch):
+    import pandas as pd
+
+    from solver_benchmarks.core import storage
+
+    with_pairs, rewritten = _pair_run_dirs(tmp_path)
+    frame = load_results(with_pairs)
+    pd.testing.assert_frame_equal(frame, load_results(rewritten))
+    for chunk_lines in (1, 2, 3):
+        pd.testing.assert_frame_equal(
+            storage.read_results_jsonl(with_pairs / "results.jsonl", chunk_lines=chunk_lines),
+            frame,
+        )
+    with monkeypatch.context() as patch:  # pandas without the chunked conversion
+        patch.setattr(storage, "_convert_object_array", None)
+        pd.testing.assert_frame_equal(
+            storage.read_results_jsonl(with_pairs / "results.jsonl"),
+            storage.read_results_jsonl(rewritten / "results.jsonl"),
+        )
+    assert len(frame) == 5
+    assert sorted(zip(frame["problem"], frame["solver_id"], frame["status"])) == [
+        ("one_variable_eq", "s", "optimal"),
+        ("one_variable_eq", "t", "optimal"),
+        ("one_variable_eq", "t", "worker_error"),
+        ("one_variable_lp", "s", "worker_error"),
+        ("one_variable_lp", "t", "optimal"),
+    ]
+
+
+def test_load_results_reads_one_state_of_a_file_a_resume_is_writing(tmp_path: Path, monkeypatch):
+    """Rows left out are found in a first read and the frame built in a
+    second; rows appended, or the file replaced, in between change neither."""
+    import pandas as pd
+
+    from solver_benchmarks.core import storage
+
+    with_pairs, rewritten = _pair_run_dirs(tmp_path)
+    path = with_pairs / "results.jsonl"
+    expected = load_results(rewritten)
+    first_read = storage._read_results_jsonl_chunked
+    calls = []
+
+    def read_then_write(*args, **kwargs):
+        frame = first_read(*args, **kwargs)
+        if not calls:
+            last = json.loads(path.read_text().splitlines()[-1])
+            with path.open("a") as handle:  # a resume appends a replacement
+                handle.write(json.dumps({**last, "status": "optimal"}, sort_keys=True) + "\n")
+            replacement = tmp_path / "rewrite.jsonl"
+            replacement.write_text(path.read_text().splitlines()[-1] + "\n")
+            os.replace(replacement, path)  # and rewrites the file at its end
+        calls.append(kwargs)
+        return frame
+
+    monkeypatch.setattr(storage, "_read_results_jsonl_chunked", read_then_write)
+    pd.testing.assert_frame_equal(storage.read_results_jsonl(path), expected)
+    assert len(calls) == 2
+
+
+def test_cli_readers_see_the_rows_the_end_of_run_rewrite_leaves(tmp_path: Path, repo_root: Path):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    with_pairs, rewritten = _pair_run_dirs(tmp_path)
+    runner = CliRunner()
+
+    def output(*args):
+        result = runner.invoke(main, [*args, "--repo-root", str(repo_root)])
+        assert result.exit_code == 0, result.output
+        return result.output.replace(str(with_pairs), "RUN").replace(str(rewritten), "RUN")
+
+    for command in ("summary", "failures"):
+        assert output(command, str(with_pairs)) == output(command, str(rewritten))
+    summary = output("summary", str(with_pairs))
+    completion = {
+        line.split()[0]: line.split()
+        for line in summary.split("Completion:")[1].splitlines()[2:] if line.strip()
+    }
+    # duplicate_rows 0, complete True for the solver with replaced rows; the
+    # other-settings pair of t is superseded handling and stays as it is.
+    assert completion["s"][-2:] == ["0", "True"]
+    assert completion["t"][-2:] == ["1", "False"]
+    assert "worker_error" in output("failures", str(with_pairs))
+
+    for run in (with_pairs, rewritten):
+        output("report", str(run), "--output-dir", str(tmp_path / f"report_{run.name}"))
+    def report_of(name: str) -> str:
+        text = (tmp_path / f"report_{name}" / "index.md").read_text().replace(name, "RUN")
+        return re.sub(r"\d{4}-\d\d-\d\dT[0-9:.]+\+00:00", "TIME", text)
+
+    report = report_of("with_pairs")
+    assert report == report_of("rewritten")
+    assert "and 1 duplicate row entries" in report  # only the other-settings pair of t
+
+    def derived_rows(path: Path) -> list[dict]:
+        return [
+            {key: value for key, value in row.items() if key != "run_id"}
+            for row in _rows(path / "results.jsonl")
+        ]
+
+    for run in (with_pairs, rewritten):
+        result = runner.invoke(main, ["merge", str(tmp_path / f"merged_{run.name}"), str(run)])
+        assert result.exit_code == 0, result.output
+        result = runner.invoke(main, ["kkt-verify", str(run), "--tol", "1e-3", "--output-dir",
+                                      str(tmp_path / f"kkt_{run.name}")])
+        assert result.exit_code == 0, result.output
+    for kind in ("merged", "kkt"):
+        assert derived_rows(tmp_path / f"{kind}_with_pairs") == derived_rows(
+            tmp_path / f"{kind}_rewritten")
+        assert len(derived_rows(tmp_path / f"{kind}_with_pairs")) == 5

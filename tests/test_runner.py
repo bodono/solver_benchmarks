@@ -1132,6 +1132,77 @@ def test_run_cli_missing_downloadable_data_reports_exact_commands(
     )
 
 
+@pytest.mark.parametrize("run_dir", [None, "new", "a/b/new", "existing", "existing/a/new"])
+def test_a_run_that_fails_in_planning_leaves_no_new_run_directory(
+    monkeypatch, tmp_path: Path, run_dir: str | None
+):
+    """A run stopped by missing data before its first solve removes the
+    directory it created (a manifest and a lock file are no partial run) and
+    the directories it created to hold it, never a directory that was there
+    before."""
+
+    class MissingDataDataset(Dataset):
+        dataset_id = "no_data_fake"
+        description = "Missing remote fixture."
+        automatic_download = True
+
+        @property
+        def data_dir(self):
+            return self.problem_classes_dir / "no_data_fake_data"
+
+        def list_problems(self):
+            return []
+
+        def load_problem(self, name):  # pragma: no cover - never planned
+            raise AssertionError
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "no_data_fake", MissingDataDataset)
+    output_dir = tmp_path / "runs"
+    config_path = tmp_path / "no_data.json"
+    config_path.write_text(json.dumps({
+        "run": {"dataset": "no_data_fake", "output_dir": str(output_dir)},
+        "solvers": [{"id": "scs", "solver": "scs"}],
+    }))
+    args = ["run", str(config_path), "--repo-root", str(tmp_path), "--no-stream-output"]
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "notes.txt").write_text("mine")
+    if run_dir is not None:
+        args += ["--run-dir", str(tmp_path / run_dir)]
+
+    for _ in range(2):
+        result = CliRunner().invoke(main, args)
+        assert result.exit_code != 0
+        assert "has no local data" in result.output
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["existing", "no_data.json"]
+    if run_dir == "existing":
+        assert sorted(path.name for path in existing.iterdir()) == [
+            ".bench.lock", "manifest.json", "notes.txt", "run_config.json"
+        ]
+    else:
+        assert [path.name for path in existing.iterdir()] == ["notes.txt"]
+
+
+@pytest.mark.parametrize("run_dir", [None, "a/new"])
+def test_an_interrupted_plan_leaves_no_new_run_directory(
+    monkeypatch, tmp_path: Path, repo_root: Path, run_dir: str | None
+):
+    from solver_benchmarks.core import runner as runner_module
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner_module, "_filter_problems", interrupt)  # Ctrl+C in planning
+    config = parse_run_config({"run": {"dataset": "synthetic_qp",
+                                       "output_dir": str(tmp_path / "runs")},
+                               "solvers": [{"id": "scs", "solver": "scs"}]})
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(config, run_dir=None if run_dir is None else tmp_path / run_dir,
+                      repo_root=repo_root)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_data_status_reports_exact_prepare_command(monkeypatch, tmp_path: Path):
     class MissingDownloadDataset(Dataset):
         dataset_id = "remote_status_fake"
@@ -1506,6 +1577,44 @@ def test_worker_loads_dataset_via_registry_name_not_entry_id(monkeypatch, tmp_pa
     assert seen_dataset_init == [{"variant": "feasible"}]
 
 
+@pytest.mark.parametrize(
+    ("status_name", "info", "expected"),
+    [
+        ("solver_error", {"error": "cvxopt.conelp raised ValueError: Rank(A) < p"},
+         "cvxopt.conelp raised ValueError: Rank(A) < p"),
+        ("solver_error", {}, None),
+        ("max_iter_reached", {"error": "not a failure reason"}, None),
+    ],
+)
+def test_worker_records_the_reason_of_a_solver_error(
+    monkeypatch, tmp_path: Path, repo_root: Path, status_name, info, expected
+):
+    """The reason an adapter gives for solver_error is the row's ``error``,
+    the column reports show."""
+    from solver_benchmarks.core.result import SolverResult
+    from solver_benchmarks.solvers.base import SolverAdapter
+    from solver_benchmarks.worker import run_payload
+
+    class _FailingSolver(SolverAdapter):
+        solver_name = "failing_stub"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):
+            return SolverResult(status=status_name, info=dict(info))
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "failing_stub", _FailingSolver)
+    payload = {
+        "run_id": "run", "dataset": "synthetic_qp", "dataset_name": "synthetic_qp",
+        "problem": "one_variable_eq", "problem_kind": QP,
+        "solver": {"id": "failing", "solver": "failing_stub", "settings": {}},
+        "artifacts_dir": str(tmp_path / "artifacts"), "repo_root": str(repo_root),
+    }
+    result = run_payload(payload)
+    assert result.status == status_name
+    assert result.error == expected
+    assert result.info == info
+
+
 def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path: Path, repo_root: Path):
     config = parse_environment_run_config(
         {
@@ -1560,6 +1669,129 @@ def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path:
         "scs_current_a",
         "scs_current_b",
     }
+
+
+def test_the_progress_line_of_a_solver_error_names_its_reason(
+    monkeypatch, tmp_path: Path, repo_root: Path, capsys
+):
+    class _Stub(SolverAdapter):
+        solver_name = "reason_stub"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover - the worker is stubbed
+            raise AssertionError
+
+    reason = "cvxopt.conelp raised ValueError: Rank(A) < p\n" + "x" * 400
+
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        stdout_path.write_text("")
+        stderr_path.write_text("")
+        failed = payload["problem"] == "one_variable_eq"
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id="stub", solver="reason_stub",
+            status="solver_error" if failed else "optimal", objective_value=None if failed else 0.0,
+            iterations=1, run_time_seconds=0.01, error=reason if failed else None,
+            artifact_dir=payload["artifacts_dir"],
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, timed_out=False)
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "reason_stub", _Stub)
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake_run_subprocess)
+    config = parse_run_config({"run": {"dataset": "synthetic_qp"},
+                               "solvers": [{"id": "stub", "solver": "reason_stub"}]})
+    run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True)
+    lines = {
+        line.split(": ", 1)[0]: line
+        for line in capsys.readouterr().err.splitlines() if line.startswith("[bench] finished")
+    }
+    failed = lines["[bench] finished one_variable_eq with stub"]
+    assert failed.startswith(
+        "[bench] finished one_variable_eq with stub: solver_error "
+        "(cvxopt.conelp raised ValueError: Rank(A) < p xxx"
+    )
+    assert failed.endswith("...)") and len(failed) < 300
+    assert lines["[bench] finished one_variable_lp with stub"].endswith(": optimal")
+
+
+@pytest.mark.parametrize(
+    ("error", "suffix"),
+    [
+        ("bad \x1b[31mred\x07\x00\x08\x7f\x9b end", " (bad ?[31mred????? end)"),
+        (" \t\n ", ""),
+        (None, ""),
+    ],
+)
+def test_the_progress_reason_has_no_control_characters(error, suffix):
+    from solver_benchmarks.core.runner import _solver_error_reason
+
+    result = ProblemResult(
+        run_id="r", dataset="d", problem="p", problem_kind=QP, solver_id="s", solver="s",
+        status="solver_error", objective_value=None, iterations=None, run_time_seconds=None,
+        error=error,
+    )
+    assert _solver_error_reason(result) == suffix
+
+
+def test_a_worker_result_that_is_not_utf8_is_a_worker_error(tmp_path: Path):
+    from solver_benchmarks.core.config import DatasetConfig, SolverConfig
+    from solver_benchmarks.core.runner import _load_worker_result
+
+    path = tmp_path / "worker_result.json"
+    path.write_bytes(b'{"status": "\xff\xfe"}')
+    result = _load_worker_result(
+        path, store=ResultStore(run_id="r", run_dir=tmp_path),
+        dataset_config=DatasetConfig(name="synthetic_qp", id="d"),
+        problem=ProblemSpec(dataset_id="d", name="p", kind=QP),
+        solver_config=SolverConfig(id="s", solver="scs"), artifacts_dir=tmp_path,
+        environment_id=None, environment_metadata=None,
+    )
+    assert result.status == "worker_error"
+    assert result.error.startswith("Could not read worker_result.json: 'utf-8' codec")
+
+
+@pytest.mark.parametrize("text", ["[1, 2]", '"x"', "null", "3"])
+def test_a_worker_result_that_is_not_an_object_is_a_worker_error(tmp_path: Path, text: str):
+    from solver_benchmarks.core.config import DatasetConfig, SolverConfig
+    from solver_benchmarks.core.runner import _load_worker_result
+
+    path = tmp_path / "worker_result.json"
+    path.write_text(text)
+    result = _load_worker_result(
+        path, store=ResultStore(run_id="r", run_dir=tmp_path),
+        dataset_config=DatasetConfig(name="synthetic_qp", id="d"),
+        problem=ProblemSpec(dataset_id="d", name="p", kind=QP),
+        solver_config=SolverConfig(id="s", solver="scs"), artifacts_dir=tmp_path,
+        environment_id=None, environment_metadata=None,
+    )
+    assert result.status == "worker_error"
+    assert result.error.startswith("worker_result.json did not hold a result object")
+    assert (result.dataset, result.problem, result.solver_id) == ("d", "p", "s")
+
+
+def test_environment_install_paths_with_spaces_stay_one_argument(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.core import env_runner
+    from solver_benchmarks.core.config import EnvironmentConfig
+
+    repo = tmp_path / "My Projects" / "solver_benchmarks"
+    python = str(tmp_path / "My Projects" / ".venvs" / "osqp 1.0" / "bin" / "python")
+    environment = EnvironmentConfig(
+        id="osqp_1_0",
+        python=python,
+        install=[
+            "{python} -m pip install -e {repo_root}",
+            "uv pip install --python={python} 'osqp==1.0.0' \"{repo_root}/extra dir\"",
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(env_runner.subprocess, "run", lambda cmd, **kwargs: calls.append(cmd))
+    env_runner._install_environment(environment, repo_root=repo, stream_output=True)
+    assert calls == [
+        [python, "-m", "pip", "install", "-e", str(repo)],
+        ["uv", "pip", "install", f"--python={python}", "osqp==1.0.0", f"{repo}/extra dir"],
+    ]
 
 
 def test_check_schema_version_accepts_int_and_none():

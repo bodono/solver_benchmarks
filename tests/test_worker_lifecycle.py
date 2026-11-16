@@ -36,6 +36,103 @@ def test_worker_start_up_does_not_import_pandas():
     assert completed.returncode == 0, completed.stderr
 
 
+def _modules_after(code: str) -> set[str]:
+    script = code + "\nimport sys\nprint('\\n'.join(sorted(sys.modules)))\n"
+    completed = subprocess.run(
+        [sys.executable, "-c", script], cwd=REPO_ROOT, env=_env(), capture_output=True, text=True
+    )
+    assert completed.returncode == 0, completed.stderr
+    return set(completed.stdout.split())
+
+
+def _adapters_and_loaders(modules: set[str]) -> set[str]:
+    return {
+        name for name in modules
+        if (name.startswith("solver_benchmarks.solvers.") and name.endswith("_adapter"))
+        or (name.startswith("solver_benchmarks.datasets.")
+            and name.rsplit(".", 1)[1] not in {"base", "registry"})
+    }
+
+
+def test_worker_start_up_imports_no_adapter_loader_pandas_or_matplotlib():
+    """A worker imports the one adapter and the one loader its solve needs,
+    when it looks them up; listing and validating names imports none."""
+    modules = _modules_after(
+        "import solver_benchmarks.worker\n"
+        "from solver_benchmarks.solvers import SOLVERS, list_solvers\n"
+        "from solver_benchmarks.datasets import DATASETS, list_datasets\n"
+        "from solver_benchmarks.core.config import parse_run_config\n"
+        "assert 'osqp' in SOLVERS and 'netlib' in DATASETS and len(SOLVERS) == len(list_solvers())\n"
+        "assert list_datasets() == sorted(DATASETS)\n"
+        "parse_run_config({'run': {'dataset': 'synthetic_qp'},\n"
+        "                  'solvers': [{'id': 'a', 'solver': 'osqp'}, {'id': 'b', 'solver': 'scs'}]})\n"
+    )
+    assert not _adapters_and_loaders(modules - {"solver_benchmarks.datasets.synthetic"})
+    assert not {"pandas", "matplotlib"} & modules
+
+    looked_up = _modules_after(
+        "from solver_benchmarks.solvers import get_solver\n"
+        "from solver_benchmarks.datasets import get_dataset\n"
+        "assert get_solver('osqp').solver_name == 'osqp'\n"
+        "assert get_dataset('netlib').dataset_id == 'netlib'\n"
+    )
+    assert _adapters_and_loaders(looked_up) == {
+        "solver_benchmarks.solvers.osqp_adapter", "solver_benchmarks.datasets.mps"
+    }
+
+
+def test_cli_imports_report_and_plot_modules_only_for_their_commands():
+    modules = _modules_after("import solver_benchmarks.cli")
+    assert "matplotlib" not in modules
+    assert "solver_benchmarks.analysis.markdown_report" not in modules
+    assert "solver_benchmarks.analysis.plots" not in modules
+    assert not {name for name in modules if name.endswith("_adapter")
+                and name.startswith("solver_benchmarks.solvers.")}
+
+
+def test_registries_stay_mutable_mappings():
+    """Tests and tools register fakes by assignment and monkeypatch.setitem."""
+    from solver_benchmarks.solvers import SOLVERS, get_solver
+    from solver_benchmarks.solvers.base import SolverAdapter
+
+    class Fake(SolverAdapter):
+        solver_name = "fake_registry_entry"
+
+    assert "fake_registry_entry" not in SOLVERS
+    SOLVERS["fake_registry_entry"] = Fake
+    try:
+        assert get_solver("fake_registry_entry") is Fake
+        assert "fake_registry_entry" in SOLVERS and "fake_registry_entry" in list(SOLVERS)
+        assert dict(SOLVERS.items())["fake_registry_entry"] is Fake
+    finally:
+        del SOLVERS["fake_registry_entry"]
+    assert "fake_registry_entry" not in SOLVERS
+    with pytest.raises(KeyError, match="Unknown solver 'fake_registry_entry'"):
+        get_solver("fake_registry_entry")
+    assert get_solver("OSQP") is SOLVERS["osqp"]
+    assert get_solver("osqp").__module__ == "solver_benchmarks.solvers.osqp_adapter"
+
+
+@pytest.mark.parametrize("kind", ["solver", "dataset"])
+def test_a_key_error_raised_importing_a_module_is_not_an_unknown_name(
+    monkeypatch, tmp_path, kind
+):
+    """A bug in an adapter or loader module (here a KeyError at import time)
+    is reported as itself, not as an unknown solver or dataset name."""
+    from solver_benchmarks.datasets import DATASETS, get_dataset
+    from solver_benchmarks.solvers import SOLVERS, get_solver
+
+    (tmp_path / "broken_registry_module.py").write_text("{}['missing_setting']\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    registry, lookup = (SOLVERS, get_solver) if kind == "solver" else (DATASETS, get_dataset)
+    monkeypatch.setitem(registry._entries, "broken_entry", ("broken_registry_module", "Broken"))
+    with pytest.raises(KeyError) as excinfo:
+        lookup("broken_entry")
+    assert excinfo.value.args == ("missing_setting",)
+    with pytest.raises(KeyError, match=f"Unknown {kind} 'no_such_entry'"):
+        lookup("no_such_entry")
+
+
 # A stand-in for `bench run`: registers a solver that sleeps, then runs one
 # solve per problem (two problems) with the given parallelism under the CLI's
 # signal handling. Each solve's worker holds an exclusive flock on its own
