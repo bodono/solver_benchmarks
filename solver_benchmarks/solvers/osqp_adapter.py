@@ -198,8 +198,10 @@ def _certificate_kind(status_val, osqp) -> str | None:
 
     Those statuses are reported as the limit the solve stopped on, and their
     ``x`` / ``y`` are NaN, but OSQP still returns the (inaccurate) certificate;
-    its residuals are kept on ``kkt``. They never count as success: the row's
-    status is a limit, and kkt-verify finds no solution residuals to promote.
+    its residuals are kept on ``kkt``. As recorded they do not count as
+    success, since the row's status is a limit; ``bench kkt-verify --promote``
+    promotes the row to the certificate's status when the certificate is
+    fully checked and passes its tolerance.
     """
     for name, kind in (
         ("OSQP_PRIMAL_INFEASIBLE_INACCURATE", status.PRIMAL_INFEASIBLE_INACCURATE),

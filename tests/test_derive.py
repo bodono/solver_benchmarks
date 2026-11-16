@@ -661,3 +661,406 @@ def test_a_run_that_planned_no_solves_can_be_merged(tmp_path):
     src = _write_run(tmp_path, "src", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
     summary = merge_runs([zero, src], tmp_path / "merged")
     assert summary["rows"] == 1
+
+
+def _certificate(kind, cert_res, **extra):
+    sign = {"primal_infeasible": {"bty": -1.0, "Aty_inf": cert_res, "dual_cone_res": 0.0},
+            "dual_infeasible": {"qtx": -1.0, "Px_inf": 0.0, "Ax_cone_res": cert_res}}[kind]
+    return {"certificate": kind, **sign, "cert_res": cert_res, "valid": True, **extra}
+
+
+def test_promote_accepts_inaccurate_certificates_that_pass_the_check(tmp_path):
+    """An *_infeasible_inaccurate row whose certificate passes --tol is held
+    to the same standard as an accurate one: with promote it becomes the
+    accurate status. A failing, missing or partly checked certificate, or a
+    row returned after the time limit, keeps its status."""
+    exp = {"metadata": {"expected_status": "infeasible"}}
+
+    def cert_row(problem, row_status, kkt, **fields):
+        return {**_row(problem, "a", status=row_status, kkt=kkt), **exp, **fields}
+
+    rows = [
+        cert_row("p_good", "primal_infeasible_inaccurate", _certificate("primal_infeasible", 1.4e-7)),
+        cert_row("d_good", "dual_infeasible_inaccurate", _certificate("dual_infeasible", 1e-8)),
+        cert_row("p_bad", "primal_infeasible_inaccurate", _certificate("primal_infeasible", 1e-4)),
+        cert_row("p_none", "primal_infeasible_inaccurate", None),
+        # the distance to a cone the harness cannot project is unknown
+        cert_row("p_partial", "primal_infeasible_inaccurate",
+                 {"certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": 1e-9, "dual_cone_res": None,
+                  "cert_res": None, "valid": None, "unsupported_cones": ["cs"]}),
+        # a certificate of the other kind says nothing about this claim
+        cert_row("d_wrong_kind", "dual_infeasible_inaccurate", _certificate("primal_infeasible", 1e-9)),
+        cert_row("p_late", "primal_infeasible_inaccurate", _certificate("primal_infeasible", 1e-9),
+                 info={"exceeded_time_limit": True}),
+    ]
+    src = _write_run(tmp_path, "src", rows)
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6, promote=True)
+    out = _read_rows(tmp_path / "out")
+    statuses = {problem: row["status"] for (problem, _), row in out.items()}
+    assert statuses == {
+        "p_good": "primal_infeasible",
+        "d_good": "dual_infeasible",
+        "p_bad": "primal_infeasible_inaccurate",
+        "p_none": "primal_infeasible_inaccurate",
+        "p_partial": "primal_infeasible_inaccurate",
+        "d_wrong_kind": "dual_infeasible_inaccurate",
+        "p_late": "primal_infeasible_inaccurate",
+    }
+    record = out[("p_good", "a")]["metadata"]["kkt_verify"]
+    assert record["original_status"] == "primal_infeasible_inaccurate"
+    assert record["worst_field"] == "cert_res" and record["worst"] == 1.4e-7
+    assert "<=" in record["reason"]
+    assert "time limit" in out[("p_late", "a")]["metadata"]["kkt_verify"]["reason"]
+    assert summary["promoted"] == {"a": 2}
+    assert summary["over_time_limit"] == {"a": 1}
+    assert summary["demoted"] == {}
+
+    from solver_benchmarks.analysis.load import load_results
+    from solver_benchmarks.analysis.outcomes import success_mask
+
+    verified = load_results(tmp_path / "out")
+    success = dict(zip(verified["problem"], success_mask(verified)))
+    assert success["p_good"] and success["d_good"] and not success["p_bad"]
+
+    # Without promote nothing changes.
+    plain = kkt_verify(src, tmp_path / "plain", tol=1e-6)
+    assert {row["status"] for row in _read_rows(tmp_path / "plain").values()} == {
+        "primal_infeasible_inaccurate", "dual_infeasible_inaccurate"}
+    assert plain["promoted"] == {}
+
+
+def test_promote_fills_the_objective_from_the_recorded_point(tmp_path):
+    """A row promoted to optimal takes its objective from the point the
+    worker recorded in the reporting convention (kkt.primal_obj_reported).
+    Other rows keep the objective they have, and rows of older runs without
+    the field stay without one."""
+    good = {**_PASSING_KKT, "primal_obj": 0.04, "primal_obj_reported": -99.96}
+    bad = {**good, "primal_res_rel": 1e-2}
+    old = {**_PASSING_KKT, "primal_obj": 0.04}
+    rows = [
+        {**_row("p1", "lim", status="max_iter_reached", kkt=good), "objective_value": None},
+        {**_row("p1", "ref", kkt={**good, "primal_obj_reported": -99.96000001}), "objective_value": -99.96000001},
+        {**_row("p2", "lim", status="optimal_inaccurate", kkt=good), "objective_value": -99.9},
+        {**_row("p3", "lim", status="max_iter_reached", kkt=bad), "objective_value": None},
+        {**_row("p4", "lim", status="time_limit", kkt=old), "objective_value": None},
+    ]
+    src = _write_run(tmp_path, "src", rows)
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6, promote=True)
+    out = _read_rows(tmp_path / "out")
+    assert summary["promoted"] == {"lim": 3}
+    assert out[("p1", "lim")]["status"] == "optimal"
+    assert out[("p1", "lim")]["objective_value"] == -99.96
+    assert out[("p1", "lim")]["metadata"]["kkt_verify"]["objective_from"] == "kkt.primal_obj_reported"
+    # an objective the solver reported is kept
+    assert out[("p2", "lim")]["objective_value"] == -99.9
+    assert "objective_from" not in out[("p2", "lim")]["metadata"]["kkt_verify"]
+    # not promoted: the limit row keeps no objective
+    assert out[("p3", "lim")]["status"] == "max_iter_reached"
+    assert out[("p3", "lim")]["objective_value"] is None
+    # an older record without the field
+    assert out[("p4", "lim")]["status"] == "optimal"
+    assert out[("p4", "lim")]["objective_value"] is None
+    assert "objective_from" not in out[("p4", "lim")]["metadata"]["kkt_verify"]
+
+
+def _require_solvers(*names):
+    """Skip unless the named solvers are installed; with
+    BENCH_REQUIRE_ALL_SOLVERS set, fail instead (as the integration tests do)."""
+    import os
+
+    import pytest
+
+    from solver_benchmarks.solvers import get_solver
+
+    for name in names:
+        if not get_solver(name).is_available():
+            message = f"{name} is not installed (or does not import)"
+            if os.environ.get("BENCH_REQUIRE_ALL_SOLVERS"):
+                pytest.fail(f"{message}, and BENCH_REQUIRE_ALL_SOLVERS is set")
+            pytest.skip(message)
+
+
+def _fake_dataset(monkeypatch, problems):
+    from solver_benchmarks.core.problem import ProblemData
+    from solver_benchmarks.datasets import DATASETS
+
+    class _Dataset:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def load_problem(self, name):
+            kind, data = problems[name]
+            return ProblemData("fake", name, kind, data)
+
+    monkeypatch.setitem(DATASETS, "fake_derive", _Dataset)
+
+
+def _solve_with_worker(tmp_path, problem, solver_id, solver, settings=None):
+    from solver_benchmarks.worker import run_payload
+
+    payload = {
+        "run_id": "run", "dataset": "fake", "dataset_name": "fake_derive", "problem": problem,
+        "solver": {"id": solver_id, "solver": solver, "settings": settings or {}},
+        "artifacts_dir": str(tmp_path / "artifacts" / problem / solver_id),
+    }
+    return run_payload(payload).to_record()
+
+
+def _offset_problems():
+    """A QP with a constant term, the same posed as a maximisation, and a
+    cone LP with a constant term posed as a maximisation."""
+    import numpy as np
+    import scipy.sparse as sp
+
+    from solver_benchmarks.core.problem import CONE, QP
+
+    qp = {"P": sp.csc_matrix(np.diag([2.0, 1.0])), "q": np.array([1.0, -1.0]),
+          "A": sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+          "l": np.array([1.0, 0.0, 0.0]), "u": np.array([1.0, 0.7, 0.7]),
+          "r": 7.0, "n": 2, "m": 3, "obj_type": "min"}
+    cone = {"P": None, "q": np.array([1.0, 2.0]), "A": sp.csc_matrix([[-1.0, -1.0], [-1.0, 0.0], [0.0, -1.0]]),
+            "b": np.array([-1.0, 0.0, 0.0]), "r": -3.0, "n": 2, "m": 3, "cone": {"l": 3}, "obj_type": "max"}
+    return {"qp_offset": (QP, qp), "qp_max": (QP, {**qp, "obj_type": "max"}), "cone_max": (CONE, cone)}
+
+
+def test_promoted_limit_row_agrees_with_an_optimal_row_of_another_solver(tmp_path, monkeypatch):
+    """End to end through the worker: a solve stopped at a limit with an
+    accurate point, of a problem with a constant term and of maximisation
+    problems, is promoted with the objective another solver reports as
+    optimal, and enters the cross-solver objective comparison."""
+    import pytest
+
+    from solver_benchmarks.analysis.load import load_results
+    from solver_benchmarks.analysis.tables import objective_spreads
+    from solver_benchmarks.core import status as status_module
+    from solver_benchmarks.solvers import SOLVERS, get_solver
+    from solver_benchmarks.solvers.base import reported_objective
+
+    _require_solvers("clarabel")
+    clarabel = get_solver("clarabel")
+
+    class _StoppedAtLimit(clarabel):
+        """Clarabel's point, reported as an iteration-limit stop would be."""
+
+        solver_name = "stopped_at_limit"
+
+        def solve(self, problem, artifacts_dir):
+            result = super().solve(problem, artifacts_dir)
+            result.status = status_module.MAX_ITER_REACHED
+            result.objective_value = reported_objective(result.status, result.objective_value)
+            return result
+
+    monkeypatch.setitem(SOLVERS, "stopped_at_limit", _StoppedAtLimit)
+    problems = _offset_problems()
+    _fake_dataset(monkeypatch, problems)
+    rows = []
+    for name in problems:
+        rows.append(_solve_with_worker(tmp_path, name, "limit", "stopped_at_limit"))
+        rows.append(_solve_with_worker(tmp_path, name, "clarabel", "clarabel"))
+    assert [row["status"] for row in rows] == ["max_iter_reached", "optimal"] * 3
+    assert all(row["objective_value"] is None for row in rows[::2])
+    src = tmp_path / "src"
+    _write_run_at(src, rows)
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6, promote=True)
+    assert summary["promoted"] == {"limit": 3}
+    out = _read_rows(tmp_path / "out")
+    for name in problems:
+        promoted, reference = out[(name, "limit")], out[(name, "clarabel")]
+        assert promoted["status"] == "optimal"
+        assert promoted["objective_value"] == pytest.approx(reference["objective_value"], rel=1e-9, abs=1e-9)
+    # the constant term and the sense are applied
+    assert out[("qp_offset", "clarabel")]["objective_value"] == pytest.approx(7.0 - 0.065, abs=1e-6)
+    assert out[("qp_max", "limit")]["objective_value"] == pytest.approx(-(7.0 - 0.065), abs=1e-6)
+    spreads = objective_spreads(load_results(tmp_path / "out"))
+    assert sorted(spreads["problem"]) == sorted(problems)
+    assert (spreads["solver_count"] == 2).all()
+
+
+def test_recorded_point_objective_matches_the_reported_objective_of_every_adapter(tmp_path, monkeypatch):
+    """For every installed adapter, kkt.primal_obj_reported equals
+    objective_value on optimal rows (constant term and maximisation
+    included), and is absent when the record has no primal objective."""
+    import pytest
+
+    from solver_benchmarks.core.problem import CONE, QP
+    from solver_benchmarks.solvers import get_solver, list_solvers
+
+    _require_solvers("clarabel", "osqp", "scs")
+    problems = _offset_problems()
+    _fake_dataset(monkeypatch, problems)
+    compared = {QP: set(), CONE: set()}
+    for solver in list_solvers():
+        cls = get_solver(solver)
+        if not cls.is_available():
+            continue
+        for name, (kind, _) in problems.items():
+            if not cls({}).supports(kind):
+                continue
+            row = _solve_with_worker(tmp_path, name, solver, solver)
+            kkt = row.get("kkt") or {}
+            if kkt.get("primal_obj") is None:
+                assert "primal_obj_reported" not in kkt, (solver, name)
+            if row["status"] != "optimal" or row["objective_value"] is None or not kkt:
+                continue
+            assert kkt["primal_obj_reported"] == pytest.approx(row["objective_value"], rel=1e-6, abs=1e-6), (
+                solver, name)
+            compared[kind].add(solver)
+    assert {"clarabel", "osqp", "scs"} <= compared[QP]
+    assert {"clarabel", "scs"} <= compared[CONE]
+
+
+def test_worker_records_no_point_objective_without_a_finite_primal_objective():
+    import numpy as np
+
+    from solver_benchmarks.core.problem import QP, ProblemData
+    from solver_benchmarks.worker import _point_objective
+
+    problem = ProblemData("d", "p", QP, {"r": 2.0, "obj_type": "max"})
+    assert _point_objective(problem, {"primal_obj": 1.0}) == -3.0
+    assert _point_objective(problem, {"primal_obj": None}) is None
+    assert _point_objective(problem, {"primal_obj": float(np.nan)}) is None
+    assert _point_objective(problem, {"certificate": "primal_infeasible"}) is None
+    assert _point_objective(problem, None) is None
+
+
+def test_overwrite_replaces_only_an_empty_directory_or_a_derived_run(tmp_path):
+    """--output-dir is the run directory itself, and --overwrite must never
+    delete a base run or a directory of unrelated files put there by mistake."""
+    import pytest
+    from click.testing import CliRunner
+
+    from solver_benchmarks.analysis.derive import DeriveInputError
+    from solver_benchmarks.cli import main
+
+    src = _write_run(tmp_path, "src", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    results = tmp_path / "results"
+    (results / "campaign" / "problems").mkdir(parents=True)
+    (results / "campaign" / "results.jsonl").write_text("{}\n")
+    (results / "notes.md").write_text("notes\n")
+    base_run = _write_run(tmp_path, "base_run", [_row("p1", "b", kkt=dict(_PASSING_KKT))])
+    a_file = tmp_path / "a_file"
+    a_file.write_text("x")
+    before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
+
+    runner = CliRunner()
+    for target, expected in ((results, "notes.md"), (base_run, "run directory"), (a_file, "not a directory")):
+        for args in (["kkt-verify", str(src), "--tol", "1e-6", "--output-dir", str(target), "--overwrite"],
+                     ["merge", str(target), str(src), "--overwrite"]):
+            result = runner.invoke(main, args)
+            assert result.exit_code == 1, (args, result.output)
+            assert isinstance(result.exception, SystemExit), (args, result.exception)
+            assert "Error:" in result.output and expected in result.output, (args, result.output)
+        with pytest.raises(DeriveInputError):
+            kkt_verify(src, target, tol=1e-6, overwrite=True)
+        with pytest.raises(DeriveInputError):
+            merge_runs([src], target, overwrite=True)
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")) == before
+
+    # An empty directory and a derived run (of either kind) are replaced.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    kkt_verify(src, empty, tol=1e-6, overwrite=True)
+    merge_runs([src], empty, overwrite=True)
+    assert json.loads((empty / "manifest.json").read_text())["derived"]["kind"] == "merge"
+    kkt_verify(src, empty, tol=1e-3, overwrite=True)
+    assert json.loads((empty / "manifest.json").read_text())["derived"]["tol"] == 1e-3
+
+
+def test_a_torn_manifest_is_a_one_line_error(tmp_path):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    good = _write_run(tmp_path, "good", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    torn = _write_run(tmp_path, "torn", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    (torn / "manifest.json").write_text('{"run_id": "torn", "con')
+    derived = tmp_path / "derived"
+    kkt_verify(good, derived, tol=1e-6)
+    (derived / "manifest.json").write_text('{"derived": {"kind": "kkt_')
+    runner = CliRunner()
+    cases = [
+        ["kkt-verify", str(torn), "--tol", "1e-6", "--output-dir", str(tmp_path / "o1")],
+        ["merge", str(tmp_path / "o2"), str(good), str(torn)],
+        ["kkt-verify", str(good), "--tol", "1e-6", "--output-dir", str(derived), "--overwrite"],
+        ["merge", str(derived), str(good), "--overwrite"],
+    ]
+    for args in cases:
+        result = runner.invoke(main, args)
+        assert result.exit_code == 1, (args, result.output)
+        assert isinstance(result.exception, SystemExit), (args, result.exception)
+        assert "Error:" in result.output and "manifest.json" in result.output, (args, result.output)
+    assert not (tmp_path / "o1").exists() and not (tmp_path / "o2").exists()
+
+
+def test_promote_judges_a_limit_row_holding_a_certificate_as_a_certificate(tmp_path):
+    """OSQP records its inaccurate certificates as max_iter_reached /
+    time_limit with the certificate on kkt. With promote, such a row whose
+    certificate is fully checked and passes takes the certificate's status;
+    a failing or partly checked one, or one returned after the time limit,
+    keeps its status. A limit row holding a point is judged as a point."""
+    exp = {"metadata": {"expected_status": "infeasible"}}
+    partial = {"certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": 1e-9, "dual_cone_res": None,
+               "cert_res": None, "valid": None, "unsupported_cones": ["cs"]}
+    rows = [
+        {**_row("p_good", "osqp", status="max_iter_reached", kkt=_certificate("primal_infeasible", 9.17e-8)), **exp},
+        {**_row("d_good", "osqp", status="time_limit", kkt=_certificate("dual_infeasible", 1e-8)), **exp},
+        {**_row("p_bad", "osqp", status="max_iter_reached", kkt=_certificate("primal_infeasible", 1e-4)), **exp},
+        {**_row("p_partial", "osqp", status="max_iter_reached", kkt=partial), **exp},
+        {**_row("p_late", "osqp", status="max_iter_reached", kkt=_certificate("primal_infeasible", 1e-9)),
+         **exp, "info": {"exceeded_time_limit": True}},
+        _row("point", "osqp", status="max_iter_reached", kkt=dict(_PASSING_KKT)),
+    ]
+    src = _write_run(tmp_path, "src", rows)
+    summary = kkt_verify(src, tmp_path / "out", tol=1e-6, promote=True)
+    out = _read_rows(tmp_path / "out")
+    statuses = {problem: row["status"] for (problem, _), row in out.items()}
+    assert statuses == {
+        "p_good": "primal_infeasible",
+        "d_good": "dual_infeasible",
+        "p_bad": "max_iter_reached",
+        "p_partial": "max_iter_reached",
+        "p_late": "max_iter_reached",
+        "point": "optimal",
+    }
+    record = out[("p_good", "osqp")]["metadata"]["kkt_verify"]
+    assert record["original_status"] == "max_iter_reached"
+    assert record["worst_field"] == "cert_res" and record["worst"] == 9.17e-8
+    assert out[("p_good", "osqp")].get("objective_value") is None
+    assert summary["promoted"] == {"osqp": 3}
+    assert summary["over_time_limit"] == {"osqp": 1}
+
+    from solver_benchmarks.analysis.load import load_results
+    from solver_benchmarks.analysis.outcomes import success_mask
+
+    verified = load_results(tmp_path / "out")
+    success = dict(zip(verified["problem"], success_mask(verified)))
+    assert success["p_good"] and success["d_good"] and not success["p_bad"]
+
+
+def test_an_unreadable_manifest_is_a_one_line_error(tmp_path):
+    """A manifest that is not UTF-8, or a manifest.json that is a directory,
+    is reported like a torn one; the JSON error reads as one sentence."""
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    good = _write_run(tmp_path, "good", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    binary = _write_run(tmp_path, "binary", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    (binary / "manifest.json").write_bytes(b'{"run_id": "\xff\xfe"}')
+    folder = _write_run(tmp_path, "folder", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    (folder / "manifest.json").unlink()
+    (folder / "manifest.json").mkdir()
+    torn = _write_run(tmp_path, "torn", [_row("p1", "a", kkt=dict(_PASSING_KKT))])
+    (torn / "manifest.json").write_text('{"run_id": "torn", "con')
+    runner = CliRunner()
+    for src in (binary, folder, torn):
+        for args in (["kkt-verify", str(src), "--tol", "1e-6", "--output-dir", str(tmp_path / "o1")],
+                     ["merge", str(tmp_path / "o2"), str(good), str(src)]):
+            result = runner.invoke(main, args)
+            assert result.exit_code == 1, (args, result.output)
+            assert isinstance(result.exception, SystemExit), (args, result.exception)
+            assert "Error:" in result.output and "manifest.json" in result.output, (args, result.output)
+            assert " at at " not in result.output
+    result = runner.invoke(main, ["merge", str(tmp_path / "o2"), str(torn)])
+    assert "Unterminated string starting at: line 1 column" in result.output, result.output
+    assert not (tmp_path / "o1").exists() and not (tmp_path / "o2").exists()

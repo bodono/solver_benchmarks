@@ -473,7 +473,9 @@ def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None, repo_root: Pat
 @main.command("merge")
 @click.argument("out_dir", type=click.Path(path_type=Path))
 @click.argument("run_dirs", nargs=-1, required=True, type=click.Path(exists=True, path_type=Path))
-@click.option("--overwrite", is_flag=True, help="Replace OUT_DIR if it exists.")
+@click.option(
+    "--overwrite", is_flag=True, help="Replace OUT_DIR if it is empty or an earlier merge / kkt-verify output."
+)
 def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> None:
     """Concatenate sharded run directories into one for analysis."""
     from solver_benchmarks.analysis.derive import merge_runs
@@ -513,11 +515,17 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
     is_flag=True,
     help=(
         "Also mark inaccurate, iteration-limited or time-limited solves optimal when their returned "
-        "point passes the check; a result returned after the run's time limit is never promoted "
+        "point passes the check (with the point's objective), and inaccurate infeasibility "
+        "certificates accurate when fully checked and passing; a result returned after the run's "
+        "time limit is never promoted "
         "(with a solver limit equal to timeout_seconds, its time-limit stops never are: set it lower)."
     ),
 )
-@click.option("--overwrite", is_flag=True, help="Replace the output directory if it exists.")
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Replace the output directory if it is empty or an earlier merge / kkt-verify output.",
+)
 def kkt_verify_cmd(
     run_dir: Path, tol: float, output_dir: Path | None, allow_missing: bool, promote: bool, overwrite: bool
 ) -> None:
