@@ -17,6 +17,7 @@ certificate must then be at most a tolerance (``CERT_TOL`` by default).
 from __future__ import annotations
 
 import functools
+import itertools
 import math
 from collections.abc import Iterable
 from typing import Any
@@ -27,6 +28,8 @@ import scipy.sparse as sp
 from solver_benchmarks.core.problem import cone_items_in_row_order
 
 _EPS = 1.0e-16
+# Shortest run of equal-sized second-order cones projected as one batch.
+_SOC_BATCH_MIN = 5
 # Bounds at or beyond this magnitude are treated as infinite. The datasets
 # document +-1e20 as their infinity sentinel and the transform layer drops
 # anything >= 1e19 (see transforms/cones.py); the checker cuts a decade
@@ -521,10 +524,18 @@ def _project_cones(
             _add(dim, _project_nonneg, _project_nonneg)
             row += dim
         elif name == "q":
-            for dim in _as_list(value):
-                dim = int(dim)
-                _add(dim, _project_soc, _project_soc)
-                row += dim
+            # Runs of consecutive blocks of one size are projected together;
+            # below _SOC_BATCH_MIN blocks the per-block path is faster.
+            for dim, group in itertools.groupby(int(dim) for dim in _as_list(value)):
+                count = len(list(group))
+                if count < _SOC_BATCH_MIN:
+                    for _ in range(count):
+                        _add(dim, _project_soc, _project_soc)
+                        row += dim
+                else:
+                    project = functools.partial(_project_soc_blocks, dim=dim)
+                    _add(count * dim, project, project)
+                    row += count * dim
         elif name == "s":
             for dim in _as_list(value):
                 dim = int(dim)
@@ -614,6 +625,32 @@ def _project_soc(v: np.ndarray) -> np.ndarray:
     out[0] = 0.5 * (t + norm_x)
     out[1:] = (out[0] / max(norm_x, _EPS)) * x
     return out
+
+
+def _project_soc_blocks(v: np.ndarray, dim: int) -> np.ndarray:
+    """Project consecutive second-order cone blocks of size ``dim`` at once.
+
+    The same formulas and floating-point operations as :func:`_project_soc`
+    applied to each block: the norm is the same dot product (``matmul`` of
+    a row with itself calls the dot that ``np.linalg.norm`` of a vector
+    does), so for a contiguous ``v`` whose length is a multiple of ``dim``
+    (what ``_project_cones`` passes) the result is bit-for-bit the
+    per-block one, NaN and inf included.
+    """
+    if v.size == 0 or dim == 0:
+        return v
+    blocks = v.reshape(-1, dim)
+    t, x = blocks[:, 0], blocks[:, 1:]
+    norm_x = np.sqrt(np.matmul(x[:, None, :], x[:, :, None])[:, 0, 0])
+    zero = norm_x <= -t
+    # Everything that is neither in the polar cone nor in K, NaN included.
+    between = ~(zero | (norm_x <= t))
+    out = blocks.copy()
+    out[zero] = 0.0
+    head = 0.5 * (t[between] + norm_x[between])
+    out[between, 0] = head
+    out[between, 1:] = (head / np.maximum(norm_x[between], _EPS))[:, None] * x[between]
+    return out.reshape(-1)
 
 
 @functools.lru_cache(maxsize=64)

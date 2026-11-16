@@ -409,3 +409,150 @@ def test_atomic_writes_honour_the_umask_and_keep_an_existing_mode(tmp_path: Path
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         "existing.json", "fresh.json", "group.json"
     ]
+
+
+# --- results.jsonl is read in chunks into the frame one json_normalize gives ---
+
+
+def _heterogeneous_lines() -> list[str]:
+    records = [
+        {"problem": "p0", "status": "optimal", "iterations": 3, "flag": True,
+         "info": {"raw_status": 2, "x": {"deep": 1.5}}, "maybe": None, "text": "a"},
+        {"problem": "p1", "status": "solver_error", "iterations": 4.5, "flag": None,
+         "info": 5, "maybe": None, "text": None},
+        # keys that first appear in a later chunk, one of them nested
+        {"problem": "p2", "status": "optimal", "late": [1, 2], "info": {"raw_status": "Solved", "y": {}},
+         "maybe": 1.25},
+        {"problem": "p3", "status": "optimal", "iterations": 2**60, "info.raw_status": "top",
+         "info": {"raw_status": "nested"}, "maybe": 2.0, "flag": False, "text": "b"},
+        {},
+        None,
+        {"problem": "p6", "status": "optimal", "maybe": float("nan"), "late": "s", "flag": True},
+        {"problem": "p7", "status": "optimal", "maybe": None, "text": "c", "iterations": -1},
+    ]
+    lines = [json.dumps(record) for record in records]
+    lines.insert(3, "")  # a blank line
+    lines.append('{"problem": "p8", "torn": ')
+    return lines
+
+
+def _expected_frame(lines):
+    """json_normalize of the lines that are JSON objects (the others are skipped)."""
+    import pandas as pd
+
+    records = []
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return pd.json_normalize(records)
+
+
+def _assert_identical_frames(got, expected):
+    import pandas as pd
+
+    assert list(got.columns) == list(expected.columns)
+    assert got.columns.dtype == expected.columns.dtype
+    assert got.index.equals(expected.index) and type(got.index) is type(expected.index)
+    assert list(got.dtypes) == list(expected.dtypes)
+    pd.testing.assert_frame_equal(got, expected, check_exact=True)
+    for column in got.columns:
+        if got[column].dtype == object:
+            assert [type(v) for v in got[column]] == [type(v) for v in expected[column]], column
+            assert [repr(v) for v in got[column]] == [repr(v) for v in expected[column]], column
+
+
+@pytest.mark.parametrize("chunk_lines", [1, 2, 3, 4, 1000])
+def test_read_results_jsonl_equals_one_shot_json_normalize(tmp_path: Path, chunk_lines):
+
+    from solver_benchmarks.core.storage import read_results_jsonl
+
+    lines = _heterogeneous_lines()
+    path = tmp_path / "results.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    expected = _expected_frame(lines)
+    got = read_results_jsonl(path, chunk_lines=chunk_lines)
+    _assert_identical_frames(got, expected)
+    # in chunks of two, 'maybe' is all null in the second chunk and 'late' first appears in the third
+    assert expected["maybe"].dtype == float and expected["info.raw_status"].dtype == object
+
+
+def test_read_results_jsonl_edge_files(tmp_path: Path):
+    import pandas as pd
+
+    from solver_benchmarks.core.storage import read_results_jsonl
+
+    path = tmp_path / "results.jsonl"
+    path.write_text("")
+    assert read_results_jsonl(path).empty
+    path.write_text('\n{"torn": \n')
+    assert read_results_jsonl(path).empty
+    path.write_text("{}\n{}\n{}\n")
+    _assert_identical_frames(read_results_jsonl(path, chunk_lines=2), pd.json_normalize([{}, {}, {}]))
+
+
+@pytest.mark.parametrize("conversion", ["chunked", "missing", "changed signature"])
+def test_read_results_jsonl_skips_lines_that_are_not_objects(tmp_path: Path, monkeypatch, caplog, conversion):
+    import pandas as pd
+
+    from solver_benchmarks.core import storage
+
+    if conversion == "missing":
+        monkeypatch.setattr(storage, "_convert_object_array", None)
+    elif conversion == "changed signature":
+        def changed(arrays):
+            raise AssertionError("not reached")
+
+        monkeypatch.setattr(storage, "_convert_object_array", changed)
+    path = tmp_path / "results.jsonl"
+    path.write_text('{"problem": "p1", "x": 1}\nnull\n5\n[1, 2]\n"text"\n{"problem": "p2", "x": 2.5}\n')
+    with caplog.at_level("WARNING", logger="solver_benchmarks.core.storage"):
+        frame = storage.read_results_jsonl(path, chunk_lines=2)
+    _assert_identical_frames(frame, pd.json_normalize([{"problem": "p1", "x": 1}, {"problem": "p2", "x": 2.5}]))
+    skipped = [r.getMessage() for r in caplog.records if "Skipping unparseable line" in r.getMessage()]
+    # the fallback reads the file again, so a line can be reported twice
+    assert {message.split()[3] for message in skipped} == {"2", "3", "4", "5"}
+
+
+def test_read_results_jsonl_without_the_pandas_conversion(tmp_path: Path, monkeypatch):
+
+    from solver_benchmarks.core import storage
+
+    lines = _heterogeneous_lines()
+    path = tmp_path / "results.jsonl"
+    path.write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr(storage, "_convert_object_array", None)
+    expected = _expected_frame(lines)
+    _assert_identical_frames(storage.read_results_jsonl(path, chunk_lines=2), expected)
+
+
+def test_load_results_and_write_parquet_share_the_chunked_reader(tmp_path: Path, monkeypatch):
+    import pandas as pd
+
+    from solver_benchmarks.analysis import load
+    from solver_benchmarks.core import storage
+
+    store = _make_store(tmp_path)
+    lines = _heterogeneous_lines()
+    store.results_jsonl_path.write_text("\n".join(lines) + "\n")
+    chunks = []
+    original = storage._batched
+
+    def spy(items, size):
+        for batch in original(items, size):
+            chunks.append(len(batch))
+            yield batch
+
+    monkeypatch.setattr(storage, "_batched", spy)
+    monkeypatch.setattr(storage.read_results_jsonl, "__kwdefaults__", {"chunk_lines": 3})
+    frame = load.load_results(store.run_dir)
+    assert chunks == [3, 3, 1]
+    expected = _expected_frame(lines)
+    _assert_identical_frames(frame, expected)
+    chunks.clear()
+    store.write_parquet()
+    assert chunks == [3, 3, 1]
+    assert len(pd.read_parquet(store.results_parquet_path)) == len(expected)

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
@@ -63,6 +65,45 @@ logger = logging.getLogger(__name__)
 # the right artifact to inspect.
 _PAIRWISE_SCATTER_MAX_PAIRS = 50
 
+# Line styles of the per-solver line plots: matplotlib's ten default
+# colours, then the same colours with the next line style (and marker), so
+# up to 40 solvers each get a distinct look.
+_LINE_COLORS = (
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+)
+_LINE_STYLES = ("-", "--", "-.", ":")
+_LINE_MARKERS = ("o", "s", "^", "D")
+
+
+def solver_styles(solver_ids: Iterable) -> dict[str, dict[str, str]]:
+    """Colour, line style and marker of each solver in the line plots.
+
+    Solvers are numbered in sorted order; the i-th gets colour ``i % 10``
+    with line style and marker ``i // 10`` (cycling after 40 solvers), so
+    the 11th..40th solvers do not look like the 1st..10th. A style depends
+    only on the set of ids: ``write_analysis_plots`` builds one map from
+    every solver of the run, recorded or planned, so a solver looks the
+    same in every plot, including plots that draw only some solvers.
+    """
+    ids = sorted({str(solver_id) for solver_id in solver_ids})
+    return {
+        solver_id: {
+            "color": _LINE_COLORS[index % len(_LINE_COLORS)],
+            "linestyle": _LINE_STYLES[(index // len(_LINE_COLORS)) % len(_LINE_STYLES)],
+            "marker": _LINE_MARKERS[(index // len(_LINE_COLORS)) % len(_LINE_MARKERS)],
+        }
+        for index, solver_id in enumerate(ids)
+    }
+
+
+def _line_style(styles: dict[str, dict[str, str]], solver_id, *, marker: bool = False) -> dict[str, Any]:
+    """Plot keyword arguments of ``solver_id`` in ``styles``."""
+    style = styles.get(str(solver_id), {})
+    if not marker:
+        style = {key: value for key, value in style.items() if key != "marker"}
+    return style
+
 
 def write_analysis_plots(
     run_dir: str | Path,
@@ -102,21 +143,27 @@ def write_analysis_plots(
         geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
     scored = with_expected_outcomes(results)
     solves = one_row_per_solve(scored, metric=metric)
+    # Planned solvers without rows are drawn too (the profile charges their
+    # missing solves), so they get a style of their own.
+    solver_ids = set(solves["solver_id"]) if "solver_id" in solves else set()
+    if expected is not None and "solver_id" in expected:
+        solver_ids |= set(expected["solver_id"])
+    styles = solver_styles(solver_ids)
     paths = [
-        _write_performance_profile(solves, output_dir, metric, expected=expected),
+        _write_performance_profile(solves, output_dir, metric, expected=expected, styles=styles),
         _write_shifted_geomean(solves, output_dir, metric, expected=expected, geomean_options=geomean_options)
         if geomean_options.get("available", True)
         else None,
         _write_failure_rates(solves, output_dir, expected=expected),
-        _write_cactus(solves, output_dir, metric, expected=expected),
+        _write_cactus(solves, output_dir, metric, expected=expected, styles=styles),
         _write_pairwise_scatter(solves, output_dir, metric),
         _write_performance_ratio_heatmap(solves, output_dir, metric),
         _write_status_heatmap(solves, output_dir),
         _write_kkt_residual_boxplot(solves, output_dir),
         _write_kkt_residual_heatmap(solves, output_dir),
-        _write_kkt_accuracy_profile(solves, output_dir),
+        _write_kkt_accuracy_profile(solves, output_dir, styles=styles),
         # Sizes problems from every row and resolves duplicates like solves.
-        _write_difficulty_scaling(scored, output_dir, metric),
+        _write_difficulty_scaling(scored, output_dir, metric, styles=styles),
         _write_setup_solve_breakdown(solves, output_dir),
     ]
     written = [path for path in paths if path is not None]
@@ -169,16 +216,23 @@ def geomean_kwargs(options: dict | None) -> dict:
     return {key: options[key] for key in ("max_value", "timeout_seconds") if key in options}
 
 
-def _write_performance_profile(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None) -> Path | None:
+def _write_performance_profile(
+    results,
+    output_dir: Path,
+    metric: str,
+    *,
+    expected: pd.DataFrame | None = None,
+    styles: dict[str, dict[str, str]] | None = None,
+) -> Path | None:
     profile = performance_profile(results, metric=metric, expected=expected)
     if profile.empty:
         return None
 
+    solver_columns = [column for column in profile.columns if column != "tau"]
+    styles = styles if styles is not None else solver_styles(solver_columns)
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
-    for column in profile.columns:
-        if column == "tau":
-            continue
-        ax.plot(profile["tau"], profile[column], label=column, linewidth=2)
+    for column in solver_columns:
+        ax.plot(profile["tau"], profile[column], label=column, linewidth=2, **_line_style(styles, column))
     ax.set_xscale("log")
     ax.set_ylim(0.0, 1.02)
     ax.set_xlabel("Performance ratio tau")
@@ -236,7 +290,14 @@ def _unique_problem_count(results: pd.DataFrame) -> int:
     return max(1, results["problem"].nunique())
 
 
-def _write_cactus(results, output_dir: Path, metric: str, *, expected: pd.DataFrame | None = None) -> Path | None:
+def _write_cactus(
+    results,
+    output_dir: Path,
+    metric: str,
+    *,
+    expected: pd.DataFrame | None = None,
+    styles: dict[str, dict[str, str]] | None = None,
+) -> Path | None:
     """Fraction of problems solved within each budget of ``metric``.
 
     The denominator is the performance profile's: every problem of the
@@ -272,6 +333,7 @@ def _write_cactus(results, output_dir: Path, metric: str, *, expected: pd.DataFr
     # zeros of metrics without one are drawn at a tiny positive value, at
     # the leftmost edge of the axis. Either way each still adds a step.
     floor = profile_floor(metric)
+    styles = styles if styles is not None else solver_styles(successful["solver_id"].unique())
     for solver_id, group in successful.groupby("solver_id", observed=True):
         raw = group[metric].to_numpy(dtype=float)
         if raw.size == 0:
@@ -283,7 +345,7 @@ def _write_cactus(results, output_dir: Path, metric: str, *, expected: pd.DataFr
         has_positive = has_positive or floor > 0.0 or bool(np.any(raw > 0.0))
         values = np.sort(values)
         fractions = np.arange(1, len(values) + 1) / problem_count
-        ax.step(values, fractions, where="post", label=solver_id, linewidth=2)
+        ax.step(values, fractions, where="post", label=solver_id, linewidth=2, **_line_style(styles, solver_id))
     if not ax.lines:
         plt.close(fig)
         return None
@@ -628,7 +690,12 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
     return path
 
 
-def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
+def _write_kkt_accuracy_profile(
+    results,
+    output_dir: Path,
+    *,
+    styles: dict[str, dict[str, str]] | None = None,
+) -> Path | None:
     available = _kkt_fields(results)
     if not available:
         return None
@@ -651,6 +718,7 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
     # failure. The y-axis label now reflects the per-success
     # normalization explicitly.
     thresholds = np.logspace(-12, 0, 121)
+    styles = styles if styles is not None else solver_styles(solver_ids)
 
     cols = len(available)
     fig, axes = plt.subplots(
@@ -672,7 +740,7 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
             continue
         drew_any = True
         for solver_id, fractions in per_solver:
-            ax.plot(thresholds, fractions, label=solver_id, linewidth=2)
+            ax.plot(thresholds, fractions, label=solver_id, linewidth=2, **_line_style(styles, solver_id))
         ax.set_xscale("log")
         ax.set_ylim(0.0, 1.02)
         ax.set_xlabel("residual threshold tau")
@@ -694,7 +762,13 @@ def _write_kkt_accuracy_profile(results, output_dir: Path) -> Path | None:
     return path
 
 
-def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | None:
+def _write_difficulty_scaling(
+    results,
+    output_dir: Path,
+    metric: str,
+    *,
+    styles: dict[str, dict[str, str]] | None = None,
+) -> Path | None:
     table = difficulty_scaling(results, metric=metric)
     if table.empty:
         return None
@@ -704,6 +778,7 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
     if plottable.empty:
         return None
 
+    styles = styles if styles is not None else solver_styles(plottable["solver_id"].unique())
     fig, ax = plt.subplots(figsize=(8, 5), constrained_layout=True)
     drew_any = False
     for solver_id, group in plottable.groupby("solver_id", observed=True):
@@ -712,9 +787,9 @@ def _write_difficulty_scaling(results, output_dir: Path, metric: str) -> Path | 
         ax.plot(
             midpoints,
             ordered[median_column],
-            marker="o",
             linewidth=2,
             label=str(solver_id),
+            **_line_style(styles, solver_id, marker=True),
         )
         drew_any = True
     if not drew_any:

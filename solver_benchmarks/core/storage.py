@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
@@ -9,11 +10,13 @@ import os
 import re
 import shutil
 import threading
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from . import status
@@ -21,6 +24,13 @@ from .atomic import atomic_write_text
 from .config import RunConfig, manifest_solve_signatures, slugify, solve_signatures
 from .result import ProblemResult, to_jsonable
 from .system_info import system_metadata
+
+try:
+    # The dtype inference pandas applies to the columns of a list of
+    # records; read_results_jsonl applies it once per column.
+    from pandas.core.internals.construction import convert_object_array as _convert_object_array
+except ImportError:  # pragma: no cover - other pandas layouts
+    _convert_object_array = None
 
 logger = logging.getLogger(__name__)
 
@@ -588,23 +598,10 @@ class ResultStore:
         with self._write_lock:
             if not self.results_jsonl_path.exists():
                 return
-            records: list[dict] = []
-            with self.results_jsonl_path.open() as handle:
-                for lineno, line in enumerate(handle, start=1):
-                    if not line.strip():
-                        continue
-                    try:
-                        records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        # A torn last line shouldn't kill the run.
-                        logger.warning(
-                            "Skipping unparseable line %d in %s while writing parquet",
-                            lineno,
-                            self.results_jsonl_path,
-                        )
-            if not records:
+            # A torn last line shouldn't kill the run: it is skipped.
+            df = read_results_jsonl(self.results_jsonl_path)
+            if not len(df.index):
                 return
-            df = pd.json_normalize(records)
             df = normalize_table_for_parquet(df)
             tmp = self.results_parquet_path.with_suffix(".parquet.tmp")
             try:
@@ -617,6 +614,102 @@ class ResultStore:
                 except OSError:
                     pass
                 raise
+
+
+# Lines of results.jsonl parsed and flattened at a time by read_results_jsonl.
+_JSONL_CHUNK_LINES = 2000
+
+
+def read_results_jsonl(path: str | Path, *, chunk_lines: int = _JSONL_CHUNK_LINES) -> pd.DataFrame:
+    """The records of a results.jsonl file as one flat frame.
+
+    The frame equals ``pd.json_normalize`` of every parseable record
+    (columns, their order, dtypes and values), without holding every parsed
+    record at once: lines are parsed and flattened ``chunk_lines`` at a time
+    into untyped (object) columns, and each column's dtype is then inferred
+    once over the whole column, with the conversion pandas applies to a list
+    of records. Blank lines are ignored; unparseable lines (a torn last
+    line) and lines that are not a JSON object (``null``, a number, a list)
+    are skipped with a warning, whatever the pandas version. No records give
+    an empty frame. Where that pandas conversion is missing or has another
+    signature, the records are normalized in one go instead (the same frame,
+    with the memory of all records at once).
+    """
+    path = Path(path)
+    if _convert_object_array is not None:
+        try:
+            return _read_results_jsonl_chunked(path, chunk_lines)
+        except TypeError:
+            # The internal conversion's signature changed in this pandas.
+            pass
+    return pd.json_normalize(list(_parsed_records(path)))
+
+
+def _read_results_jsonl_chunked(path: Path, chunk_lines: int) -> pd.DataFrame:
+    assert _convert_object_array is not None
+    columns: dict[str, list[np.ndarray]] = {}
+    rows = 0
+    for chunk in _batched(_parsed_records(path), chunk_lines):
+        # Missing keys are NaN, as in a frame built from all records at once.
+        frame = pd.DataFrame([_flatten_record(record) for record in chunk], dtype=object)
+        size = len(chunk)
+        for name in frame.columns:
+            if name not in columns:
+                columns[name] = [np.full(rows, np.nan, dtype=object)]
+            columns[name].append(frame[name].to_numpy(dtype=object, copy=True))
+        for name, parts in columns.items():
+            if name not in frame.columns:
+                parts.append(np.full(size, np.nan, dtype=object))
+        rows += size
+        del frame
+    if not rows:
+        return pd.DataFrame()
+    if not columns:
+        # Only empty records: rows without columns, as json_normalize gives.
+        return pd.DataFrame([{} for _ in range(rows)])
+    data = {}
+    for name in list(columns):
+        values = np.concatenate(columns.pop(name))
+        data[name] = _convert_object_array([values], dtype=None)[0]
+    return pd.DataFrame(data, index=pd.RangeIndex(rows))
+
+
+def _parsed_records(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open() as handle:
+        for lineno, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                record = None
+            if not isinstance(record, dict):
+                logger.warning("Skipping unparseable line %d in %s", lineno, path)
+                continue
+            yield record
+
+
+def _batched(items: Iterable[Any], size: int) -> Iterator[list[Any]]:
+    iterator = iter(items)
+    while batch := list(itertools.islice(iterator, size)):
+        yield batch
+
+
+def _flatten_record(record: dict[str, Any]) -> dict[str, Any]:
+    """One record flattened as ``pd.json_normalize`` does: top-level
+    non-dict values first, then nested dicts as ``outer.inner`` keys."""
+    flat = {key: value for key, value in record.items() if not isinstance(value, dict)}
+    nested: dict[str, Any] = {}
+    _flatten_into(nested, "", {key: value for key, value in record.items() if isinstance(value, dict)})
+    return {**flat, **nested}
+
+
+def _flatten_into(out: dict[str, Any], prefix: str, value: Any) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _flatten_into(out, f"{prefix}.{key}" if prefix else str(key), item)
+    else:
+        out[prefix] = value
 
 
 _NUMERIC_COLUMNS: tuple[str, ...] = (

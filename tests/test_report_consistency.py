@@ -185,10 +185,27 @@ def test_headline_counts_unattempted_solves_like_the_geomean(tmp_path, repo_root
     headline = pd.read_csv(tmp_path / "report" / "headline_solver_metrics.csv").set_index("solver_id")
     geomean = pd.read_csv(tmp_path / "report" / "shifted_geomean_run_time_seconds.csv").set_index("solver_id")
     assert headline.loc["b", "completed"] == 2
+    assert headline.loc["b", "total"] == 4
+    columns = list(headline.reset_index().columns)
+    assert columns.index("total") + 1 == columns.index("completed")
     assert headline.loc["b", "success_count"] == geomean.loc["b", "success_count"] == 2
     assert headline.loc["b", "failure_count"] == geomean.loc["b", "failure_count"] == 2
     assert headline.loc["b", "success_rate"] == 0.5
     assert "not_attempted=2" in headline.loc["b", "statuses"]
+
+
+def test_solver_metrics_total_is_what_the_rates_are_over():
+    rows = [_row(f"p{i}", "a") for i in range(2)]
+    expected = pd.DataFrame([{"dataset": "d", "problem": f"p{i}", "solver_id": "a"} for i in range(5)])
+    metrics = solver_metrics(pd.DataFrame(rows), expected=expected)
+    assert list(metrics.columns[:3]) == ["solver_id", "total", "completed"]
+    row = metrics.set_index("solver_id").loc["a"]
+    assert (row["total"], row["completed"], row["success_count"], row["failure_count"]) == (5, 2, 2, 3)
+    assert row["success_count"] + row["failure_count"] == row["total"]
+    assert row["success_rate"] == 2 / 5
+    # Without planned solves the total is the recorded solves.
+    assert solver_metrics(pd.DataFrame(rows)).set_index("solver_id").loc["a", "total"] == 2
+    assert list(solver_metrics(pd.DataFrame()).columns[:3]) == ["solver_id", "total", "completed"]
 
 
 def test_headline_statistics_cover_successes_only():
@@ -555,6 +572,86 @@ def test_rerun_report_removes_the_problem_table_of_a_solver_without_rows(tmp_pat
     assert (tables / "a.csv").exists() and not (tables / "c.csv").exists()
 
 
+def test_sweep_variants_get_their_own_report_files(tmp_path):
+    # The default sweep ids of scale: [1e-6, 1e+6]; distinct artifact directories.
+    a, b = "scs__scale=1e-06", "scs__scale=1e+06"
+    empty_root = tmp_path / "repo"
+    empty_root.mkdir()
+    rows = [_report_row(d, p, s, iterations=10 + k)
+            for d in ("set=1e-06", "set=1e+06") for p in ("p1", "p2") for k, s in enumerate((a, b))]
+    run = _manifest_run(tmp_path, rows, {"set=1e-06": ["p1", "p2"], "set=1e+06": ["p1", "p2"]}, [a, b])
+    report = run / "report"
+    # Files an earlier report wrote under the older name rule ('+' and '=' became '-').
+    legacy = [report / "solver_problem_tables" / "scs__scale-1e-06.csv",
+              report / "by_dataset" / "set-1e-06" / "headline_solver_metrics.csv"]
+    for path in legacy:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("stale\n")
+    write_run_report(run, repo_root=empty_root)
+    tables = report / "solver_problem_tables"
+    assert sorted(p.name for p in tables.glob("*.csv")) == [f"{b}.csv", f"{a}.csv"]
+    assert set(pd.read_csv(tables / f"{a}.csv")["iterations"]) == {10}
+    assert set(pd.read_csv(tables / f"{b}.csv")["iterations"]) == {11}
+    markdown = (report / "index.md").read_text()
+    for dataset in ("set=1e-06", "set=1e+06"):
+        assert (report / "by_dataset" / dataset / "headline_solver_metrics.csv").exists()
+        assert f"(by_dataset/{dataset}/headline_solver_metrics.csv)" in markdown
+    for path in legacy:
+        assert not path.exists(), path
+    # the emptied folder of the older name goes too; a folder with other files stays
+    assert not (report / "by_dataset" / "set-1e-06").exists()
+    kept = report / "by_dataset" / "set-1e-06" / "notes.txt"
+    kept.parent.mkdir()
+    kept.write_text("mine")
+    write_run_report(run, repo_root=empty_root)
+    assert kept.read_text() == "mine"
+
+
+def test_report_file_names_disambiguate_ids_that_share_a_slug():
+    from solver_benchmarks.analysis.tables import report_file_names
+
+    names = report_file_names(["a b", "a/b", "c", "C", "x=1e+06", "x=1e-06", "a-b~1"])
+    assert names["x=1e+06"] == "x=1e+06" and names["x=1e-06"] == "x=1e-06"
+    assert names["a-b~1"] == "a-b-1"
+    # Ids whose names would coincide (case-insensitively, as on macOS and
+    # Windows) all get the slug plus '~' and a hash of the id.
+    for group in (("a b", "a/b"), ("c", "C")):
+        for value in group:
+            stem, _, digest = names[value].partition("~")
+            assert stem.lower() == group[0].replace(" ", "-").lower() and len(digest) == 8
+    assert len({name.lower() for name in names.values()}) == len(names)
+    # Deterministic: the same names whatever the order.
+    assert report_file_names(list(reversed(list(names)))) == names
+
+
+def test_solvers_whose_ids_share_a_slug_get_separate_tables(tmp_path, repo_root):
+    run = _write_run(tmp_path, [_row("p1", "a b", iterations=1), _row("p1", "a/b", iterations=2)])
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    tables = sorted((tmp_path / "report" / "solver_problem_tables").glob("*.csv"))
+    assert len(tables) == 2
+    assert sorted(int(pd.read_csv(path)["iterations"].iloc[0]) for path in tables) == [1, 2]
+    # the artifact index says which id each hashed name belongs to
+    markdown = (tmp_path / "report" / "index.md").read_text()
+    for path in tables:
+        solver = "a b" if pd.read_csv(path)["iterations"].iloc[0] == 1 else "a/b"
+        assert f"(solver_problem_tables/{path.name}) (solver `{solver}`)" in markdown
+
+
+def test_datasets_whose_ids_share_a_slug_are_labelled(tmp_path):
+    from solver_benchmarks.analysis.tables import report_file_names
+
+    empty_root = tmp_path / "repo"
+    empty_root.mkdir()
+    rows = [_report_row(d, "p1", "a") for d in ("x y", "x/y")]
+    run = _manifest_run(tmp_path, rows, {"x y": ["p1"], "x/y": ["p1"]}, ["a"])
+    write_run_report(run, repo_root=empty_root)
+    markdown = (run / "report" / "index.md").read_text()
+    for dataset, name in report_file_names(["x y", "x/y"]).items():
+        assert "~" in name
+        assert (run / "report" / "by_dataset" / name / "headline_solver_metrics.csv").exists()
+        assert f"(by_dataset/{name}/headline_solver_metrics.csv) (dataset `{dataset}`)" in markdown
+
+
 def test_unavailable_penalized_geomean_removes_the_earlier_one(tmp_path, repo_root):
     run = _write_run(tmp_path, [_row("p1", "a"), _row("p1", "b", "solver_error")])
     write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
@@ -566,6 +663,117 @@ def test_unavailable_penalized_geomean_removes_the_earlier_one(tmp_path, repo_ro
     write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
     for name in ("shifted_geomean_run_time_seconds.csv", "shifted_geomean_run_time_seconds.png"):
         assert not (tmp_path / "report" / name).exists()
+
+
+# --- every solver has its own line style, the same in every plot ---
+
+
+def test_solver_styles_are_distinct_for_forty_solvers():
+    from solver_benchmarks.analysis.plots import solver_styles
+
+    ids = [f"s{i:02d}" for i in range(40)]
+    styles = solver_styles(reversed(ids))
+    assert list(styles) == ids
+    assert len({(st["color"], st["linestyle"]) for st in styles.values()}) == 40
+    assert len({(st["color"], st["marker"]) for st in styles.values()}) == 40
+    # a solver's style depends on the set of ids, not on their order
+    assert solver_styles(ids) == styles
+
+
+def test_line_plots_give_each_solver_one_distinct_style(tmp_path, monkeypatch):
+    import matplotlib.figure
+
+    from solver_benchmarks.analysis import plots
+
+    solvers = [f"solver_{i:02d}" for i in range(12)]
+    rows = []
+    for i, solver in enumerate(solvers):
+        for j in range(6):
+            row = _row(f"p{j}", solver, time=0.01 * (i + 1) * (j + 1), iterations=5, **{"metadata.n": 10 ** j})
+            if i % 3 == 0:  # only some solvers have residuals: the KKT plot draws a subset
+                row["kkt.primal_res_rel"] = 1e-9 * (j + 1)
+            rows.append(row)
+    frame = pd.DataFrame(rows)
+    seen = {}
+    original = matplotlib.figure.Figure.savefig
+
+    def spy(self, path, *args, **kwargs):
+        seen[Path(path).name] = [
+            (line.get_label(), line.get_color(), line.get_linestyle(), line.get_marker())
+            for ax in self.axes for line in ax.lines if not line.get_label().startswith("_")
+        ]
+        return original(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", spy)
+    run = _write_run(tmp_path, rows)
+    plots.write_analysis_plots(run, output_dir=tmp_path / "plots", results=frame, expected=None,
+                               geomean_options={"available": False})
+    figures = ["performance_profile_run_time_seconds.png", "cactus_run_time_seconds.png",
+               "kkt_accuracy_profile.png", "difficulty_scaling_run_time_seconds.png"]
+    style_of = {}
+    for name in figures:
+        lines = seen[name]
+        labels = {label for label, *_ in lines}
+        assert labels == set(solvers if name != "kkt_accuracy_profile.png" else solvers[::3]), name
+        assert len({(color, style) for _, color, style, _ in lines}) == len(lines), name
+        for label, color, style, _marker in lines:
+            assert style_of.setdefault(label, (color, style)) == (color, style), (name, label)
+        if name.startswith("difficulty"):
+            assert len({(color, marker) for _, color, _, marker in lines}) == len(lines)
+
+
+def _profile_line_styles(monkeypatch):
+    import matplotlib.colors
+    import matplotlib.figure
+
+    seen = {}
+    original = matplotlib.figure.Figure.savefig
+
+    def spy(self, path, *args, **kwargs):
+        seen[Path(path).name] = [
+            (line.get_label(), matplotlib.colors.to_hex(line.get_color()), line.get_linestyle())
+            for ax in self.axes for line in ax.lines if not line.get_label().startswith("_")
+        ]
+        return original(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.figure.Figure, "savefig", spy)
+    return seen
+
+
+def test_planned_solvers_without_rows_get_their_own_style(tmp_path, monkeypatch):
+    from solver_benchmarks.analysis import plots
+
+    solvers = ["clarabel", "ecos", "highs", "osqp", "piqp", "scs"]
+    rows = [_row(f"p{j}", s, time=0.1 * (i + 1) * (j + 1)) for i, s in enumerate(solvers[:3]) for j in range(4)]
+    expected = pd.DataFrame([{"dataset": "d", "problem": f"p{j}", "solver_id": s} for s in solvers for j in range(4)])
+    seen = _profile_line_styles(monkeypatch)
+    run = _write_run(tmp_path, rows, solvers=solvers)
+    plots.write_analysis_plots(run, output_dir=tmp_path / "plots", results=pd.DataFrame(rows),
+                               expected=expected, geomean_options={"available": False})
+    lines = seen["performance_profile_run_time_seconds.png"]
+    assert {label for label, *_ in lines} == set(solvers)
+    assert len({tuple(style) for _, *style in lines}) == len(solvers)
+    styles = plots.solver_styles(solvers)
+    assert all((color, ls) == (styles[label]["color"], styles[label]["linestyle"]) for label, color, ls in lines)
+    # the profile on its own also styles planned solvers
+    seen.clear()
+    plots._write_performance_profile(pd.DataFrame(rows), tmp_path, "run_time_seconds", expected=expected)
+    lines = seen["performance_profile_run_time_seconds.png"]
+    assert len({tuple(style) for _, *style in lines}) == len(lines) == len(solvers)
+
+
+def test_report_styles_a_configured_solver_without_rows(tmp_path, monkeypatch, repo_root):
+    import solver_benchmarks.analysis.markdown_report as report
+
+    solvers = ["clarabel", "osqp", "scs"]
+    rows = [_row(f"p{j}", s, time=0.1 * (j + 1)) for s in ("osqp", "scs") for j in range(3)]
+    expected = pd.DataFrame([{"dataset": "d", "problem": f"p{j}", "solver_id": s} for s in solvers for j in range(3)])
+    monkeypatch.setattr(report, "expected_results", lambda *args, **kwargs: expected)
+    seen = _profile_line_styles(monkeypatch)
+    write_run_report(_write_run(tmp_path, rows, solvers=solvers), output_dir=tmp_path / "report", repo_root=repo_root)
+    lines = seen["performance_profile_run_time_seconds.png"]
+    assert {label for label, *_ in lines} == set(solvers)
+    assert len({tuple(style) for _, *style in lines}) == 3
 
 
 # --- the cactus plot counts like the profile ---

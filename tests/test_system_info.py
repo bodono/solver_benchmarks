@@ -429,6 +429,22 @@ def test_system_summary_lines_renders_cpu_and_memory():
     assert "numpy 1.26.0" in rendered
 
 
+def test_system_summary_lines_show_the_usable_cpu_count():
+    from solver_benchmarks.analysis.markdown_report import _system_summary_lines
+
+    def cores(cpu):
+        rows = [line for line in _system_summary_lines({"system": {"cpu": cpu}}) if "CPU cores" in line]
+        return rows[0] if rows else None
+
+    assert cores({"logical_count": 128, "physical_count": 64, "usable_count": 4}) == (
+        "| CPU cores | 64 physical / 128 logical, 4 usable by this run |"
+    )
+    assert cores({"logical_count": 8, "usable_count": 8}) == "| CPU cores | 8 logical, 8 usable by this run |"
+    # Not recorded (manifests written before the field existed): as before.
+    assert cores({"logical_count": 16, "physical_count": 8}) == "| CPU cores | 8 physical / 16 logical |"
+    assert cores({"logical_count": 16, "usable_count": None}) == "| CPU cores | 16 logical |"
+
+
 def test_system_summary_lines_returns_empty_when_no_system_block():
     """Legacy run directories without a ``system`` manifest block
     must render no system section rather than a half-populated one
