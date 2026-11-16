@@ -422,7 +422,9 @@ def test_a_worker_started_after_its_pool_was_aborted_is_killed():
         thread.join()
     try:
         assert processes["pool-x_0"].wait(timeout=10) == -signal.SIGKILL
-        assert processes["pool-y_0"].poll() is None
+        # Given time to die, as a wrongful SIGKILL takes effect asynchronously.
+        with pytest.raises(subprocess.TimeoutExpired):
+            processes["pool-y_0"].wait(timeout=0.5)
     finally:
         for process in processes.values():
             process.kill()

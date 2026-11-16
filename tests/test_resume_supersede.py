@@ -941,7 +941,10 @@ def test_cli_readers_see_the_rows_the_end_of_run_rewrite_leaves(tmp_path: Path, 
         output("report", str(run), "--output-dir", str(tmp_path / f"report_{run.name}"))
     def report_of(name: str) -> str:
         text = (tmp_path / f"report_{name}" / "index.md").read_text().replace(name, "RUN")
-        return re.sub(r"\d{4}-\d\d-\d\dT[0-9:.]+\+00:00", "TIME", text)
+        text = re.sub(r"\d{4}-\d\d-\d\dT[0-9:.]+\+00:00", "TIME", text)
+        # Each manifest records the machine's state when its run started.
+        return re.sub(r"^\| (RAM available at start|CPU max frequency) \| .* \|$",
+                      r"| \1 | STATE |", text, flags=re.MULTILINE)
 
     report = report_of("with_pairs")
     assert report == report_of("rewritten")
