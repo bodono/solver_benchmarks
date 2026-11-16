@@ -507,13 +507,20 @@ _THREAD_CASES = [
     ({"threads": 2}, {"OMP_NUM_THREADS": "8"}, {**_caps(None), "OMP_NUM_THREADS": "8"}),
     ({}, {"OPENBLAS_NUM_THREADS": "3"}, {**_caps(None), "OPENBLAS_NUM_THREADS": "3"}),
     ({"threads": 2}, {"OMP_NUM_THREADS": ""}, _caps("2")),
+    ({"threads": 2}, {"OMP_NUM_THREADS": " "}, _caps("2")),
+    (
+        {"threads": 2},
+        {"OMP_NUM_THREADS": "", "OPENBLAS_NUM_THREADS": "3"},
+        {**_caps(None), "OMP_NUM_THREADS": "", "OPENBLAS_NUM_THREADS": "3"},
+    ),
 ]
 
 
 @pytest.mark.parametrize(
     "settings, exported, expected",
     _THREAD_CASES,
-    ids=["default", "threads-2", "threads-0", "exported-omp", "exported-openblas", "exported-empty"],
+    ids=["default", "threads-2", "threads-0", "exported-omp", "exported-openblas", "exported-empty",
+         "exported-blank", "exported-empty-and-set"],
 )
 def test_the_runner_hands_the_worker_thread_caps(
     monkeypatch, tmp_path: Path, settings, exported, expected
@@ -544,7 +551,7 @@ def test_the_runner_hands_the_worker_thread_caps(
          "solvers": [{"id": "s", "solver": "scs", "settings": settings}]}
     )
     store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=REPO_ROOT)
-    user_managed = any(exported.values())
+    user_managed = any(value.strip() for value in exported.values())
     added = {} if user_managed else {name: value for name, value in expected.items() if value is not None}
     assert handed == [added]
     (row,) = _rows(store)

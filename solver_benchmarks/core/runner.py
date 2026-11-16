@@ -1641,14 +1641,16 @@ def worker_thread_environ(
     thread setting, which would otherwise start one thread per core in each
     of ``run.parallelism`` workers. ``threads: 0`` (the solver's own choice)
     sets none of them. If ``environ`` (default: this process's environment)
-    already sets any of them to a non-empty value, the user is managing the
-    thread pools and none is set (an empty value counts as unset): a mix of the user's values and the runner's would leave
-    one library on a different count from another. An invalid ``threads``
+    already sets any of them to a value that is not blank, the user is
+    managing the thread pools and none is set (an empty or whitespace-only
+    value counts as unset, as OpenBLAS and OpenMP read it): a mix of the
+    user's values and the runner's would leave one library on a different
+    count from another. An invalid ``threads``
     is the adapter's to reject; the default applies meanwhile.
     """
     if environ is None:
         environ = os.environ
-    if any(environ.get(name) for name in THREAD_LIMIT_ENV_VARS):
+    if any((environ.get(name) or "").strip() for name in THREAD_LIMIT_ENV_VARS):
         return {}
     try:
         threads = pop_threads(dict(settings or {}))

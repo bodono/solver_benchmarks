@@ -499,13 +499,16 @@ infeasibility rows have no KKT record; PDLP skips cone problems with a nonzero
 
 Comparing with runs recorded before the runner capped each worker's BLAS /
 OpenMP threads (see `threads` under
-[Shared Solver Settings](#shared-solver-settings)): timings of solvers that
-call a threaded BLAS change at default settings: Clarabel on PSD cones
-(through SciPy), and CVXOPT, SDPA and SCS builds linked to a threaded BLAS.
-The PyPI wheels of CVXOPT, SCS and SDPA bundle a serial OpenBLAS, so with
-them it is Clarabel's PSD path whose pool goes from every core to one. With `run.parallelism` above one, solves that returned in time
-but whose post-solve KKT check (PSD cones) ran past the kill deadline were
-recorded as `time_limit` with no KKT record; they now keep their own status.
+[Shared Solver Settings](#shared-solver-settings)): at default settings,
+timings change for every solve path that goes through NumPy / SciPy's
+OpenBLAS, whatever the solver's own wheel bundles: Clarabel on PSD cones,
+QTQP, and ECOS on QPs with an off-diagonal `P` (the adapter's dense
+factorization of `P`, part of `run_time_seconds`); and for CVXOPT, SDPA and
+SCS builds linked to a threaded BLAS (the PyPI wheels of those three bundle a
+serial OpenBLAS). With `run.parallelism` above one, solves that returned in
+time but whose post-solve KKT check (PSD cones) ran past the kill deadline
+were recorded as `time_limit` with no KKT record; they now keep their own
+status.
 
 Unsupported solver/problem combinations are skipped by default and recorded as
 `skipped_unsupported`. For example, OSQP on a DIMACS conic problem is skipped,
@@ -659,7 +662,8 @@ A few setting names mean the same thing for every adapter:
   worker starts with `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
   `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` set to `threads` (one unless
   set; `threads: 0` sets none of them). Export any of these four yourself
-  (with a non-empty value; an empty one counts as unset) and the runner
+  (with a value that is not blank; an empty or whitespace-only one counts
+  as unset) and the runner
   leaves all of them alone, whatever `threads` says (the solver's own thread
   option still follows `threads`); `tools/bench_modal.py` does this with
   `OMP_NUM_THREADS`. This is what bounds the harness's own KKT check (an

@@ -313,7 +313,8 @@ def test_bench_modal_runs_from_the_image_checkout_with_data_from_the_volume(benc
     assert result["exit"] == 0
 
 
-def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tmp_path, monkeypatch):
+@pytest.mark.parametrize("exported_omp", [None, ""], ids=["unset", "empty"])
+def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tmp_path, monkeypatch, exported_omp):
     """bench_modal exports OMP_NUM_THREADS for the shard's `bench run`; the
     runner then leaves all four BLAS / OpenMP variables alone, so a worker
     sees exactly what bench_modal set (no OpenBLAS cap of 1 next to OpenMP's 4)."""
@@ -322,6 +323,8 @@ def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tm
     thread_vars = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
     for name in thread_vars:
         monkeypatch.delenv(name, raising=False)
+    if exported_omp is not None:
+        monkeypatch.setenv("OMP_NUM_THREADS", exported_omp)
     calls = []
 
     class FakeProcess:

@@ -181,7 +181,8 @@ def _run(campaign: str, name: str, config_yaml: str) -> dict:
     cfg.write_text(config_yaml)
     run_dir = Path("/results") / campaign / name
     run_dir.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS", "4"))
+    # An empty OMP_NUM_THREADS counts as unset for the runner too.
+    env = dict(os.environ, OMP_NUM_THREADS=os.environ.get("OMP_NUM_THREADS") or "4")
     t0 = time.time()
     with (run_dir / "modal_stdout.log").open("w") as out, (run_dir / "modal_stderr.log").open("w") as err:
         # The repository root is the image's checkout: `python -m` puts the
