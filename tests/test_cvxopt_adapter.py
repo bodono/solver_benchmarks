@@ -475,7 +475,7 @@ def test_cvxopt_converts_arithmetic_error_into_solver_error(tmp_path):
     # CVXOPT version; both are correct outcomes for this problem.
     assert result.status in {status.SOLVER_ERROR, status.PRIMAL_INFEASIBLE}
     if result.status == status.SOLVER_ERROR:
-        assert "solver_error" in result.info or result.info.get("solver_error")
+        assert result.info.get("error")
 
 
 def test_cvxopt_solver_error_via_stub(tmp_path, monkeypatch):
@@ -493,7 +493,7 @@ def test_cvxopt_solver_error_via_stub(tmp_path, monkeypatch):
     adapter = CVXOPTSolverAdapter({"verbose": False})
     result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
     assert result.status == status.SOLVER_ERROR
-    assert "ArithmeticError" in result.info.get("solver_error", "")
+    assert "ArithmeticError" in result.info.get("error", "")
 
 
 # ---------------------------------------------------------------------------
@@ -504,13 +504,11 @@ def test_cvxopt_solver_error_via_stub(tmp_path, monkeypatch):
 def test_psd_triangle_to_full_inverse_round_trips():
     """``_psd_full_to_triangle`` must invert ``_psd_triangle_to_full``
     on canonical inputs (preserves √2 off-diagonal scaling)."""
-    from solver_benchmarks.solvers.cvxopt_adapter import (
-        _psd_full_to_triangle,
-        _psd_triangle_to_full,
-    )
+    from solver_benchmarks.solvers.cone_layout import psd_triangle_to_full
+    from solver_benchmarks.solvers.cvxopt_adapter import _psd_full_to_triangle
 
     for n in (1, 2, 3, 5):
-        forward = _psd_triangle_to_full(n)
+        forward = psd_triangle_to_full(n)
         backward = _psd_full_to_triangle(n)
         # Random canonical PSD-triangle vector.
         tri = np.random.RandomState(n).randn(n * (n + 1) // 2)
@@ -521,9 +519,9 @@ def test_psd_triangle_to_full_diagonal_unscaled_off_diagonal_inv_sqrt2():
     """The canonical → BLAS transform leaves diagonal entries unscaled
     and splits each off-diagonal canonical entry across symmetric
     positions, each scaled by ``1/√2``."""
-    from solver_benchmarks.solvers.cvxopt_adapter import _psd_triangle_to_full
+    from solver_benchmarks.solvers.cone_layout import psd_triangle_to_full
 
-    transform = _psd_triangle_to_full(2).toarray()
+    transform = psd_triangle_to_full(2).toarray()
     # n=2: canonical [X11, X21*√2, X22] → BLAS [X[0,0], X[1,0], X[0,1], X[1,1]]
     # row 0 (BLAS X[0,0]) gets canonical[0] (X11) directly.
     assert transform[0, 0] == pytest.approx(1.0)
@@ -628,3 +626,79 @@ def test_flatten_info_keeps_scalar_fields():
     assert info["iterations"] == 7
     assert info["primal objective"] == pytest.approx(1.5)
     assert "x" not in info and "y" not in info
+
+
+# ---------------------------------------------------------------------------
+# A bad option value is a configuration error, not a solver failure.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("settings, name", [
+    ({"kktsolver": "chol3"}, "kktsolver"),
+    ({"maxiters": 0}, "maxiters"),
+    ({"max_iter": 0}, "max_iter"),
+    ({"feastol": 0}, "feastol"),
+    ({"eps": -1.0}, "feastol"),
+    ({"refinement": -1}, "refinement"),
+    ({"abstol": "1e-8x"}, "abstol"),
+    ({"abstol": -1.0, "reltol": 0.0}, "at least one"),
+    ({"kktreg": -1.0}, "kktreg"),
+])
+@pytest.mark.parametrize("problem", ["lp", "qp"])
+def test_cvxopt_bad_option_value_raises_before_solving(settings, name, problem, tmp_path, monkeypatch):
+    # conelp / coneqp check these in the call that solves and raise the
+    # ValueError the adapter scored as a numerical failure (solver_error on
+    # every problem of the run).
+    pytest.importorskip("cvxopt")
+    import cvxopt.solvers as cs
+
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.cvxopt_adapter import CVXOPTSolverAdapter
+
+    def not_called(*args, **kwargs):
+        raise AssertionError("the solver must not be called with a bad option")
+
+    monkeypatch.setattr(cs, "conelp", not_called)
+    monkeypatch.setattr(cs, "coneqp", not_called)
+    qp = _small_lp_in_qp_form() if problem == "lp" else _small_qp()
+    adapter = CVXOPTSolverAdapter({"verbose": False, **settings})
+    with pytest.raises(SolverConfigError, match=name):
+        adapter.solve(_make_qp_problem(qp), tmp_path)
+
+
+def test_cvxopt_qr_kktsolver_is_refused_for_coneqp(tmp_path):
+    pytest.importorskip("cvxopt")
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.cvxopt_adapter import CVXOPTSolverAdapter
+
+    adapter = CVXOPTSolverAdapter({"verbose": False, "kktsolver": "qr"})
+    with pytest.raises(SolverConfigError, match="coneqp"):
+        adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
+    # conelp (LPs) takes it.
+    result = adapter.solve(_make_qp_problem(_small_lp_in_qp_form()), tmp_path)
+    assert result.status == status.OPTIMAL
+
+
+def test_cvxopt_option_error_raised_by_the_solver_is_a_configuration_error(tmp_path, monkeypatch):
+    # Backstop for a value the adapter's checks let through.
+    pytest.importorskip("cvxopt")
+    import cvxopt.solvers as cs
+
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.cvxopt_adapter import CVXOPTSolverAdapter
+
+    def refuse(*args, **kwargs):
+        raise ValueError("options['maxiters'] must be a positive integer")
+
+    monkeypatch.setattr(cs, "coneqp", refuse)
+    with pytest.raises(SolverConfigError, match="maxiters"):
+        CVXOPTSolverAdapter({"verbose": False}).solve(_make_qp_problem(_small_qp()), tmp_path)
+
+
+def test_cvxopt_eps_abs_null_falls_back_to_eps(tmp_path):
+    pytest.importorskip("cvxopt")
+    from solver_benchmarks.solvers.cvxopt_adapter import _resolve_options
+
+    options, translated = _resolve_options({"eps": 1e-6, "eps_abs": None})
+    assert options["abstol"] == options["feastol"] == options["reltol"] == 1e-6
+    assert translated == {"abstol": 1e-6, "feastol": 1e-6, "reltol": 1e-6}

@@ -588,6 +588,7 @@ def test_ecos_factors_only_the_off_diagonal_block_of_a_mostly_diagonal_p(
 
     from solver_benchmarks.solvers.ecos_adapter import (
         ECOS_DENSE_FACTOR_MAX_DIM,
+        _psd_square_root,
         _qp_to_ecos_via_socp,
     )
 
@@ -606,7 +607,7 @@ def test_ecos_factors_only_the_off_diagonal_block_of_a_mostly_diagonal_p(
         patch.setattr(scipy.linalg, "cholesky", recording_cholesky)
         data, dims, _, state = _qp_to_ecos_via_socp(qp)
     assert factored_shapes == [(10, 10)]
-    r = state["r_factor"]
+    r = _psd_square_root(sp.csc_matrix(p))
     assert r.shape == (n, n)
     assert abs(r.T @ r - p).max() < 1e-12
     # n - 10 diagonal rows plus a 10 x 10 upper-triangular Cholesky factor.
@@ -690,7 +691,10 @@ def test_ecos_native_settings_win_over_aliases():
 
 
 def test_ecos_rejects_unknown_settings_by_name(tmp_path):
-    with pytest.raises(TypeError, match="feastoll"):
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    # ECOS's own TypeError for an unknown keyword is a configuration error.
+    with pytest.raises(SolverConfigError, match="feastoll"):
         _solve("ecos", CONE, _feasible_cone_lp(), {"feastoll": 1e-6}, tmp_path)
 
 
@@ -1163,3 +1167,261 @@ def test_sdpa_solves_a_feasible_problem_with_a_large_objective(tmp_path, repo_ro
     result = _solve("sdpa", CONE, data, {}, tmp_path)
     assert result.status == status.OPTIMAL, (result.status, result.info["phasevalue"])
     assert result.objective_value == pytest.approx(426666.67, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Clarabel / ECOS: an "almost" verdict at the iteration limit is the limit
+# ---------------------------------------------------------------------------
+
+
+def _random_box_qp(seed: int = 0, n: int = 40, m: int = 30, lp: bool = False) -> dict:
+    rng = np.random.default_rng(seed)
+    g = rng.standard_normal((n, n))
+    p = np.zeros((n, n)) if lp else g @ g.T / n + 0.1 * np.eye(n)
+    a = np.vstack([rng.standard_normal((m, n)), np.eye(n)])
+    x0 = rng.standard_normal(n)
+    return {
+        "P": sp.csc_matrix(p),
+        "q": rng.standard_normal(n),
+        "A": sp.csc_matrix(a),
+        "l": np.concatenate([a[:m] @ x0 - rng.random(m), -5.0 * np.ones(n)]),
+        "u": np.concatenate([a[:m] @ x0 + rng.random(m), 5.0 * np.ones(n)]),
+    }
+
+
+# Clarabel and ECOS relabel a stop at max_iter as AlmostSolved / "Close to
+# optimal" when the last iterate meets their reduced tolerances.
+_ALMOST = {"clarabel": "AlmostSolved", "ecos": "Close to optimal solution found"}
+
+
+@pytest.mark.parametrize("lp", [False, True], ids=["qp", "lp"])
+@pytest.mark.parametrize("solver_name", ["clarabel", "ecos"])
+def test_almost_solved_at_the_iteration_cap_is_max_iter_reached(solver_name, lp, tmp_path):
+    # Was optimal_inaccurate with an objective (Clarabel at max_iter 8-10 of
+    # 11 needed, ECOS at max_iters 14-15 of 16), unlike SCS, QTQP, CVXOPT,
+    # OSQP and PIQP at the same position.
+    qp = _random_box_qp(lp=lp)
+    needed = _solve(solver_name, QP, qp, {}, tmp_path).iterations
+    almost_seen = 0
+    for cap in range(max(1, needed - 4), needed):
+        result = _solve(solver_name, QP, qp, {"max_iter": cap}, tmp_path)
+        assert result.status != status.OPTIMAL_INACCURATE, (cap, result.info["raw_status"])
+        if result.info["raw_status"] == _ALMOST[solver_name]:
+            almost_seen += 1
+            assert result.status == status.MAX_ITER_REACHED
+            assert result.objective_value is None
+            _assert_finite_solution_kkt(result)
+    assert almost_seen, "no cap below convergence gave an 'almost' verdict"
+
+
+def test_almost_verdicts_before_the_limit_stay_inaccurate():
+    from solver_benchmarks.solvers.clarabel_adapter import _map_clarabel_status
+    from solver_benchmarks.solvers.ecos_adapter import _map_ecos_status
+
+    # Insufficient progress or numerical trouble: not a limit.
+    assert _map_clarabel_status("AlmostSolved") == status.OPTIMAL_INACCURATE
+    assert (
+        _map_clarabel_status("AlmostPrimalInfeasible", hit_iteration_limit=True)
+        == status.MAX_ITER_REACHED
+    )
+    assert _map_clarabel_status("AlmostSolved", hit_time_limit=True) == status.TIME_LIMIT
+    assert _map_clarabel_status("Solved", hit_iteration_limit=True) == status.OPTIMAL
+    assert _map_ecos_status({"exitFlag": 10, "iter": 12}, max_iters=100) == status.OPTIMAL_INACCURATE
+    assert _map_ecos_status({"exitFlag": 11, "iter": 100}, max_iters=100) == status.MAX_ITER_REACHED
+    assert _map_ecos_status({"exitFlag": 0, "iter": 100}, max_iters=100) == status.OPTIMAL
+
+
+def test_ecos_close_to_optimal_nan_iterate_at_zero_iterations(tmp_path, monkeypatch):
+    # ECOS at max_iters 0 can answer "Close to optimal" at iteration 0 with an
+    # uninitialised (NaN) iterate; it was optimal_inaccurate with a KKT record
+    # of NaNs. ECOS's output there varies, so the answer is fixed here.
+    ecos = pytest.importorskip("ecos")
+    real_solve = ecos.solve
+
+    def nan_close_to_optimal(*args, **kwargs):
+        raw = real_solve(*args, **kwargs)
+        raw = dict(raw)
+        raw["x"] = np.full_like(raw["x"], np.nan)
+        raw["info"] = dict(raw["info"], exitFlag=10, iter=0,
+                           infostring="Close to optimal solution found")
+        return raw
+
+    monkeypatch.setattr(ecos, "solve", nan_close_to_optimal)
+    result = _solve("ecos", CONE, _feasible_cone_lp(n=5, m=10), {"max_iters": 0}, tmp_path)
+    assert result.status == status.MAX_ITER_REACHED
+    assert result.objective_value is None
+    assert result.kkt is None
+
+
+@pytest.mark.parametrize("settings", [
+    {"tol_feas": -1.0},
+    {"tol_feas": 0.0},
+    {"tol_gap_abs": 0.0, "tol_gap_rel": 0.0},
+    {"tol_infeas_abs": float("nan")},
+    {"eps_abs": -1.0},
+    {"eps": -1e-6},
+])
+def test_clarabel_rejects_tolerances_it_cannot_stop_on(settings, tmp_path):
+    # Clarabel accepted these and never met its stopping test (AlmostSolved
+    # or InsufficientProgress on every problem).
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    with pytest.raises(SolverConfigError, match="tol_"):
+        _solve("clarabel", CONE, _feasible_cone_lp(), settings, tmp_path)
+
+
+@pytest.mark.parametrize("settings", [
+    {"eps_abs": 1e-6, "eps_rel": 0.0},
+    {"tol_gap_abs": 0.0},
+    {"tol_gap_rel": 0.0},
+    {"tol_infeas_abs": 0.0},
+])
+def test_clarabel_accepts_a_single_zero_gap_or_infeasibility_tolerance(settings, tmp_path):
+    # The gap test is absolute OR relative: one zero tolerance is a valid
+    # absolute-only or relative-only test (the shared eps_rel: 0 shape).
+    result = _solve("clarabel", CONE, _feasible_cone_lp(), settings, tmp_path)
+    assert result.status == status.OPTIMAL
+
+
+def test_clarabel_backend_missing_on_this_host_is_unavailable(tmp_path):
+    # "Bad settings: Problem with mkl solver (not available)": a valid backend
+    # whose library is missing is a broken environment, not a typo that
+    # would stop the solver.
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    try:
+        result = _solve("clarabel", CONE, _feasible_cone_lp(), {"direct_solve_method": "mkl"}, tmp_path)
+    except SolverUnavailable as exc:
+        assert "not available" in str(exc)
+    else:
+        pytest.skip(f"MKL loads on this host ({result.status})")
+
+
+def test_clarabel_enum_setting_typo_is_a_config_error(tmp_path):
+    # Clarabel raised a bare Exception("Bad settings: ...") from DefaultSolver.
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    with pytest.raises(SolverConfigError, match="direct_solve_method"):
+        _solve("clarabel", CONE, _feasible_cone_lp(), {"direct_solve_method": "qdldll"}, tmp_path)
+
+
+def _integer_cone_lp() -> dict:
+    # min x0 + x1 s.t. x0 + x1 >= 1, x >= 0 with an integer-typed A (scipy keeps
+    # the dtype of an integer array).
+    return {
+        "P": None,
+        "A": sp.csc_matrix(np.array([[-1, -1], [-1, 0], [0, -1]])),
+        "b": np.array([-1.0, 0.0, 0.0]),
+        "q": np.array([1.0, 1.0]),
+        "r": 0.0,
+        "cone": {"l": 3},
+    }
+
+
+@pytest.mark.parametrize("solver_name", ["scs", "ecos", "clarabel", "cvxopt", "cpo3"])
+def test_integer_typed_cone_data_solves(solver_name, tmp_path):
+    # SCS and ECOS refused int64 A with a TypeError the branch reported as
+    # SolverConfigError "rejected the settings ['verbose']".
+    result = _solve(solver_name, CONE, _integer_cone_lp(), {}, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(1.0, abs=1e-5)
+
+
+def test_scs_integer_typed_qp_hessian_solves(tmp_path):
+    qp = _random_box_qp()
+    qp["P"] = sp.csc_matrix(np.diag(np.arange(1, 41)))
+    assert qp["P"].dtype.kind == "i"
+    reference = _solve("clarabel", QP, qp, {}, tmp_path)
+    result = _solve("scs", QP, qp, {"eps_abs": 1e-8, "eps_rel": 1e-8}, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(reference.objective_value, rel=1e-5)
+
+
+def test_ecos_zero_dimensional_second_order_cone_is_ignored(tmp_path):
+    # ECOS refused q: [0] ("dims['q'] ought to be a list of positive integers").
+    problem = _integer_cone_lp()
+    problem["cone"] = {"l": 3, "q": [0]}
+    result = _solve("ecos", CONE, problem, {}, tmp_path)
+    assert result.status == status.OPTIMAL
+
+
+def test_scs_non_numeric_power_cone_exponent_is_a_solver_error(tmp_path):
+    # SCS's TypeError ("must be real number, not str") read like a setting's.
+    problem = _feasible_cone_lp(n=5, m=10)
+    problem["A"] = sp.vstack([problem["A"], sp.csc_matrix((3, 5))], format="csc")
+    problem["b"] = np.concatenate([problem["b"], [1.0, 1.0, 0.0]])
+    problem["cone"] = {"l": 10, "p": ["a"]}
+    result = _solve("scs", CONE, problem, {}, tmp_path)
+    assert result.status == status.SOLVER_ERROR
+    assert "exponent" in result.info["error"]
+
+
+@pytest.mark.parametrize("solver_name, module_name", [("scs", "scs"), ("ecos", "ecos")])
+def test_solver_type_error_about_data_is_a_solver_error(solver_name, module_name, tmp_path, monkeypatch):
+    module = pytest.importorskip(module_name)
+
+    def refuse(*args, **kwargs):
+        raise TypeError("Ax must be a 1-D numpy array of floats")
+
+    monkeypatch.setattr(module, "solve", refuse)
+    result = _solve(solver_name, CONE, _feasible_cone_lp(n=5, m=10), {}, tmp_path)
+    assert result.status == status.SOLVER_ERROR
+    assert "Ax must be" in result.info["error"]
+
+
+@pytest.mark.parametrize("solver_name, settings", [
+    ("scs", {"acceleration_interval": "often"}),
+    ("ecos", {"reltol": "tight"}),
+    ("ecos", {"nitref": -1}),
+])
+def test_solver_type_error_about_a_setting_is_a_config_error(solver_name, settings, tmp_path):
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    with pytest.raises(SolverConfigError):
+        _solve(solver_name, CONE, _feasible_cone_lp(n=5, m=10), settings, tmp_path)
+
+
+def test_sdpa_problem_without_rows_is_a_solver_error(tmp_path):
+    # sdpa-python's "Inconsistent Size" escaped as a worker_error.
+    cone = {"P": None, "A": sp.csc_matrix((0, 2)), "b": np.zeros(0), "q": np.ones(2),
+            "r": 0.0, "cone": {"l": 0}}
+    result = _solve("sdpa", CONE, cone, {}, tmp_path)
+    assert result.status == status.SOLVER_ERROR
+    assert "Inconsistent Size" in result.info["error"]
+    assert result.objective_value is None and result.kkt is None
+
+
+@pytest.mark.parametrize("settings", [
+    {"maxIteration": "many"},
+    {"eps_abs": -1.0},
+    {"optimality_tolerance": 0.0},
+])
+def test_sdpa_rejects_bad_values(settings, tmp_path):
+    # sdpa-python resets a value of the wrong type to its default.
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    with pytest.raises(SolverConfigError):
+        _solve("sdpa", CONE, _feasible_cone_lp(n=5, m=10), settings, tmp_path)
+
+
+def test_sdpa_integer_parameters_follow_the_integer_rule():
+    # numThreads -1 ends the process inside sdpa-python; numpy integers and
+    # integral floats are the same count (master accepted them).
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
+
+    assert _sdpa_options({"maxIteration": np.int64(30)}, Path("."))["maxIteration"] == 30
+    assert _sdpa_options({"maxIteration": 30.0}, Path("."))["maxIteration"] == 30
+    # numThreads 0 works in sdpa-python (as on master); only negatives end it.
+    assert _sdpa_options({"numThreads": 0}, Path("."))["numThreads"] == 0
+    for settings in ({"numThreads": -1}, {"maxIteration": 2.5}):
+        with pytest.raises(SolverConfigError):
+            _sdpa_options(settings, Path("."))
+
+
+def test_sdpa_threads_zero_leaves_sdpa_python_default():
+    from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
+
+    assert _sdpa_options({}, Path("."))["numThreads"] == 1
+    assert "numThreads" not in _sdpa_options({"threads": 0}, Path("."))
+    assert _sdpa_options({"threads": 3}, Path("."))["numThreads"] == 3

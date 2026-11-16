@@ -741,9 +741,9 @@ _NONFINITE_STRINGS = {
 
 def normalize_table_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
-    # Adapters disagree on value types for shared keys (Gurobi and CPLEX
-    # report an integer info.raw_status, the others a string), and Arrow
-    # rejects a column that mixes them. Store such columns as text, with
+    # Rows can disagree on value types for shared keys (Gurobi and CPLEX
+    # rows recorded by older versions have an integer info.raw_status, the
+    # others a string), and Arrow rejects a column that mixes them. Store such columns as text, with
     # lists and dicts as JSON.
     for column in normalized.columns:
         if column in _NUMERIC_COLUMNS or normalized[column].dtype != object:

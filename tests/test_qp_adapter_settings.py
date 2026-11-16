@@ -134,13 +134,20 @@ def test_highs_forwards_threads_and_checks_the_result():
 def test_eps_alias_sets_both_native_tolerances(solver_name, tmp_path):
     result = _solve(solver_name, {"eps": 1e-7}, tmp_path, _small_lp())
     assert result.status == status.OPTIMAL
-    assert result.info["settings_translated"] == {"eps_abs": 1e-7, "eps_rel": 1e-7}
+    expected = {"eps_abs": 1e-7, "eps_rel": 1e-7}
+    if solver_name == "piqp":
+        # PIQP's duality-gap tolerances follow the configured eps_abs / eps_rel.
+        expected.update(eps_duality_gap_abs=1e-7, eps_duality_gap_rel=1e-7)
+    assert result.info["settings_translated"] == expected
 
 
 @pytest.mark.parametrize("solver_name", ["osqp", "piqp", "proxqp", "pdlp"])
 def test_eps_alias_does_not_override_explicit_tolerances(solver_name, tmp_path):
     result = _solve(solver_name, {"eps": 1e-7, "eps_abs": 1e-9}, tmp_path, _small_lp())
-    assert result.info["settings_translated"] == {"eps_rel": 1e-7}
+    expected = {"eps_rel": 1e-7}
+    if solver_name == "piqp":
+        expected.update(eps_duality_gap_abs=1e-9, eps_duality_gap_rel=1e-7)
+    assert result.info["settings_translated"] == expected
 
 
 def test_proxqp_rejects_unknown_settings_by_name(tmp_path):
@@ -237,3 +244,209 @@ def test_proxqp_duality_gap_check_can_be_turned_off(tmp_path):
     assert result.status == status.OPTIMAL
     assert result.info["check_duality_gap"] is False
     assert "eps_duality_gap_abs" not in result.info
+
+
+# --- max_iter translation is recorded -------------------------------------------
+
+
+@pytest.mark.parametrize("solver_name, expected", [
+    ("cpo3", {"max_iters": 77}),
+    ("highs", {
+        "simplex_iteration_limit": 77,
+        "ipm_iteration_limit": 77,
+        "qp_iteration_limit": 77,
+        "pdlp_iteration_limit": 77,
+    }),
+    ("pdlp", {"iteration_limit": 77}),
+    ("scs", {"max_iters": 77}),
+    ("ecos", {"max_iters": 77}),
+    ("cvxopt", {"maxiters": 77}),
+])
+def test_max_iter_translation_is_recorded(solver_name, expected, tmp_path):
+    # cpo3, HiGHS and PDLP renamed max_iter without saying so on info.
+    result = _solve(solver_name, {"max_iter": 77}, tmp_path, _small_lp())
+    assert result.info["settings_translated"] == expected
+
+
+def test_highs_native_iteration_limit_wins_over_max_iter(tmp_path):
+    result = _solve("highs", {"max_iter": 77, "qp_iteration_limit": 5}, tmp_path, _small_lp())
+    assert "qp_iteration_limit" not in result.info["settings_translated"]
+
+
+# --- HiGHS: refused model data, KKT gating, iteration count ---------------------
+
+
+def test_highs_refused_rows_are_a_solver_error(tmp_path):
+    # addRows refuses a coefficient >= large_matrix_value (1e15); the model
+    # was solved without its rows and the adapter then died on a NumPy shape
+    # error that named nothing.
+    qp = _small_qp()
+    qp["A"] = sp.csc_matrix([[1e15, 0.0], [0.0, 1.0]])
+    result = _solve("highs", {}, tmp_path, qp)
+    assert result.status == status.SOLVER_ERROR
+    assert "addRows" in result.info["error"]
+    assert result.objective_value is None and result.kkt is None
+
+
+def test_highs_refused_hessian_is_a_solver_error(tmp_path):
+    # A refused Hessian left an LP that was solved and reported as the QP.
+    qp = _small_qp()
+    qp["P"] = sp.csc_matrix(np.diag([1e300, 1.0]))
+    result = _solve("highs", {}, tmp_path, qp)
+    assert result.status == status.SOLVER_ERROR
+    assert "passHessian" in result.info["error"]
+
+
+@pytest.mark.parametrize("qp, expected", [
+    ({"P": sp.csc_matrix([[1.0, 0.0], [0.0, 0.0]]), "q": np.array([0.0, -1.0]),
+      "A": sp.eye(2, format="csc"), "l": np.array([-1.0, 0.0]), "u": np.array([1.0, np.inf])},
+     status.DUAL_INFEASIBLE),
+    ({"P": sp.eye(1, format="csc"), "q": np.array([1.0]), "A": sp.csc_matrix([[1.0], [1.0]]),
+      "l": np.array([2.0, -np.inf]), "u": np.array([np.inf, 1.0])},
+     status.PRIMAL_INFEASIBLE),
+])
+def test_highs_infeasibility_claims_carry_no_solution_residuals(qp, expected, tmp_path):
+    # HiGHS has no checkable certificate; residuals of its last point were
+    # recorded under certificate statuses.
+    result = _solve("highs", {}, tmp_path, qp)
+    assert result.status == expected
+    assert result.kkt is None
+
+
+def test_highs_iterations_are_those_of_the_finishing_algorithm(tmp_path):
+    # A QP runs simplex for phase 1 first; the max over algorithms reported
+    # 42 iterations for a solve stopped by qp_iteration_limit = 2.
+    rng = np.random.default_rng(0)
+    n, m = 20, 15
+    g = rng.standard_normal((n, n))
+    qp = {
+        "P": sp.csc_matrix(g @ g.T / n + 0.1 * np.eye(n)),
+        "q": rng.standard_normal(n),
+        "A": sp.csc_matrix(np.vstack([rng.standard_normal((m, n)), np.eye(n)])),
+        "l": np.concatenate([-rng.random(m), -np.ones(n)]),
+        "u": np.concatenate([rng.random(m), np.ones(n)]),
+    }
+    result = _solve("highs", {"max_iter": 2}, tmp_path, qp)
+    assert result.status == status.MAX_ITER_REACHED
+    assert result.info["qp_iteration_count"] == 2
+    assert result.iterations == 2
+
+
+def test_highs_iteration_choice_without_a_qp_phase():
+    from types import SimpleNamespace
+
+    from solver_benchmarks.solvers.highs_adapter import _highs_iterations
+
+    # More crossover iterations than interior-point ones: max() would pick 40.
+    ipm_with_crossover = SimpleNamespace(
+        qp_iteration_count=0, ipm_iteration_count=9, pdlp_iteration_count=0,
+        simplex_iteration_count=40,
+    )
+    assert _highs_iterations(ipm_with_crossover) == 9
+    simplex = SimpleNamespace(
+        qp_iteration_count=-1, ipm_iteration_count=0, pdlp_iteration_count=0,
+        simplex_iteration_count=6,
+    )
+    assert _highs_iterations(simplex) == 6
+    presolved = SimpleNamespace(
+        qp_iteration_count=0, ipm_iteration_count=0, pdlp_iteration_count=0,
+        simplex_iteration_count=0,
+    )
+    assert _highs_iterations(presolved) == 0
+    errored = SimpleNamespace(
+        qp_iteration_count=-1, ipm_iteration_count=-1, pdlp_iteration_count=-1,
+        simplex_iteration_count=-1,
+    )
+    assert _highs_iterations(errored) is None
+
+
+def test_highs_thread_count_can_change_between_solves_in_one_process(tmp_path):
+    # HiGHS sizes one thread pool per process on its first run; a later run
+    # asking for another size failed.
+    pytest.importorskip("highspy")
+    for threads in (1, 2, 1):
+        result = _solve("highs", {"threads": threads}, tmp_path)
+        assert result.status == status.OPTIMAL, threads
+        assert result.info["threads"] == threads
+
+
+# --- PIQP duality-gap tolerances follow eps_abs / eps_rel -----------------------
+
+
+def _piqp_settings_seen(monkeypatch):
+    pytest.importorskip("piqp")
+    from solver_benchmarks.solvers import piqp_adapter
+
+    seen = {}
+    real = piqp_adapter._configure_piqp
+
+    def recording(solver, settings):
+        seen.update(settings)
+        return real(solver, settings)
+
+    monkeypatch.setattr(piqp_adapter, "_configure_piqp", recording)
+    return seen
+
+
+def test_piqp_gap_tolerances_follow_the_configured_tolerances(tmp_path, monkeypatch):
+    # PIQP closed the gap to its own 1e-8 / 1e-9 whatever eps_abs / eps_rel
+    # said (+40% iterations at a nominal 1e-4 on Maros-Meszaros).
+    seen = _piqp_settings_seen(monkeypatch)
+    result = _solve("piqp", {"eps_abs": 1e-4, "eps_rel": 1e-4}, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert seen["eps_duality_gap_abs"] == 1e-4 and seen["eps_duality_gap_rel"] == 1e-4
+    assert result.info["settings_translated"] == {
+        "eps_duality_gap_abs": 1e-4, "eps_duality_gap_rel": 1e-4,
+    }
+
+
+def test_piqp_gap_tolerances_explicit_values_win(tmp_path, monkeypatch):
+    seen = _piqp_settings_seen(monkeypatch)
+    result = _solve(
+        "piqp", {"eps": 1e-5, "eps_duality_gap_abs": 1e-9, "eps_duality_gap_rel": 1e-10}, tmp_path
+    )
+    assert seen["eps_duality_gap_abs"] == 1e-9 and seen["eps_duality_gap_rel"] == 1e-10
+    assert result.info["settings_translated"] == {"eps_abs": 1e-5, "eps_rel": 1e-5}
+
+
+def test_piqp_keeps_its_gap_defaults_without_tolerances(tmp_path, monkeypatch):
+    seen = _piqp_settings_seen(monkeypatch)
+    result = _solve("piqp", {}, tmp_path)
+    assert "eps_duality_gap_abs" not in seen and "eps_duality_gap_rel" not in seen
+    assert "settings_translated" not in result.info
+
+
+# --- PIQP / ProxQP backend values -----------------------------------------------
+
+
+@pytest.mark.parametrize("solver_name", ["piqp", "proxqp"])
+@pytest.mark.parametrize("settings", [{"backend": "bogus"}, {"dense": "false"}, {"dense": 1}])
+def test_backend_values_are_validated(solver_name, settings, tmp_path):
+    # backend: <anything> ran the sparse backend and dense: 'false' the dense one.
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    with pytest.raises(SolverConfigError):
+        _solve(solver_name, settings, tmp_path)
+
+
+@pytest.mark.parametrize("solver_name", ["piqp", "proxqp"])
+@pytest.mark.parametrize("settings", [{"backend": "dense"}, {"backend": "Sparse"}, {"dense": True}])
+def test_valid_backend_values_solve(solver_name, settings, tmp_path):
+    assert _solve(solver_name, settings, tmp_path).status == status.OPTIMAL
+
+
+# --- QTQP: a missing linear-solver backend is an unavailable solver -------------
+
+
+def test_qtqp_missing_backend_module_is_solver_unavailable(tmp_path):
+    pytest.importorskip("qtqp")
+    try:
+        import qdldl  # noqa: F401
+    except ModuleNotFoundError:
+        pass
+    else:
+        pytest.skip("qdldl is installed")
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    with pytest.raises(SolverUnavailable, match="qdldl"):
+        _solve("qtqp", {"linear_solver": "qdldl"}, tmp_path)

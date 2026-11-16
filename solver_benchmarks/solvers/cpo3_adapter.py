@@ -18,6 +18,13 @@ Settings follow Clarabel's names (``tol_feas``, ``tol_gap_abs``,
 ``linear_solver`` takes the backend name (``faer``, ``accelerate``,
 ``cholmod``, ``pardiso``); a backend this build or host cannot load is refused
 before the solve instead of being reported as a numerical failure.
+``threads`` is one unless configured (0: the backend's default), as for every
+adapter with a thread setting; Accelerate takes only 0, so it keeps 0 unless
+``threads`` is given.
+
+Problem data cpo3 refuses (an asymmetric ``P``, non-finite entries) is the
+solver failing that problem (``solver_error``); setting values it refuses
+raise ``SolverConfigError``.
 """
 
 from __future__ import annotations
@@ -43,11 +50,17 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    threads_or_default,
+    translate_tolerance_aliases,
 )
 
 _STATUS = {
@@ -129,22 +142,25 @@ class Cpo3SolverAdapter(SolverAdapter):
         settings = settings_with_defaults(self.settings)
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
-        if threads is not None:
-            settings["threads"] = threads
         translated = translate_settings(settings)
         if time_limit is not None:
             settings["time_limit"] = float(time_limit)
         unknown = sorted(k for k in settings if k not in cpo3.Settings.__dataclass_fields__)
         if unknown:
-            raise ValueError(f"cpo3.Settings does not accept {unknown}")
+            raise SolverConfigError(f"cpo3.Settings does not accept {unknown}")
         if "linear_solver" in settings:
             settings["linear_solver"] = resolve_linear_solver(settings["linear_solver"], cpo3)
+        if threads is None and _is_accelerate(settings.get("linear_solver")):
+            threads = 0
+        settings["threads"] = threads_or_default(threads)
         try:
             cpo3_settings = cpo3.Settings(**settings)
-        except (TypeError, OverflowError) as exc:
-            # cpo3 refuses most bad values with a ValueError of its own; a
+        except (TypeError, ValueError, OverflowError) as exc:
+            # cpo3 validates its settings here (a ValueError of its own); a
             # negative count or a value of the wrong type fails conversion.
-            raise ValueError(f"cpo3 rejected a setting value in {sorted(settings)}: {exc}") from exc
+            raise SolverConfigError(
+                f"cpo3 rejected a setting value in {sorted(settings)}: {exc}"
+            ) from exc
 
         cones: list[Any] = []
         if cone_dict.get("z"):
@@ -156,24 +172,23 @@ class Cpo3SolverAdapter(SolverAdapter):
         # time their solver's setup: cpo3.Problem copies and validates the data.
         start = time.perf_counter()
         try:
+            # cpo3.Problem refuses data it cannot take (P not symmetric,
+            # non-finite entries) with ValueError: the solver failing on
+            # this problem. The settings were validated by cpo3.Settings
+            # above, so a ValueError from cpo3.solve is left to raise.
             cpo3_problem = cpo3.Problem(P=p if p.nnz else None, c=c, A=a, b=b, cones=cones)
+        except ValueError as exc:
+            return _solver_error(exc, start, settings["threads"])
+        try:
             solution = cpo3.solve(cpo3_problem, settings=cpo3_settings)
         except RuntimeError as exc:  # numerical failures raise rather than returning a status
-            elapsed = time.perf_counter() - start
-            return SolverResult(
-                status=status.SOLVER_ERROR,
-                objective_value=None,
-                iterations=None,
-                run_time_seconds=elapsed,
-                info={"raw_status": "error", "error": str(exc)},
-                kkt=None,
-            )
+            return _solver_error(exc, start, settings["threads"])
         elapsed = time.perf_counter() - start
 
         raw_status = getattr(solution.status, "value", str(solution.status))
         mapped = _STATUS.get(str(raw_status), status.SOLVER_ERROR)
         info = solution.info
-        result_info: dict[str, Any] = {"raw_status": raw_status}
+        result_info: dict[str, Any] = {"raw_status": raw_status, "threads": settings["threads"]}
         for field in _INFO_FIELDS:
             value = getattr(info, field, None)
             if value is not None:
@@ -211,30 +226,37 @@ def translate_settings(settings: dict) -> dict:
     and only settings actually inserted are reported. ``max_iter`` becomes
     ``max_iters`` unless that is given too.
     """
-    eps = settings.pop("eps", None)
-    eps_abs = settings.pop("eps_abs", eps)
-    eps_rel = settings.pop("eps_rel", eps)
-    translated: dict = {}
-
-    def put(key: str, value) -> None:
-        if value is not None and key not in settings:
-            settings[key] = float(value)
-            translated[key] = float(value)
-
-    put("tol_feas", eps_abs)
-    put("tol_gap_abs", eps_abs)
-    put("tol_gap_rel", eps_rel)
-    if "max_iter" in settings:
-        max_iter = settings.pop("max_iter")
-        if "max_iters" not in settings:
-            settings["max_iters"] = int(max_iter)
+    translated: dict = translate_tolerance_aliases(
+        settings, ("tol_feas", "tol_gap_abs"), ("tol_gap_rel",)
+    )
+    max_iter = pop_max_iter(settings)
+    if max_iter is not None and settings.get("max_iters") is None:
+        settings["max_iters"] = max_iter
+        translated["max_iters"] = max_iter
+    if settings.get("max_iters") is not None:
+        settings["max_iters"] = coerce_int_setting("max_iters", settings["max_iters"], minimum=1)
     return translated
+
+
+def _solver_error(exc: Exception, start: float, threads: int) -> SolverResult:
+    return SolverResult(
+        status=status.SOLVER_ERROR,
+        objective_value=None,
+        iterations=None,
+        run_time_seconds=time.perf_counter() - start,
+        info={"raw_status": "error", "error": str(exc), "threads": threads},
+        kkt=None,
+    )
+
+
+def _is_accelerate(linear_solver) -> bool:
+    return str(getattr(linear_solver, "value", linear_solver)).lower() == "accelerate"
 
 
 def resolve_linear_solver(value, cpo3_module):
     """Return the ``cpo3.LinearSolver`` named by ``value``.
 
-    A name cpo3 does not know is a configuration error (``ValueError``). A
+    A name cpo3 does not know is a configuration error (``SolverConfigError``). A
     backend this build or host cannot load raises ``SolverUnavailable`` here,
     before the solve: cpo3 would otherwise raise ``RuntimeError`` mid-solve and
     the row would be scored as a numerical failure of the solver.
@@ -247,7 +269,7 @@ def resolve_linear_solver(value, cpo3_module):
             backend = linear_solver(str(value).strip().lower())
         except ValueError:
             known = ", ".join(member.value for member in linear_solver)
-            raise ValueError(
+            raise SolverConfigError(
                 f"Unknown cpo3 linear_solver {value!r}; expected one of: {known}"
             ) from None
     if not backend.is_available():
@@ -322,17 +344,17 @@ def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
     x = getattr(solution, "x", None)
     y = getattr(solution, "y", None)
     s_slack = getattr(solution, "s", None)
-    if x is None:
-        return None
     if mapped_status in status.ANY_FEASIBLE:
-        if y is None or s_slack is None:
+        if not finite_point(x, y, s_slack):
             return None
         return kkt.cone_residuals(p, c, a, b, cone_dict, x, y, s_slack)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
-        if y is None:
+        if not finite_point(y):
             return None
         return kkt.cone_primal_infeasibility_cert(a, b, cone_dict, y)
     if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        if not finite_point(x):
+            return None
         return kkt.cone_dual_infeasibility_cert(p, c, a, cone_dict, x)
     return None
 

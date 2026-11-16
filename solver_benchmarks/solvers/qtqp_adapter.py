@@ -20,14 +20,17 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
     finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    translate_tolerance_aliases,
 )
 
 
@@ -56,6 +59,7 @@ class QTQPSolverAdapter(SolverAdapter):
         # detect they were ignored rather than silently dropping them.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        normalize_max_iter(settings)
         settings = _normalize_settings(settings, qtqp)
         sig = inspect.signature(qtqp.QTQP.solve)
         accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
@@ -64,7 +68,10 @@ class QTQPSolverAdapter(SolverAdapter):
         if not accepts_any:
             unknown = sorted(k for k in settings if k not in solve_params)
             if unknown:
-                raise ValueError(f"qtqp.solve() does not accept settings {unknown}; installed qtqp exposes {sorted(solve_params)}")
+                raise SolverConfigError(
+                    f"qtqp.solve() does not accept settings {unknown}; installed qtqp "
+                    f"exposes {sorted(solve_params)}"
+                )
         _check_setting_values(settings, translated)
         a, b, z = qp_to_nonnegative_cone(qp)
         p = sp.csc_matrix(qp["P"])
@@ -79,6 +86,12 @@ class QTQPSolverAdapter(SolverAdapter):
         try:
             solver = qtqp.QTQP(a=sp.csc_matrix(a), b=b, c=c, z=z, p=p)
             solution = solver.solve(**solve_kwargs)
+        except ImportError as exc:
+            # qtqp imports a linear-solver backend (qdldl, cholmod, ...) when
+            # the solve starts; a missing one is a broken environment.
+            raise SolverUnavailable(
+                f"QTQP linear_solver backend could not be imported: {exc}"
+            ) from exc
         except (ValueError, ArithmeticError, np.linalg.LinAlgError) as exc:
             # qtqp raises ValueError for data it cannot take (non-finite or
             # non-symmetric P from the constructor; a non-convex P, from the
@@ -86,7 +99,11 @@ class QTQPSolverAdapter(SolverAdapter):
             # solver failing on this problem. The setting values solve()
             # would refuse with a ValueError were checked above, so a bad
             # value still raises as a configuration error.
-            error_info = {"raw_status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            error_info = {
+                "raw_status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "threads": None,
+            }
             mark_time_limit_ignored(error_info, time_limit)
             mark_threads_ignored(error_info, threads)
             return SolverResult(
@@ -128,7 +145,7 @@ class QTQPSolverAdapter(SolverAdapter):
         if a.shape[0] - z:
             cone_dict["l"] = int(a.shape[0] - z)
         kkt_dict = _compute_kkt(mapped, solution, p, c, a, b, cone_dict)
-        result_info = {"raw_status": raw_status, **info}
+        result_info = {"raw_status": raw_status, **info, "threads": None}
         mark_time_limit_ignored(result_info, time_limit)
         mark_threads_ignored(result_info, threads)
         if translated:
@@ -174,7 +191,7 @@ _SETTING_RANGES = {
 
 
 def _check_setting_values(settings: dict, translated: dict) -> None:
-    """Raise ValueError naming a setting whose value qtqp would refuse."""
+    """Raise SolverConfigError naming a setting whose value qtqp would refuse."""
     checks = dict(_SETTING_RANGES)
     # gmres_restart is used, and checked, only with GMRES refinement.
     strategy = settings.get("refinement_strategy")
@@ -191,7 +208,7 @@ def _check_setting_values(settings: dict, translated: dict) -> None:
             description, test = checks[key]
             if not test(value):
                 source = " (set from eps_abs / eps_rel / eps)" if key in translated else ""
-                raise ValueError(
+                raise SolverConfigError(
                     f"Invalid QTQP setting {key!r}={value!r}{source}: must be {description}"
                 )
 
@@ -270,7 +287,6 @@ def _compute_kkt(mapped_status, solution, p, c, a, b, cone_dict):
 # qtqp 0.0.7 replaced ``atol``/``rtol`` with Clarabel-style termination
 # settings. Accept both spellings plus the harness-wide ``eps``/``eps_abs``/
 # ``eps_rel`` aliases and translate to whatever the installed build takes.
-_LEGACY_TOL_KEYS = ("atol", "rtol")
 _NEW_TOL_KEYS = ("tol_feas", "tol_gap_abs", "tol_gap_rel")
 
 
@@ -278,74 +294,60 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
     """Map tolerance aliases onto the installed ``solve()`` signature.
 
     Returns a dict describing what was translated (empty if nothing was).
+    An alias supplies a setting only when the native name is absent, and only
+    then is it recorded: the metadata must report what the solver actually
+    received, so an explicit native value is never overwritten or misreported.
     """
-    eps_abs = settings.pop("eps_abs", None)
-    eps_rel = settings.pop("eps_rel", None)
-    eps = settings.pop("eps", None)
-    if eps is not None:
-        eps_abs = eps if eps_abs is None else eps_abs
-        eps_rel = eps if eps_rel is None else eps_rel
-    translated: dict = {}
-
-    def put(key: str, value: float) -> None:
-        # An alias supplies a setting only when the native name is absent, and
-        # only then is it recorded: the metadata must report what the solver
-        # actually received, so an explicit native value is never overwritten
-        # or misreported.
-        if key not in settings:
-            settings[key] = float(value)
-            translated[key] = float(value)
-
     if "tol_feas" not in solve_params and "atol" not in solve_params:
         # unknown signature (e.g. **kwargs): pass names through unchanged
-        if eps_abs is not None:
-            put("tol_feas", eps_abs)
-            put("tol_gap_abs", eps_abs)
-        if eps_rel is not None:
-            put("tol_gap_rel", eps_rel)
-        return translated
-    new_api = "tol_feas" in solve_params
-    if new_api:
-        # legacy atol/rtol -> feasibility and gap tolerances
+        return translate_tolerance_aliases(settings, ("tol_feas", "tol_gap_abs"), ("tol_gap_rel",))
+    if "tol_feas" in solve_params:
+        # legacy atol/rtol -> feasibility and gap tolerances; the eps aliases
+        # win over them.
         atol = settings.pop("atol", None)
         rtol = settings.pop("rtol", None)
-        abs_tol = eps_abs if eps_abs is not None else atol
-        rel_tol = eps_rel if eps_rel is not None else rtol
-        if abs_tol is not None:
-            put("tol_feas", abs_tol)
-            put("tol_gap_abs", abs_tol)
-        if rel_tol is not None:
-            put("tol_gap_rel", rel_tol)
-    else:
-        for key in _NEW_TOL_KEYS:
-            settings.pop(key, None)
-        if eps_abs is not None:
-            put("atol", eps_abs)
-        if eps_rel is not None:
-            put("rtol", eps_rel)
-    return translated
+        translated = translate_tolerance_aliases(
+            settings, ("tol_feas", "tol_gap_abs"), ("tol_gap_rel",)
+        )
+        legacy = {}
+        if atol is not None:
+            legacy["eps_abs"] = atol
+        if rtol is not None:
+            legacy["eps_rel"] = rtol
+        if legacy:
+            settings.update(legacy)
+            translated.update(
+                translate_tolerance_aliases(settings, ("tol_feas", "tol_gap_abs"), ("tol_gap_rel",))
+            )
+        return translated
+    for key in _NEW_TOL_KEYS:
+        settings.pop(key, None)
+    return translate_tolerance_aliases(settings, ("atol",), ("rtol",))
+
+
+def _enum_member(enum_type, value, key: str):
+    """The member of ``enum_type`` named ``value`` (any case), else SolverConfigError."""
+    members = {member.name.lower(): member for member in enum_type}
+    member = members.get(str(value).strip().lower())
+    if member is None:
+        raise SolverConfigError(
+            f"Unknown QTQP {key} {value!r}; expected one of: {', '.join(sorted(members))}"
+        )
+    return member
 
 
 def _normalize_settings(settings: dict, qtqp_module):
-    linear_solver = settings.get("linear_solver")
-    if isinstance(linear_solver, str):
-        lookup = {
-            "qdldl": "QDLDL",
-            "accelerate": "ACCELERATE",
-            "cholmod": "CHOLMOD",
-        }
-        attr = lookup.get(linear_solver.lower(), linear_solver.upper())
-        settings["linear_solver"] = getattr(qtqp_module.LinearSolver, attr)
     # QTQP's enum-valued knobs are named in YAML as plain strings; map any
     # that the installed build exposes.
     for key, enum_name in (
+        ("linear_solver", "LinearSolver"),
         ("init_strategy", "InitStrategy"),
         ("equilibration_strategy", "EquilibrationStrategy"),
         ("refinement_strategy", "RefinementStrategy"),
     ):
         value = settings.get(key)
         if isinstance(value, str) and hasattr(qtqp_module, enum_name):
-            settings[key] = getattr(getattr(qtqp_module, enum_name), value.upper())
+            settings[key] = _enum_member(getattr(qtqp_module, enum_name), value, key)
     return settings
 
 

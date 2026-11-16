@@ -1,4 +1,13 @@
-"""IBM CPLEX adapter."""
+"""IBM CPLEX adapter.
+
+A license failure raised by the solve (the Community Edition that ``pip
+install cplex`` ships with refuses larger problems inside ``solve()``, error
+1016) is a broken environment, not CPLEX failing the problem: it raises
+``SolverUnavailable``. Any other CPLEX error from the solve is
+``solver_error``; other exceptions are left to raise. ``threads`` is one
+unless configured (0: CPLEX's own choice). ``info["raw_status"]`` is CPLEX's
+status string, ``info["raw_status_code"]`` its integer code.
+"""
 
 from __future__ import annotations
 
@@ -16,12 +25,16 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     EPS_ALIASES,
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    finite_point,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
     refuse_settings,
     reported_objective,
     settings_with_defaults,
+    threads_or_default,
 )
 from .qp_split import normalize_qp_bounds
 
@@ -47,7 +60,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         settings = dict(self.settings)
         use_ranged_rows = settings.pop("use_ranged_rows", False)
         if not isinstance(use_ranged_rows, bool):
-            raise ValueError("use_ranged_rows must be a boolean")
+            raise SolverConfigError("use_ranged_rows must be a boolean")
 
         qp = problem.qp
         q = np.asarray(qp["q"], dtype=float)
@@ -60,7 +73,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         # are released deterministically, even when an exception fires.
         try:
             model.objective.set_sense(model.objective.sense.minimize)
-            translated = _configure_cplex(model, settings)
+            translated, threads = _configure_cplex(model, settings)
             infinity = cplex.infinity
             model.variables.add(
                 obj=q.tolist(),
@@ -80,11 +93,18 @@ class CPLEXSolverAdapter(SolverAdapter):
             try:
                 model.solve()
                 resolved = _resolve_infeasible_or_unbounded(model, settings)
-            except Exception as exc:
+            except _cplex_error_type(cplex) as exc:
+                if _is_license_error(exc):
+                    raise SolverUnavailable(f"CPLEX license error: {exc}") from exc
                 return SolverResult(
                     status=status.SOLVER_ERROR,
                     run_time_seconds=time.perf_counter() - start,
-                    info={"error": str(exc), "use_ranged_rows": use_ranged_rows},
+                    info={
+                        "raw_status": "error",
+                        "error": str(exc),
+                        "use_ranged_rows": use_ranged_rows,
+                        "threads": threads,
+                    },
                 )
             elapsed = time.perf_counter() - start
             raw_status = model.solution.get_status()
@@ -104,7 +124,8 @@ class CPLEXSolverAdapter(SolverAdapter):
                     y = np.zeros(a.shape[0])
                     # CPLEX uses the opposite dual sign; sum any split rows.
                     np.add.at(y, constraint_rows, -duals)
-                    kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
+                    if finite_point(x, y):
+                        kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
@@ -112,8 +133,10 @@ class CPLEXSolverAdapter(SolverAdapter):
                 iterations=iteration_counts["iterations"],
                 run_time_seconds=elapsed,
                 info={
-                    "raw_status": raw_status,
-                    "status_string": model.solution.get_status_string(raw_status),
+                    "raw_status": _status_string(model, raw_status),
+                    "raw_status_code": raw_status,
+                    "threads": threads,
+                    "status_string": _status_string(model, raw_status),
                     "problem_type": model.problem_type[model.get_problem_type()],
                     "use_ranged_rows": use_ranged_rows,
                     "simplex_iterations": iteration_counts["simplex_iterations"],
@@ -188,13 +211,15 @@ def _add_cplex_constraints(
     return constraint_rows
 
 
-def _configure_cplex(model, settings: dict) -> dict:
+def _configure_cplex(model, settings: dict) -> tuple[dict, int]:
     """Apply ``settings`` (dotted CPLEX parameter paths) to ``model``.
 
-    Returns the aliases it translated: ``max_iter`` caps both the barrier and
-    the simplex iteration counts unless either path is given. The ``eps``
-    aliases are refused (CPLEX's tolerances are not an absolute/relative
-    pair), and a path CPLEX does not have raises ValueError naming it.
+    Returns the aliases it translated and the thread count: ``max_iter``
+    caps both the barrier and the simplex iteration counts unless either path
+    is given, and ``threads`` (CPLEX's own name too) is one unless
+    configured. The ``eps`` aliases are refused (CPLEX's tolerances are not an
+    absolute/relative pair), and a path CPLEX does not have raises
+    SolverConfigError naming it.
     """
     settings = settings_with_defaults(settings)
     refuse_settings(
@@ -205,8 +230,8 @@ def _configure_cplex(model, settings: dict) -> dict:
         "simplex.tolerances.feasibility, simplex.tolerances.optimality)",
     )
     translated: dict = {}
-    if "max_iter" in settings:
-        max_iter = int(settings.pop("max_iter"))
+    max_iter = pop_max_iter(settings, minimum=0)
+    if max_iter is not None:
         for path in ("barrier.limits.iteration", "simplex.limits.iterations"):
             if path not in settings:
                 settings[path] = max_iter
@@ -220,12 +245,11 @@ def _configure_cplex(model, settings: dict) -> dict:
     time_limit = pop_time_limit(settings)
     if time_limit is not None:
         model.parameters.timelimit.set(float(time_limit))
-    threads = pop_threads(settings)
-    if threads is not None:
-        model.parameters.threads.set(int(threads))
+    threads = threads_or_default(pop_threads(settings))
+    model.parameters.threads.set(threads)
     for key, value in settings.items():
         _set_cplex_parameter(model, key, value)
-    return translated
+    return translated, threads
 
 
 def _set_cplex_parameter(model, key: str, value) -> None:
@@ -235,8 +259,37 @@ def _set_cplex_parameter(model, key: str, value) -> None:
             node = getattr(node, part)
         setter = node.set
     except AttributeError:
-        raise ValueError(f"Unknown CPLEX parameter {key!r}") from None
-    setter(value)
+        raise SolverConfigError(f"Unknown CPLEX parameter {key!r}") from None
+    try:
+        setter(value)
+    except Exception as exc:
+        raise SolverConfigError(f"Invalid CPLEX parameter {key!r}={value!r}: {exc}") from exc
+
+
+def _cplex_error_type(cplex):
+    """CPLEX's base exception (``CplexError``; ``CplexSolverError`` derives from it)."""
+    exceptions = cplex.exceptions
+    return getattr(exceptions, "CplexError", exceptions.CplexSolverError)
+
+
+# CPLEX error codes for license failures: Community Edition size limits
+# (CPXERR_RESTRICTED_VERSION) and no valid license (CPXERR_ILOG_LICENSE).
+_LICENSE_CODES = frozenset({1016, 32201})
+
+
+def _is_license_error(exc: Exception) -> bool:
+    # CplexError's args are (message, environment, error code).
+    args = tuple(exc.args)
+    code = args[2] if len(args) >= 3 else None
+    text = str(exc).lower()
+    return code in _LICENSE_CODES or "community edition" in text or "licen" in text
+
+
+def _status_string(model, raw_status) -> str:
+    try:
+        return str(model.solution.get_status_string(raw_status))
+    except Exception:
+        return str(raw_status)
 
 
 def _map_cplex_status(raw_status: int, model) -> str:

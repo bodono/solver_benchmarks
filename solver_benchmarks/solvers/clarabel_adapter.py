@@ -10,11 +10,23 @@ pass through unchanged. Dual exponential (``ed``) and dual power cones
 
 The harness aliases ``eps`` / ``eps_abs`` / ``eps_rel`` map onto ``tol_feas``,
 ``tol_gap_abs`` and ``tol_gap_rel`` (recorded in ``info.settings_translated``);
-``max_iter`` and ``time_limit`` are Clarabel's own names.
+``max_iter`` and ``time_limit`` are Clarabel's own names. A negative or
+non-finite tolerance is refused; so are ``tol_feas`` 0 and ``tol_gap_abs`` and
+``tol_gap_rel`` both 0, which can never be met. One zero gap tolerance is a
+valid absolute-only or relative-only test. ``threads`` sets ``max_threads``, one unless
+configured (0: Clarabel's own choice).
+
+Clarabel relabels a solve that stopped on ``max_iter`` or ``time_limit`` as
+``AlmostSolved`` (or ``Almost*Infeasible``) when the last iterate meets its
+reduced tolerances; such a stop is reported as ``max_iter_reached`` /
+``time_limit`` like every other adapter's, with Clarabel's status kept in
+``info.raw_status``. An ``Almost*`` status for any other stop (insufficient
+progress, numerical trouble) stays ``*_inaccurate``.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 
@@ -33,11 +45,18 @@ from solver_benchmarks.transforms.psd import (
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
     mark_threads_ignored,
+    normalize_max_iter,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    threads_or_default,
+    translate_tolerance_aliases,
 )
 
 
@@ -82,42 +101,70 @@ class ClarabelSolverAdapter(SolverAdapter):
         if time_limit is not None:
             normalized_settings["time_limit"] = float(time_limit)
         translated = translate_settings(normalized_settings)
+        normalize_max_iter(normalized_settings, minimum=0)
         settings = clarabel.DefaultSettings()
-        threads_ignored = False
-        if threads is not None and threads >= 1:
-            # Probe the real DefaultSettings instance: Clarabel renamed
-            # the knob across versions and some builds expose neither.
-            # Injecting an attribute that does not exist on the actual
-            # object would later trip the "Invalid Clarabel settings"
-            # validation below.
-            available = [
-                attr for attr in ("max_threads", "threads")
-                if hasattr(settings, attr)
-            ]
-            for attr in available:
-                normalized_settings.setdefault(attr, threads)
-            if not available:
-                threads_ignored = True
+        # Probe the real DefaultSettings instance: Clarabel renamed the knob
+        # across versions and some builds expose neither. Injecting an
+        # attribute that does not exist on the actual object would later
+        # trip the "Invalid Clarabel settings" validation below.
+        thread_attrs = [attr for attr in ("max_threads", "threads") if hasattr(settings, attr)]
+        threads_used = None
+        if thread_attrs:
+            native = [normalized_settings[attr] for attr in thread_attrs if attr in normalized_settings]
+            threads_used = (
+                coerce_int_setting("max_threads", native[0], minimum=0)
+                if native
+                else threads_or_default(threads)
+            )
+            for attr in thread_attrs:
+                normalized_settings[attr] = threads_used
 
         settings.verbose = bool(normalized_settings.get("verbose"))
         unknown_keys: list[str] = []
         for key, value in normalized_settings.items():
             if key == "verbose":
                 continue
-            if hasattr(settings, key):
-                setattr(settings, key, value)
-            else:
+            if not hasattr(settings, key):
                 unknown_keys.append(key)
+                continue
+            _check_setting_value(key, value, translated)
+            try:
+                setattr(settings, key, value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise SolverConfigError(
+                    f"Invalid Clarabel setting {key!r}={value!r}: {exc}"
+                ) from exc
         if unknown_keys:
-            raise ValueError(
+            raise SolverConfigError(
                 f"Invalid Clarabel settings: {sorted(unknown_keys)!r}"
+            )
+        if getattr(settings, "tol_gap_abs", None) == 0 and getattr(settings, "tol_gap_rel", None) == 0:
+            raise SolverConfigError(
+                "Invalid Clarabel settings tol_gap_abs = tol_gap_rel = 0: the gap test "
+                "(absolute or relative) could never pass"
             )
 
         start = time.perf_counter()
-        solver = clarabel.DefaultSolver(p, q, sp.csc_matrix(a), b, cones, settings)
+        try:
+            solver = clarabel.DefaultSolver(p, q, sp.csc_matrix(a), b, cones, settings)
+        except Exception as exc:
+            # Clarabel checks enum-valued settings (direct_solve_method, ...)
+            # when the solver is built and raises a bare Exception. A valid
+            # backend whose library is not on this host ("Problem with mkl
+            # solver (not available)") is a broken environment, not a typo.
+            text = str(exc)
+            if text.startswith("Bad settings") and "(not available)" in text:
+                raise SolverUnavailable(f"Clarabel backend not available: {exc}") from exc
+            if text.startswith("Bad settings"):
+                raise SolverConfigError(f"Clarabel rejected a setting: {exc}") from exc
+            raise
         solution = solver.solve()
         elapsed = time.perf_counter() - start
-        mapped = _map_clarabel_status(str(solution.status))
+        mapped = _map_clarabel_status(
+            str(solution.status),
+            hit_iteration_limit=_at_least(getattr(solution, "iterations", None), settings.max_iter),
+            hit_time_limit=_at_least(getattr(solution, "solve_time", None), settings.time_limit),
+        )
         kkt_dict = _compute_kkt(
             mapped, solution, problem, p, q, a, b, cone_dict
         )
@@ -128,18 +175,16 @@ class ClarabelSolverAdapter(SolverAdapter):
             "solve_time": getattr(solution, "solve_time", None),
         }
         info.update(_linear_solver_counters(solver))
-        if threads_ignored:
+        info["threads"] = threads_used
+        if not thread_attrs:
             mark_threads_ignored(info, threads)
         if translated:
             info["settings_translated"] = translated
         # Clarabel fills obj_val for every status; only a claimed solution
         # has an objective (the KKT record keeps an iterate's primal_obj).
-        objective_present = mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
         return SolverResult(
             status=mapped,
-            objective_value=(
-                _maybe_float(getattr(solution, "obj_val", None)) if objective_present else None
-            ),
+            objective_value=reported_objective(mapped, getattr(solution, "obj_val", None)),
             iterations=_maybe_int(getattr(solution, "iterations", None)),
             run_time_seconds=elapsed,
             info=info,
@@ -155,19 +200,36 @@ def translate_settings(settings: dict) -> dict:
     ``eps_rel`` (or ``eps``) supplies ``tol_gap_rel``. An explicit native value
     always wins, and only settings actually inserted are reported.
     """
-    eps = settings.pop("eps", None)
-    eps_abs = settings.pop("eps_abs", eps)
-    eps_rel = settings.pop("eps_rel", eps)
-    translated: dict = {}
-    for key, value in (
-        ("tol_feas", eps_abs),
-        ("tol_gap_abs", eps_abs),
-        ("tol_gap_rel", eps_rel),
-    ):
-        if value is not None and key not in settings:
-            settings[key] = float(value)
-            translated[key] = float(value)
-    return translated
+    return translate_tolerance_aliases(settings, ("tol_feas", "tol_gap_abs"), ("tol_gap_rel",))
+
+
+def _check_setting_value(key: str, value, translated: dict) -> None:
+    """Refuse a negative or non-finite tolerance, and ``tol_feas`` 0.
+
+    ``tol_feas`` <= 0 can never be met (every problem ends ``AlmostSolved`` or
+    worse). Any other tolerance may be 0: the gap test is absolute OR
+    relative, so one zero gap tolerance (the shared ``eps_rel: 0``) is a
+    valid configuration; both gap tolerances 0 are refused by the caller.
+    """
+    if not (key.startswith("tol_") or key.startswith("reduced_tol_")):
+        return
+    is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+    source = " (set from eps_abs / eps_rel / eps)" if key in translated else ""
+    if not (is_number and math.isfinite(value) and value >= 0):
+        raise SolverConfigError(
+            f"Invalid Clarabel setting {key!r}={value!r}{source}: must be a finite number >= 0"
+        )
+    if key == "tol_feas" and value == 0:
+        raise SolverConfigError(
+            f"Invalid Clarabel setting {key!r}={value!r}{source}: must be positive"
+        )
+
+
+def _at_least(value, limit) -> bool:
+    try:
+        return value is not None and limit is not None and float(value) >= float(limit)
+    except (TypeError, ValueError):
+        return False
 
 
 def _linear_solver_counters(solver) -> dict:
@@ -223,18 +285,20 @@ def _compute_kkt(mapped_status, solution, problem, p, q, a, b, cone_dict):
         s_for_kkt = np.asarray(s_slack, dtype=float) if s_slack is not None else None
 
     if mapped_status in status.ANY_FEASIBLE:
-        if y_for_kkt is None or s_for_kkt is None:
+        if not finite_point(x, y_for_kkt, s_for_kkt):
             return None
         return kkt.cone_residuals(
             p, q, a_for_kkt, b_for_kkt, cone_dict, x, y_for_kkt, s_for_kkt
         )
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
-        if y_for_kkt is None:
+        if not finite_point(y_for_kkt):
             return None
         return kkt.cone_primal_infeasibility_cert(
             a_for_kkt, b_for_kkt, cone_dict, y_for_kkt
         )
     if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        if not finite_point(x):
+            return None
         return kkt.cone_dual_infeasibility_cert(p, q, a_for_kkt, cone_dict, x)
     return None
 
@@ -251,20 +315,26 @@ _CLARABEL_STATUS_MAP: dict[str, str] = {
 }
 
 
-def _map_clarabel_status(raw_status: str) -> str:
+def _map_clarabel_status(
+    raw_status: str, *, hit_iteration_limit: bool = False, hit_time_limit: bool = False
+) -> str:
     """Translate a Clarabel ``solution.status`` string to canonical.
 
+    An ``Almost*`` status from a solve that used up ``max_iter`` or
+    ``time_limit`` is that limit (Clarabel relabels such a stop when the
+    last iterate meets its reduced tolerances); otherwise the table applies.
     Exposed as a module-level helper so the per-status mapping table
     can be exercised directly in tests instead of via a real Clarabel
     solve, and so a regression in any non-optimal branch surfaces in
     a fast unit test rather than only when that branch is hit at
     runtime.
     """
+    if raw_status.startswith("Almost"):
+        if hit_iteration_limit:
+            return status.MAX_ITER_REACHED
+        if hit_time_limit:
+            return status.TIME_LIMIT
     return _CLARABEL_STATUS_MAP.get(raw_status, status.SOLVER_ERROR)
-
-
-def _maybe_float(value):
-    return None if value is None else float(value)
 
 
 def _maybe_int(value):

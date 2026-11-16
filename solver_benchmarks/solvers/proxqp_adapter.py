@@ -8,24 +8,32 @@ import re
 import time
 from pathlib import Path
 
-from solver_benchmarks.analysis import kkt
+import numpy as np
+import scipy.sparse as sp
+
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
-    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
     translate_eps_alias,
 )
-from .qp_split import combine_qp_duals, split_qp_for_range_constraints
+from .qp_split import (
+    combine_qp_duals,
+    dense_backend_requested,
+    split_qp_for_range_constraints,
+    split_qp_kkt,
+)
 
 
 class ProxQPSolverAdapter(SolverAdapter):
@@ -49,15 +57,12 @@ class ProxQPSolverAdapter(SolverAdapter):
         qp = problem.qp
         p, q, aeq, b, g, h_l, h_u, eq_idx, ineq_idx = split_qp_for_range_constraints(qp)
         settings = settings_with_defaults(self.settings)
-        # Pop both keys unconditionally so an explicit dense=True does
-        # not leak "backend" into the **settings forwarded to ProxQP.
-        dense_flag = settings.pop("dense", False)
-        backend_value = settings.pop("backend", "")
-        use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
+        use_dense = dense_backend_requested(settings, "ProxQP")
         # ProxQP has no native time-limit / threads knobs; record the
         # configured values on info so callers know they were ignored.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        normalize_max_iter(settings)
         translated = translate_eps_alias(settings)
         settings.setdefault("compute_timings", True)
         backend = proxsuite.proxqp.dense if use_dense else proxsuite.proxqp.sparse
@@ -65,8 +70,12 @@ class ProxQPSolverAdapter(SolverAdapter):
         _check_setting_values(settings)
         gap_settings = _duality_gap_settings(settings, proxsuite)
         start = time.perf_counter()
+        # 1-D float64 vectors and float64 matrices, so that the binding's
+        # TypeError ("incompatible function arguments") is about a setting.
+        p, aeq, g = (_float_matrix(m) for m in (p, aeq, g))
+        q, b, h_l, h_u = (_float_vector(v) for v in (q, b, h_l, h_u))
         if use_dense:
-            result = proxsuite.proxqp.dense.solve(
+            data = (
                 p.toarray(),
                 q,
                 None if aeq is None else aeq.toarray(),
@@ -74,19 +83,25 @@ class ProxQPSolverAdapter(SolverAdapter):
                 None if g is None else g.toarray(),
                 h_l,
                 h_u,
-                **settings,
             )
         else:
-            result = proxsuite.proxqp.sparse.solve(
-                p,
-                q,
-                aeq,
-                b,
-                g,
-                h_l,
-                h_u,
-                **settings,
-            )
+            data = (p, q, aeq, b, g, h_l, h_u)
+        try:
+            result = backend.solve(*data, **settings)
+        except TypeError as exc:
+            if not _settings_refused(backend, settings, use_dense):
+                # The settings work on a one-variable problem: the binding
+                # refused this problem's data (e.g. complex entries).
+                return SolverResult(
+                    status=status.SOLVER_ERROR,
+                    run_time_seconds=time.perf_counter() - start,
+                    info={"raw_status": "error", "error": f"TypeError: {exc}", "threads": None},
+                )
+            # The binding refuses a setting of the wrong type (the names were
+            # checked above) before solving.
+            raise SolverConfigError(
+                f"ProxQP rejected a setting value in {sorted(settings)}: {exc}"
+            ) from exc
         elapsed = time.perf_counter() - start
 
         mapped = _map_proxqp_status(result.info.status, proxsuite)
@@ -97,18 +112,10 @@ class ProxQPSolverAdapter(SolverAdapter):
             ineq_idx,
             getattr(result, "z", None),
         )
-        kkt_dict = None
-        if mapped in status.ANY_FEASIBLE and finite_point(result.x, y):
-            kkt_dict = kkt.qp_residuals(
-                qp["P"],
-                qp["q"],
-                qp["A"],
-                qp["l"],
-                qp["u"],
-                result.x,
-                y,
-            )
+        kkt_dict = split_qp_kkt(mapped, qp, result.x, y)
         info = _info_dict(result.info)
+        info["raw_status"] = info.get("status", str(result.info.status))
+        info["threads"] = None
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
         info.update(gap_settings)
@@ -198,12 +205,14 @@ _SETTING_RANGES = {
 
 
 def _check_setting_values(settings: dict) -> None:
-    """Raise ValueError naming a setting whose value is out of range (None means unset)."""
+    """Raise SolverConfigError naming a setting whose value is out of range (None means unset)."""
     for key, value in settings.items():
         if key in _SETTING_RANGES and value is not None:
             description, test = _SETTING_RANGES[key]
             if not test(value):
-                raise ValueError(f"Invalid ProxQP setting {key!r}={value!r}: must be {description}")
+                raise SolverConfigError(
+                    f"Invalid ProxQP setting {key!r}={value!r}: must be {description}"
+                )
 
 
 # Positional problem data in ProxQP's ``solve`` signatures, not settings.
@@ -211,7 +220,7 @@ _DATA_ARGUMENTS = {"H", "g", "A", "b", "C", "l", "u", "l_box", "u_box", "x", "y"
 
 
 def _check_settings(settings: dict, solve) -> None:
-    """Raise ValueError naming any setting ProxQP's ``solve`` does not take.
+    """Raise SolverConfigError naming any setting ProxQP's ``solve`` does not take.
 
     The nanobind binding would raise a TypeError that lists every passed
     keyword without saying which one is wrong. The accepted names are read
@@ -228,7 +237,7 @@ def _check_settings(settings: dict, solve) -> None:
         return
     unknown = sorted(key for key in settings if key not in accepted)
     if unknown:
-        raise ValueError(
+        raise SolverConfigError(
             f"Unrecognized ProxQP settings {unknown}; accepted: {sorted(accepted)}"
         )
 
@@ -282,6 +291,34 @@ def _info_dict(info) -> dict:
             value = getattr(info, key)
             out[key] = str(value) if key == "status" else value
     return out
+
+
+def _float_vector(value):
+    """A 1-D float64 copy of ``value`` (None and complex data pass unchanged)."""
+    if value is None:
+        return None
+    array = np.asarray(value)
+    if np.iscomplexobj(array):
+        return array
+    return array.astype(float).reshape(-1)
+
+
+def _float_matrix(value):
+    if value is None or np.iscomplexobj(value.data if sp.issparse(value) else value):
+        return value
+    return sp.csc_matrix(value, dtype=float)
+
+
+def _settings_refused(backend, settings: dict, use_dense: bool) -> bool:
+    """Whether ProxQP refuses ``settings`` on a one-variable problem too."""
+    h = np.eye(1) if use_dense else sp.csc_matrix(np.eye(1))
+    try:
+        backend.solve(h, np.ones(1), None, None, None, None, None, **settings)
+    except TypeError:
+        return True
+    except Exception:  # noqa: BLE001 - any other failure says nothing about types
+        return False
+    return False
 
 
 def _proxqp_seconds(value):

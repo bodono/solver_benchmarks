@@ -12,6 +12,7 @@ the unavailable-module paths.
 from __future__ import annotations
 
 import csv
+import enum
 import json
 import sys
 from types import SimpleNamespace
@@ -618,6 +619,13 @@ def test_qtqp_solve_raises_solver_unavailable_when_module_missing(
 # ---------------------------------------------------------------------------
 
 
+class _FakeLinearSolver(enum.Enum):
+    QDLDL = "qdldl_enum"
+    ACCELERATE = "accelerate_enum"
+    CHOLMOD = "cholmod_enum"
+    MUMPS = "mumps_enum"
+
+
 @pytest.mark.parametrize(
     "input_value,expected_attr",
     [
@@ -627,32 +635,38 @@ def test_qtqp_solve_raises_solver_unavailable_when_module_missing(
         ("accelerate", "ACCELERATE"),
         ("ACCELERATE", "ACCELERATE"),
         ("cholmod", "CHOLMOD"),
-        ("MUMPS", "MUMPS"),  # unknown lookup -> upper-case fallthrough
+        ("MUMPS", "MUMPS"),  # any member of the installed enum
     ],
 )
 def test_qtqp_normalize_linear_solver_resolves_string_aliases(
     input_value, expected_attr
 ):
     """The adapter accepts QTQP's LinearSolver enum *or* a string. The
-    string path must look up the canonical aliases (qdldl/accelerate/
-    cholmod) case-insensitively and fall back to the .upper() name for
-    unknown values, so the adapter is forward-compatible with new
-    QTQP linear solvers."""
+    string path looks the member name up case-insensitively among the
+    installed build's members, so new QTQP linear solvers work."""
+    from solver_benchmarks.solvers.qtqp_adapter import _normalize_settings
+
+    fake_qtqp = SimpleNamespace(LinearSolver=_FakeLinearSolver)
+    settings = {"linear_solver": input_value, "other_kwarg": 42}
+    normalized = _normalize_settings(settings, fake_qtqp)
+    assert normalized["linear_solver"] is _FakeLinearSolver[expected_attr]
+    # Unrelated settings must pass through untouched.
+    assert normalized["other_kwarg"] == 42
+
+
+@pytest.mark.parametrize("key", ["linear_solver", "equilibration_strategy", "refinement_strategy"])
+def test_qtqp_unknown_enum_name_is_a_configuration_error(key):
+    """An unknown name raised AttributeError from getattr on the enum."""
+    from solver_benchmarks.solvers.base import SolverConfigError
     from solver_benchmarks.solvers.qtqp_adapter import _normalize_settings
 
     fake_qtqp = SimpleNamespace(
-        LinearSolver=SimpleNamespace(
-            QDLDL="qdldl_enum",
-            ACCELERATE="accelerate_enum",
-            CHOLMOD="cholmod_enum",
-            MUMPS="mumps_enum",
-        )
+        LinearSolver=_FakeLinearSolver,
+        EquilibrationStrategy=_FakeLinearSolver,
+        RefinementStrategy=_FakeLinearSolver,
     )
-    settings = {"linear_solver": input_value, "other_kwarg": 42}
-    normalized = _normalize_settings(settings, fake_qtqp)
-    assert normalized["linear_solver"] == f"{expected_attr.lower()}_enum"
-    # Unrelated settings must pass through untouched.
-    assert normalized["other_kwarg"] == 42
+    with pytest.raises(SolverConfigError, match="bogus"):
+        _normalize_settings({key: "bogus"}, fake_qtqp)
 
 
 def test_qtqp_normalize_linear_solver_passes_through_non_string():

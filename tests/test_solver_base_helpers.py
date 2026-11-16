@@ -125,3 +125,123 @@ def test_mark_threads_ignored_records_request():
 
 def test_settings_with_defaults_default_quiet():
     assert settings_with_defaults({})["verbose"] is False
+
+
+# --- SolverConfigError and the shared tolerance aliases -----------------------
+
+
+def test_config_errors_from_the_shared_helpers_are_solver_config_errors():
+    from solver_benchmarks.solvers.base import SolverConfigError, refuse_settings
+
+    assert issubclass(SolverConfigError, ValueError)
+    with pytest.raises(SolverConfigError):
+        pop_time_limit({"time_limit": 0})
+    with pytest.raises(SolverConfigError):
+        pop_threads({"threads": -1})
+    with pytest.raises(SolverConfigError):
+        pop_threads({"threads": 1.5})
+    with pytest.raises(SolverConfigError):
+        refuse_settings({"eps": 1e-6}, ("eps",), "X", "hint")
+
+
+def test_tolerance_aliases_map_onto_solver_names():
+    from solver_benchmarks.solvers.base import translate_tolerance_aliases
+
+    settings = {"eps": 1e-6, "eps_rel": 1e-4, "tol_feas": 1e-9}
+    translated = translate_tolerance_aliases(
+        settings, ("tol_feas", "tol_gap_abs"), ("tol_gap_rel",)
+    )
+    # eps supplies the absolute names, eps_rel the relative one; a native
+    # value wins and is not reported.
+    assert settings == {"tol_feas": 1e-9, "tol_gap_abs": 1e-6, "tol_gap_rel": 1e-4}
+    assert translated == {"tol_gap_abs": 1e-6, "tol_gap_rel": 1e-4}
+
+
+def test_tolerance_alias_set_to_null_counts_as_unset():
+    # eps_abs: null disabled the eps fallback in Clarabel, cpo3, ECOS, CVXOPT
+    # and SDPA, and reached SCS as None.
+    from solver_benchmarks.solvers.base import translate_tolerance_aliases
+
+    settings = {"eps": 1e-6, "eps_abs": None, "tol_feas": None}
+    translated = translate_tolerance_aliases(settings, ("tol_feas",), ("tol_gap_rel",))
+    assert settings == {"tol_feas": 1e-6, "tol_gap_rel": 1e-6}
+    assert translated == {"tol_feas": 1e-6, "tol_gap_rel": 1e-6}
+    native = {"eps": 1e-6, "eps_abs": None}
+    assert translate_tolerance_aliases(native) == {"eps_abs": 1e-6, "eps_rel": 1e-6}
+    assert native == {"eps_abs": 1e-6, "eps_rel": 1e-6}
+
+
+def test_native_eps_names_pass_through_unchanged():
+    from solver_benchmarks.solvers.base import translate_tolerance_aliases
+
+    settings = {"eps_abs": "1e-3"}
+    assert translate_tolerance_aliases(settings) == {}
+    assert settings == {"eps_abs": "1e-3"}  # left for the solver to judge
+
+
+def test_tolerance_alias_that_is_not_a_number_is_a_config_error():
+    from solver_benchmarks.solvers.base import SolverConfigError, translate_tolerance_aliases
+
+    with pytest.raises(SolverConfigError, match="'eps'"):
+        translate_tolerance_aliases({"eps": "tight"})
+    with pytest.raises(SolverConfigError, match="'eps_abs'"):
+        translate_tolerance_aliases({"eps_abs": True}, ("tol_feas",), ())
+
+
+def test_refused_alias_set_to_null_counts_as_unset():
+    from solver_benchmarks.solvers.base import EPS_ALIASES, refuse_settings
+
+    settings = {"eps": None, "max_iter": 5}
+    refuse_settings(settings, EPS_ALIASES, "X", "hint")
+    assert settings == {"max_iter": 5}
+
+
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "cpo3", "ecos", "qtqp"])
+def test_eps_with_null_eps_abs_sets_every_tolerance(solver_name):
+    # One rule in every adapter: SCS passed None on (TypeError), Clarabel set
+    # only tol_gap_rel.
+    import importlib
+
+    pytest.importorskip(solver_name)
+    module = importlib.import_module(f"solver_benchmarks.solvers.{solver_name}_adapter")
+    settings = {"eps": 1e-6, "eps_abs": None}
+    if solver_name == "qtqp":
+        module._translate_tolerances(settings, {"tol_feas", "tol_gap_abs", "tol_gap_rel"})
+    else:
+        module.translate_settings(settings)
+    assert None not in settings.values()
+    assert sorted(settings.values()) == [1e-6] * len(settings)
+    assert len(settings) >= 2
+
+
+def test_integer_setting_rule():
+    import numpy as np
+
+    from solver_benchmarks.solvers.base import (
+        SolverConfigError,
+        coerce_int_setting,
+        pop_max_iter,
+    )
+
+    assert coerce_int_setting("k", 3) == 3
+    assert coerce_int_setting("k", np.int32(3)) == 3
+    assert coerce_int_setting("k", 1000.0) == 1000
+    for value in (True, 2.5, float("nan"), "3", None, [3]):
+        with pytest.raises(SolverConfigError, match="'k'"):
+            coerce_int_setting("k", value)
+    with pytest.raises(SolverConfigError, match=">= 1"):
+        coerce_int_setting("k", 0, minimum=1)
+    settings = {"max_iter": None}
+    assert pop_max_iter(settings) is None and settings == {}
+    assert pop_max_iter({"max_iter": 0}, minimum=0) == 0
+    with pytest.raises(SolverConfigError):
+        pop_threads({"threads": "4"})
+
+
+def test_threads_or_default():
+    from solver_benchmarks.solvers.base import DEFAULT_THREADS, threads_or_default
+
+    assert DEFAULT_THREADS == 1
+    assert threads_or_default(None) == 1
+    assert threads_or_default(0) == 0
+    assert threads_or_default(8) == 8

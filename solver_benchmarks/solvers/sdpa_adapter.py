@@ -5,9 +5,12 @@ Settings are sdpa-python's own parameters (``maxIteration``, ``epsilonStar``,
 adapter's ``optimality_tolerance``, ``result_file`` and ``print``. The harness
 aliases are translated: ``max_iter`` -> ``maxIteration``, ``eps_abs`` ->
 ``epsilonStar``, ``eps_rel`` -> ``epsilonDash`` (``eps`` supplies both) and
-``threads`` -> ``numThreads``. Any other name raises ``ValueError``:
-sdpa-python silently ignores names it does not know. SDPA has no time limit;
-one is recorded as ignored.
+``threads`` -> ``numThreads``. Any other name raises ``SolverConfigError``:
+sdpa-python silently ignores names it does not know, and resets a value of the
+wrong type to its default, so the adapter also refuses a numeric parameter
+that is not a number and an ``epsilonStar`` / ``epsilonDash`` /
+``optimality_tolerance`` that is not positive, or a ``maxIteration`` below 1.
+SDPA has no time limit; one is recorded as ignored.
 
 Defaults that differ from sdpa-python's:
 
@@ -20,6 +23,7 @@ Defaults that differ from sdpa-python's:
 * ``numThreads`` is 1 unless ``threads`` (or ``numThreads``) is given;
   sdpa-python otherwise uses every core, which oversubscribes parallel runs
   and makes its timings incomparable with single-threaded solvers.
+  ``threads: 0`` leaves it to sdpa-python (every core).
 
 Status: ``pdOPT`` / ``pdFEAS`` are ``optimal`` when sdpa-python's primal and
 dual errors and relative duality gap are within ``optimality_tolerance``
@@ -29,10 +33,14 @@ eigenvalue computation does not converge (common for PSD blocks of order 40
 and up); that error is then unknown and left out, not treated as a failure.
 A run that stops at ``maxIteration`` without SDPA declaring a solution or a
 certificate is ``max_iter_reached``.
+
+sdpa-python refuses a problem with no constraint rows ("Inconsistent Size");
+that refusal is recorded as ``solver_error``, the solver failing that problem.
 """
 
 from __future__ import annotations
 
+import numbers
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,13 +54,21 @@ from solver_benchmarks.core.problem import CONE, ProblemData, cone_items_in_row_
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    DEFAULT_THREADS,
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
     mark_time_limit_ignored,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    translate_tolerance_aliases,
 )
+from .cone_layout import psd_triangle_to_full
 
 
 class SDPASolverAdapter(SolverAdapter):
@@ -92,14 +108,33 @@ class SDPASolverAdapter(SolverAdapter):
         option = _sdpa_options(settings, artifacts_dir, info=ignore_markers)
         if optimality_tolerance is None:
             optimality_tolerance = _default_optimality_tolerance(option)
+        else:
+            optimality_tolerance = check_optimality_tolerance(optimality_tolerance)
+        threads = option.get("numThreads", 0)
         start = time.perf_counter()
-        result = sdpap.solve(prepared.a, prepared.b, prepared.c, prepared.k, prepared.j, option)
+        try:
+            result = sdpap.solve(prepared.a, prepared.b, prepared.c, prepared.k, prepared.j, option)
+        except ValueError as exc:
+            # sdpa-python's size check, which a problem without constraint
+            # rows fails (its empty b counts as one row).
+            if not str(exc).startswith("Inconsistent Size"):
+                raise
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info={
+                    "raw_status": "error",
+                    "error": f"sdpa-python refused the problem: {exc}",
+                    "threads": threads,
+                    **ignore_markers,
+                },
+            )
         elapsed = time.perf_counter() - start
         if result is None:
             return SolverResult(
                 status=status.SOLVER_ERROR,
                 run_time_seconds=elapsed,
-                info={"raw_status": "no_result", **ignore_markers},
+                info={"raw_status": "no_result", "threads": threads, **ignore_markers},
             )
         x_raw, y_raw, sdpap_info, time_info, sdpa_info = result
         x = _dense(x_raw)
@@ -107,12 +142,9 @@ class SDPASolverAdapter(SolverAdapter):
         y = prepared.dual_to_original(y_sdpap)
         mapped = _map_sdpa_status(sdpap_info, sdpa_info, option, float(optimality_tolerance))
         kkt_dict = _compute_kkt(cone_problem, mapped, x, y)
-        objective_present = mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
         return SolverResult(
             status=mapped,
-            objective_value=(
-                _maybe_float(sdpap_info.get("primalObj")) if objective_present else None
-            ),
+            objective_value=reported_objective(mapped, sdpap_info.get("primalObj")),
             iterations=_maybe_int(sdpa_info.get("iteration")),
             run_time_seconds=elapsed,
             solve_time_seconds=_maybe_float(time_info.get("sdpa")),
@@ -128,6 +160,7 @@ class SDPASolverAdapter(SolverAdapter):
                 "sdpa": sdpa_info,
                 "optimality_tolerance": float(optimality_tolerance),
                 "numThreads": option.get("numThreads"),
+                "threads": threads,
                 "lowerBound": option.get("lowerBound"),
                 "upperBound": option.get("upperBound"),
                 **ignore_markers,
@@ -145,12 +178,16 @@ def _compute_kkt(cone_problem: dict, mapped: str, x: np.ndarray, y: np.ndarray):
     cone = cone_problem["cone"]
     p_mat = sp.csc_matrix((a.shape[1], a.shape[1]))
     if mapped in status.ANY_FEASIBLE:
-        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+        if not finite_point(x, y):
             return None
         return kkt.cone_residuals(p_mat, cone_problem["q"], a, b, cone, x, y, b - a @ x)
     if mapped in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        if not finite_point(y):
+            return None
         return kkt.cone_primal_infeasibility_cert(a, b, cone, y)
     if mapped in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        if not finite_point(x):
+            return None
         return kkt.cone_dual_infeasibility_cert(p_mat, cone_problem["q"], a, cone, x)
     return None
 
@@ -213,7 +250,7 @@ def _prepare_sdpap_problem(cone_problem: dict, sdpap) -> _PreparedSDPAProblem:
             _append_identity_block(raw_a, raw_b, start, dim, sdpa_row, a_parts, b_parts, dual_blocks)
             sdpa_row += dim
     for start, dim, psd_order in by_kind["s"]:
-        transform = _psd_triangle_to_full(psd_order)
+        transform = psd_triangle_to_full(psd_order)
         a_parts.append(transform @ raw_a[start : start + dim, :])
         b_parts.append(transform @ raw_b[start : start + dim])
         dual_blocks.append((start, dim, sdpa_row, psd_order * psd_order, transform))
@@ -274,30 +311,6 @@ def _append_identity_block(
     a_parts.append(raw_a[row : row + dim, :])
     b_parts.append(raw_b[row : row + dim])
     dual_blocks.append((row, dim, sdpa_row, dim, None))
-
-
-def _psd_triangle_to_full(dim: int) -> sp.csc_matrix:
-    """Map a length-``dim*(dim+1)/2`` PSD triangle vec (canonical col-major
-    lower order with √2 off-diagonal scaling) to its ``dim*dim`` full-matrix
-    vec in column-major order.
-    """
-    rows = []
-    cols = []
-    data = []
-    col = 0
-    for j in range(dim):
-        for i in range(j, dim):
-            if i == j:
-                rows.append(i + j * dim)
-                cols.append(col)
-                data.append(1.0)
-            else:
-                scale = 1.0 / np.sqrt(2.0)
-                rows.extend([i + j * dim, j + i * dim])
-                cols.extend([col, col])
-                data.extend([scale, scale])
-            col += 1
-    return sp.csc_matrix((data, (rows, cols)), shape=(dim * dim, dim * (dim + 1) // 2))
 
 
 # sdpa-python's parameter names (sdpap.param). Anything else is ignored by
@@ -376,13 +389,11 @@ def _sdpa_options(
         options["resultFile"] = str(artifacts_dir / "sdpa_result.txt")
     time_limit = pop_time_limit(settings)
     threads = pop_threads(settings)
-    max_iter = settings.pop("max_iter", None)
-    eps = settings.pop("eps", None)
-    eps_abs = settings.pop("eps_abs", eps)
-    eps_rel = settings.pop("eps_rel", eps)
+    max_iter = pop_max_iter(settings)
+    translated.update(translate_tolerance_aliases(settings, ("epsilonStar",), ("epsilonDash",)))
     unknown = sorted(str(key) for key in settings if key not in _SDPAP_PARAMETERS)
     if unknown:
-        raise ValueError(
+        raise SolverConfigError(
             f"Unrecognized SDPA settings {unknown!r}; expected sdpa-python parameters "
             f"{sorted(_SDPAP_PARAMETERS)!r}, optimality_tolerance, result_file, or the "
             "aliases max_iter, eps, eps_abs, eps_rel, threads, time_limit"
@@ -395,19 +406,31 @@ def _sdpa_options(
             translated[key] = value
 
     put("maxIteration", max_iter)
-    put("epsilonStar", eps_abs)
-    put("epsilonDash", eps_rel)
     if threads is not None and threads >= 1:
         put("numThreads", threads)
-    options.setdefault("numThreads", 1)
+    if threads != 0:
+        # One thread unless configured; ``threads: 0`` leaves sdpa-python's
+        # own default (every core).
+        options.setdefault("numThreads", DEFAULT_THREADS)
     options.setdefault("lowerBound", SDPA_LOWER_BOUND)
     options.setdefault("upperBound", SDPA_UPPER_BOUND)
     for key in _SDPAP_FLOATS:
         if key in options:
-            options[key] = float(options[key])
+            options[key] = _coerce_number(key, options[key], float, translated)
     for key in _SDPAP_INTS:
         if key in options:
-            options[key] = int(options[key])
+            options[key] = _coerce_number(key, options[key], int, translated)
+    # A negative numThreads ends the process inside sdpa-python (0 works).
+    if options.get("numThreads", 0) < 0:
+        raise SolverConfigError(
+            f"Invalid SDPA setting 'numThreads'={options['numThreads']!r}: must be >= 0"
+        )
+    for key, minimum in (("epsilonStar", 0.0), ("epsilonDash", 0.0), ("maxIteration", 0)):
+        if key in options and not options[key] > minimum:
+            raise SolverConfigError(
+                f"Invalid SDPA setting {key!r}={options[key]!r}"
+                f"{_alias_note(key, translated)}: must be greater than {minimum}"
+            )
     for key in translated:
         translated[key] = options[key]
     if info is not None:
@@ -415,6 +438,49 @@ def _sdpa_options(
         if translated:
             info["settings_translated"] = translated
     return options
+
+
+def _coerce_number(key: str, value, kind, translated: dict):
+    """``kind(value)`` for a numeric sdpa-python parameter, else SolverConfigError.
+
+    Integers follow the shared rule (``coerce_int_setting``: a numpy integer
+    or ``30.0`` is 30); a float parameter takes any real number or a numeric
+    string.
+    """
+    if kind is int:
+        try:
+            return coerce_int_setting(key, value)
+        except SolverConfigError as exc:
+            raise SolverConfigError(f"Invalid SDPA setting: {exc}{_alias_note(key, translated)}") from exc
+    ok = isinstance(value, numbers.Real) and not isinstance(value, bool)
+    if not ok:
+        try:
+            ok = kind is float and isinstance(value, str) and np.isfinite(float(value))
+        except ValueError:
+            ok = False
+    if not ok:
+        raise SolverConfigError(
+            f"Invalid SDPA setting {key!r}={value!r}{_alias_note(key, translated)}: "
+            f"must be {'an integer' if kind is int else 'a number'}"
+        )
+    return float(value)
+
+
+def _alias_note(key: str, translated: dict) -> str:
+    return " (set from an alias)" if key in translated else ""
+
+
+def check_optimality_tolerance(value) -> float:
+    """``optimality_tolerance`` as a positive float, else SolverConfigError."""
+    try:
+        tolerance = float(value)
+    except (TypeError, ValueError):
+        tolerance = float("nan")
+    if isinstance(value, bool) or not (np.isfinite(tolerance) and tolerance > 0):
+        raise SolverConfigError(
+            f"Invalid SDPA setting 'optimality_tolerance'={value!r}: must be a positive number"
+        )
+    return tolerance
 
 
 def _default_optimality_tolerance(options: dict) -> float:

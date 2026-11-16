@@ -1,8 +1,20 @@
-"""SCS adapter."""
+"""SCS adapter.
+
+Settings are SCS's own keyword arguments; the harness aliases ``max_iter``
+(-> ``max_iters``) and ``eps`` (-> ``eps_abs`` / ``eps_rel``) are translated
+and ``time_limit`` becomes ``time_limit_secs``. SCS reports an unknown name or
+a bad value by raising from the same call that solves, so the adapter checks
+the value ranges SCS enforces first and turns SCS's own refusal of a setting
+into ``SolverConfigError``; any other exception from SCS (problem data it
+cannot take: a non-convex ``P``, crossed bounds, non-finite entries, a problem
+without rows) is the solver failing that problem, ``solver_error``.
+"""
 
 from __future__ import annotations
 
 import csv
+import math
+import numbers
 import time
 from pathlib import Path
 
@@ -17,11 +29,18 @@ from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dua
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
+    is_setting_type_error,
     mark_threads_ignored,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    translate_tolerance_aliases,
 )
 
 _SCS_NUM_THREADS_SUPPORTED: bool | None = None
@@ -102,6 +121,7 @@ class SCSSolverAdapter(SolverAdapter):
                 threads_ignored = True
         if settings.get("log_csv_filename") is True:
             settings["log_csv_filename"] = str(artifacts_dir / "scs_trace.csv")
+        _check_setting_values(settings, translated)
 
         inv_perm = None
         if problem.kind == QP:
@@ -122,11 +142,55 @@ class SCSSolverAdapter(SolverAdapter):
             free = int(cone.pop("f", 0))
             if free:
                 cone["z"] = int(cone.get("z", 0)) + free
+            exponents = cone.get("p", [])
+            exponents = exponents if isinstance(exponents, (list, tuple)) else [exponents]
+            if not all(_is_number(alpha) for alpha in exponents):
+                # SCS's TypeError for it reads like a setting's; it is data.
+                return SolverResult(
+                    status=status.SOLVER_ERROR,
+                    run_time_seconds=0.0,
+                    info={
+                        "raw_status": "error",
+                        "error": f"power cone exponents must be numbers (got {exponents!r})",
+                        "threads": None,
+                    },
+                )
 
+        # SCS's C layer takes float64 data only (an integer-typed A or P is
+        # refused with a TypeError); the other adapters convert as well.
+        data["A"] = sp.csc_matrix(data["A"], dtype=float)
+        if data.get("P") is not None:
+            data["P"] = sp.csc_matrix(data["P"], dtype=float)
+        data["b"] = np.asarray(data["b"], dtype=float)
+        data["c"] = np.asarray(data["c"], dtype=float)
+        threads_used = settings.get("num_threads") if not threads_ignored else None
         start = time.perf_counter()
-        raw = scs.solve(data, cone, **settings)
+        try:
+            raw = scs.solve(data, cone, **settings)
+        except (TypeError, ValueError) as exc:
+            # SCS raises from the solving call both for a setting it refuses
+            # (an unknown keyword, a value of the wrong type or range) and for
+            # problem data it cannot take; only the first is a configuration
+            # error.
+            if isinstance(exc, TypeError) and is_setting_type_error(exc):
+                raise SolverConfigError(f"SCS rejected the settings {sorted(settings)}: {exc}") from exc
+            if isinstance(exc, ValueError) and _is_setting_error(exc, settings):
+                raise SolverConfigError(f"SCS rejected a setting value: {exc}") from exc
+            error_info = {
+                "raw_status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "threads": threads_used,
+            }
+            if threads_ignored:
+                mark_threads_ignored(error_info, threads)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start,
+                info=error_info,
+            )
         elapsed = time.perf_counter() - start
         info = dict(raw.get("info", {}))
+        info["threads"] = threads_used
         if threads_ignored:
             mark_threads_ignored(info, threads)
         if translated:
@@ -144,10 +208,9 @@ class SCSSolverAdapter(SolverAdapter):
         # normalizer, and for an iterate cut off by max_iters or
         # time_limit_secs it is the value at an arbitrary point; the KKT
         # record keeps that point's primal objective for kkt-verify.
-        objective_present = mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
         return SolverResult(
             status=mapped,
-            objective_value=_maybe_float(info.get("pobj")) if objective_present else None,
+            objective_value=reported_objective(mapped, info.get("pobj")),
             iterations=_maybe_int(info.get("iter")),
             run_time_seconds=elapsed,
             setup_time_seconds=_maybe_scs_seconds(info.get("setup_time")),
@@ -164,20 +227,21 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
     s = raw.get("s")
     if x is None:
         return None
+    # A non-finite iterate has no residuals (None, not a record of NaNs).
     if problem.kind == QP:
         qp = problem.qp
         # Every status that may carry a usable point (including the
         # max_iters / time-limit iterates) gets solution residuals, so
         # ``kkt-verify --promote`` treats SCS like every other solver.
-        if mapped_status in status.ANY_FEASIBLE and y is not None:
+        if mapped_status in status.ANY_FEASIBLE and finite_point(x, y):
             y_qp = unbox_scs_dual(y, cone, inv_perm)
             return kkt.qp_residuals(
                 qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y_qp
             )
-        if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE} and y is not None:
+        if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE} and finite_point(y):
             y_qp = unbox_scs_dual(y, cone, inv_perm)
             return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y_qp)
-        if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE} and finite_point(x):
             return kkt.qp_dual_infeasibility_cert(
                 qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x
             )
@@ -186,7 +250,7 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
     p = cone_problem.get("P")
     if p is None:
         p = sp.csc_matrix((sp.csc_matrix(cone_problem["A"]).shape[1],) * 2)
-    if mapped_status in status.ANY_FEASIBLE and y is not None and s is not None:
+    if mapped_status in status.ANY_FEASIBLE and finite_point(x, y, s):
         return kkt.cone_residuals(
             p,
             cone_problem["q"],
@@ -197,11 +261,11 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
             y,
             s,
         )
-    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE} and y is not None:
+    if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE} and finite_point(y):
         return kkt.cone_primal_infeasibility_cert(
             cone_problem["A"], cone_problem["b"], cone, y
         )
-    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE} and finite_point(x):
         return kkt.cone_dual_infeasibility_cert(
             p, cone_problem["q"], cone_problem["A"], cone, x
         )
@@ -286,22 +350,89 @@ def translate_settings(settings: dict) -> dict:
     """Map the harness aliases onto SCS's names, in place.
 
     ``max_iter`` becomes ``max_iters`` and ``eps`` supplies ``eps_abs`` and
-    ``eps_rel`` (SCS's own names). An explicit native value always wins,
-    and only settings actually inserted are reported. Any other unknown
-    name is left for SCS, which rejects it with a ``TypeError`` naming it.
+    ``eps_rel`` (SCS's own names). An explicit native value always wins, an
+    alias set to null counts as unset, and only settings actually inserted
+    are reported. Any other unknown name is left for SCS, whose refusal the
+    adapter raises as ``SolverConfigError`` naming it.
     """
-    translated: dict = {}
-    max_iter = settings.pop("max_iter", None)
-    if max_iter is not None and "max_iters" not in settings:
-        settings["max_iters"] = int(max_iter)
-        translated["max_iters"] = int(max_iter)
-    eps = settings.pop("eps", None)
-    if eps is not None:
-        for key in ("eps_abs", "eps_rel"):
-            if key not in settings:
-                settings[key] = float(eps)
-                translated[key] = float(eps)
+    translated: dict = translate_tolerance_aliases(settings, ("eps_abs",), ("eps_rel",))
+    max_iter = pop_max_iter(settings)
+    if max_iter is not None and settings.get("max_iters") is None:
+        settings["max_iters"] = max_iter
+        translated["max_iters"] = max_iter
+    if settings.get("max_iters") is not None:
+        settings["max_iters"] = coerce_int_setting("max_iters", settings["max_iters"], minimum=1)
     return translated
+
+
+def _is_number(value) -> bool:
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _is_integer(value) -> bool:
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _finite_at_least(bound: float, strict: bool):
+    def test(value) -> bool:
+        if not _is_number(value) or not math.isfinite(value):
+            return False
+        return value > bound if strict else value >= bound
+
+    return test
+
+
+# Ranges SCS enforces, checked before the solve so that a bad value is named
+# as a configuration error instead of being raised from the solving call.
+_SETTING_RANGES = {
+    **{
+        key: ("a finite number >= 0", _finite_at_least(0.0, strict=False))
+        for key in ("eps_abs", "eps_rel", "eps_infeas", "time_limit_secs")
+    },
+    **{
+        key: ("a finite number > 0", _finite_at_least(0.0, strict=True))
+        for key in ("scale", "rho_x")
+    },
+    "alpha": ("in (0, 2)", lambda v: _is_number(v) and 0 < v < 2),
+    "max_iters": ("an integer >= 1", lambda v: _is_integer(v) and v >= 1),
+    "acceleration_lookback": ("an integer", _is_integer),
+}
+
+
+def _check_setting_values(settings: dict, translated: dict) -> None:
+    """Raise SolverConfigError naming a setting whose value SCS would refuse."""
+    for key, value in settings.items():
+        if key in _SETTING_RANGES:
+            description, test = _SETTING_RANGES[key]
+            if not test(value):
+                source = " (set from an alias)" if key in translated else ""
+                raise SolverConfigError(
+                    f"Invalid SCS setting {key!r}={value!r}{source}: must be {description}"
+                )
+    linear_solver = settings.get("linear_solver")
+    if isinstance(linear_solver, str):
+        try:
+            import scs
+        except ModuleNotFoundError:  # pragma: no cover - solve() imported it
+            return
+        known = getattr(scs, "LinearSolver", None)
+        if known is not None and linear_solver not in {member.value for member in known}:
+            raise SolverConfigError(
+                f"Unknown SCS linear_solver {linear_solver!r}; expected one of: "
+                f"{', '.join(member.value for member in known)}"
+            )
+
+
+def _is_setting_error(exc: ValueError, settings: dict) -> bool:
+    """Whether SCS's ValueError is its refusal of a setting value.
+
+    SCS names the setting first ("max_iters must be positive", "'x' is not a
+    valid LinearSolver"); its data errors name no setting ("ScsWork
+    allocation error!", "m must be a positive integer").
+    """
+    text = str(exc)
+    first = text.split(" ", 1)[0]
+    return first in settings or "LinearSolver" in text
 
 
 def _read_csv_trace(path) -> list[dict]:

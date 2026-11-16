@@ -14,7 +14,7 @@ by hand on a GPU with ``probe_cuopt`` in ``tools/bench_modal.py`` and are
 pinned against a fake cuOpt in ``tests/test_cuopt_adapter.py``. Termination
 names are matched against a static table across spellings (``_STATUS_MAP``);
 a name it does not know becomes ``solver_error`` and the name itself is kept
-on ``info["termination"]``. The Python API has changed across releases, so
+on ``info["termination"]`` and ``info["raw_status"]``. The Python API has changed across releases, so
 rerun the probe after upgrading cuOpt.
 """
 
@@ -33,8 +33,10 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
     finite_point,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
@@ -151,8 +153,8 @@ class CuOptSolverAdapter(SolverAdapter):
             )
 
         translated: dict = {}
-        if "max_iter" in settings:
-            max_iter = int(settings.pop("max_iter"))
+        max_iter = pop_max_iter(settings, minimum=0)
+        if max_iter is not None:
             if "iteration_limit" not in settings:
                 settings["iteration_limit"] = max_iter
                 translated["iteration_limit"] = max_iter
@@ -161,12 +163,17 @@ class CuOptSolverAdapter(SolverAdapter):
         # ``eps`` sets all six of cuOpt's tolerances; ``eps_abs`` / ``eps_rel``
         # set the absolute and relative primal, dual and gap tolerances
         # independently (an explicit alias wins over ``eps``).
-        if eps is not None:
-            opts.set_optimality_tolerance(float(eps))
-        for alias, prefix in ((eps_abs, "absolute"), (eps_rel, "relative")):
-            if alias is not None:
-                for kind in ("primal", "dual", "gap"):
-                    opts.set_parameter(f"{prefix}_{kind}_tolerance", float(alias))
+        try:
+            if eps is not None:
+                opts.set_optimality_tolerance(float(eps))
+                translated["optimality_tolerance"] = float(eps)
+            for alias, prefix in ((eps_abs, "absolute"), (eps_rel, "relative")):
+                if alias is not None:
+                    for kind in ("primal", "dual", "gap"):
+                        opts.set_parameter(f"{prefix}_{kind}_tolerance", float(alias))
+                        translated[f"{prefix}_{kind}_tolerance"] = float(alias)
+        except (TypeError, ValueError) as exc:
+            raise SolverConfigError(f"Invalid cuOpt tolerance setting: {exc}") from exc
         if time_limit is not None:
             opts.set_parameter("time_limit", float(time_limit))
         if threads is not None:
@@ -175,7 +182,7 @@ class CuOptSolverAdapter(SolverAdapter):
             try:
                 opts.set_parameter(key, value)
             except Exception as exc:
-                raise ValueError(f"Invalid cuOpt setting {key!r}={value!r}: {exc}") from exc
+                raise SolverConfigError(f"Invalid cuOpt setting {key!r}={value!r}: {exc}") from exc
         if verbose:
             try:
                 opts.set_parameter("log_to_console", True)
@@ -189,7 +196,10 @@ class CuOptSolverAdapter(SolverAdapter):
         term_name = _termination_name(solution)
         mapped = _map_status(term_name)
         info = {
+            "raw_status": term_name,
             "termination": term_name,
+            # GPU solver: ``threads`` sets only its CPU-side num_cpu_threads.
+            "threads": threads,
             "solve_time": _maybe_float(solution.get_solve_time()),
             "primal_objective": _maybe_float(solution.get_primal_objective()),
             "dual_objective": _maybe_float(solution.get_dual_objective()),

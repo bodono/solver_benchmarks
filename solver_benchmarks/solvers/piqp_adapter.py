@@ -5,24 +5,31 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
-    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    threads_or_default,
     translate_eps_alias,
 )
-from .qp_split import combine_qp_duals, dual_from_lower_upper, split_qp_for_range_constraints
+from .qp_split import (
+    combine_qp_duals,
+    dense_backend_requested,
+    dual_from_lower_upper,
+    split_qp_for_range_constraints,
+    split_qp_kkt,
+)
 
 
 class PIQPSolverAdapter(SolverAdapter):
@@ -46,22 +53,21 @@ class PIQPSolverAdapter(SolverAdapter):
         qp = problem.qp
         p, q, aeq, b, g, h_l, h_u, eq_idx, ineq_idx = split_qp_for_range_constraints(qp)
         settings = settings_with_defaults(self.settings)
-        # Pop both keys unconditionally; the previous `or`-chain
-        # short-circuited and left "backend" in settings whenever
-        # "dense" was truthy, which then tripped the unknown-setting
-        # check below.
-        dense_flag = settings.pop("dense", False)
-        backend_value = settings.pop("backend", "")
-        use_dense = bool(dense_flag) or str(backend_value).lower() == "dense"
+        use_dense = dense_backend_requested(settings, "PIQP")
         # PIQP has no time limit; record a configured one as ignored. Its
         # thread count is ``num_threads`` (0 = PIQP's default), which
-        # pop_threads also consumes, so it is put back under that name.
+        # pop_threads also consumes, so it is put back under that name; one
+        # thread unless configured, as for every adapter with a thread knob.
         time_limit = pop_time_limit(settings)
         threads = pop_threads(settings)
+        normalize_max_iter(settings)
         translated = translate_eps_alias(settings)
+        translated.update(_duality_gap_tolerances(settings))
         solver = piqp.DenseSolver() if use_dense else piqp.SparseSolver()
-        if threads is not None and hasattr(solver.settings, "num_threads"):
-            settings["num_threads"] = threads
+        threads_used = None
+        if hasattr(solver.settings, "num_threads"):
+            threads_used = threads_or_default(threads)
+            settings["num_threads"] = threads_used
             threads = None
         settings.setdefault("compute_timings", True)
         _configure_piqp(solver, settings)
@@ -87,7 +93,7 @@ class PIQPSolverAdapter(SolverAdapter):
             # PIQP checks its settings' ranges (eps_abs > 0, max_iter > 0,
             # ...) only when solving, and reports a failure as a status
             # without saying which one; it is a configuration error.
-            raise ValueError(
+            raise SolverConfigError(
                 "PIQP rejected a setting value (PIQP_INVALID_SETTINGS); check "
                 f"the values of {sorted(settings)}"
             )
@@ -105,18 +111,10 @@ class PIQPSolverAdapter(SolverAdapter):
             ineq_idx,
             ineq_dual,
         )
-        kkt_dict = None
-        if mapped in status.ANY_FEASIBLE and finite_point(result.x, y):
-            kkt_dict = kkt.qp_residuals(
-                qp["P"],
-                qp["q"],
-                qp["A"],
-                qp["l"],
-                qp["u"],
-                result.x,
-                y,
-            )
+        kkt_dict = split_qp_kkt(mapped, qp, result.x, y)
         info = _info_dict(result.info)
+        info["raw_status"] = info.get("status", str(raw_status))
+        info["threads"] = threads_used
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
         if translated:
@@ -136,8 +134,47 @@ class PIQPSolverAdapter(SolverAdapter):
 def _configure_piqp(solver, settings: dict) -> None:
     for key, value in settings.items():
         if not hasattr(solver.settings, key):
-            raise ValueError(f"Invalid PIQP setting {key!r}")
-        setattr(solver.settings, key, value)
+            raise SolverConfigError(f"Invalid PIQP setting {key!r}")
+        try:
+            setattr(solver.settings, key, value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SolverConfigError(f"Invalid PIQP setting {key!r}={value!r}: {exc}") from exc
+
+
+def _duality_gap_tolerances(settings: dict) -> dict:
+    """Default PIQP's duality-gap tolerances to the configured ``eps_abs`` / ``eps_rel``.
+
+    PIQP checks the duality gap by default against its own
+    ``eps_duality_gap_abs`` 1e-8 and ``eps_duality_gap_rel`` 1e-9, whatever
+    ``eps_abs`` / ``eps_rel`` say, so a run at a nominal 1e-4 would still
+    close the gap to about 1e-8. As in the ProxQP adapter, a configured
+    ``eps_abs`` supplies ``eps_duality_gap_abs`` and ``eps_rel``
+    ``eps_duality_gap_rel`` (``eps_abs`` when ``eps_rel`` is 0) unless the
+    gap tolerances are given; with no tolerance configured PIQP's defaults
+    stay. Returns what was inserted, for ``info["settings_translated"]``.
+    """
+    eps_abs = settings.get("eps_abs")
+    eps_rel = settings.get("eps_rel")
+    translated: dict = {}
+
+    def put(key: str, value) -> None:
+        if value is not None and settings.get(key) is None:
+            settings[key] = value
+            translated[key] = value
+
+    put("eps_duality_gap_abs", eps_abs)
+    if eps_rel is not None and _is_zero(eps_rel):
+        put("eps_duality_gap_rel", eps_abs)
+    else:
+        put("eps_duality_gap_rel", eps_rel)
+    return translated
+
+
+def _is_zero(value) -> bool:
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _map_piqp_status(raw_status, piqp) -> str:

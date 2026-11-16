@@ -23,13 +23,17 @@ import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, QP, ProblemData
+from solver_benchmarks.core.problem import CONE, QP, ProblemData, cone_row_count
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    coerce_time_limit,
     finite_point,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
@@ -38,9 +42,6 @@ from .base import (
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
-# The datasets' documented infinity sentinel. Bounds are normalized with the
-# shared cutoff in qp_split (|bound| >= 1e19 is infinite) before use.
-INF_BOUND = 1.0e20
 # Protobuf messages must be smaller than 2 GiB, including the request envelope.
 MAX_PROTOBUF_BYTES = (1 << 31) - 1
 
@@ -104,7 +105,18 @@ class PDLPSolverAdapter(SolverAdapter):
 
     def _solve_linear_cone(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         cone_problem = problem.cone
-        cone = dict(cone_problem["cone"])
+        p = cone_problem.get("P")
+        if p is not None and sp.csc_matrix(p).nnz:
+            return SolverResult(
+                status=status.SKIPPED_UNSUPPORTED,
+                info={"reason": "PDLP supports LPs only; this problem has nonzero P"},
+            )
+        # A cone listed with no rows (q: [], ep: 0) constrains nothing.
+        cone = {
+            key: value
+            for key, value in dict(cone_problem["cone"]).items()
+            if key in {"f", "z", "l"} or cone_row_count({key: value}) != 0
+        }
         unsupported = set(cone) - {"f", "z", "l"}
         if unsupported:
             return SolverResult(
@@ -122,10 +134,11 @@ class PDLPSolverAdapter(SolverAdapter):
         oversized = _preflight_model_size(len(cone_problem["q"]), a.shape[0], a.nnz)
         if oversized is not None:
             return oversized
-        model = _build_lp_model_from_linear_cone(dict(cone_problem, A=a))
+        linear_problem = dict(cone_problem, A=a, cone=cone)
+        model = _build_lp_model_from_linear_cone(linear_problem)
 
         def compute_kkt(mapped_status, x, y):
-            return _cone_kkt(mapped_status, cone_problem, x, y)
+            return _cone_kkt(mapped_status, linear_problem, x, y)
 
         return _solve_model(model, self.settings, artifacts_dir, compute_kkt)
 
@@ -265,10 +278,12 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     verbose = bool(settings.pop("verbose"))
     # Cross-adapter aliases live in pop_time_limit; ortools also has a
     # legacy ``solver_time_limit_sec`` spelling we still accept here for
-    # back-compat with pinned configs.
+    # back-compat with pinned configs, validated the same way (a shared
+    # alias given alongside wins).
     time_limit = pop_time_limit(settings)
-    if time_limit is None:
-        time_limit = settings.pop("solver_time_limit_sec", None)
+    legacy_time_limit = settings.pop("solver_time_limit_sec", None)
+    if time_limit is None and legacy_time_limit is not None:
+        time_limit = coerce_time_limit("solver_time_limit_sec", legacy_time_limit)
     translated = translate_eps_alias(settings)
 
     request = linear_solver_pb2.MPModelRequest(
@@ -281,9 +296,24 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
             time_limit_ignored = True
 
     given = sorted(settings)
+    max_iter_alias = pop_max_iter(settings, minimum=0)
+    if max_iter_alias is not None:
+        settings["max_iter"] = max_iter_alias
+    native_limit = settings.get("iteration_limit") is not None
+    if native_limit:
+        # PDLP itself refuses a negative limit, with its own message.
+        settings["iteration_limit"] = coerce_int_setting("iteration_limit", settings["iteration_limit"])
     parameters = _pdlp_parameters_from_settings(settings)
+    # Recorded only when it is the limit PDLP runs with (parameters_text,
+    # merged last, can override it).
+    if (
+        max_iter_alias is not None
+        and not native_limit
+        and int(parameters.termination_criteria.iteration_limit) == max_iter_alias
+    ):
+        translated["iteration_limit"] = max_iter_alias
     if settings:
-        raise ValueError(f"Unsupported PDLP settings: {sorted(settings)}")
+        raise SolverConfigError(f"Unsupported PDLP settings: {sorted(settings)}")
 
     request.solver_specific_parameters = text_format.MessageToString(parameters)
 
@@ -324,7 +354,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     if invalid_parameter is not None and solve_log.termination_reason == invalid_parameter:
         # PDLP validates its parameters only when asked to solve and answers
         # with a termination reason; a bad value is a configuration error.
-        raise ValueError(
+        raise SolverConfigError(
             f"PDLP rejected a setting value in {given}: {solve_log.termination_string}"
         )
     mapped_status = _map_status(solve_log)
@@ -336,14 +366,17 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
     if compute_kkt is not None and x is not None:
         kkt_dict = compute_kkt(mapped_status, x, y)
 
+    termination_reason = solve_log_pb2.TerminationReason.Name(solve_log.termination_reason)
     info = {
-        "termination_reason": solve_log_pb2.TerminationReason.Name(
-            solve_log.termination_reason
-        ),
+        "raw_status": termination_reason,
+        "termination_reason": termination_reason,
         "termination_string": solve_log.termination_string,
         "solver_time_sec": getattr(solve_log, "solve_time_sec", None),
         "primal_solution_size": len(response.variable_value),
         "dual_solution_size": len(response.dual_value),
+        # PDLP's own default is one thread; ``num_threads`` (from ``threads``
+        # or parameters_text) is the count it ran with.
+        "threads": int(parameters.num_threads),
     }
     if time_limit_ignored:
         info["time_limit_ignored"] = True
@@ -363,6 +396,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
 
 
 def _pdlp_parameters_from_settings(settings: dict[str, Any]):
+    """PDLP parameters for ``settings``, which are consumed in place."""
     from google.protobuf import text_format
     from ortools.pdlp import solvers_pb2
 
@@ -380,20 +414,23 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
     parameters = solvers_pb2.PrimalDualHybridGradientParams()
     _apply_pure_pdlp_defaults(parameters)
     parameters.presolve_options.use_glop = use_glop
-    if eps_abs is not None:
-        criteria = parameters.termination_criteria.simple_optimality_criteria
-        criteria.eps_optimal_absolute = float(eps_abs)
-    if eps_rel is not None:
-        criteria = parameters.termination_criteria.simple_optimality_criteria
-        criteria.eps_optimal_relative = float(eps_rel)
-    if max_iter is not None:
-        parameters.termination_criteria.iteration_limit = int(max_iter)
-    if threads:
-        # PDLP parallelizes its matrix-vector products over num_threads
-        # (default 1); 0 keeps that default, as for the other adapters.
-        parameters.num_threads = int(threads)
-    if parameters_text:
-        text_format.Merge(str(parameters_text), parameters)
+    try:
+        if eps_abs is not None:
+            criteria = parameters.termination_criteria.simple_optimality_criteria
+            criteria.eps_optimal_absolute = float(eps_abs)
+        if eps_rel is not None:
+            criteria = parameters.termination_criteria.simple_optimality_criteria
+            criteria.eps_optimal_relative = float(eps_rel)
+        if max_iter is not None:
+            parameters.termination_criteria.iteration_limit = int(max_iter)
+        if threads:
+            # PDLP parallelizes its matrix-vector products over num_threads
+            # (default 1); 0 keeps that default, as for the other adapters.
+            parameters.num_threads = int(threads)
+        if parameters_text:
+            text_format.Merge(str(parameters_text), parameters)
+    except (TypeError, ValueError, text_format.ParseError) as exc:
+        raise SolverConfigError(f"Invalid PDLP setting: {exc}") from exc
     return parameters
 
 

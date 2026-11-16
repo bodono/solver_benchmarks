@@ -19,6 +19,7 @@ from solver_benchmarks.core.problem import CONE, QP, cone_dimensions, qp_dimensi
 from solver_benchmarks.core.result import ProblemResult, to_jsonable
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.solvers import get_solver
+from solver_benchmarks.solvers.base import CONFIG_ERROR_KIND, SolverConfigError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -146,6 +147,8 @@ def run_payload(payload: dict) -> ProblemResult:
         }
         if payload.get("resume_signature") is not None:
             metadata["resume_signature"] = payload["resume_signature"]
+        if isinstance(exc, SolverConfigError):
+            metadata["error_kind"] = CONFIG_ERROR_KIND
         return ProblemResult(
             run_id=payload["run_id"],
             dataset=payload["dataset"],
