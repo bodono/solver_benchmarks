@@ -36,7 +36,6 @@ class DIMACSDataset(Dataset):
     dataset_id = "dimacs"
     description = "DIMACS conic benchmark dataset."
     data_source = "bundled data; official source https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances/"
-    data_patterns = ("*.mat", "*.mat.gz")
     prepare_command = "python scripts/prepare_dimacs.py"
     option_names = frozenset[str]()
 

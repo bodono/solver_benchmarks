@@ -120,7 +120,7 @@ def run_payload(payload: dict) -> ProblemResult:
             error = str(solver_result.info["error"])
         kkt = to_jsonable(solver_result.kkt) if solver_result.kkt else None
         point_objective = _point_objective(problem, kkt)
-        if point_objective is not None:
+        if point_objective is not None and kkt is not None:
             kkt["primal_obj_reported"] = point_objective
         return ProblemResult(
             run_id=payload["run_id"],

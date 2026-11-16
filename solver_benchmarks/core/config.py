@@ -67,15 +67,15 @@ class DatasetConfig:
     dataset_options: dict[str, Any] = field(default_factory=dict)
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
-    id: str | None = None
+    id: str = ""
 
     def __post_init__(self) -> None:
         # ``id`` is the per-entry identity used for results/resume keys and
         # artifact directories; ``name`` is the registry lookup. Defaulting
-        # to ``name`` keeps the common single-entry case unchanged while
-        # still allowing two entries that share a registry name to coexist
-        # under different ids.
-        if self.id is None:
+        # (an empty id included) to ``name`` keeps the common single-entry
+        # case unchanged while still allowing two entries that share a
+        # registry name to coexist under different ids.
+        if not self.id:
             object.__setattr__(self, "id", self.name)
 
 
@@ -443,7 +443,6 @@ def _parse_dataset_entries(
     )
     parsed: list[DatasetConfig] = []
     seen_ids: set[str] = set()
-    seen_names_no_id: set[str] = set()
     seen_slugs: dict[str, str] = {}
     # Run-level defaults go to the listed datasets that read them; one that
     # no listed dataset reads is an error (below).
@@ -451,21 +450,24 @@ def _parse_dataset_entries(
     for entry in items:
         explicit_id: str | None = None
         entry_options: dict[str, Any] = {}
+        # The YAML value as given; ``name`` is its str.
+        raw_name: object
         if isinstance(entry, str):
-            name = entry
+            raw_name = entry
             include: list[str] = []
             exclude: list[str] = []
         elif isinstance(entry, dict):
-            name = entry.get("name") or entry.get("dataset")
-            if not name:
+            raw_name = entry.get("name") or entry.get("dataset")
+            if not raw_name:
                 raise ValueError(
                     "Every dataset entry must define `name` (or legacy `dataset`)"
                 )
-            _check_keys(entry, _DATASET_ENTRY_KEYS, f"dataset entry {name!r}")
+            _check_keys(entry, _DATASET_ENTRY_KEYS, f"dataset entry {raw_name!r}")
             raw_id = entry.get("id")
-            explicit_id = str(raw_id) if raw_id is not None else None
+            # An empty id is no id: the entry is identified by its name.
+            explicit_id = str(raw_id) if raw_id is not None and raw_id != "" else None
             entry_options = _canonicalize(
-                dict(_mapping(entry.get("dataset_options"), f"dataset {name!r} dataset_options"))
+                dict(_mapping(entry.get("dataset_options"), f"dataset {raw_name!r} dataset_options"))
             )
             include = _listify(entry.get("include", []))
             exclude = _listify(entry.get("exclude", []))
@@ -473,7 +475,7 @@ def _parse_dataset_entries(
             raise ValueError(
                 f"Dataset entry must be a string or mapping, got {type(entry).__name__}"
             )
-        name = str(name)
+        name = str(raw_name)
         _check_registered_dataset(name)
         defaults = _defaults_read_by(name, default_options)
         defaults_taken |= set(defaults)
@@ -488,25 +490,15 @@ def _parse_dataset_entries(
                     "told apart."
                 )
             raise ValueError(f"Duplicate dataset id in datasets list: {entry_id!r}")
-        # Surface a clearer message when a user lists the same adapter twice
-        # without ids on either entry.
-        if explicit_id is None and name in seen_names_no_id:
-            raise ValueError(
-                f"Duplicate dataset name {name!r}: include each adapter once, "
-                "or give each occurrence an explicit `id` so its results can be "
-                "told apart."
-            )
         seen_ids.add(entry_id)
         _check_slug_unique(entry_id, seen_slugs, "dataset")
-        if explicit_id is None:
-            seen_names_no_id.add(name)
         parsed.append(
             DatasetConfig(
                 name=name,
                 dataset_options=dataset_options,
                 include=include,
                 exclude=exclude,
-                id=explicit_id,
+                id=explicit_id or "",
             )
         )
     unused = sorted(set(default_options) - defaults_taken)
@@ -607,7 +599,7 @@ def _expand_solver_entry(item: dict[str, Any], *, context: str) -> list[SolverCo
     ]
     expanded = []
     for values in product(*value_grid):
-        sweep_settings = _canonicalize(dict(zip(keys, values)))
+        sweep_settings = _canonicalize(dict(zip(keys, values, strict=True)))
         # Re-deepcopy on each expansion so the underlying SolverConfig
         # entries cannot share mutable nested settings.
         settings = {**copy.deepcopy(base_settings), **copy.deepcopy(sweep_settings)}
@@ -1064,13 +1056,13 @@ def manifest_dataset_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
         return out
-    name = config.get("dataset")
-    if not name:
+    single = config.get("dataset")
+    if not single:
         return []
     return [
         {
-            "id": str(name),
-            "name": str(name),
+            "id": str(single),
+            "name": str(single),
             "dataset_options": dict(config.get("dataset_options") or {}),
             "include": list(run_include),
             "exclude": list(run_exclude),

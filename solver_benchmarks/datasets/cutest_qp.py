@@ -26,7 +26,6 @@ class CUTEstQPDataset(Dataset):
     dataset_id = "cutest_qp"
     description = "Curated CUTEst QP exports in local .npz format."
     data_source = "manual export from a local CUTEst/SIF installation"
-    data_patterns = ("*.npz",)
     prepare_command = "python scripts/prepare_cutest_qp.py"
     subset_lists_problems = True
     option_names = frozenset({"subset"})

@@ -80,7 +80,6 @@ class Dataset(ABC):
     dataset_id: str
     description: str
     data_source: str = "bundled in the repository"
-    data_patterns: tuple[str, ...] = ()
     prepare_command: str | None = None
     automatic_download: bool = False
     # True when the ``subset`` option names problems (a comma-separated

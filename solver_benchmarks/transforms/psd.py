@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from solver_benchmarks.core.problem import cone_items_in_row_order
+from solver_benchmarks.core.problem import as_list, cone_items_in_row_order
 
 
 def col_major_to_row_major_perm(n: int) -> np.ndarray:
@@ -64,11 +64,11 @@ def cone_row_perm_canonical_to_row_major(cone: dict, m: int) -> np.ndarray:
             # Box rows sit before the PSD rows and are not sized here.
             raise ValueError("PSD rows cannot be located in a cone with a box")
         if name == "q":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 row += int(dim)
             continue
         if name == "s":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 size = int(dim)
                 tri = size * (size + 1) // 2
                 p = col_major_to_row_major_perm(size)
@@ -104,11 +104,11 @@ def _apply_cone_vec_perm(v: np.ndarray, cone: dict, *, direction: str) -> np.nda
             # Box rows sit before the PSD rows and are not sized here.
             raise ValueError("PSD rows cannot be located in a cone with a box")
         if name == "q":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 row += int(dim)
             continue
         if name == "s":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 size = int(dim)
                 tri = size * (size + 1) // 2
                 block = v[row : row + tri]
@@ -120,8 +120,3 @@ def _apply_cone_vec_perm(v: np.ndarray, cone: dict, *, direction: str) -> np.nda
             continue
     return out
 
-
-def _as_list(value):
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]

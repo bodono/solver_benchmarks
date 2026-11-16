@@ -63,9 +63,7 @@ def runtime_metadata(solver_name: str, environ: Mapping[str, str] | None = None)
     # ``python3.12``) rather than the full path, since the full path
     # commonly contains a username (``/Users/<user>/...``,
     # ``/home/<user>/...``) that we don't want to publish into shared
-    # report tables. The absolute path is captured under
-    # ``manifest["system"]["python_executable_full"]`` only when
-    # ``system_metadata(include_full_python_path=True)`` is requested.
+    # report tables.
     short_executable = os.path.basename(sys.executable) if sys.executable else None
     if environ is None:
         environ = os.environ

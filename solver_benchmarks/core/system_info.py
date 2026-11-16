@@ -24,7 +24,6 @@ import logging
 import os
 import platform
 import re
-import socket
 import sys
 from importlib import metadata
 from typing import Any
@@ -32,11 +31,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def system_metadata(
-    *,
-    include_hostname: bool = False,
-    include_full_python_path: bool = False,
-) -> dict[str, Any]:
+def system_metadata() -> dict[str, Any]:
     """Return a JSON-serializable snapshot of the host running this code.
 
     Captures CPU model / count / frequency, total RAM, OS / kernel
@@ -49,55 +44,37 @@ def system_metadata(
     library is missing or a probe raises, the field is set to None
     rather than failing the capture.
 
-    Privacy defaults:
-
-    - ``include_hostname=False`` (default) omits ``socket.gethostname()``
-      so manifests don't leak machine names into shared reports.
-    - ``include_full_python_path=False`` (default) records only the
-      *basename* of ``sys.executable`` (e.g. ``python3.12`` rather
-      than ``/Users/<username>/miniconda3/envs/.../bin/python3.12``).
-      The full path can include a username or private environment
-      path, which the report's per-row Runtime Environments table
-      then publishes alongside the timing data.
-
-    Callers running on isolated infrastructure can opt into the full
-    fields when the privacy concern doesn't apply.
+    Privacy: the host name is not recorded, so manifests don't leak
+    machine names into shared reports, and ``python_executable`` is only
+    the *basename* of ``sys.executable`` (e.g. ``python3.12`` rather
+    than ``/Users/<username>/miniconda3/envs/.../bin/python3.12``).
+    The full path can include a username or private environment path,
+    which the report's per-row Runtime Environments table would then
+    publish alongside the timing data.
     """
     payload: dict[str, Any] = {}
-    payload.update(
-        _safe(
-            lambda: _python_metadata(include_full_path=include_full_python_path),
-            "python",
-        )
-        or {}
-    )
+    payload.update(_safe(_python_metadata, "python") or {})
     payload.update(_safe(_os_metadata, "os") or {})
     payload["cpu"] = _safe(_cpu_metadata, "cpu") or {}
     payload["memory"] = _safe(_memory_metadata, "memory") or {}
     payload["library_versions"] = _safe(_library_versions, "library_versions") or {}
-    if include_hostname:
-        payload["hostname"] = _safe(_hostname, "hostname")
     return payload
 
 
-def _python_metadata(*, include_full_path: bool = False) -> dict[str, Any]:
+def _python_metadata() -> dict[str, Any]:
     """Capture Python interpreter / executable info.
 
-    ``python_executable`` defaults to the basename of
-    ``sys.executable`` so a manifest doesn't leak a username via the
-    full installer path. The full ``sys.executable`` is preserved
-    under ``python_executable_full`` only when explicitly requested.
+    ``python_executable`` is the basename of ``sys.executable`` so a
+    manifest doesn't leak a username via the full installer path.
     """
     executable = sys.executable
     short = os.path.basename(executable) if executable else None
     payload: dict[str, Any] = {
-        "python_executable": executable if include_full_path else short,
+        "python_executable": short,
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "python_compiler": platform.python_compiler(),
     }
-    if include_full_path:
-        payload["python_executable_full"] = executable
     return payload
 
 
@@ -302,13 +279,6 @@ def _library_versions() -> dict[str, Any]:
     for package in ("numpy", "scipy", "pandas", "pyarrow", *solver_packages):
         versions[package] = _package_version(package)
     return versions
-
-
-def _hostname() -> str | None:
-    try:
-        return socket.gethostname()
-    except OSError:
-        return None
 
 
 def _try_import(name: str):

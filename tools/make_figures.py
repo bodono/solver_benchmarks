@@ -316,19 +316,19 @@ def draw_geomean(ax, df: pd.DataFrame, title: str, compact: bool = False, family
         colors = [NEUTRAL_COLORS.get(base_solver(s), "#c4c4c4") for s in gm["solver_id"]]
         edges = colors
     else:
-        colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs)]
-        edges = [SCS_STYLE[base_solver(s)][0] if scs else "#9a9a9a" for s, scs in zip(gm["solver_id"], is_scs)]
+        colors = [SCS_STYLE[base_solver(s)][0] if scs else "#c4c4c4" for s, scs in zip(gm["solver_id"], is_scs, strict=True)]
+        edges = [SCS_STYLE[base_solver(s)][0] if scs else "#9a9a9a" for s, scs in zip(gm["solver_id"], is_scs, strict=True)]
     y = np.arange(len(gm))
     ax.barh(y, gm[value_col], height=0.68, color=colors, edgecolor=edges, linewidth=0.8, zorder=3)
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=fs)
-    for tick, scs in zip(ax.get_yticklabels(), is_scs):
+    for tick, scs in zip(ax.get_yticklabels(), is_scs, strict=False):
         if scs:
             tick.set_fontweight("bold")
     hi = float(gm[value_col].max())
     ax.set_xlim(0, hi * 1.28)
     pad = hi * 0.012
-    for yi, (v, solved) in enumerate(zip(gm[value_col], gm["success_count"])):
+    for yi, (v, solved) in enumerate(zip(gm[value_col], gm["success_count"], strict=True)):
         ax.text(v + pad, yi, f"{v:.1f} s" if v < 20 else f"{v:.0f} s", va="center", ha="left", fontsize=fs - 1, color="#222222")
         ax.text(v + pad, yi, f"\n{int(solved)}/{n_problems} solved", va="top", ha="left", fontsize=fs - 2.5, color="#666666", linespacing=0.6)
     ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
@@ -380,7 +380,7 @@ def plot_grid(frames: dict, path: Path) -> None:
         return
     fig, axes = plt.subplots(len(rows), 2, figsize=(9.6, 3.5 * len(rows)), gridspec_kw={"width_ratios": [1.0, 1.0]})
     axes = np.atleast_2d(axes)
-    for (fam, sub), (ax_p, ax_g) in zip(rows, axes):
+    for (fam, sub), (ax_p, ax_g) in zip(rows, axes, strict=True):
         df, title, overrides = frames[(fam, sub)]
         LABEL_OVERRIDE.clear()
         LABEL_OVERRIDE.update(overrides)
@@ -431,7 +431,7 @@ def main() -> None:
             df = df[~df["solver_id"].apply(base_solver).isin(set(args.exclude_solver))]
         drop_p = FAMILY_DROP_PROBLEMS.get(family)
         if drop_p:
-            df = df[~pd.Series(list(zip(df["dataset"], df["problem"])), index=df.index).isin(drop_p)]
+            df = df[~pd.Series(list(zip(df["dataset"], df["problem"], strict=True)), index=df.index).isin(drop_p)]
         if df.empty:
             print(f"{family}: no results left in {run_dir} after the family's dataset, problem and solver "
                   "filters; skipped")

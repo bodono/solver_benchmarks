@@ -388,7 +388,7 @@ def _solve_model(model, settings: dict[str, Any], artifacts_dir: Path, compute_k
         # or parameters_text) is the count it ran with.
         "threads": int(parameters.num_threads),
     }
-    if time_limit_ignored:
+    if time_limit_ignored and time_limit is not None:
         info["time_limit_ignored"] = True
         info["time_limit_seconds"] = float(time_limit)
     if translated:
@@ -506,9 +506,9 @@ def _import_model_builder_helper():
 
         return model_builder_helper
     except ModuleNotFoundError:
-        from ortools.model_builder.python import model_builder_helper
+        from ortools.model_builder.python import model_builder_helper as helper
 
-        return model_builder_helper
+        return helper
 
 
 def _set_time_limit(request, value: float) -> bool:

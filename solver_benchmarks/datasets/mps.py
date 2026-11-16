@@ -38,7 +38,6 @@ class MPSLPDataset(Dataset):
     problem_folder: str
     dataset_id: str
     description: str
-    data_patterns = ("*.mps", "*.mps.gz")
     option_names = frozenset({"folder", "add_quadratic"})
 
     @property
@@ -346,7 +345,7 @@ def _miplib_names_under_size(
             missing.append(name)
     if missing:
         with ThreadPoolExecutor(max_workers=8) as pool:
-            sizes.update(zip(missing, pool.map(_miplib_remote_size_bytes, missing)))
+            sizes.update(zip(missing, pool.map(_miplib_remote_size_bytes, missing), strict=True))
     return [name for name in names if sizes[name] <= threshold_bytes]
 
 

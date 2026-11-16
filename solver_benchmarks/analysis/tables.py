@@ -273,7 +273,7 @@ def claimed_optimal_kkt_thresholds(
                 "count_above_max": int((worst > thresholds[-1]).sum()),
                 **{
                     column: int((worst <= threshold).sum())
-                    for column, threshold in zip(threshold_columns, thresholds)
+                    for column, threshold in zip(threshold_columns, thresholds, strict=True)
                 },
             }
         rows.append(row)

@@ -84,7 +84,6 @@ class MittelmannSDPDataset(Dataset):
         "F_k•Y = c_k, Y ⪰ 0, and the first is posed."
     )
     data_source = "external download from https://plato.asu.edu/ftp/sdp/"
-    data_patterns = ("*.dat-s", "*.dat-s.gz")
     prepare_command = "python scripts/prepare_mittelmann_sdp.py"
     automatic_download = True
     subset_lists_problems = True
@@ -187,7 +186,7 @@ def download_mittelmann_sdp_problem(name: str, folder: Path) -> Path:
         try:
             body = _download_kocvara_fallback_bytes(name, remote_filename)
         except KeyError:
-            raise primary_error
+            raise primary_error from None
         except RuntimeError as fallback_error:
             raise RuntimeError(
                 f"Could not download Mittelmann SDP problem {name!r}: "

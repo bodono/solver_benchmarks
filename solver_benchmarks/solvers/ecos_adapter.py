@@ -75,7 +75,7 @@ from scipy.sparse.csgraph import connected_components
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, QP, ProblemData
+from solver_benchmarks.core.problem import CONE, QP, ProblemData, as_list
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
@@ -246,7 +246,7 @@ class ECOSSolverAdapter(SolverAdapter):
                 objective = None
         else:
             objective = _maybe_float(info.get("pcost"))
-        kkt_dict = _compute_kkt(problem, mapped, raw, dims, cone_dict, socp_state=socp_state)
+        kkt_dict = _compute_kkt(problem, mapped, raw, cone_dict, socp_state=socp_state)
 
         return SolverResult(
             status=mapped,
@@ -478,7 +478,7 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
         members = coupled[order]
         block_matrix = sp.csr_matrix(p_sym[members][:, members])
         bounds = np.concatenate([[0], np.cumsum(sizes)])
-        for start, stop in zip(bounds[:-1], bounds[1:]):
+        for start, stop in zip(bounds[:-1], bounds[1:], strict=True):
             block = block_matrix[start:stop, start:stop].toarray()
             r_block = _dense_psd_square_root(block, scale=scale)
             if r_block is None:
@@ -655,7 +655,7 @@ def _cone_to_ecos(cone_problem: dict):
     z_count = int(cone.pop("f", 0)) + int(cone.pop("z", 0))
     l_count = int(cone.pop("l", 0))
     # A second-order cone of dimension 0 has no rows; ECOS refuses it.
-    q_list = [int(dim) for dim in cone.pop("q", []) if int(dim)]
+    q_list = [int(dim) for dim in as_list(cone.pop("q", [])) if int(dim)]
     e_count = int(cone.pop("ep", 0)) + int(cone.pop("e", 0))
     unsupported = sorted(cone.keys())
     if unsupported:
@@ -792,7 +792,7 @@ def _map_ecos_status(info: dict, *, max_iters=None) -> str:
     return _ECOS_EXIT_FLAG_MAP.get(flag_int, status.SOLVER_ERROR)
 
 
-def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=None):
+def _compute_kkt(problem, mapped_status, raw, cone_dict, *, socp_state=None):
     """Forward to the canonical KKT helpers in the same shape as SCS.
 
     For QP-as-LP solves we call ``kkt.qp_residuals`` with P=0 and the

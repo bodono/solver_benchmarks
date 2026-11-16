@@ -66,7 +66,7 @@ class MosekSolverAdapter(SolverAdapter):
         q = np.asarray(qp["q"], dtype=float)
         p_mat = sp.tril(sp.coo_matrix(qp["P"]), format="coo")
         a_mat = sp.coo_matrix(qp["A"])
-        n = int(qp.get("n", q.shape[0]))
+        n = int(qp.get("n", int(q.shape[0])))
         m = int(qp.get("m", a_mat.shape[0]))
         lower, upper = normalize_qp_bounds(qp["l"], qp["u"])
 

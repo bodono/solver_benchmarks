@@ -1294,6 +1294,7 @@ def _run_one(
     # (0). A solver-level None means "fall back to the run-level setting";
     # any other numeric value (including 0, which means no limit) takes
     # precedence over the global default.
+    configured_timeout: float | None
     if solver_config.timeout_seconds is not None:
         configured_timeout = solver_config.timeout_seconds
     else:

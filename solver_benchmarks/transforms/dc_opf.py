@@ -195,7 +195,7 @@ def _piecewise_linear_costs(
             raise ValueError(f"Invalid piecewise-linear cost points for generator {g}")
         slopes = np.diff(y) / np.diff(x)
         intercepts = y[:-1] - slopes * x[:-1]
-        for slope, intercept in zip(slopes, intercepts):
+        for slope, intercept in zip(slopes, intercepts, strict=True):
             row = len(bounds)
             rows.extend([row, row])
             cols.extend([g, n_vars + i])

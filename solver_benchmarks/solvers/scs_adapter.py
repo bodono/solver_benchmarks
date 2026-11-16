@@ -136,7 +136,12 @@ class SCSSolverAdapter(SolverAdapter):
                 "b": np.asarray(cone_problem["b"], dtype=float),
                 "c": np.asarray(cone_problem["q"], dtype=float),
             }
-            cone = dict(cone_problem["cone"])
+            # SCS's C layer refuses numpy integers, 0-d arrays and tuples in
+            # cone fields, and an int array for a float field such as ``bu``.
+            cone = {
+                key: _plain_cone_value(value)
+                for key, value in dict(cone_problem["cone"]).items()
+            }
             free = int(cone.pop("f", 0))
             if free:
                 cone["z"] = int(cone.get("z", 0)) + free
@@ -217,6 +222,21 @@ class SCSSolverAdapter(SolverAdapter):
             trace=trace,
             kkt=kkt_dict,
         )
+
+
+def _plain_cone_value(value):
+    """A cone-dict value with numpy integers, floats and 0-d or 1-d arrays
+    turned into Python numbers and lists, and a tuple into a list.
+
+    Anything else, including the elements of a list that are not numpy
+    scalars, is left as it is, for SCS (or the exponent check above) to
+    judge as before.
+    """
+    if isinstance(value, np.generic) or (isinstance(value, np.ndarray) and value.ndim <= 1):
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return [item.item() if isinstance(item, np.generic) else item for item in value]
+    return value
 
 
 def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):

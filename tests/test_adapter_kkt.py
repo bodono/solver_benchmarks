@@ -232,6 +232,91 @@ def test_sdpa_still_prepares_a_problem_whose_second_order_list_is_empty():
     assert prepared.a.shape[0] == 1
 
 
+def test_sdpa_skips_a_second_order_cone_given_as_an_array(tmp_path: Path):
+    problem = _small_soc_problem([3])
+    problem["cone"] = {"l": np.int64(1), "q": np.array([3])}
+    result = _solve_cone("sdpa", problem, tmp_path)
+    assert result.status == status.SKIPPED_UNSUPPORTED
+    assert "second-order" in result.info["reason"]
+
+
+_SOC_LIST_CONE = {"l": 1, "q": [3]}
+_SOC_OTHER_FORMS = {
+    "numpy integers": {"l": np.int64(1), "q": np.int64(3)},
+    "list of numpy integers": {"l": 1, "q": [np.int64(3)]},
+    "tuple": {"l": 1, "q": (3,)},
+    "array": {"l": np.int64(1), "q": np.array([3])},
+}
+_SDP_LIST_CONE = {"z": 1, "s": [2]}
+_SDP_OTHER_FORMS = {
+    "numpy integers": {"z": np.int64(1), "s": np.int64(2)},
+    "list of numpy integers": {"z": 1, "s": [np.int64(2)]},
+    "tuple": {"z": 1, "s": (2,)},
+    "array": {"z": np.int64(1), "s": np.array([2])},
+}
+
+
+@pytest.mark.parametrize(
+    ("solver_name", "build", "form"),
+    [
+        *[(solver, "soc", form) for solver in ("scs", "clarabel", "ecos", "cvxopt") for form in _SOC_OTHER_FORMS],
+        *[(solver, "sdp", form) for solver in ("scs", "clarabel", "sdpa", "cvxopt") for form in _SDP_OTHER_FORMS],
+    ],
+)
+def test_cone_dimensions_in_other_forms_solve_like_lists(
+    solver_name: str, build: str, form: str, tmp_path: Path
+):
+    def problem(cone):
+        built = _small_soc_problem([3]) if build == "soc" else _small_sdp()
+        built["cone"] = cone
+        return built
+
+    list_cone, other = (
+        (_SOC_LIST_CONE, _SOC_OTHER_FORMS[form])
+        if build == "soc"
+        else (_SDP_LIST_CONE, _SDP_OTHER_FORMS[form])
+    )
+    expected = _solve_cone(solver_name, problem(dict(list_cone)), tmp_path / "list")
+    result = _solve_cone(solver_name, problem(dict(other)), tmp_path / "other")
+    assert expected.status == status.OPTIMAL
+    assert result.status == expected.status
+    assert result.objective_value == pytest.approx(expected.objective_value, rel=1e-9)
+    assert result.iterations == expected.iterations
+    assert result.kkt is not None
+    assert result.kkt["primal_res_rel"] < 1e-4
+
+
+@pytest.mark.parametrize(
+    ("list_cone", "numpy_cone"),
+    [
+        # Power cone: max x3 with (x1, x2, x3) in K_pow(alpha), x1 + x2 <= 2.
+        ({"l": 1, "p": [0.3]}, {"l": np.int64(1), "p": np.array([0.3])}),
+        ({"l": 1, "p": [-0.3]}, {"l": 1, "p": np.array([-0.3])}),
+        # Box cone: max x1 + x2 with t = 1 and bl <= x <= bu.
+        ({"bu": [1.0, 2.0], "bl": [-1.0, 0.0]}, {"bu": np.array([1, 2]), "bl": np.array([-1, 0])}),
+    ],
+)
+def test_scs_reads_float_cone_fields_given_as_arrays(list_cone, numpy_cone, tmp_path: Path):
+    def problem(cone):
+        if "p" in cone:
+            a = np.vstack([[[1.0, 1.0, 0.0]], -np.eye(3)])
+            q, b = np.array([0.0, 0.0, -1.0]), np.array([2.0, 0.0, 0.0, 0.0])
+        else:
+            a = np.vstack([np.zeros((1, 2)), -np.eye(2)])
+            q, b = np.array([-1.0, -1.0]), np.array([1.0, 0.0, 0.0])
+        return {
+            "P": None, "q": q, "A": sp.csc_matrix(a), "b": b, "r": 0.0,
+            "n": a.shape[1], "m": a.shape[0], "cone": cone, "obj_type": "min",
+        }
+
+    expected = _solve_cone("scs", problem(list_cone), tmp_path / "list")
+    result = _solve_cone("scs", problem(numpy_cone), tmp_path / "numpy")
+    assert expected.status == status.OPTIMAL
+    assert result.status == expected.status
+    assert result.objective_value == pytest.approx(expected.objective_value, rel=1e-9)
+    assert result.iterations == expected.iterations
+
+
 @pytest.mark.parametrize("solver_name", ["scs", "clarabel", "sdpa", "cvxopt"])
 def test_solvers_agree_on_small_sdp_with_psd_cone(solver_name: str, tmp_path: Path):
     # Verifies that all conic adapters interpret the canonical PSD triangle vec

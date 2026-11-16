@@ -1361,6 +1361,53 @@ def test_ecos_zero_dimensional_second_order_cone_is_ignored(tmp_path):
     assert result.status == status.OPTIMAL
 
 
+def _soc_and_psd_cone_lp(cone: dict) -> dict:
+    # Variables (t, a, b, c, d, X00, X10, X11): min t + c + X00 + 2 X11 with
+    # X00 + X11 = 1, a >= 1, d >= 1, (t, a, b) and (c, d) second-order cones
+    # and X PSD (col-major lower triangle). Optimum 3.
+    a = np.zeros((11, 8))
+    a[0, [5, 7]] = 1.0
+    a[1, 1] = a[2, 4] = -1.0
+    a[3:6, 0:3] = -np.eye(3)
+    a[6:8, 3:5] = -np.eye(2)
+    a[8:11, 5:8] = -np.eye(3)
+    return {
+        "P": None,
+        "A": sp.csc_matrix(a),
+        "b": np.array([1.0, -1.0, -1.0] + [0.0] * 8),
+        "q": np.array([1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 2.0]),
+        "r": 0.0,
+        "cone": cone,
+    }
+
+
+def test_cvxopt_zero_dimensional_cones_are_ignored(tmp_path):
+    # CVXOPT refuses a second-order cone of dimension 0; such a cone, and an
+    # empty PSD cone, has no rows.
+    expected = _solve(
+        "cvxopt", CONE, _soc_and_psd_cone_lp({"z": 1, "l": 2, "q": [3, 2], "s": [2]}), {}, tmp_path / "a"
+    )
+    result = _solve(
+        "cvxopt", CONE, _soc_and_psd_cone_lp({"z": 1, "l": 2, "q": [3, 0, 2], "s": [0, 2]}), {}, tmp_path / "b"
+    )
+    assert expected.status == status.OPTIMAL
+    assert expected.objective_value == pytest.approx(3.0, abs=1e-6)
+    assert result.status == expected.status
+    assert result.objective_value == pytest.approx(expected.objective_value, rel=1e-9)
+    assert result.iterations == expected.iterations
+
+
+def test_scs_accepts_a_cone_given_as_key_value_pairs(tmp_path):
+    expected = _solve("scs", CONE, _integer_cone_lp(), {}, tmp_path / "dict")
+    problem = _integer_cone_lp()
+    problem["cone"] = [("l", 3)]
+    result = _solve("scs", CONE, problem, {}, tmp_path / "pairs")
+    assert expected.status == status.OPTIMAL
+    assert result.status == expected.status
+    assert result.objective_value == pytest.approx(expected.objective_value, rel=1e-9)
+    assert result.iterations == expected.iterations
+
+
 def test_scs_non_numeric_power_cone_exponent_is_a_solver_error(tmp_path):
     # SCS's TypeError ("must be real number, not str") read like a setting's.
     problem = _feasible_cone_lp(n=5, m=10)

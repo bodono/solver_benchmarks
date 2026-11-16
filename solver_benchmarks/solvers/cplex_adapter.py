@@ -68,7 +68,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         p = sp.coo_matrix(qp["P"])
         a = sp.csr_matrix(qp["A"])
         l, u = normalize_qp_bounds(qp["l"], qp["u"])
-        n = int(qp.get("n", q.shape[0]))
+        n = int(qp.get("n", int(q.shape[0])))
         model = cplex.Cplex()
         # Always end() the model so the C-level state and license token
         # are released deterministically, even when an exception fires.
@@ -83,11 +83,11 @@ class CPLEXSolverAdapter(SolverAdapter):
                 names=[f"x_{idx}" for idx in range(n)],
             )
             constraint_rows = _add_cplex_constraints(
-                model, cplex, a, l, u, infinity, use_ranged_rows=use_ranged_rows
+                model, cplex, a, l, u, use_ranged_rows=use_ranged_rows
             )
             if p.nnz:
                 model.objective.set_quadratic_coefficients(
-                    [(int(i), int(j), float(v)) for i, j, v in zip(p.row, p.col, p.data)]
+                    [(int(i), int(j), float(v)) for i, j, v in zip(p.row, p.col, p.data, strict=True)]
                 )
 
             start = time.perf_counter()
@@ -154,7 +154,7 @@ class CPLEXSolverAdapter(SolverAdapter):
 
 
 def _add_cplex_constraints(
-    model, cplex, a, l, u, infinity: float, *, use_ranged_rows: bool = False
+    model, cplex, a, l, u, *, use_ranged_rows: bool = False
 ) -> list[int]:
     constraint_rows = []
     lin_expr = []

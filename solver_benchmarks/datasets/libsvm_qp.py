@@ -96,7 +96,6 @@ class LibsvmQPDataset(Dataset):
         "external download from "
         "https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/binary/"
     )
-    data_patterns = ("*.libsvm", "*.libsvm.gz")
     prepare_command = "python scripts/prepare_libsvm_qp.py"
     automatic_download = True
     subset_lists_problems = True

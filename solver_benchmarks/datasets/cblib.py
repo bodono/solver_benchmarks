@@ -45,7 +45,6 @@ class CBLIBDataset(Dataset):
     dataset_id = "cblib"
     description = "CBLIB continuous linear/SOC subset in CBF format."
     data_source = "external download from https://cblib.zib.de/download/all/"
-    data_patterns = ("*.cbf", "*.cbf.gz")
     prepare_command = "python scripts/prepare_cblib.py"
     automatic_download = True
     subset_lists_problems = True
@@ -210,7 +209,7 @@ def cblib_names_under_size(names: list[str], max_size_mb: float) -> list[str]:
     threshold_bytes = float(max_size_mb) * 1.0e6
     with ThreadPoolExecutor(max_workers=8) as pool:
         sizes = list(pool.map(cblib_remote_size_bytes, names))
-    return [name for name, size in zip(names, sizes) if size <= threshold_bytes]
+    return [name for name, size in zip(names, sizes, strict=True) if size <= threshold_bytes]
 
 
 def cblib_remote_size_bytes(name: str) -> int:

@@ -41,7 +41,6 @@ class QPLIBDataset(Dataset):
     dataset_id = "qplib"
     description = "Convex QPLIB subset present in problem_classes/qplib_data."
     data_source = "external download from https://qplib.zib.de/qplib/"
-    data_patterns = ("QPLIB_*.qplib",)
     prepare_command = "python scripts/prepare_qplib.py"
     automatic_download = True
     subset_lists_problems = True

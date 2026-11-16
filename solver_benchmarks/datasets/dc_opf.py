@@ -33,7 +33,6 @@ class DCOPFDataset(Dataset):
     dataset_id = "dc_opf"
     description = "DC Optimal Power Flow QPs built from evaluated MATPOWER cases."
     data_source = MATPOWER_BASE_URL
-    data_patterns = ("*.mat",)
     prepare_command = "python scripts/prepare_dc_opf.py"
     automatic_download = True
     # A single-string subset is not taken for a case name when choosing what

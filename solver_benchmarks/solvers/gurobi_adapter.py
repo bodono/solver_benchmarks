@@ -64,7 +64,7 @@ class GurobiSolverAdapter(SolverAdapter):
         q = np.asarray(qp["q"], dtype=float)
         p_mat = sp.coo_matrix(qp["P"])
         a_mat = sp.csr_matrix(qp["A"])
-        n = int(qp.get("n", q.shape[0]))
+        n = int(qp.get("n", int(q.shape[0])))
         m = int(qp.get("m", a_mat.shape[0]))
         l, u = normalize_qp_bounds(qp["l"], qp["u"])
         lower = np.where(np.isneginf(l), -grb.GRB.INFINITY, l)
@@ -106,7 +106,7 @@ class GurobiSolverAdapter(SolverAdapter):
                     constraint_rows.append(row)
 
                 objective = grb.QuadExpr()
-                for row, col, value in zip(p_mat.row, p_mat.col, p_mat.data):
+                for row, col, value in zip(p_mat.row, p_mat.col, p_mat.data, strict=True):
                     objective.add(0.5 * float(value) * variables[row] * variables[col])
                 objective.add(grb.LinExpr(q, variables))
                 # The ``r`` constant offset is added by ``solver_benchmarks.worker``;

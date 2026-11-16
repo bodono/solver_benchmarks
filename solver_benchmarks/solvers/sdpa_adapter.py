@@ -50,7 +50,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, ProblemData, cone_items_in_row_order
+from solver_benchmarks.core.problem import CONE, ProblemData, as_list, cone_items_in_row_order
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
@@ -226,7 +226,7 @@ def _prepare_sdpap_problem(cone_problem: dict, sdpap) -> _PreparedSDPAProblem:
     unsupported = set(cone) - {"f", "z", "l", "q", "s"}
     if unsupported:
         raise ValueError(f"SDPA adapter does not support cone keys: {', '.join(sorted(unsupported))}")
-    if any(int(dim) for dim in _as_tuple(cone.get("q", ()))):
+    if any(int(dim) for dim in as_list(cone.get("q", ()))):
         # sdpa-python ends the Python process on any second-order cone: it
         # prints "block struct :: line 93 in sdpa_block.cpp" and exits with
         # status 0, even for a single cone of dimension 3 handed straight to
@@ -283,13 +283,13 @@ def _cone_blocks(cone: dict) -> list[tuple[str, int, int, int]]:
                 blocks.append(("l", row, dim, dim))
             row += dim
         elif key == "q":
-            for dim in _as_tuple(value):
+            for dim in as_list(value):
                 dim = int(dim)
                 if dim:
                     blocks.append(("q", row, dim, dim))
                 row += dim
         elif key == "s":
-            for order in _as_tuple(value):
+            for order in as_list(value):
                 order = int(order)
                 dim = order * (order + 1) // 2
                 if dim:
@@ -549,12 +549,6 @@ def _dense(value) -> np.ndarray:
     if sp.issparse(value):
         value = value.toarray()
     return np.asarray(value, dtype=float).reshape(-1)
-
-
-def _as_tuple(value):
-    if isinstance(value, (list, tuple)):
-        return tuple(value)
-    return (value,)
 
 
 def _maybe_float(value):

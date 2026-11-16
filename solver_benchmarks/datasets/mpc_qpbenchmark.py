@@ -37,7 +37,6 @@ class MPCQPBenchmarkDataset(Dataset):
     dataset_id = "mpc_qpbenchmark"
     description = "Structured MPC QPs from qpsolvers/mpc_qpbenchmark."
     data_source = "external download from https://github.com/qpsolvers/mpc_qpbenchmark"
-    data_patterns = ("*.npz",)
     prepare_command = "python scripts/prepare_mpc_qpbenchmark.py"
     automatic_download = True
     subset_lists_problems = True

@@ -111,22 +111,22 @@ def cone_row_count(cone: dict[str, Any]) -> int | None:
         if key in ("f", "z", "l"):
             rows += int(value)
         elif key == "q":
-            rows += sum(int(dim) for dim in _as_list(value))
+            rows += sum(int(dim) for dim in as_list(value))
         elif key == "s":
-            rows += sum(int(dim) * (int(dim) + 1) // 2 for dim in _as_list(value))
+            rows += sum(int(dim) * (int(dim) + 1) // 2 for dim in as_list(value))
         elif key == "cs":
-            rows += sum(int(dim) * int(dim) for dim in _as_list(value))
+            rows += sum(int(dim) * int(dim) for dim in as_list(value))
         elif key in ("bl", "bu"):
             if not box_counted:
                 # One row for the scaling variable and one per bound; an
                 # empty box takes no rows at all, as in SCS.
-                width = max(len(_as_list(cone.get("bl", []))), len(_as_list(cone.get("bu", []))))
+                width = max(len(as_list(cone.get("bl", []))), len(as_list(cone.get("bu", []))))
                 rows += 1 + width if width else 0
                 box_counted = True
         elif key in ("ep", "ed"):
             rows += 3 * int(value)
         elif key == "p":
-            rows += 3 * len(_as_list(value))
+            rows += 3 * len(as_list(value))
         else:
             return None
     return rows
@@ -213,7 +213,12 @@ def check_qp_layout(name: str, qp: dict[str, Any]) -> None:
             raise ValueError(f"Problem {name!r}: {key} has NaN entries")
 
 
-def _as_list(value: Any) -> list[Any]:
+def as_list(value: Any) -> list[Any]:
+    """The entries of a cone dict value (``q``, ``s``, ``p``, ...) as a list.
+
+    A list or tuple gives its elements, a numpy array or numpy scalar its
+    ``tolist()`` (Python numbers), and any other single value ``[value]``.
+    """
     if isinstance(value, (list, tuple)):
         return list(value)
     if hasattr(value, "tolist"):

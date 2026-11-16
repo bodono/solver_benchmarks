@@ -125,7 +125,8 @@ def _compute_expected_outcomes(results: pd.DataFrame) -> pd.Series:
         | ((in_path("/sdplib_data/") | dataset_is("sdplib")) & problem_in(SDPLIB_INFEASIBLE))
         | ((in_path("/dimacs_data/") | dataset_is("dimacs")) & problem_in(DIMACS_INFEASIBLE))
     )
-    inferred = np.where(infeasible, status.EXPECT_INFEASIBLE, None)
+    inferred = np.full(len(rows), None, dtype=object)
+    inferred[infeasible] = status.EXPECT_INFEASIBLE
     out.iloc[np.flatnonzero(~known)] = inferred
     return out
 

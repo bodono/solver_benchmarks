@@ -19,13 +19,12 @@ from __future__ import annotations
 import functools
 import itertools
 import math
-from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
 import scipy.sparse as sp
 
-from solver_benchmarks.core.problem import cone_items_in_row_order
+from solver_benchmarks.core.problem import as_list, cone_items_in_row_order
 
 _EPS = 1.0e-16
 # Shortest run of equal-sized second-order cones projected as one batch.
@@ -526,7 +525,7 @@ def _project_cones(
         elif name == "q":
             # Runs of consecutive blocks of one size are projected together;
             # below _SOC_BATCH_MIN blocks the per-block path is faster.
-            for dim, group in itertools.groupby(int(dim) for dim in _as_list(value)):
+            for dim, group in itertools.groupby(int(dim) for dim in as_list(value)):
                 count = len(list(group))
                 if count < _SOC_BATCH_MIN:
                     for _ in range(count):
@@ -537,7 +536,7 @@ def _project_cones(
                     _add(count * dim, project, project)
                     row += count * dim
         elif name == "s":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 dim = int(dim)
                 triangle = dim * (dim + 1) // 2
                 project = functools.partial(_project_psd_triangle, n=dim)
@@ -578,7 +577,7 @@ def _project_cones(
             _add(dim, _rowwise(primal), _rowwise(dual))
             row += dim
         elif name == "p":
-            powers = np.array([float(power) for power in _as_list(value)], dtype=float)
+            powers = np.array([float(power) for power in as_list(value)], dtype=float)
             unsupported.extend("p" for a in powers if not 0.0 < abs(a) < 1.0)
             _add(
                 3 * powers.size,
@@ -989,12 +988,6 @@ def _as_dense(value):
 
 def _as_sparse(M):
     return M.tocsr() if sp.issparse(M) else sp.csr_matrix(M)
-
-
-def _as_list(value) -> Iterable:
-    if isinstance(value, (list, tuple, np.ndarray)):
-        return list(value)
-    return [value]
 
 
 def _inf_norm(v) -> float:
