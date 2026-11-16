@@ -49,16 +49,19 @@ from solver_benchmarks.core.result import SolverResult, to_jsonable
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     coerce_int_setting,
     finite_point,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     threads_or_default,
     translate_tolerance_aliases,
 )
@@ -111,11 +114,7 @@ class Cpo3SolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import cpo3  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("cpo3")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         # Problems cpo3 cannot take are skipped before cpo3 is imported, so the
@@ -134,9 +133,9 @@ class Cpo3SolverAdapter(SolverAdapter):
             )
         try:
             import cpo3
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable(
-                "Install with the cpo3 extra (pip install cpo3) to use cpo3"
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "cpo3", "Install with the cpo3 extra (pip install cpo3) to use cpo3", exc
             ) from exc
 
         settings = settings_with_defaults(self.settings)

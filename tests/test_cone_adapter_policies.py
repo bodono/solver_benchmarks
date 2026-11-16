@@ -1131,6 +1131,22 @@ def test_sdpa_options_defaults_and_translation(tmp_path):
     assert "threads_ignored" not in info
 
 
+@pytest.mark.parametrize("key, good, bad", [
+    ("convMethod", "EQ", "eq"),
+    ("domainMethod", "clique", "cliques"),
+    ("frvMethod", "elimination", True),
+    ("rangeMethod", "decomp", "none "),
+])
+def test_sdpa_method_parameters_take_only_values_sdpa_python_accepts(tmp_path, key, good, bad):
+    # sdpa-python replaces any other value by its default with a printed note.
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
+
+    assert _sdpa_options({key: good}, tmp_path)[key] == good
+    with pytest.raises(SolverConfigError, match=key):
+        _sdpa_options({key: bad}, tmp_path)
+
+
 def test_sdpa_defaults_to_one_thread_and_native_settings_win(tmp_path):
     from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
 

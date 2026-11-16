@@ -24,16 +24,19 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     EPS_ALIASES,
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     finite_point,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     refuse_settings,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     threads_or_default,
 )
 from .qp_split import normalize_qp_bounds
@@ -45,17 +48,15 @@ class CPLEXSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import cplex  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("cplex")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import cplex
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the cplex extra to use CPLEX") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "cplex", "Install with the cplex extra to use CPLEX", exc
+            ) from exc
 
         settings = dict(self.settings)
         use_ranged_rows = settings.pop("use_ranged_rows", False)

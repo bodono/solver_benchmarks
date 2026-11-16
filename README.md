@@ -104,6 +104,13 @@ scs       available               cone,qp
 sdpa      available               cone
 ```
 
+A solver package that is installed but fails to import (a native library that
+does not load, an ABI mismatch) is listed as `unavailable: <the import error>`
+instead of `missing optional extra`, and `bench run` prints the same warning.
+Either way the solver counts as not installed: its solves are recorded as
+skipped with `metadata.skip_reason: solver_unavailable` and the other solvers
+run.
+
 ## Supported Datasets
 
 List datasets:
@@ -446,13 +453,13 @@ Current maintained adapters:
 | SCS | `scs` | QP, cone | Supports SCS box-cone form for QPs and native conic data. `max_iter` maps to `max_iters` and `eps` to `eps_abs` / `eps_rel`. A run stopped by `max_iters` or `time_limit_secs` is recorded as `max_iter_reached` / `time_limit` (SCS's own text, e.g. `solved (inaccurate - reached max_iters)`, is kept in `info.raw_status`), not as `optimal_inaccurate`. Problem data SCS refuses (a non-convex `P`, crossed bounds, non-finite entries, no constraint rows) is `solver_error`; an unknown setting or a value SCS refuses is a configuration error. |
 | Clarabel | `clarabel` | QP, cone | Uses nonnegative cone conversion for QPs and native zero/nonnegative/SOC/PSD/exponential (`ep`) and power (`p`, 0 < alpha < 1) cones; exponential and power cone rows pass through unchanged (Clarabel uses the same orientation as SCS), dual exponential (`ed`) and dual power (negative alpha) cones are skipped. `eps` / `eps_abs` / `eps_rel` map onto `tol_feas`, `tol_gap_abs`, `tol_gap_rel`; a negative or non-finite tolerance is refused, and so are `tol_feas: 0` and `tol_gap_abs` and `tol_gap_rel` both 0, which can never be met; one zero gap or infeasibility tolerance (e.g. `eps_rel: 0`) is a valid absolute-only or relative-only test. `threads` sets `max_threads`, one unless set. A `direct_solve_method` Clarabel knows but cannot load on this host (`mkl`, `panua`) stops the solve as a `worker_error` (`SolverUnavailable`); an unknown one is a rejected setting. Clarabel relabels a stop at `max_iter` or `time_limit` as `AlmostSolved` (or `Almost*Infeasible`) when the last iterate meets its reduced tolerances; such a stop is `max_iter_reached` / `time_limit`, with Clarabel's status in `info.raw_status`, while an `Almost*` status for any other stop stays `*_inaccurate`. On some SDPs Clarabel's chordal decomposition (on by default) reports `Solved` at a point that misses the original constraints by far more than its tolerance (SDPLIB `control1`: 18.05 against the optimum 17.7846, harness `dual_res_rel` about 2e-2); the KKT record shows it, and `chordal_decomposition_enable: false` solves that instance. |
 | OSQP | `osqp` | QP | Direct QP adapter. |
-| ECOS | `ecos` | QP, cone (LP/SOCP/expcone) | Interior-point conic solver. QPs are reformulated to SOCP via the standard epigraph trick with `P = R'R`; the SOC dim is `rank(P) + 2`. A row/column of `P` whose only entry is its diagonal gives an `R` row `sqrt(p_ii)` (so a diagonal `P` works at any size); only the rows/columns coupled by off-diagonal entries are factored densely, one connected block at a time (Cholesky for PD, eigendecomposition for rank-deficient PSD). A QP whose coupled blocks would need more than 2000² dense entries together (for example one coupled block larger than 2000 × 2000, as in CVXQP*_L) is skipped as `skipped_unsupported` instead of densified; mostly diagonal problems such as MOSARQP1 (10 coupled rows of 2500) and STCQP1/2 (1534 of 4097) are solved. The reformulation is included in `run_time_seconds` (and recorded as `info.socp_reformulation_seconds`). `max_iter` maps to `max_iters`, `eps` / `eps_abs` to `feastol` and `abstol`, `eps_rel` to `reltol`; an unknown setting or a value ECOS refuses is a configuration error. ECOS answers "close to optimal" (exit flags 10-12) when it stops at `max_iters` with an iterate within its reduced tolerances; that stop is `max_iter_reached` (ECOS's text in `info.raw_status`), and the same flags for an earlier stop stay `*_inaccurate`. PSD cones not supported. |
+| ECOS | `ecos` | QP, cone (LP/SOCP/expcone) | Interior-point conic solver. QPs are reformulated to SOCP via the standard epigraph trick with `P = R'R`; the SOC dim is `rank(P) + 2`. A row/column of `P` whose only entry is its diagonal gives an `R` row `sqrt(p_ii)` (so a diagonal `P` works at any size); only the rows/columns coupled by off-diagonal entries are factored densely, one connected block at a time (Cholesky for PD, eigendecomposition for rank-deficient PSD, keeping every eigenvalue above the block's round-off `k * eps * max|eigenvalue|`, so `R'R` reproduces `P` even when its spectrum spans many orders of magnitude; an eigenvalue below `-1e-12` times the scale of `P` makes `P` indefinite and the problem `skipped_unsupported`). A QP whose coupled blocks would need more than 2000² dense entries together (for example one coupled block larger than 2000 × 2000, as in CVXQP*_L) is skipped as `skipped_unsupported` instead of densified; mostly diagonal problems such as MOSARQP1 (10 coupled rows of 2500) and STCQP1/2 (1534 of 4097) are solved. The reformulation is included in `run_time_seconds` (and recorded as `info.socp_reformulation_seconds`). `max_iter` maps to `max_iters`, `eps` / `eps_abs` to `feastol` and `abstol`, `eps_rel` to `reltol`; an unknown setting or a value ECOS refuses is a configuration error. ECOS answers "close to optimal" (exit flags 10-12) when it stops at `max_iters` with an iterate within its reduced tolerances; that stop is `max_iter_reached` (ECOS's text in `info.raw_status`), and the same flags for an earlier stop stay `*_inaccurate`. PSD cones not supported. |
 | CVXOPT | `cvxopt` | QP, cone (LP/QP/SOCP/SDP) | Interior-point solver supporting QPs natively plus PSD cones (canonical PSD-vec layout converted to BLAS unpacked-L automatically). Problems with a linear objective (LP/SOCP/SDP) go through `cvxopt.solvers.conelp`, which certifies primal and dual infeasibility; problems with a quadratic objective go through `coneqp`, which cannot. `conelp`'s infeasibility test divides a residual by minus the objective, so at its least-squares starting point it only checks whether that objective exceeds `1/feastol` in magnitude; a claim at iteration 0 (NETLIB agg, agg2, agg3, grow7) is discarded and the problem solved with `coneqp` (`info.conelp_discarded_claim`, time of both calls reported). A later claim can be false as well on a badly scaled feasible problem (NETLIB scagr25, gfrd-pnc, nesm), with a scaled residual that passes the certificate check, so the adapter also solves such a problem with `coneqp`: the claim stands unless `coneqp` finds a solution, which is then reported (`info.coneqp_cross_check`; a genuinely infeasible problem costs two solves). NETLIB shell remains a false claim (`coneqp` fails on it). With second-order cones the adapter passes `conelp` the sparse `chol` KKT solver `coneqp` used, not CVXOPT's dense `qr` default, which turned DIMACS sched_50_50_scaled from `optimal` in 80 s into an error after 490 s. PSD-only problems keep `qr`: `conelp` with `chol` fails on SDPLIB control1 and hinf9 and is inaccurate on control2 and truss6/7, which `qr` solves; `qr` is slower (qap6/7 about 8x) and stops at `maxiters` on hinf1/6/14 and qap6/7. `kktsolver` overrides either choice. A problem without cone rows (equalities only) is solved by `coneqp`'s single KKT solve of `[[P, A'], [A, 0]]`, which always says `optimal`; a CVXOPT residual above `feastol` makes it `optimal_inaccurate` (below 1e-3) or `solver_error`. The default `chol2` KKT solver returns such a wrong point for singular `P` (HS52, GENHS28), so when `n + p` is at most 2000 the adapter uses the `ldl` KKT solver; `ldl` factors the KKT matrix as a dense array (7.3 GB for AUG2DC, `n + p` = 30200), so larger systems keep `chol2`. CVXOPT's `unknown` status is `max_iter_reached` only when `maxiters` was reached; an earlier stop is `optimal_inaccurate` when gap and residuals are below 1e-3 and `solver_error` otherwise. Settings are CVXOPT's options (`maxiters`, `abstol`, `reltol`, `feastol`, `refinement`, `kktreg`, ...) plus `kktsolver`; `max_iter` maps to `maxiters`, `eps` / `eps_abs` to `abstol` and `feastol`, `eps_rel` to `reltol`, and any other name raises (CVXOPT would ignore it). CVXOPT checks option values and `kktsolver` in the call that solves, raising the same exception as for numerical trouble, so the adapter checks them first (`maxiters` >= 1, `feastol` > 0, `refinement` >= 0, one of `abstol` / `reltol` positive, `kktsolver` one CVXOPT accepts for the entry point used): a bad value is a configuration error, not `solver_error` on every problem. A numerical failure is `solver_error` with the message on `info.error`. Exponential cones not supported. CVXOPT options live on a global dict; the adapter snapshots and restores it per solve so **sequential** solves in the same process don't leak knobs into each other. This is *not* thread-safe — concurrent in-process solves would still race on the global. The benchmark runner uses subprocess-level parallelism, so this per-process sequential contract is sufficient. |
 | PDLP | `pdlp` | LP-only QP, simple linear cone | Uses OR-Tools directly, no CVXPY. QPs and cone problems with a nonzero `P` are skipped; cone entries without rows (`q: []`, `ep: 0`) are ignored. `max_iter` maps to `iteration_limit`; the legacy `solver_time_limit_sec` spelling is validated like `time_limit` (which wins when both are given). PDLP runs on one thread by default. See [PDLP Notes](#pdlp-notes). |
 | HiGHS | `highs` | QP | Direct LP/QP adapter through `highspy`; strong LP baseline. Model data HiGHS refuses when it is added (a coefficient at or above `large_matrix_value`, an infinite matrix entry, a wrong-signed infinite bound) is `solver_error`, not a solve of the truncated model. HiGHS records no checkable infeasibility certificate, so its infeasibility statuses carry no KKT record. `iterations` is the count of the algorithm that finished the solve (QP, else interior point, else PDLP, else simplex); every algorithm's count is on `info`. |
 | ProxQP | `proxqp` | QP | Direct QP adapter through ProxSuite. ProxSuite's default stopping test checks only the primal and dual residuals and can call a point with a large duality gap solved, so the adapter turns on its duality-gap test (`check_duality_gap: true`, with `eps_duality_gap_abs` / `eps_duality_gap_rel` taken from `eps_abs` / `eps_rel` unless given); the values used are on `info`. With `eps_rel` unset or 0 (ProxQP's default), `eps_abs` is the relative gap tolerance too: an absolute-only gap test is out of reach of double precision when the objective is large (at `eps_abs: 1.0e-9`, Maros-Meszaros QSCAGR25, objective 2e8, ran to `max_iter`, and QPCBOEI1 ended in a false infeasibility). Set `check_duality_gap: false` for ProxSuite's own default, which ProxQP results recorded before this change used. Infeasibility claims carry the harness certificate check: on feasible NETLIB LPs ProxQP often reports `primal_infeasible` (17 of the 30 smallest) and those claims fail the check, and so do most of its claims on infeasible problems: ProxSuite returns its dual iterate, which often is not a certificate within the tolerance. `backend` must be `sparse` or `dense` and `dense` a boolean. |
 | PIQP | `piqp` | QP | Direct sparse/dense QP adapter. PIQP checks the duality gap against its own `eps_duality_gap_abs` / `eps_duality_gap_rel` (1e-8 / 1e-9); when the config sets `eps_abs` / `eps_rel` (or `eps`) and not those, they follow `eps_abs` / `eps_rel` (`eps_abs` when `eps_rel` is 0), as in the ProxQP adapter, and are listed on `info.settings_translated`; with no tolerance configured PIQP's defaults stay. Infeasibility claims carry the harness certificate check. `threads` sets `num_threads`, one unless set; `backend` must be `sparse` or `dense` and `dense` a boolean. |
-| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. `lowerBound` / `upperBound` default to -1e30 / 1e30 (with sdpa-python's -1e5 / 1e5, SDPA stops as soon as an objective crosses them, so feasible problems with an optimum beyond 1e5 in magnitude came back infeasible or unbounded). `threads` maps to `numThreads`, which defaults to 1 (sdpa-python otherwise uses every core; `threads: 0` leaves it to sdpa-python); `max_iter` maps to `maxIteration`, `eps_abs` / `eps_rel` (or `eps`) to `epsilonStar` / `epsilonDash`; other names must be sdpa-python parameters. `pdOPT` / `pdFEAS` are `optimal` when sdpa-python's primal / dual errors and gap are within `optimality_tolerance` (default `max(1e-6, epsilonStar, epsilonDash)`); an error sdpa-python could not compute (`None`) is left out. Infeasibility claims carry the harness certificate check. A problem without constraint rows, which sdpa-python refuses ("Inconsistent Size"), is `solver_error`. |
+| SDPA | `sdpa` | cone | Linear conic adapter through `sdpa-python`; useful for SDP subsets. Problems with second-order cones are skipped: `sdpa-python` ends the process on them. `lowerBound` / `upperBound` default to -1e30 / 1e30 (with sdpa-python's -1e5 / 1e5, SDPA stops as soon as an objective crosses them, so feasible problems with an optimum beyond 1e5 in magnitude came back infeasible or unbounded). `threads` maps to `numThreads`, which defaults to 1 (sdpa-python otherwise uses every core; `threads: 0` leaves it to sdpa-python); `max_iter` maps to `maxIteration`, `eps_abs` / `eps_rel` (or `eps`) to `epsilonStar` / `epsilonDash`; other names must be sdpa-python parameters, and `frvMethod`, `convMethod`, `domainMethod` and `rangeMethod` one of the values sdpa-python takes (`split` / `elimination`, `LMI` / `EQ`, `none` / `clique` / `basis`, `none` / `clique` / `decomp`), which it would otherwise replace by its default with only a printed note. `pdOPT` / `pdFEAS` are `optimal` when sdpa-python's primal / dual errors and gap are within `optimality_tolerance` (default `max(1e-6, epsilonStar, epsilonDash)`); an error sdpa-python could not compute (`None`) is left out. Infeasibility claims carry the harness certificate check. A problem without constraint rows, which sdpa-python refuses ("Inconsistent Size"), is `solver_error`. |
 | GUROBI | `gurobi` | QP | Optional extra; requires `gurobipy` and license. A license failure raised by the solve (the size-limited license of the PyPI package refuses larger models) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as Gurobi failing the problem; another `GurobiError` from the solve is `solver_error`. When presolve can only say "infeasible or unbounded", the adapter re-solves with `DualReductions=0` (Gurobi's documented remedy) so the row gets a definite status; `info.inf_or_unbd_resolved` marks it. `info.raw_status` is the status name (`OPTIMAL`, ...), `info.raw_status_code` Gurobi's integer. |
 | MOSEK | `mosek` | QP | Optional extra; requires Mosek package and license. A license failure raised by the solve (missing, expired or exhausted license) stops it as a `worker_error` (`SolverUnavailable`) instead of being scored as MOSEK failing the problem. Settings are MOSEK parameter names (`MSK_IPAR_*`, `MSK_DPAR_*`, `MSK_SPAR_*`); `max_iter` sets `MSK_IPAR_INTPNT_MAX_ITERATIONS` and `MSK_IPAR_SIM_MAX_ITERATIONS`, and the `eps` aliases are refused. |
 | CPLEX | `cplex` | QP | Optional extra; requires IBM CPLEX package and license. A license failure raised by the solve (Community Edition size limits, error 1016, or no license) stops it as a `worker_error` (`SolverUnavailable`); another CPLEX error from the solve is `solver_error`. `info.raw_status` is CPLEX's status string, `info.raw_status_code` its integer. After an "infeasible or unbounded" status the adapter re-solves with `preprocessing.reduce: 0` (`info.inf_or_unbd_resolved`). `iterations` is the barrier count when barrier ran (CPLEX's default for QPs), else the simplex count; both are on `info`. |
@@ -496,14 +503,44 @@ and so is a problem whose cone types an adapter cannot take (ECOS on a PSD cone)
 which the adapter reports from the solve. A solver that is not installed has
 every one of its solves skipped the same way.
 
-To fail instead of skipping (a solver that is not installed then fails the run
-before anything is solved; a skip the adapter reports is recorded, then the run
+To fail instead of skipping (a solver that is not installed, or installed but
+not loadable, then fails the run before anything is solved; a skip the adapter reports is recorded, then the run
 stops):
 
 ```yaml
 run:
   fail_on_unsupported: true
 ```
+
+### Solve Times
+
+Every result has `run_time_seconds`, the wall-clock time the adapter measures
+around the solver's calls (problem loading excluded). `solve_time_seconds` is
+the solve time the solver itself reports; where a solver reports its setup
+(scaling, factorization set-up) separately, that part is in
+`setup_time_seconds` and not in `solve_time_seconds`, and where it reports one
+total, `solve_time_seconds` includes the setup and `setup_time_seconds` is
+empty. Compare `solve_time_seconds` across solvers with
+that in mind, or use `run_time_seconds`. What each adapter records:
+
+| Solver | `solve_time_seconds` | `setup_time_seconds` |
+|---|---|---|
+| `clarabel` | `solve_time` (setup included) | not reported |
+| `cplex` | not reported | not reported |
+| `cpo3` | `solve_time` (presolve, equilibration and factorizations included) | not reported |
+| `cuopt` | `get_solve_time()` | not reported |
+| `cvxopt` | not reported | not reported |
+| `ecos` | `timing.tsolve` | `timing.tsetup` |
+| `gurobi` | not reported | not reported |
+| `highs` | not reported | not reported |
+| `mosek` | not reported | not reported |
+| `osqp` | `solve_time` | `setup_time` |
+| `pdlp` | not reported | not reported |
+| `piqp` | `solve_time` | `setup_time` |
+| `proxqp` | `solve_time` | `setup_time` |
+| `qtqp` | not reported | not reported |
+| `scs` | `solve_time` | `setup_time` |
+| `sdpa` | sdpa-python's `sdpa` time | not reported |
 
 ## Configuration Files
 
@@ -616,12 +653,16 @@ A few setting names mean the same thing for every adapter:
   `simplex.limits.iterations`; MOSEK: `MSK_IPAR_INTPNT_MAX_ITERATIONS` and
   `MSK_IPAR_SIM_MAX_ITERATIONS`; cuOpt and PDLP: `iteration_limit`; cpo3, SCS
   and ECOS: `max_iters`; CVXOPT: `maxiters`; SDPA: `maxIteration`). A native
-  name given alongside wins.
+  name given alongside wins. HiGHS's own `*_iteration_limit` settings and
+  ECOS's `max_iters` and `nitref` (refinement steps) follow the same integer
+  rule.
 - `eps_abs` / `eps_rel` (and `eps`, which sets both): the absolute and relative
   tolerances, native for OSQP, PIQP, ProxQP, PDLP and SCS and translated for
   QTQP, cpo3, Clarabel, ECOS, CVXOPT, SDPA and cuOpt. An alias set to `null`
-  counts as unset (`eps` then still applies). HiGHS, Gurobi, CPLEX and MOSEK
-  have no such pair and refuse these names; set their own tolerances instead.
+  counts as unset (`eps` then still applies), and a boolean is refused (a
+  solver that takes any number would read `eps_abs: true` as 1.0). HiGHS,
+  Gurobi, CPLEX and MOSEK have no such pair and refuse these names; set their
+  own tolerances instead.
 
 Every adapter refuses a setting it does not know, or a value it or its solver
 rejects, with a `SolverConfigError` (a `ValueError`) naming it, so a misspelled
@@ -1204,7 +1245,8 @@ Run and analysis commands:
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
-each solver reports.
+each solver reports (see [Solve Times](#solve-times) for which adapters record
+the two solver-reported times and what they cover).
 
 When run from the CLI, `bench run` writes solver stdout/stderr to each solve's
 `stdout.log`/`stderr.log` (solvers print nothing there unless their settings
@@ -1716,10 +1758,12 @@ from pathlib import Path
 from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.solvers.base import (
+    IMPORT_ERRORS,
     SolverAdapter,
-    SolverUnavailable,
     finite_point,
+    module_available,
     reported_objective,
+    solver_import_failed,
 )
 
 
@@ -1729,17 +1773,15 @@ class MySolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import my_solver
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("my_solver")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import my_solver
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install my_solver to use this adapter") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "my_solver", "Install my_solver to use this adapter", exc
+            ) from exc
 
         from solver_benchmarks.analysis import kkt
         from solver_benchmarks.core import status
@@ -1774,7 +1816,12 @@ SOLVERS["my_solver"] = MySolverAdapter
 Adapter expectations:
 
 - Do not import optional solver packages at module import time if they may be missing.
-- Use `is_available()` for optional dependency checks.
+- Use `is_available()` for optional dependency checks, through
+  `module_available()`: an installed package that fails to import (a native
+  library that does not load raises `ImportError` or `OSError`) then makes the
+  solver unavailable with a warning instead of stopping the run, and
+  `solver_import_failed()` turns the same failure in `solve()` into
+  `SolverUnavailable`.
 - Keep solver adapter modules solver-specific rather than grouping unrelated adapters together.
 - Return canonical statuses from `solver_benchmarks.core.status`. Map every raw solver status the underlying library can emit (including any `*_inaccurate` variants and infeasibility/unboundedness certificates), and fall back to `SOLVER_ERROR` only for genuinely unrecognized states. A solve that stopped on its iteration or time limit is `MAX_ITER_REACHED` / `TIME_LIMIT` even when the solver labels its last iterate "solved inaccurate" or "almost solved"; keep the solver's own status in `info["raw_status"]`.
 - Populate `SolverResult.kkt` whenever the solver returned a finite primal/dual pair: use `solver_benchmarks.analysis.kkt.qp_residuals` (or `cone_residuals` for cone solvers) for every status in `status.ANY_FEASIBLE` (optimal, inaccurate, iteration or time limit, solver error), and the matching `*_infeasibility_cert` helpers when the solver reports a Farkas-style certificate (also an inaccurate one that came with a limit status, as OSQP's `*_infeasible_inaccurate` do). `bench kkt-verify --promote` can then judge every solver's limit-hit point by the same check. The KKT plots, summaries, and accuracy profile all read this field. `cone_residuals` projects onto every cone but complex PSD (zero, nonnegative, box, second-order, PSD, exponential and its dual, power and its dual), and its `primal_res` is the larger of `Ax + s − b` and the distance of `s` to the cone, so an adapter may pass `s = b − Ax`.
@@ -1857,8 +1904,15 @@ settings:
 
 PDLP artifacts:
 
-- `pdlp_solve_log.textproto`
-- `pdlp_response.textproto`
+- `pdlp_solve_log.textproto`: PDLP's solve log (termination, iteration
+  statistics).
+- `pdlp_response.textproto`: OR-Tools' response without the solution vectors
+  (`variable_value`, `dual_value`, `reduced_cost`), which as text take seconds
+  and tens of MB per solve on large LPs. Set `save_response: true` in the
+  solver's settings to write the complete response; the result row is the
+  same either way.
+
+The model sent to PDLP gives its variables and constraints no names.
 
 ## Testing
 

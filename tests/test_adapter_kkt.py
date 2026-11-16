@@ -160,6 +160,17 @@ def test_adapter_reports_kkt_for_small_qp(solver_name: str, tmp_path: Path):
     assert result.kkt["duality_gap_rel"] < 1e-4
 
 
+@pytest.mark.parametrize("solve", [_solve, _solve_cone])
+def test_clarabel_reports_its_own_solve_time(solve, tmp_path: Path):
+    # Clarabel's solve_time (setup included) is solve_time_seconds, as cpo3's is.
+    data = _small_qp() if solve is _solve else _small_cone_lp()
+    result = solve("clarabel", data, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.solve_time_seconds == result.info["solve_time"]
+    assert 0.0 < result.solve_time_seconds <= result.run_time_seconds
+    assert result.setup_time_seconds is None
+
+
 @pytest.mark.parametrize("solver_name", ["osqp", "scs", "clarabel", "qtqp", "cpo3", "pdlp", "highs", "proxqp", "piqp", "cvxopt", "ecos"])
 def test_adapter_reports_kkt_for_small_lp(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _small_lp(), tmp_path)

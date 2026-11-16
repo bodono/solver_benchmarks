@@ -828,3 +828,36 @@ def test_cplex_license_error_by_code_or_by_text(monkeypatch, tmp_path, error):
     _install_fake_cplex(monkeypatch, [{"raise": error}])
     with pytest.raises(SolverUnavailable):
         _solve("cplex", _small_qp(), tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# availability
+
+
+@pytest.mark.parametrize("adapter_name, install", [
+    ("gurobi", lambda monkeypatch: _install_fake_gurobipy(monkeypatch, [])),
+    ("cplex", lambda monkeypatch: _install_fake_cplex(monkeypatch, [])),
+])
+def test_installed_fake_is_available_and_a_broken_one_is_not(monkeypatch, adapter_name, install):
+    import builtins
+
+    from solver_benchmarks.solvers import get_solver
+    from solver_benchmarks.solvers.base import SolverImportWarning
+
+    adapter_cls = get_solver(adapter_name)
+    install(monkeypatch)
+    assert adapter_cls.is_available() is True
+
+    # The same package failing to load its native library is unavailable,
+    # with the reason, instead of raising out of is_available().
+    package = "gurobipy" if adapter_name == "gurobi" else "cplex"
+    real_import = builtins.__import__
+
+    def broken(name, *args, **kwargs):
+        if name == package:
+            raise ImportError(f"lib{package}.so: cannot open shared object file")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken)
+    with pytest.warns(SolverImportWarning, match=f"lib{package}.so"):
+        assert adapter_cls.is_available() is False

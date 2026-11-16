@@ -380,3 +380,101 @@ def test_pdlp_records_raw_status_threads_and_max_iter_translation(tmp_path):
     native = PDLPSolverAdapter({"iteration_limit": 500, "threads": 2}).solve(_lp_problem(QP), tmp_path)
     assert "settings_translated" not in native.info
     assert native.info["threads"] == 2
+
+
+def _reference_rows(a, keep):
+    """(var_index, coefficient) of each kept row, entry by entry."""
+    a = sp.csr_matrix(a)
+    return [
+        (
+            [int(a.indices[k]) for k in range(a.indptr[i], a.indptr[i + 1])],
+            [float(a.data[k]) for k in range(a.indptr[i], a.indptr[i + 1])],
+        )
+        for i in keep
+    ]
+
+
+@pytest.mark.parametrize("kind", [QP, CONE])
+def test_pdlp_model_rows_bounds_and_no_names(kind):
+    pytest.importorskip("ortools.linear_solver.linear_solver_pb2")
+    from solver_benchmarks.solvers import pdlp_adapter as mod
+
+    rng = np.random.default_rng(3)
+    a = sp.random(6, 5, density=0.5, random_state=4, format="csc")
+    a.data = rng.normal(size=a.nnz)
+    q = rng.normal(size=5)
+    if kind == QP:
+        l = np.array([-np.inf, 0.0, -1e20, -2.0, 1.0, -np.inf])
+        u = np.array([1.0, np.inf, 1e20, 2.0, 1.0, np.inf])  # rows 2 and 5 are free
+        model = mod._build_lp_model_from_qp({"A": a, "q": q, "l": l, "u": u})
+        keep = [0, 1, 3, 4]
+        bounds = [(-np.inf, 1.0), (0.0, np.inf), (-2.0, 2.0), (1.0, 1.0)]
+    else:
+        b = rng.normal(size=6)
+        model = mod._build_lp_model_from_linear_cone(
+            {"A": a, "b": b, "q": q, "cone": {"z": 2, "l": 4}}
+        )
+        keep = list(range(6))
+        bounds = [(b[i], b[i]) for i in range(2)] + [(-np.inf, b[i]) for i in range(2, 6)]
+    assert [v.objective_coefficient for v in model.variable] == q.tolist()
+    assert all(v.lower_bound == -np.inf and v.upper_bound == np.inf for v in model.variable)
+    rows = [(list(c.var_index), list(c.coefficient)) for c in model.constraint]
+    assert rows == _reference_rows(a, keep)
+    assert [(c.lower_bound, c.upper_bound) for c in model.constraint] == bounds
+    # No per-entity names: they cost time and request bytes and nothing reads them.
+    assert not any(v.name for v in model.variable)
+    assert not any(c.name for c in model.constraint)
+
+
+def _feasible_lp():
+    a = sp.csc_matrix([[1.0, 1.0], [1.0, -1.0]])
+    data = {
+        "P": sp.csc_matrix((2, 2)),
+        "q": np.array([1.0, 2.0]),
+        "A": a,
+        "l": np.array([1.0, -1.0]),
+        "u": np.array([np.inf, 1.0]),
+    }
+    return ProblemData(dataset_id="test", name="lp", kind=QP, data=data)
+
+
+def test_pdlp_response_file_leaves_out_the_solution_vectors_by_default(tmp_path):
+    pytest.importorskip("ortools")
+    from google.protobuf import text_format
+    from ortools.linear_solver import linear_solver_pb2
+
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    default_dir = tmp_path / "default"
+    full_dir = tmp_path / "full"
+    default_dir.mkdir()
+    full_dir.mkdir()
+    default = PDLPSolverAdapter({}).solve(_feasible_lp(), default_dir)
+    full = PDLPSolverAdapter({"save_response": True}).solve(_feasible_lp(), full_dir)
+
+    def response(directory):
+        return text_format.Parse(
+            (directory / "pdlp_response.textproto").read_text(),
+            linear_solver_pb2.MPSolutionResponse(),
+        )
+
+    saved = response(default_dir)
+    assert not saved.variable_value and not saved.dual_value and not saved.reduced_cost
+    assert saved.objective_value == pytest.approx(full.objective_value)
+    complete = response(full_dir)
+    assert len(complete.variable_value) == 2 and len(complete.dual_value) == 2
+    # The result itself does not depend on the setting.
+    assert default.status == full.status == status.OPTIMAL
+    assert default.objective_value == full.objective_value
+    assert default.kkt == full.kkt
+    assert default.info["primal_solution_size"] == 2
+
+
+@pytest.mark.parametrize("value", ["yes", 1, 0.0])
+def test_pdlp_save_response_must_be_a_boolean(value, tmp_path):
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    with pytest.raises(SolverConfigError, match="'save_response' must be true or false"):
+        PDLPSolverAdapter({"save_response": value}).solve(_feasible_lp(), tmp_path)

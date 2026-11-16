@@ -16,16 +16,18 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    module_available,
     normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     translate_eps_alias,
 )
 from .qp_split import (
@@ -42,17 +44,15 @@ class ProxQPSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import proxsuite  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("proxsuite")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import proxsuite
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the proxqp extra to use ProxQP") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "proxsuite", "Install with the proxqp extra to use ProxQP", exc
+            ) from exc
 
         qp = problem.qp
         p, q, aeq, b, g, h_l, h_u, eq_idx, ineq_idx = split_qp_for_range_constraints(qp)

@@ -64,6 +64,29 @@ def test_highs_rejects_unknown_or_invalid_options(settings, name, tmp_path):
         _solve("highs", settings, tmp_path)
 
 
+@pytest.mark.parametrize("option", [
+    "simplex_iteration_limit", "ipm_iteration_limit", "qp_iteration_limit", "pdlp_iteration_limit",
+])
+def test_highs_iteration_limits_follow_the_integer_rule(option, tmp_path, monkeypatch):
+    # highspy refused YAML's 1e3 (a float) and parsed the string "10".
+    highspy = pytest.importorskip("highspy")
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    seen = {}
+    original = highspy.Highs.setOptionValue
+
+    def record(self, key, value):
+        seen[key] = value
+        return original(self, key, value)
+
+    monkeypatch.setattr(highspy.Highs, "setOptionValue", record)
+    assert _solve("highs", {option: 1e3}, tmp_path).status == status.OPTIMAL
+    assert seen[option] == 1000 and isinstance(seen[option], int)
+    for value in (True, "10", 2.5, -1):
+        with pytest.raises(SolverConfigError, match=option):
+            _solve("highs", {option: value}, tmp_path)
+
+
 @pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
 def test_highs_refuses_eps_aliases_and_names_its_own_tolerances(alias, tmp_path):
     with pytest.raises(ValueError, match="primal_feasibility_tolerance"):
@@ -450,3 +473,21 @@ def test_qtqp_missing_backend_module_is_solver_unavailable(tmp_path):
 
     with pytest.raises(SolverUnavailable, match="qdldl"):
         _solve("qtqp", {"linear_solver": "qdldl"}, tmp_path)
+
+
+@pytest.mark.parametrize("error", [
+    ImportError("No module named 'qdldl'"),
+    OSError("libcholmod.so.5: cannot open shared object file"),
+])
+def test_qtqp_backend_that_does_not_load_is_solver_unavailable(monkeypatch, tmp_path, error):
+    # qtqp loads its linear-solver backend when the solve starts; a native
+    # library that does not load raises OSError rather than ImportError.
+    qtqp = pytest.importorskip("qtqp")
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    def solve(self, **kwargs):
+        raise error
+
+    monkeypatch.setattr(qtqp.QTQP, "solve", solve)
+    with pytest.raises(SolverUnavailable, match="backend could not be imported"):
+        _solve("qtqp", {}, tmp_path)

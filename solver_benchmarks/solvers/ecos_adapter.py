@@ -80,20 +80,22 @@ from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
+    IMPORT_ERRORS,
     OBJECTIVE_STATUSES,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     coerce_int_setting,
     finite_point,
     is_setting_type_error,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    module_available,
     pop_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     translate_tolerance_aliases,
 )
 from .cone_layout import qp_dual_in_native_order
@@ -111,17 +113,15 @@ class ECOSSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import ecos  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("ecos")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import ecos
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the ecos extra to use ECOS") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "ecos", "Install with the ecos extra to use ECOS", exc
+            ) from exc
 
         settings = settings_with_defaults(self.settings)
         # ECOS exposes neither a native time-limit knob nor a thread
@@ -411,11 +411,13 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
     components of that coupling graph; each component's block (its
     diagonal included) is factored densely on its own — Cholesky first
     (cheap, only works for SPD), then a symmetric eigendecomposition that
-    drops near-zero eigenvalues but rejects any ``< -threshold`` curvature
-    — so ``R`` is block diagonal. The dense factors together may hold at
-    most ``ECOS_DENSE_FACTOR_MAX_DIM ** 2`` entries (one 2000 x 2000 block,
-    or e.g. four 1000 x 1000 ones); above that ``_SOCPReformulationError``
-    is raised before anything is factored.
+    drops eigenvalues of round-off size but rejects negative curvature
+    (see :func:`_dense_psd_square_root`) — so ``R`` is block diagonal.
+    ``R'R`` reproduces ``P`` to round-off, so ECOS solves the posed QP even
+    when ``P``'s spectrum spans many orders of magnitude. The dense factors
+    together may hold at most ``ECOS_DENSE_FACTOR_MAX_DIM ** 2`` entries (one
+    2000 x 2000 block, or e.g. four 1000 x 1000 ones); above that
+    ``_SOCPReformulationError`` is raised before anything is factored.
     """
     p = sp.csc_matrix(p, dtype=float)
     if p.ndim != 2 or p.shape[0] != p.shape[1]:
@@ -433,10 +435,11 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
         return sp.csc_matrix((0, n))
 
     diagonal = p_sym.diagonal()
-    # One curvature scale for the whole of P, so diagonal-only rows and
-    # coupled blocks drop (or reject) eigenvalues against the same cut-off.
+    # Negative curvature is refused against the scale of the whole of P
+    # (diagonal-only rows and coupled blocks alike), allowing for the
+    # precision P's data was stored with; what is kept is decided per block.
     scale = float(np.abs(diagonal).max())
-    threshold = max(1e-12, scale * 1e-12)
+    negative_tol = _negative_curvature_tol(scale)
     off_diagonal = sp.csr_matrix(p_sym - sp.diags(diagonal))
     off_diagonal.eliminate_zeros()
     coupled_mask = np.diff(off_diagonal.indptr) > 0
@@ -444,9 +447,11 @@ def _psd_square_root(p: sp.csc_matrix) -> sp.csc_matrix | None:
     single = np.flatnonzero(~coupled_mask)
 
     single_diagonal = diagonal[single]
-    if single.size and float(single_diagonal.min()) < -threshold:
+    if single.size and float(single_diagonal.min()) < -negative_tol:
         return None
-    keep = single[single_diagonal > threshold]
+    # A diagonal-only row is its own 1 x 1 block whose eigenvalue p_ii is
+    # exact, so every positive one is kept, however small next to the rest.
+    keep = single[single_diagonal > 0.0]
     row_parts = [np.arange(keep.size)]
     col_parts = [keep]
     val_parts = [np.sqrt(diagonal[keep])]
@@ -502,13 +507,27 @@ def _close_to_symmetric(p: sp.csc_matrix, p_sym: sp.csc_matrix) -> bool:
     return not (excess.nnz and float(excess.max()) > atol)
 
 
+def _negative_curvature_tol(scale: float) -> float:
+    """How far below zero an eigenvalue of ``P`` may be and still count as
+    zero (dropped) rather than negative curvature (``P`` refused).
+
+    ``1e-12`` relative to ``scale`` (at least ``1e-12``): larger than the
+    round-off of the eigendecomposition, to allow for ``P`` data stored with
+    fewer than full digits.
+    """
+    return max(1e-12, float(scale) * 1e-12)
+
+
 def _dense_psd_square_root(p_sym: np.ndarray, *, scale: float = 0.0) -> np.ndarray | None:
     """Dense ``R`` with ``R'R = p_sym``, or None when ``p_sym`` is indefinite.
 
-    Eigenvalues up to ``1e-12 * max(largest eigenvalue, scale)`` (at least
-    ``1e-12``) count as zero: they are dropped, and anything below minus
-    that cut-off is negative curvature. ``scale`` lets a block of a larger
-    ``P`` use the curvature scale of the whole matrix.
+    Eigenvalues up to the eigendecomposition's round-off, ``k * eps * |λ|max``
+    for this ``k x k`` block (``numpy.linalg.matrix_rank``'s rule), count as
+    zero and are dropped; every larger one is kept, so ``R'R`` reproduces
+    ``p_sym`` to round-off whatever the spread of its spectrum. An eigenvalue
+    below minus :func:`_negative_curvature_tol` of ``max(λmax, scale)`` is
+    negative curvature and ``p_sym`` is refused; ``scale`` lets a block of a
+    larger ``P`` use the scale of the whole matrix for that test.
     """
     try:
         return la.cholesky(p_sym, lower=False)
@@ -530,12 +549,14 @@ def _dense_psd_square_root(p_sym: np.ndarray, *, scale: float = 0.0) -> np.ndarr
     # ``diag([1, -1])`` was sent to ECOS as a rank-1 PSD relaxation.
     # An all-non-positive block is either zero within the cut-off (empty
     # factor below) or negative definite (refused here).
-    threshold = max(1e-12, max(max_eig, float(scale)) * 1e-12)
-    if min_eig < -threshold:
+    if min_eig < -_negative_curvature_tol(max(max_eig, float(scale))):
         return None
-    # Drop near-zero eigenvalues (the QP epigraph constraint
-    # t ≥ ½ x'Px ignores zero-curvature directions).
-    keep = eigvals > threshold
+    # Drop the eigenvalues that are zero up to round-off (the QP epigraph
+    # constraint t ≥ ½ x'Px ignores zero-curvature directions). A cut-off
+    # relative to λmax but above round-off would drop genuine curvature of a
+    # wide spectrum and have ECOS solve a different problem.
+    cutoff = p_sym.shape[0] * np.finfo(float).eps * max(abs(max_eig), abs(min_eig))
+    keep = eigvals > cutoff
     if not keep.any():
         return np.zeros((0, p_sym.shape[0]))
     sqrt_eigvals = np.sqrt(eigvals[keep])
@@ -712,7 +733,8 @@ def translate_settings(settings: dict) -> dict:
     ``max_iter`` becomes ``max_iters``; ``eps_abs`` (or ``eps``) supplies
     ``feastol`` and ``abstol`` and ``eps_rel`` (or ``eps``) supplies
     ``reltol``. An explicit native value always wins, and only settings
-    actually inserted are reported.
+    actually inserted are reported. ``max_iters`` and ``nitref`` follow the
+    shared integer rule (``coerce_int_setting``).
     """
     translated: dict = {}
     # ECOS takes max_iters 0 (it then reports its starting point).
@@ -720,8 +742,9 @@ def translate_settings(settings: dict) -> dict:
     if max_iter is not None and settings.get("max_iters") is None:
         settings["max_iters"] = max_iter
         translated["max_iters"] = max_iter
-    if settings.get("max_iters") is not None:
-        settings["max_iters"] = coerce_int_setting("max_iters", settings["max_iters"], minimum=0)
+    for key in ("max_iters", "nitref"):
+        if settings.get(key) is not None:
+            settings[key] = coerce_int_setting(key, settings[key], minimum=0)
     translated.update(
         translate_tolerance_aliases(settings, ("feastol", "abstol"), ("reltol",))
     )

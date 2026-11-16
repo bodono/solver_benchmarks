@@ -67,9 +67,23 @@ def list_datasets_cmd() -> None:
 
 @list_group.command("solvers")
 def list_solvers_cmd() -> None:
+    import warnings
+
+    from solver_benchmarks.solvers.base import SolverImportWarning
+
     for name in list_solvers():
         cls = get_solver(name)
-        availability = "available" if cls.is_available() else "missing optional extra"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", SolverImportWarning)
+            available = cls.is_available()
+        broken = [str(w.message) for w in caught if issubclass(w.category, SolverImportWarning)]
+        if available:
+            availability = "available"
+        elif broken:
+            # Installed but not importable: say why instead of "missing".
+            availability = f"unavailable: {broken[-1]}"
+        else:
+            availability = "missing optional extra"
         kinds = ",".join(sorted(cls.supported_problem_kinds))
         click.echo(f"{name}\t{availability}\t{kinds}")
 

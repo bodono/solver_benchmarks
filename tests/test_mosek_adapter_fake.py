@@ -307,3 +307,26 @@ def test_mosek_nan_point_has_no_kkt(monkeypatch, tmp_path):
     result = _solve_with(monkeypatch, fake, tmp_path, {})
     assert result.status == status.TIME_LIMIT
     assert result.kkt is None
+
+
+def test_mosek_fake_is_available_and_a_broken_install_is_not(monkeypatch, tmp_path):
+    import builtins
+
+    from solver_benchmarks.solvers.base import SolverImportWarning
+    from solver_benchmarks.solvers.mosek_adapter import MosekSolverAdapter
+
+    monkeypatch.setitem(sys.modules, "mosek", types.ModuleType("mosek"))
+    assert MosekSolverAdapter.is_available() is True
+
+    real_import = builtins.__import__
+
+    def broken(name, *args, **kwargs):
+        if name == "mosek":
+            raise OSError("libmosek64.so.10.1: cannot open shared object file")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken)
+    with pytest.warns(SolverImportWarning, match="libmosek64"):
+        assert MosekSolverAdapter.is_available() is False
+    with pytest.raises(SolverUnavailable, match="libmosek64"):
+        MosekSolverAdapter({"verbose": False}).solve(_small_qp(), tmp_path)

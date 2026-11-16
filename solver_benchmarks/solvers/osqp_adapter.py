@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from pathlib import Path
 from typing import Any
@@ -15,16 +16,18 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    IMPORT_ERRORS,
     SolverAdapter,
     SolverConfigError,
-    SolverUnavailable,
     finite_point,
     mark_threads_ignored,
+    module_available,
     normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
     settings_with_defaults,
+    solver_import_failed,
     translate_eps_alias,
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
@@ -36,17 +39,15 @@ class OSQPSolverAdapter(SolverAdapter):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import osqp  # noqa: F401
-        except ModuleNotFoundError:
-            return False
-        return True
+        return module_available("osqp")
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
             import osqp
-        except ModuleNotFoundError as exc:
-            raise SolverUnavailable("Install with the osqp extra to use OSQP") from exc
+        except IMPORT_ERRORS as exc:
+            raise solver_import_failed(
+                "osqp", "Install with the osqp extra to use OSQP", exc
+            ) from exc
 
         qp = problem.qp
         settings = settings_with_defaults(self.settings)
@@ -73,10 +74,15 @@ class OSQPSolverAdapter(SolverAdapter):
         a_kept = a if kept.all() else a[np.flatnonzero(kept), :]
 
         solver = osqp.OSQP()
+        # Every OSQP status is mapped below, so the solve must not raise for
+        # one: osqp 1.x raises OSQPException(status) for anything but "solved"
+        # when raise_error is true (a default it announces will change).
+        # Builds before 1.0 have no such argument and never raise. Looked up
+        # before the clock starts: the signature costs tens of microseconds.
+        solve_kwargs = _solve_kwargs(solver)
         start = time.perf_counter()
         try:
             solver.setup(p, qp["q"], a_kept, l[kept], u[kept], **settings)
-            raw = solver.solve()
         except ValueError as exc:
             # osqp's wrapper refuses an unknown setting name before the solve.
             if "setting" in str(exc).lower():
@@ -97,13 +103,18 @@ class OSQPSolverAdapter(SolverAdapter):
                 ) from exc
             # Data validation (e.g. l > u) and a non-convex P are the solver
             # failing on this problem, not a harness error.
-            error_info = {"raw_status": "error", "error": f"OSQPException: {code}", "threads": None}
+            error_info = {
+                "raw_status": "error",
+                "error": f"OSQPException: {_osqp_error_text(code)}",
+                "threads": None,
+            }
             mark_threads_ignored(error_info, threads)
             return SolverResult(
                 status=status.SOLVER_ERROR,
                 run_time_seconds=time.perf_counter() - start,
                 info=error_info,
             )
+        raw = solver.solve(**solve_kwargs)
         elapsed = time.perf_counter() - start
 
         iterations = _maybe_int(raw.info.iter)
@@ -162,9 +173,36 @@ class OSQPSolverAdapter(SolverAdapter):
 # OSQP's default iteration cap, used only if the solver does not expose its
 # settings after setup.
 _OSQP_DEFAULT_MAX_ITER = 4000
-# osqp_error_type in OSQP's C API (not exported by the Python package):
-# 1 data validation, 2 settings validation, 4 non-convex problem, ...
+# OSQP's osqp_error_type, the code an OSQPException from setup() carries.
+_OSQP_ERROR_NAMES = {
+    1: "data validation",
+    2: "settings validation",
+    3: "linear system solver initialization",
+    4: "non-convex problem",
+    5: "memory allocation",
+    6: "workspace not initialized",
+    7: "algebra load",
+    8: "file open",
+    9: "codegen defines",
+    10: "data not initialized",
+    11: "function not implemented",
+}
 _OSQP_SETTINGS_VALIDATION_ERROR = 2
+
+
+def _osqp_error_text(code) -> str:
+    """``code`` with its osqp_error_type name, e.g. ``4 (non-convex problem)``."""
+    name = _OSQP_ERROR_NAMES.get(code) if isinstance(code, int) else None
+    return f"{code} ({name})" if name else str(code)
+
+
+def _solve_kwargs(solver) -> dict[str, Any]:
+    """``raise_error=False`` for OSQP builds whose solve() takes it."""
+    try:
+        parameters = inspect.signature(solver.solve).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"raise_error": False} if "raise_error" in parameters else {}
 
 
 def _osqp_exception(osqp):
