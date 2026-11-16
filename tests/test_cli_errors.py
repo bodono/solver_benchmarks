@@ -45,7 +45,12 @@ def test_env_run_reports_matrix_failures_as_a_click_error(tmp_path, monkeypatch)
     ],
     ids=["runtime-error", "url-error"],
 )
-def test_list_problems_prepare_reports_prepare_failures_as_a_click_error(monkeypatch, error):
+@pytest.mark.parametrize(
+    "command",
+    [["list", "problems", "failing_prepare", "--prepare"], ["data", "prepare", "failing_prepare"]],
+    ids=["list-problems", "data-prepare"],
+)
+def test_prepare_failures_are_click_errors(monkeypatch, error, command):
     class FailingPrepare(SyntheticQPDataset):
         dataset_id = "failing_prepare"
 
@@ -54,7 +59,7 @@ def test_list_problems_prepare_reports_prepare_failures_as_a_click_error(monkeyp
 
     monkeypatch.setitem(dataset_registry.DATASETS, "failing_prepare", FailingPrepare)
 
-    result = CliRunner().invoke(cli.main, ["list", "problems", "failing_prepare", "--prepare"])
+    result = CliRunner().invoke(cli.main, command)
 
     assert result.exit_code == 1
     assert isinstance(result.exception, SystemExit)
@@ -159,9 +164,26 @@ def test_environment_config_mistakes_are_click_errors(tmp_path, text, expected):
     assert not (tmp_path / "run").exists()
 
 
-def test_data_status_of_every_dataset_gives_each_only_the_options_it_takes(repo_root):
+@pytest.fixture
+def linked_repo_root(repo_root, tmp_path):
+    """A repository root whose data folders hold links to the bundled files,
+    so a dataset that writes beside its data (SDPLIB caches its archive
+    index there) writes under tmp_path, not into the source tree."""
+    root = tmp_path / "repo"
+    for folder in (repo_root / "problem_classes").iterdir():
+        if not folder.is_dir() or folder.name == "__pycache__":
+            continue
+        target = root / "problem_classes" / folder.name
+        target.mkdir(parents=True)
+        for entry in folder.iterdir():
+            if entry.name != ".cache":
+                (target / entry.name).symlink_to(entry)
+    return root
+
+
+def test_data_status_of_every_dataset_gives_each_only_the_options_it_takes(linked_repo_root):
     result = CliRunner().invoke(
-        cli.main, ["data", "status", "--repo-root", str(repo_root), "--option", "subset=all"]
+        cli.main, ["data", "status", "--repo-root", str(linked_repo_root), "--option", "subset=all"]
     )
     assert result.exit_code == 0, result.output
     rows = {line.split("\t")[0]: line.split("\t") for line in result.output.splitlines()}
@@ -182,9 +204,9 @@ def test_data_status_of_one_dataset_rejects_an_option_it_does_not_take(repo_root
     assert "Traceback" not in result.output
 
 
-def test_data_status_of_every_dataset_skips_one_that_rejects_the_value(repo_root):
+def test_data_status_of_every_dataset_skips_one_that_rejects_the_value(linked_repo_root):
     result = CliRunner().invoke(
-        cli.main, ["data", "status", "--repo-root", str(repo_root), "--option", "subset=feasible"]
+        cli.main, ["data", "status", "--repo-root", str(linked_repo_root), "--option", "subset=feasible"]
     )
     assert result.exit_code == 0, result.output
     assert "note: qplib skipped: QPLIB problem names must be numeric IDs" in result.output

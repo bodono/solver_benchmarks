@@ -466,11 +466,9 @@ def test_clarabel_psd_conversion_is_exact_on_sdplib_control1(tmp_path, repo_root
     decomposition solves the converted problem to the published optimum.
     Scoring such a point is left to the analysis (kkt-verify).
     """
-    if not (repo_root / "problem_classes" / "sdplib_data" / "sdplib.tar").exists():
-        pytest.skip("SDPLIB archive not present")
-    from solver_benchmarks.datasets import get_dataset
+    from conftest import sdplib_archive_dataset
 
-    problem = get_dataset("sdplib")().load_problem("control1")
+    problem = sdplib_archive_dataset(repo_root, tmp_path / "data").load_problem("control1")
     adapter = _adapter("clarabel", {"chordal_decomposition_enable": False})
     result = adapter.solve(problem, tmp_path)
     assert result.status == status.OPTIMAL, result.info
@@ -1467,24 +1465,24 @@ def test_sdpa_rejects_bad_values(settings, tmp_path):
         _solve("sdpa", CONE, _feasible_cone_lp(n=5, m=10), settings, tmp_path)
 
 
-def test_sdpa_integer_parameters_follow_the_integer_rule():
+def test_sdpa_integer_parameters_follow_the_integer_rule(tmp_path):
     # numThreads -1 ends the process inside sdpa-python; numpy integers and
     # integral floats are the same count (master accepted them).
     from solver_benchmarks.solvers.base import SolverConfigError
     from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
 
-    assert _sdpa_options({"maxIteration": np.int64(30)}, Path("."))["maxIteration"] == 30
-    assert _sdpa_options({"maxIteration": 30.0}, Path("."))["maxIteration"] == 30
+    assert _sdpa_options({"maxIteration": np.int64(30)}, tmp_path)["maxIteration"] == 30
+    assert _sdpa_options({"maxIteration": 30.0}, tmp_path)["maxIteration"] == 30
     # numThreads 0 works in sdpa-python (as on master); only negatives end it.
-    assert _sdpa_options({"numThreads": 0}, Path("."))["numThreads"] == 0
+    assert _sdpa_options({"numThreads": 0}, tmp_path)["numThreads"] == 0
     for settings in ({"numThreads": -1}, {"maxIteration": 2.5}):
         with pytest.raises(SolverConfigError):
-            _sdpa_options(settings, Path("."))
+            _sdpa_options(settings, tmp_path)
 
 
-def test_sdpa_threads_zero_leaves_sdpa_python_default():
+def test_sdpa_threads_zero_leaves_sdpa_python_default(tmp_path):
     from solver_benchmarks.solvers.sdpa_adapter import _sdpa_options
 
-    assert _sdpa_options({}, Path("."))["numThreads"] == 1
-    assert "numThreads" not in _sdpa_options({"threads": 0}, Path("."))
-    assert _sdpa_options({"threads": 3}, Path("."))["numThreads"] == 3
+    assert _sdpa_options({}, tmp_path)["numThreads"] == 1
+    assert "numThreads" not in _sdpa_options({"threads": 0}, tmp_path)
+    assert _sdpa_options({"threads": 3}, tmp_path)["numThreads"] == 3

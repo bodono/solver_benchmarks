@@ -15,13 +15,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from solver_benchmarks.core.config import parse_run_config
 from solver_benchmarks.core.problem import QP, ProblemSpec
-from solver_benchmarks.core.result import ProblemResult
+from solver_benchmarks.core.runner import _run_subprocess as _real_run_subprocess
 from solver_benchmarks.core.runner import run_benchmark
 from solver_benchmarks.datasets import registry as dataset_registry
 from solver_benchmarks.solvers import registry as solver_registry
@@ -49,42 +48,15 @@ class _StubSolverAdapter(SolverAdapter):
         raise AssertionError("Subprocess is stubbed in this test")
 
 
-def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-    """Pretend to invoke the worker by reading the payload and writing
-    a deterministic ProblemResult-shaped JSON next to it."""
-    payload = json.loads(Path(cmd[-1]).read_text())
-    artifact_dir = Path(payload["artifacts_dir"])
-    record = ProblemResult(
-        run_id=payload["run_id"],
-        dataset=payload["dataset"],
-        problem=payload["problem"],
-        problem_kind=payload["problem_kind"],
-        solver_id=payload["solver"]["id"],
-        solver=payload["solver"]["solver"],
-        status="optimal",
-        objective_value=0.0,
-        iterations=1,
-        run_time_seconds=0.001,
-        artifact_dir=str(artifact_dir),
-    ).to_record()
-    (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-    stdout_path.write_text("")
-    stderr_path.write_text("")
-    return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
-
-
 @pytest.mark.parametrize("parallelism", [2, 4])
 def test_parallel_run_writes_one_record_per_solve_no_torn_lines(
-    monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path, parallelism: int
 ):
     monkeypatch.setitem(
         dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset
     )
     monkeypatch.setitem(
         solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter
-    )
-    monkeypatch.setattr(
-        "solver_benchmarks.core.runner._run_subprocess", _fake_run_subprocess
     )
 
     config = parse_run_config(
@@ -117,7 +89,7 @@ def test_parallel_run_writes_one_record_per_solve_no_torn_lines(
 
 
 def test_parallel_run_writes_parquet_at_end(
-    monkeypatch, tmp_path: Path, repo_root: Path
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path
 ):
     """write_result only appends to jsonl during the run; the runner
     must call store.write_parquet() at the end so the parquet reflects
@@ -127,9 +99,6 @@ def test_parallel_run_writes_parquet_at_end(
     )
     monkeypatch.setitem(
         solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter
-    )
-    monkeypatch.setattr(
-        "solver_benchmarks.core.runner._run_subprocess", _fake_run_subprocess
     )
 
     config = parse_run_config(
@@ -167,7 +136,7 @@ def _parallel_config(tmp_path: Path, parallelism: int = 2):
 
 @pytest.mark.parametrize("parallelism", [1, 2])
 def test_a_failing_task_becomes_a_worker_error_row(
-    monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path, parallelism: int
 ):
     """An OSError launching one worker (EMFILE, ENOMEM, ...) must not abort
     the run and throw away every other result."""
@@ -177,7 +146,7 @@ def test_a_failing_task_becomes_a_worker_error_row(
     def flaky(cmd, **kwargs):
         if json.loads(Path(cmd[-1]).read_text())["problem"] == "p003":
             raise OSError(24, "Too many open files")
-        return _fake_run_subprocess(cmd, **kwargs)
+        return fake_worker(cmd, **kwargs)
 
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", flaky)
     store = run_benchmark(_parallel_config(tmp_path, parallelism), repo_root=repo_root)
@@ -196,7 +165,7 @@ def test_a_failing_task_becomes_a_worker_error_row(
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
 def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
-    monkeypatch, tmp_path: Path, repo_root: Path, capsys
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path, capsys
 ):
     """Ctrl+C reaches only the runner (workers run in their own sessions).
     Queued solves must not start, running workers must be killed rather than
@@ -217,15 +186,12 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
     # Names this test's sleepers, not those of a concurrent run of it.
     marker = f"bench-interrupt-test-{uuid.uuid4().hex}"
 
-    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, **_kwargs):
         problem = json.loads(Path(cmd[-1]).read_text())["problem"]
         with lock:
             started.append(problem)
         if problem == "p000":
-            return _fake_run_subprocess(
-                cmd, cwd=cwd, timeout=timeout, stdout_path=stdout_path,
-                stderr_path=stderr_path, stream_output=stream_output,
-            )
+            return fake_worker(cmd, stdout_path=stdout_path, stderr_path=stderr_path)
         # A long solve, killed only if the runner kills its process group.
         return real_run_subprocess(
             [sys.executable, "-c", "import time; time.sleep(60)", marker],
@@ -233,7 +199,7 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
             stream_output=False,
         )
 
-    real_run_subprocess = runner._run_subprocess
+    real_run_subprocess = _real_run_subprocess
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", worker)
     real_record = runner._ProgressReporter.record_result
 
@@ -263,7 +229,7 @@ def test_interrupting_a_parallel_run_stops_it_and_keeps_finished_results(
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
 def test_sigterm_to_bench_run_kills_workers_and_keeps_finished_results(
-    monkeypatch, tmp_path: Path, repo_root: Path
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path
 ):
     """SIGTERM (Slurm scancel, kill, CI timeouts) reaches only the runner, as
     Ctrl+C does. Under ``bench run``'s handler it must unwind the same way:
@@ -284,22 +250,19 @@ def test_sigterm_to_bench_run_kills_workers_and_keeps_finished_results(
     lock = threading.Lock()
     marker = f"bench-sigterm-test-{uuid.uuid4().hex}"
 
-    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, **_kwargs):
         problem = json.loads(Path(cmd[-1]).read_text())["problem"]
         with lock:
             started.append(problem)
         if problem == "p000":
-            return _fake_run_subprocess(
-                cmd, cwd=cwd, timeout=timeout, stdout_path=stdout_path,
-                stderr_path=stderr_path, stream_output=stream_output,
-            )
+            return fake_worker(cmd, stdout_path=stdout_path, stderr_path=stderr_path)
         return real_run_subprocess(
             [sys.executable, "-c", "import time; time.sleep(60)", marker],
             cwd=cwd, timeout=None, stdout_path=stdout_path, stderr_path=stderr_path,
             stream_output=False,
         )
 
-    real_run_subprocess = runner._run_subprocess
+    real_run_subprocess = _real_run_subprocess
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", worker)
     real_record = runner._ProgressReporter.record_result
 
@@ -309,6 +272,8 @@ def test_sigterm_to_bench_run_kills_workers_and_keeps_finished_results(
         while len(started) < 2 and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.5)
+        # Without the handler, SIGTERM would end the whole pytest session.
+        assert signal.getsignal(signal.SIGTERM) is not previous
         os.kill(os.getpid(), signal.SIGTERM)
         time.sleep(5)  # the handler raises in this (the main) thread first
 
@@ -325,3 +290,142 @@ def test_sigterm_to_bench_run_kills_workers_and_keeps_finished_results(
     assert [row["problem"] for row in rows] == ["p000"]
     leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
     assert leftover.stdout.strip() == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
+def test_an_interrupt_writes_results_that_finished_but_were_not_yet_written(
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path
+):
+    """The interrupt comes while p000 is being recorded, after p001 and p002
+    had finished but before the loop took them: p001 is written all the
+    same, and p002, a solve whose settings the solver rejected, is not."""
+    import subprocess
+    import sys
+    import threading
+    import time
+    import uuid
+
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter)
+    marker = f"bench-unconsumed-test-{uuid.uuid4().hex}"
+    instant = {"p000", "p001", "p002"}
+    fake_worker.outcomes["p002"] = {
+        "status": "worker_error", "objective_value": None,
+        "error": "SolverConfigError: Unrecognized settings ['max_itr']",
+        "metadata": {"error_kind": "config"},
+    }
+
+    def worker(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, **_kwargs):
+        if json.loads(Path(cmd[-1]).read_text())["problem"] in instant:
+            return fake_worker(cmd, stdout_path=stdout_path, stderr_path=stderr_path)
+        return _real_run_subprocess(
+            [sys.executable, "-c", "import time; time.sleep(60)", marker],
+            cwd=cwd, timeout=None, stdout_path=stdout_path, stderr_path=stderr_path,
+            stream_output=False,
+        )
+
+    monkeypatch.setattr(runner, "_run_subprocess", worker)
+    finished: set[str] = set()
+    all_finished = threading.Event()
+    first_recorded = threading.Event()
+    real_run_task = runner._run_task
+
+    def run_task(store, config, repo_root, dataset_config, problem, *args, **kwargs):
+        if problem.name in instant - {"p000"}:
+            # Finish only once the loop has taken p000, so these stay unconsumed.
+            assert first_recorded.wait(timeout=10)
+        result = real_run_task(store, config, repo_root, dataset_config, problem, *args, **kwargs)
+        if problem.name in instant:
+            finished.add(problem.name)
+            if finished == instant:
+                all_finished.set()
+        return result
+
+    monkeypatch.setattr(runner, "_run_task", run_task)
+    real_record = runner._ProgressReporter.record_result
+    recorded: list[str] = []
+
+    def record_then_interrupt(self, result):
+        real_record(self, result)
+        recorded.append(result.problem)
+        first_recorded.set()
+        assert all_finished.wait(timeout=10)
+        time.sleep(0.2)  # the pool thread marks the future done
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner._ProgressReporter, "record_result", record_then_interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(_parallel_config(tmp_path, 3), run_dir=tmp_path / "run", repo_root=repo_root)
+
+    rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
+    assert recorded == ["p000"]
+    assert sorted(row["problem"] for row in rows) == ["p000", "p001"]
+    leftover = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+    assert leftover.stdout.strip() == ""
+
+
+def test_an_interrupt_while_a_result_is_written_still_writes_it(
+    monkeypatch, fake_worker, tmp_path: Path, repo_root: Path
+):
+    """A Ctrl+C that lands inside ``write_result``, before the row is
+    appended, must not lose the result: the stopping path writes it."""
+    from solver_benchmarks.core.storage import ResultStore
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "parallel_fixture", _ManyProblemDataset)
+    monkeypatch.setitem(solver_registry.SOLVERS, "parallel_stub", _StubSolverAdapter)
+    real_write = ResultStore.write_result
+    interrupted: list[str] = []
+
+    def write_result(self, result):
+        if not interrupted:
+            interrupted.append(result.problem)
+            raise KeyboardInterrupt
+        real_write(self, result)
+
+    monkeypatch.setattr(ResultStore, "write_result", write_result)
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(_parallel_config(tmp_path, 2), run_dir=tmp_path / "run", repo_root=repo_root)
+
+    rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
+    problems = [row["problem"] for row in rows]
+    assert interrupted[0] in problems
+    assert len(problems) == len(set(problems))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
+def test_a_worker_started_after_its_pool_was_aborted_is_killed():
+    """A pool thread can launch its worker just after the main thread aborted
+    the pool; ``add`` kills it at once. Workers of other pools are left alone."""
+    import signal
+    import subprocess
+    import sys
+    import threading
+
+    from solver_benchmarks.core.runner import _WorkerProcesses
+
+    workers = _WorkerProcesses()
+    workers.abort("pool-x")
+    processes: dict[str, subprocess.Popen] = {}
+
+    def start(name):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+        )
+        processes[name] = process
+        workers.add(process)
+
+    for name in ("pool-x_0", "pool-y_0"):
+        thread = threading.Thread(target=start, args=(name,), name=name)
+        thread.start()
+        thread.join()
+    try:
+        assert processes["pool-x_0"].wait(timeout=10) == -signal.SIGKILL
+        # Given time to die, as a wrongful SIGKILL takes effect asynchronously.
+        with pytest.raises(subprocess.TimeoutExpired):
+            processes["pool-y_0"].wait(timeout=0.5)
+    finally:
+        for process in processes.values():
+            process.kill()
+            process.wait()

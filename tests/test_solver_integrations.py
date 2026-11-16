@@ -1,7 +1,7 @@
-import os
 from pathlib import Path
 
 import pytest
+from conftest import skip_or_fail_missing_solver
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.core import status
@@ -20,6 +20,8 @@ OPEN_SOURCE_SOLVERS = {
     },
     "clarabel": {"verbose": False},
     "cpo3": {"verbose": False},
+    "cvxopt": {"verbose": False},
+    "ecos": {"verbose": False},
     "osqp": {
         "verbose": False,
         "eps_abs": 1.0e-8,
@@ -46,6 +48,8 @@ OPEN_SOURCE_CONE_SOLVERS = {
     },
     "clarabel": {"verbose": False},
     "cpo3": {"verbose": False},
+    "cvxopt": {"verbose": False},
+    "ecos": {"verbose": False},
     "sdpa": {
         "verbose": False,
         "max_iter": 50,
@@ -62,12 +66,8 @@ def _require_solver(solver_name: str) -> None:
     BENCH_REQUIRE_ALL_SOLVERS, which turns a missing solver into a failure:
     there an unavailable solver is a packaging or import regression.
     """
-    if get_solver(solver_name).is_available():
-        return
-    message = f"{solver_name} is not installed (or does not import)"
-    if os.environ.get("BENCH_REQUIRE_ALL_SOLVERS"):
-        pytest.fail(f"{message}, and BENCH_REQUIRE_ALL_SOLVERS is set")
-    pytest.skip(message)
+    if not get_solver(solver_name).is_available():
+        skip_or_fail_missing_solver(solver_name)
 
 
 def _solve_one(tmp_path: Path, repo_root: Path, dataset: str, problem: str, solver_name: str,

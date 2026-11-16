@@ -47,10 +47,10 @@ def test_atomic_write_text_recovers_from_replace_failure(tmp_path: Path, monkeyp
     with pytest.raises(OSError):
         atomic_write_text(target, "new content")
 
-    # Original is intact (rename was the last step), and no .tmp* files
-    # have been left orphaned alongside it.
+    # Original is intact (rename was the last step), and no temporary file
+    # has been left orphaned alongside it.
     assert target.read_text() == "original"
-    assert not list(tmp_path.glob("tmp*"))
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["file.txt"]
 
     # Sanity-check: with the real os.replace restored, the write succeeds.
     monkeypatch.setattr("solver_benchmarks.core.storage.os.replace", real_replace)
@@ -311,7 +311,9 @@ def test_write_parquet_cleans_up_tmp_on_failure(tmp_path: Path, monkeypatch):
 
     import pandas as pd
 
-    def failing_to_parquet(self, *args, **kwargs):  # noqa: ARG001
+    def failing_to_parquet(self, path, *args, **kwargs):  # noqa: ARG001
+        # Fail part-way, as a full disk does: the file has been started.
+        Path(path).write_bytes(b"PAR1 half-written")
         raise OSError("simulated parquet failure")
 
     monkeypatch.setattr(pd.DataFrame, "to_parquet", failing_to_parquet)
@@ -319,8 +321,8 @@ def test_write_parquet_cleans_up_tmp_on_failure(tmp_path: Path, monkeypatch):
     with pytest.raises(OSError):
         store.write_parquet()
 
-    leftover = list(store.run_dir.glob("results.parquet.tmp"))
-    assert leftover == []
+    assert [path.name for path in store.run_dir.iterdir() if path.name.endswith(".tmp")] == []
+    assert not store.results_parquet_path.exists()
 
 
 def test_normalize_table_for_parquet_does_not_scrub_string_columns(tmp_path: Path):
@@ -398,20 +400,12 @@ def test_write_parquet_handles_columns_mixing_python_types(tmp_path: Path):
 
 
 def test_run_completes_when_parquet_cannot_be_written(tmp_path: Path, monkeypatch, repo_root):
-    from types import SimpleNamespace
+
+    from conftest import FakeWorker
 
     from solver_benchmarks.core.runner import run_benchmark
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-            problem_kind=payload["problem_kind"], solver_id="scs", solver="scs",
-            status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.01,
-            artifact_dir=payload["artifacts_dir"],
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, timed_out=False)
+    fake = FakeWorker()
 
     def broken_parquet(self):
         raise TypeError("Conversion failed for column info.raw_status")

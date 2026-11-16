@@ -545,7 +545,7 @@ def test_mps_dataset_records_the_objective_with_its_constant(tmp_path: Path):
     assert reported == pytest.approx(-16.0, abs=1e-7)  # minus the file's optimum, 11 + 5
 
 
-def test_netlib_e226_is_recorded_with_its_constant():
+def test_netlib_e226_is_recorded_with_its_constant(tmp_path):
     # The one bundled file with a constant term (7.113). Its optimum as HiGHS
     # solves the file is -11.6389; the Netlib table lists -18.7519, the value
     # without the constant, which is what the harness used to record.
@@ -561,7 +561,7 @@ def test_netlib_e226_is_recorded_with_its_constant():
     problem = dataset.load_problem("e226")
     assert problem.qp["r"] == pytest.approx(7.113)
     assert problem.metadata["original_obj_type"] == "min"
-    result = get_solver("highs")({"verbose": False}).solve(problem, Path("."))
+    result = get_solver("highs")({"verbose": False}).solve(problem, tmp_path)
     assert result.status == status.OPTIMAL
     assert result.objective_value == pytest.approx(-18.7519290, rel=1e-6)
     assert _reported_objective(problem, result.objective_value) == pytest.approx(-11.6389290, rel=1e-6)

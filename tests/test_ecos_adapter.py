@@ -8,6 +8,7 @@ unavailable-module paths.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -469,7 +470,6 @@ def test_ecos_socp_path_handles_missing_primal_x(monkeypatch, tmp_path):
     Stub ECOS to return ``x=None`` and verify the adapter surfaces
     a status without raising."""
     pytest.importorskip("ecos")
-    import sys as _sys
     from types import SimpleNamespace as _NS
 
     captured = {}
@@ -486,14 +486,11 @@ def test_ecos_socp_path_handles_missing_primal_x(monkeypatch, tmp_path):
         }
 
     fake_ecos = _NS(solve=fake_solve)
-    _sys.modules["ecos"] = fake_ecos
-    try:
-        from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
+    monkeypatch.setitem(sys.modules, "ecos", fake_ecos)
+    from solver_benchmarks.solvers.ecos_adapter import ECOSSolverAdapter
 
-        adapter = ECOSSolverAdapter({"verbose": False})
-        result = adapter.solve(_make_qp_problem(_qp_with_nonzero_p()), tmp_path)
-    finally:
-        _sys.modules.pop("ecos", None)
+    adapter = ECOSSolverAdapter({"verbose": False})
+    result = adapter.solve(_make_qp_problem(_qp_with_nonzero_p()), tmp_path)
     assert captured.get("called")
     # Status maps from exitFlag=-1.
     assert result.status == status.MAX_ITER_REACHED
@@ -705,8 +702,6 @@ def test_ecos_forwards_native_kwargs_to_solver(monkeypatch, tmp_path):
     """Settings that are not popped (e.g. ``feastol``, ``abstol``,
     ``max_iters``) must reach ecos.solve unchanged."""
     pytest.importorskip("ecos")
-    import sys as _sys
-
     import solver_benchmarks.solvers.ecos_adapter as ecos_mod
 
     captured: dict = {}
@@ -723,14 +718,11 @@ def test_ecos_forwards_native_kwargs_to_solver(monkeypatch, tmp_path):
         }
 
     fake_ecos = SimpleNamespace(solve=fake_solve)
-    _sys.modules["ecos"] = fake_ecos
-    try:
-        adapter = ecos_mod.ECOSSolverAdapter(
-            {"verbose": False, "feastol": 1e-9, "abstol": 1e-9, "max_iters": 200}
-        )
-        adapter.solve(_make_qp_problem(_small_lp_in_qp_form()), tmp_path)
-    finally:
-        _sys.modules.pop("ecos", None)
+    monkeypatch.setitem(sys.modules, "ecos", fake_ecos)
+    adapter = ecos_mod.ECOSSolverAdapter(
+        {"verbose": False, "feastol": 1e-9, "abstol": 1e-9, "max_iters": 200}
+    )
+    adapter.solve(_make_qp_problem(_small_lp_in_qp_form()), tmp_path)
     assert captured.get("feastol") == 1e-9
     assert captured.get("abstol") == 1e-9
     assert captured.get("max_iters") == 200

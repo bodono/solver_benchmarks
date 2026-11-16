@@ -1036,10 +1036,10 @@ def _run_tasks_in_parallel(
     try:
         for future in as_completed(futures):
             result = future.result()
-            written.add(future)
             if result is None or (discard_result is not None and discard_result(result)):
                 continue
             store.write_result(result)
+            written.add(future)
             progress.record_result(result)
             if check_result is not None:
                 check_result(result)

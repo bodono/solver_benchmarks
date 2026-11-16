@@ -37,9 +37,7 @@ def test_new_names_map_back_on_old_api():
     assert s == {"atol": 1e-6, "rtol": 1e-7}
 
 
-def test_adapter_solves_with_translated_settings():
-    import tempfile
-    from pathlib import Path
+def test_adapter_solves_with_translated_settings(tmp_path):
 
     pytest.importorskip("qtqp")
     from solver_benchmarks.core.problem import QP, ProblemData
@@ -49,7 +47,7 @@ def test_adapter_solves_with_translated_settings():
     qp = {"P": sp.eye(n, format="csc"), "q": -np.ones(n), "A": sp.eye(n, format="csc"), "l": np.zeros(n), "u": np.full(n, 0.5)}
     problem = ProblemData("unit", "box", QP, qp, metadata={})
     adapter = QTQPSolverAdapter(settings={"atol": 1e-8, "rtol": 1e-8, "verbose": False})
-    result = adapter.solve(problem, Path(tempfile.mkdtemp()))
+    result = adapter.solve(problem, tmp_path)
     assert result.status == "optimal"
     assert np.allclose(result.objective_value, 3 * (0.5 ** 2 / 2 - 0.5), atol=1e-5)
     assert result.info.get("settings_translated") == {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}

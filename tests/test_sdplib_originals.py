@@ -10,15 +10,13 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import shutil
-import tarfile
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from solver_benchmarks.datasets import get_dataset
-from solver_benchmarks.transforms.sdplib import list_sdplib_tar, read_sdplib_jld2
+from solver_benchmarks.transforms.sdplib import list_sdplib_tar
 
 # name: (constraints m, order n of the single semidefinite block, SHA-256 of
 # the original file as SDPLIB distributes it)
@@ -155,32 +153,22 @@ def test_damaged_member_is_read_from_its_original(repo_root: Path, tmp_path: Pat
         assert np.count_nonzero(problem.cone["q"]) == 6910
 
 
-# Minutes on its own, and two to three times that under coverage tracing.
+# The archive pass (sdplib_archive_members, shared with the other slow SDPLIB
+# test) takes minutes, and two to three times that under coverage tracing.
 @pytest.mark.slow
 @pytest.mark.timeout(900)
-def test_every_archive_member_without_an_original_can_be_read(repo_root: Path, tmp_path: Path):
-    # One pass over the archive: each member is copied to a scratch file in
-    # pieces, read and removed. The three members that have a bundled
-    # original are skipped; they are the ones that cannot be read.
-    archive = _bundled_folder(repo_root) / "sdplib.tar"
-    scratch = tmp_path / "member.jld2"
-    read, unreadable = [], []
-    with tarfile.open(archive) as tar:
-        for member in tar:
-            name = Path(member.name).stem
-            if not member.name.endswith(".jld2") or name in BUNDLED_ORIGINALS:
-                continue
-            source = tar.extractfile(member)
-            assert source is not None, member.name
-            with source, open(scratch, "wb") as sink:
-                shutil.copyfileobj(source, sink)
-            try:
-                problem = read_sdplib_jld2(scratch)
-            except Exception as exc:  # noqa: BLE001 - the point is to list every failure
-                unreadable.append(f"{name}: {type(exc).__name__}: {exc}")
-            else:
-                assert problem["A"].shape == (problem["b"].size, problem["q"].size), name
-                read.append(name)
-            scratch.unlink()
+def test_every_archive_member_without_an_original_can_be_read(sdplib_archive_members):
+    # The pass over the archive (shared with test_sdplib_blocks.py) reads
+    # every member except the three that have a bundled original; they are
+    # the ones that cannot be read.
+    assert len(sdplib_archive_members) == 92
+    unread = {name for name, member in sdplib_archive_members.items()
+              if "shape" not in member and "error" not in member}
+    assert unread == set(BUNDLED_ORIGINALS)
+    unreadable = [f"{name}: {member['error']}" for name, member in sdplib_archive_members.items()
+                  if "error" in member]
     assert not unreadable, unreadable
-    assert len(read) == 92 - len(BUNDLED_ORIGINALS)
+    for name, member in sdplib_archive_members.items():
+        if "shape" in member:
+            a_shape, b_size, q_size = member["shape"]
+            assert a_shape == (b_size, q_size), name
