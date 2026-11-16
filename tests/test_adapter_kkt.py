@@ -392,7 +392,9 @@ def test_solver_error_retains_kkt(solver_name, tmp_path, monkeypatch):
     if solver_name == "cpo3":
         monkeypatch.setattr(module, "_STATUS", dict.fromkeys(module._STATUS, reported))
     else:
-        monkeypatch.setattr(module, f"_map_{solver_name}_status", lambda *args: reported)
+        monkeypatch.setattr(
+            module, f"_map_{solver_name}_status", lambda *args, **kwargs: reported
+        )
     result = _solve(solver_name, _small_qp(), tmp_path)
     assert result.status == reported
     assert result.kkt is not None
@@ -580,3 +582,63 @@ def test_highs_omits_free_rows_and_verifies_original_problem(free_bound, tmp_pat
     assert result.objective_value == pytest.approx(-1.5, abs=1e-6)
     for field in ("primal_res_rel", "dual_res_rel", "duality_gap_rel"):
         assert result.kkt[field] < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# PIQP and ProxQP infeasibility claims carry the harness certificate check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("problem, kind", [
+    (_infeasible_lp, status.PRIMAL_INFEASIBLE),
+    (_unbounded_lp, status.DUAL_INFEASIBLE),
+])
+def test_piqp_infeasibility_claims_are_checked(problem, kind, tmp_path):
+    # PIQP returned kkt None for these, so the claim was scored unchecked.
+    result = _solve("piqp", problem(), tmp_path)
+    assert result.status == kind
+    assert result.kkt is not None
+    assert result.kkt["certificate"] == kind
+    assert result.kkt["valid"] is True
+
+
+def _netlib_problem(subset: str, name: str):
+    from solver_benchmarks.datasets import get_dataset
+
+    repo_root = Path(__file__).resolve().parent.parent
+    return get_dataset("netlib")(repo_root=repo_root, subset=subset).load_problem(name)
+
+
+def test_proxqp_false_infeasibility_claim_fails_the_certificate_check(tmp_path):
+    # ProxQP calls 17 of the 30 smallest feasible NETLIB LPs primal infeasible
+    # (afiro after 3 iterations); with kkt None the claims carried no check.
+    if not get_solver("proxqp").is_available():
+        pytest.skip("proxqp not installed")
+    adapter = get_solver("proxqp")(SOLVER_SETTINGS["proxqp"] | {"eps_abs": 1e-5, "eps_rel": 0.0})
+    result = adapter.solve(_netlib_problem("feasible", "afiro"), tmp_path)
+    if result.status != status.PRIMAL_INFEASIBLE:
+        pytest.skip(f"this ProxSuite build solves afiro ({result.status})")
+    assert result.kkt["certificate"] == status.PRIMAL_INFEASIBLE
+    assert result.kkt["valid"] is False
+
+
+def test_proxqp_invalid_certificate_is_not_a_success_on_an_infeasible_problem(tmp_path):
+    # On NETLIB bgprtr (infeasible) ProxQP's claim was a success although its
+    # returned dual fails the check that rejects CVXOPT's claim there.
+    import pandas as pd
+
+    from solver_benchmarks.analysis.outcomes import success_mask
+
+    if not get_solver("proxqp").is_available():
+        pytest.skip("proxqp not installed")
+    problem = _netlib_problem("infeasible", "bgprtr")
+    result = get_solver("proxqp")({"verbose": False}).solve(problem, tmp_path)
+    if result.status != status.PRIMAL_INFEASIBLE:
+        pytest.skip(f"this ProxSuite build does not claim infeasibility ({result.status})")
+    assert result.kkt is not None and result.kkt["valid"] is False
+    row = pd.DataFrame([{
+        "status": result.status,
+        "metadata.expected_status": problem.metadata["expected_status"],
+        "kkt.valid": result.kkt["valid"],
+    }])
+    assert not success_mask(row).iloc[0]

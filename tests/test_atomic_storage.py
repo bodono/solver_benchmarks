@@ -317,7 +317,8 @@ def test_completed_keys_skips_record_missing_required_keys(tmp_path: Path):
 
 
 def test_write_parquet_handles_columns_mixing_python_types(tmp_path: Path):
-    """Gurobi and CPLEX report an integer raw_status; most adapters a string."""
+    """Gurobi and CPLEX rows recorded by older versions have an integer
+    raw_status; the others a string."""
     import pandas as pd
 
     store = _make_store(tmp_path)

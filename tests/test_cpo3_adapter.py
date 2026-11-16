@@ -19,7 +19,9 @@ from solver_benchmarks.solvers.cpo3_adapter import translate_settings
 
 def test_aliases_map_to_cpo3_names_and_native_values_win():
     s = {"eps": 1e-6, "max_iter": 50}
-    assert translate_settings(s) == {"tol_feas": 1e-6, "tol_gap_abs": 1e-6, "tol_gap_rel": 1e-6}
+    assert translate_settings(s) == {
+        "tol_feas": 1e-6, "tol_gap_abs": 1e-6, "tol_gap_rel": 1e-6, "max_iters": 50,
+    }
     assert s == {"tol_feas": 1e-6, "tol_gap_abs": 1e-6, "tol_gap_rel": 1e-6, "max_iters": 50}
     s = {"eps_abs": 1e-3, "eps_rel": 1e-4, "tol_feas": 1e-9}
     assert translate_settings(s) == {"tol_gap_abs": 1e-3, "tol_gap_rel": 1e-4}

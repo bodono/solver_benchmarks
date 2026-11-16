@@ -49,6 +49,7 @@ from solver_benchmarks.datasets.base import (
     filter_problem_specs_by_size,
 )
 from solver_benchmarks.solvers import get_solver
+from solver_benchmarks.solvers.base import CONFIG_ERROR_KIND, SolverConfigError
 
 # Bounds of the grace added on top of the configured timeout before the
 # worker is force-killed (see _subprocess_timeout). The grace covers worker
@@ -337,9 +338,13 @@ def _run_benchmark(
         progress.emit_final()
         return store
 
+    rejected = _RejectedSolvers(store, stream_output, environment_id=environment_id)
+
     def run_task(
         dataset_config: DatasetConfig, problem: ProblemSpec, solver_config: SolverConfig
-    ) -> ProblemResult:
+    ) -> ProblemResult | None:
+        if rejected.rejects(solver_config.id):
+            return None  # its settings were rejected: the solve is not run
         return _run_task(
             store,
             config,
@@ -357,6 +362,8 @@ def _run_benchmark(
         if parallelism == 1:
             for task in tasks:
                 result = run_task(*task)
+                if result is None or rejected.discard(result):
+                    continue
                 store.write_result(result)
                 progress.record_result(result)
                 _check_supported(config, result)
@@ -364,11 +371,15 @@ def _run_benchmark(
             _run_tasks_in_parallel(
                 tasks, run_task, store, progress, parallelism,
                 check_result=lambda result: _check_supported(config, result),
+                discard_result=rejected.discard,
             )
     finally:
         # Also after an interruption, so the results written so far stand
         # alone in results.jsonl.
         _retire_replaced_rows(store)
+    # A solver whose settings were rejected left solves undone: the run did not
+    # complete, so there is no parquet sentinel and the run fails.
+    rejected.raise_if_any()
     # All queued tasks completed successfully — materialize the parquet
     # exactly once. results.jsonl is the canonical live record during
     # the run; results.parquet is the end-of-run derived artifact whose
@@ -780,6 +791,85 @@ def _check_supported(config: RunConfig, result: ProblemResult) -> None:
         )
 
 
+class _RejectedSolvers:
+    """Solvers whose settings an adapter rejected during the run.
+
+    The worker marks a solve that raised SolverConfigError (an unknown setting
+    name, a value the adapter or its solver refuses) with
+    ``metadata.error_kind = "config"``. The solver id is then stopped: that
+    result is not written, its queued solves are not run and the results of
+    its solves already running are dropped, while the other solvers' solves
+    go on. A setting refused only for some problems stops the solver's other
+    solves too, including ones its adapter would have accepted. The run then
+    fails (``raise_if_any``) naming every rejected solver and the run
+    directory; its solves stay missing, so a re-run with the same settings
+    fails again after one solve per rejected solver in a serial run (a few,
+    up to about ``parallelism``, in a parallel run, for the solves already
+    started) and a corrected config runs them.
+    """
+
+    def __init__(
+        self, store: ResultStore, stream_output: bool, *, environment_id: str | None = None
+    ) -> None:
+        self._store = store
+        self._stream_output = stream_output
+        self._environment = {} if environment_id is None else {"environment_id": environment_id}
+        self._messages: dict[str, str] = {}
+
+    def rejects(self, solver_id: str) -> bool:
+        return solver_id in self._messages
+
+    def discard(self, result: ProblemResult) -> bool:
+        """Whether ``result`` is not to be written (and record a rejection)."""
+        if result.solver_id in self._messages:
+            return True
+        reason = _config_error_reason(result)
+        if reason is None:
+            return False
+        message = (
+            f"solver {result.solver_id!r} rejected its settings "
+            f"({result.dataset}/{result.problem}): {reason}"
+        )
+        self._messages[result.solver_id] = message
+        self._store.append_event(
+            "error",
+            f"{message}; its remaining solves are not run",
+            solver_id=result.solver_id,
+            dataset=result.dataset,
+            problem=result.problem,
+            **self._environment,
+        )
+        _emit_progress(self._stream_output, f"error: {message}; its remaining solves are not run")
+        return True
+
+    def raise_if_any(self) -> None:
+        if not self._messages:
+            return
+        lines = "\n".join(f"- {message}" for message in self._messages.values())
+        run_dir = self._store.run_dir
+        raise RuntimeError(
+            "Settings rejected, so these solvers' solves were not run:\n"
+            f"{lines}\n"
+            f"The other solvers' results are in {run_dir}; fix the settings and resume "
+            f"with --run-dir {run_dir}"
+        )
+
+
+def _config_error_reason(result: ProblemResult) -> str | None:
+    """The first line of the adapter's message for a SolverConfigError
+    result (``metadata.error_kind == "config"``), else None."""
+    if result.status != status.WORKER_ERROR:
+        return None
+    if (result.metadata or {}).get("error_kind") != CONFIG_ERROR_KIND:
+        return None
+    message = str(result.error or "").strip()
+    prefix = f"{SolverConfigError.__name__}: "
+    if message.startswith(prefix):
+        message = message[len(prefix):]
+    first_line = message.splitlines()[0].strip() if message else "no message"
+    return first_line.rstrip(".") or "no message"
+
+
 def _retire_replaced_rows(store: ResultStore) -> None:
     """Move the superseded rows replaced during the run out of results.jsonl.
 
@@ -853,17 +943,20 @@ def _prepare_data(dataset: Any, config: RunConfig, dataset_config: DatasetConfig
 
 def _run_tasks_in_parallel(
     tasks: list[tuple[DatasetConfig, ProblemSpec, SolverConfig]],
-    run_task: Callable[[DatasetConfig, ProblemSpec, SolverConfig], ProblemResult],
+    run_task: Callable[[DatasetConfig, ProblemSpec, SolverConfig], ProblemResult | None],
     store: ResultStore,
     progress: _ProgressReporter,
     parallelism: int,
     *,
     check_result: Callable[[ProblemResult], None] | None = None,
+    discard_result: Callable[[ProblemResult], bool] | None = None,
 ) -> None:
     """Run ``tasks`` on a thread pool and write each result as it lands.
 
-    ``check_result`` sees each result once it is written and may raise to
-    stop the run. On any exception in this thread, KeyboardInterrupt
+    ``run_task`` may return None for a solve it did not run. A result for
+    which ``discard_result`` returns True is not written (also when it
+    finishes while stopping). ``check_result`` sees each result once it is
+    written and may raise to stop the run. On any exception in this thread, KeyboardInterrupt
     included, solves that have not started are cancelled, results that had
     already finished are written, and the workers still running are killed
     (their results are not recorded) before the exception propagates. Workers run in their own
@@ -880,6 +973,8 @@ def _run_tasks_in_parallel(
         for future in as_completed(futures):
             result = future.result()
             written.add(future)
+            if result is None or (discard_result is not None and discard_result(result)):
+                continue
             store.write_result(result)
             progress.record_result(result)
             if check_result is not None:
@@ -891,8 +986,17 @@ def _run_tasks_in_parallel(
                 continue
             if future.exception() is not None:
                 continue
+            finished = future.result()
+            if finished is None:
+                continue
+            if discard_result is not None:
+                try:
+                    if discard_result(finished):
+                        continue
+                except Exception:  # noqa: BLE001 - keep the original exception.
+                    logger.exception("Could not check a finished result while stopping")
             try:
-                store.write_result(future.result())
+                store.write_result(finished)
             except Exception:  # noqa: BLE001 - keep the original exception.
                 logger.exception("Could not write a finished result while stopping")
         _WORKERS.abort(prefix)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import numbers
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,22 @@ from solver_benchmarks.core.result import SolverResult
 
 class SolverUnavailable(RuntimeError):
     pass
+
+
+class SolverConfigError(ValueError):
+    """A setting name, value or alias that an adapter or its solver rejects.
+
+    A configuration error, not the solver failing a problem: adapters raise it
+    (never return ``solver_error``) so the row records the mistake and the
+    setting can be fixed. It is a ``ValueError``, so callers catching that
+    still see it.
+    """
+
+
+# ``metadata.error_kind`` the worker gives the worker_error row of a solve that
+# raised SolverConfigError; the runner stops the run on it, since every other
+# solve with the same settings would fail the same way.
+CONFIG_ERROR_KIND = "config"
 
 
 class SolverAdapter(ABC):
@@ -111,25 +128,25 @@ def pop_time_limit(settings: dict[str, Any]) -> float | None:
     for key in TIME_LIMIT_KEYS:
         value = settings.pop(key, None)
         if resolved is None and value is not None:
-            resolved = _coerce_time_limit(key, value)
+            resolved = coerce_time_limit(key, value)
     return resolved
 
 
-def _coerce_time_limit(key: str, value: Any) -> float:
+def coerce_time_limit(key: str, value: Any) -> float:
     message = (
         f"Setting {key!r} must be a finite positive number of seconds or null "
         f"(got {value!r})"
     )
     if isinstance(value, bool):
-        raise ValueError(message)
+        raise SolverConfigError(message)
     try:
         coerced = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(message) from exc
+        raise SolverConfigError(message) from exc
     if not math.isfinite(coerced) or coerced < 0:
-        raise ValueError(message)
+        raise SolverConfigError(message)
     if coerced == 0:
-        raise ValueError(
+        raise SolverConfigError(
             f"{message}; a zero limit means 'no limit' to some solvers and 'stop "
             "immediately' to others, so to run without a limit omit the setting"
         )
@@ -150,31 +167,73 @@ def mark_time_limit_ignored(info: dict[str, Any], time_limit: float | None) -> N
 EPS_ALIASES: tuple[str, ...] = ("eps", "eps_abs", "eps_rel")
 
 
-def translate_eps_alias(settings: dict[str, Any]) -> dict[str, float]:
-    """Expand ``eps`` into ``eps_abs`` and ``eps_rel`` for solvers that take both.
+def translate_tolerance_aliases(
+    settings: dict[str, Any],
+    abs_keys: tuple[str, ...] = ("eps_abs",),
+    rel_keys: tuple[str, ...] = ("eps_rel",),
+) -> dict[str, float]:
+    """Map the shared tolerance aliases onto a solver's own names, in place.
 
-    An explicit ``eps_abs`` / ``eps_rel`` wins. Returns the settings actually
-    inserted, for adapters to record as ``info["settings_translated"]``.
+    ``eps_abs`` (or ``eps``) supplies every name in ``abs_keys`` and
+    ``eps_rel`` (or ``eps``) every name in ``rel_keys``. The aliases are
+    popped. An alias set to null counts as unset (so ``eps`` still applies
+    when ``eps_abs: null``), and a solver name the config gives a non-null
+    value always wins. For a solver whose own names are ``eps_abs`` /
+    ``eps_rel`` an explicitly given value is passed through unchanged, for
+    the solver to validate. Returns the settings inserted from an alias,
+    for ``info["settings_translated"]``; a value that is not a number raises
+    ``SolverConfigError`` naming the alias.
     """
     eps = settings.pop("eps", None)
+    given = {"eps_abs": settings.pop("eps_abs", None), "eps_rel": settings.pop("eps_rel", None)}
     translated: dict[str, float] = {}
-    if eps is not None:
-        for key in ("eps_abs", "eps_rel"):
-            if settings.get(key) is None:
-                settings[key] = float(eps)
-                translated[key] = float(eps)
+    for alias, keys in (("eps_abs", abs_keys), ("eps_rel", rel_keys)):
+        source = alias if given[alias] is not None else "eps"
+        value = given[alias] if given[alias] is not None else eps
+        if value is None:
+            continue
+        for key in keys:
+            if settings.get(key) is not None:
+                continue
+            if key == source:
+                settings[key] = value
+                continue
+            settings[key] = _coerce_tolerance(source, value)
+            translated[key] = settings[key]
     return translated
 
 
+def translate_eps_alias(settings: dict[str, Any]) -> dict[str, float]:
+    """Expand ``eps`` into ``eps_abs`` and ``eps_rel`` for solvers that take both.
+
+    :func:`translate_tolerance_aliases` for the solver names ``eps_abs`` /
+    ``eps_rel``.
+    """
+    return translate_tolerance_aliases(settings, ("eps_abs",), ("eps_rel",))
+
+
+def _coerce_tolerance(alias: str, value: Any) -> float:
+    if isinstance(value, bool):
+        raise SolverConfigError(f"Setting {alias!r} must be a number (got {value!r})")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise SolverConfigError(f"Setting {alias!r} must be a number (got {value!r})") from exc
+
+
 def refuse_settings(settings: dict[str, Any], names, solver: str, hint: str) -> None:
-    """Raise ValueError if ``settings`` uses any of ``names``.
+    """Raise SolverConfigError if ``settings`` uses any of ``names``.
 
     For shared aliases a solver has no faithful equivalent for: refusing them
-    keeps a config from silently running the solver at its defaults.
+    keeps a config from silently running the solver at its defaults. A name
+    set to null counts as unset and is dropped.
     """
+    for name in names:
+        if name in settings and settings[name] is None:
+            del settings[name]
     present = sorted(name for name in names if name in settings)
     if present:
-        raise ValueError(f"{solver} does not accept {present}: {hint}")
+        raise SolverConfigError(f"{solver} does not accept {present}: {hint}")
 
 
 THREADS_KEYS: tuple[str, ...] = ("threads", "num_threads")
@@ -199,32 +258,88 @@ def pop_threads(settings: dict[str, Any]) -> int | None:
         if resolved is None and value is not None:
             resolved = _coerce_threads(key, value)
     if resolved is not None and resolved < 0:
-        raise ValueError(f"threads must be >= 0 (got {resolved})")
+        raise SolverConfigError(f"threads must be >= 0 (got {resolved})")
     return resolved
 
 
+# Thread count for solvers that have a thread setting, when neither
+# ``threads`` nor the solver's own name for it is configured. One thread
+# keeps timings comparable with the single-threaded solvers, and the runner
+# may run several workers in parallel, which a solver using every core would
+# oversubscribe. ``threads: 0`` leaves the choice to the solver.
+DEFAULT_THREADS = 1
+
+
+def threads_or_default(threads: int | None) -> int:
+    """The thread count to give a solver: ``threads`` if set, else one."""
+    return DEFAULT_THREADS if threads is None else int(threads)
+
+
 def _coerce_threads(key: str, value: Any) -> int:
-    # ``bool`` is a subclass of ``int``; reject it explicitly so YAML
-    # ``threads: true`` doesn't quietly become ``threads = 1``.
-    if isinstance(value, bool):
-        raise ValueError(
-            f"Setting {key!r} must be an integer (got {value!r})"
-        )
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if not value.is_integer():
-            raise ValueError(
-                f"Setting {key!r} must be an integer (got {value!r})"
-            )
-        return int(value)
-    try:
+    return coerce_int_setting(key, value)
+
+
+def coerce_int_setting(key: str, value: Any, *, minimum: int | None = None) -> int:
+    """The integer value of setting ``key``, else ``SolverConfigError`` naming it.
+
+    An ``int``, a numpy integer or an integer-valued float (YAML reads ``1e3``
+    as ``1000.0``) is accepted. A bool (``threads: true`` is not 1), a
+    non-integral or non-finite float and a string are refused rather than
+    truncated or parsed, as is a value below ``minimum``.
+    """
+    message = f"Setting {key!r} must be an integer"
+    if minimum is not None:
+        message += f" >= {minimum}"
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise SolverConfigError(f"{message} (got {value!r})")
+    if isinstance(value, numbers.Integral):
         coerced = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Setting {key!r} must be an integer (got {value!r})"
-        ) from exc
+    else:
+        number = float(value)
+        if not (math.isfinite(number) and number.is_integer()):
+            raise SolverConfigError(f"{message} (got {value!r})")
+        coerced = int(number)
+    if minimum is not None and coerced < minimum:
+        raise SolverConfigError(f"{message} (got {value!r})")
     return coerced
+
+
+def pop_max_iter(settings: dict[str, Any], *, minimum: int = 1) -> int | None:
+    """Pop the shared ``max_iter`` alias and return it as an integer.
+
+    ``max_iter: null`` counts as unset (None); anything else must pass
+    :func:`coerce_int_setting` with ``minimum``.
+    """
+    value = settings.pop("max_iter", None)
+    if value is None:
+        return None
+    return coerce_int_setting("max_iter", value, minimum=minimum)
+
+
+def normalize_max_iter(settings: dict[str, Any], *, minimum: int = 1) -> None:
+    """For solvers whose own name is ``max_iter``: validate it in place
+    (:func:`pop_max_iter`), dropping an explicit null."""
+    value = pop_max_iter(settings, minimum=minimum)
+    if value is not None:
+        settings["max_iter"] = value
+
+
+# Text of the TypeError a solver binding raises for a keyword argument it does
+# not know or a value of the wrong type; a TypeError about problem data (for
+# example SCS's "Ax must be a 1-D numpy array of floats") has none of these.
+_KEYWORD_TYPE_ERROR_MARKERS = (
+    "keyword argument",
+    "incompatible function arguments",
+    "cannot be interpreted as an integer",
+    "must be real number",
+    "argument ",
+)
+
+
+def is_setting_type_error(exc: BaseException) -> bool:
+    """Whether a solver's TypeError is about a keyword (a setting), not data."""
+    text = str(exc)
+    return any(marker in text for marker in _KEYWORD_TYPE_ERROR_MARKERS)
 
 
 def mark_threads_ignored(info: dict[str, Any], threads: int | None) -> None:

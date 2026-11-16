@@ -1,7 +1,9 @@
 # EXPERIMENTAL: needs an unreleased SCS build that accepts
 # acceleration_trust_factor and adaptive_diag_scale values above 1. With only
-# the released solvers from the package extras, the solves that need them fail
-# as worker_error. See configs/README.md.
+# the released solvers from the package extras, those arms are not run: their
+# settings are rejected, so the run finishes the other arms and exits with an
+# error naming them (remove those arms for a clean exit). See
+# configs/README.md.
 #
 # AA hyperparameter sweep v2 — on the new base algorithm (stacked-Q Ruiz
 # equilibration + adaptive_diag_scale + hardened certificates), eps 1e-6.

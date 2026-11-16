@@ -45,11 +45,18 @@ ECOS' native data form is::
 with ``dims = {"l": l, "q": [q_1, ..., q_p], "e": e}``.
 
 Settings are ECOS's own keyword arguments (``feastol``, ``abstol``,
-``reltol``, ``max_iters``, ...); ECOS rejects unknown names with a
-``TypeError`` naming them. The harness aliases ``max_iter`` (-> ``max_iters``),
-``eps`` / ``eps_abs`` (-> ``feastol`` and ``abstol``) and ``eps_rel``
-(-> ``reltol``) are translated, recorded in ``info["settings_translated"]``.
-ECOS has no time limit or thread count; those are recorded as ignored.
+``reltol``, ``max_iters``, ...); an unknown name or a value ECOS refuses
+raises ``SolverConfigError`` naming it. The harness aliases ``max_iter``
+(-> ``max_iters``), ``eps`` / ``eps_abs`` (-> ``feastol`` and ``abstol``) and
+``eps_rel`` (-> ``reltol``) are translated, recorded in
+``info["settings_translated"]``. ECOS has no time limit or thread count;
+those are recorded as ignored.
+
+ECOS answers "close to optimal" (or close to a certificate, exit flags 10-12)
+when it stops at ``max_iters`` with an iterate that meets its reduced
+tolerances; such a stop is ``max_iter_reached`` like every other adapter's,
+with ECOS's text kept in ``info.raw_status``. The same flags for an earlier
+stop (numerical trouble) stay ``*_inaccurate``.
 """
 
 from __future__ import annotations
@@ -73,14 +80,23 @@ from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
+    OBJECTIVE_STATUSES,
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
+    is_setting_type_error,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    translate_tolerance_aliases,
 )
+from .cone_layout import qp_dual_in_native_order
 
 # The QP -> SOCP reformulation factors densely only the rows/columns of P
 # coupled by off-diagonal entries, one connected block at a time; the dense
@@ -147,10 +163,38 @@ class ECOSSolverAdapter(SolverAdapter):
         verbose = bool(kwargs.pop("verbose", False))
         kwargs["verbose"] = verbose
 
+        # ECOS takes float64 arrays only (an integer-typed G or A is refused
+        # with a TypeError); the other adapters convert as well.
+        g_matrix = sp.csc_matrix(data["G"], dtype=float)
+        a_matrix = sp.csc_matrix(data["A"], dtype=float)
+        c_vec = np.asarray(data["c"], dtype=float)
+        h_vec = np.asarray(data["h"], dtype=float)
+        b_vec = np.asarray(data["b"], dtype=float)
         start = time.perf_counter()
-        raw = ecos.solve(
-            data["c"], data["G"], data["h"], dims, A=data["A"], b=data["b"], **kwargs
-        )
+        try:
+            raw = ecos.solve(c_vec, g_matrix, h_vec, dims, A=a_matrix, b=b_vec, **kwargs)
+        except (TypeError, ValueError) as exc:
+            # ECOS checks its keyword arguments before solving: an unknown
+            # name or a value of the wrong type is a TypeError about the
+            # argument, a bad value a ValueError naming the setting
+            # ("'feastol' must be ..."). Anything else is ECOS refusing the
+            # problem data.
+            if _is_ecos_setting_error(exc):
+                raise SolverConfigError(
+                    f"ECOS rejected the settings {sorted(kwargs)}: {exc}"
+                ) from exc
+            error_info = {
+                "raw_status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "threads": None,
+            }
+            mark_time_limit_ignored(error_info, time_limit)
+            mark_threads_ignored(error_info, threads)
+            return SolverResult(
+                status=status.SOLVER_ERROR,
+                run_time_seconds=time.perf_counter() - start + reformulation_seconds,
+                info=error_info,
+            )
         elapsed = time.perf_counter() - start + reformulation_seconds
         ineq_perm = data.get("ineq_perm")
         if ineq_perm is not None:
@@ -163,26 +207,22 @@ class ECOSSolverAdapter(SolverAdapter):
         info = dict(raw.get("info", {}))
         if "infostring" in info:
             info["raw_status"] = info["infostring"]
+        info["threads"] = None
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
         if translated:
             info["settings_translated"] = translated
 
-        mapped = _map_ecos_status(info)
+        mapped = _map_ecos_status(info, max_iters=kwargs.get("max_iters", _ECOS_DEFAULT_MAX_ITERS))
         # ECOS reports ``pcost`` (primal objective). For infeasibility-
         # certificate statuses ``pcost`` is the certificate normalizer,
-        # not an objective value, so suppress it there (mirrors SCS).
-        objective_present = (
-            mapped in status.SOLUTION_PRESENT or mapped == status.OPTIMAL_INACCURATE
-        )
+        # not an objective value, so only a solution reports it (mirrors SCS).
         if socp_state is not None:
             # Augmented variables x_full = [x_orig, t]. ECOS may
             # return without a primal vector (max-iter, numerical
             # error, infeasibility certificate); guard every read of
             # ``raw['x']`` so non-solution statuses don't crash the
-            # adapter. Pre-fix we unconditionally indexed
-            # ``raw['x'][n_x]`` here.
-            socp_state["raw_full"] = raw
+            # adapter.
             info["socp_reformulation"] = True
             info["socp_reformulation_seconds"] = reformulation_seconds
             full_x = raw.get("x")
@@ -195,7 +235,7 @@ class ECOSSolverAdapter(SolverAdapter):
             raw = _strip_socp_aux_from_solution(raw, n_x)
             stripped_x = raw.get("x")
             if (
-                objective_present
+                mapped in OBJECTIVE_STATUSES
                 and stripped_x is not None
                 and np.asarray(stripped_x).size == n_x
             ):
@@ -205,14 +245,12 @@ class ECOSSolverAdapter(SolverAdapter):
             else:
                 objective = None
         else:
-            objective = (
-                _maybe_float(info.get("pcost")) if objective_present else None
-            )
+            objective = _maybe_float(info.get("pcost"))
         kkt_dict = _compute_kkt(problem, mapped, raw, dims, cone_dict, socp_state=socp_state)
 
         return SolverResult(
             status=mapped,
-            objective_value=objective,
+            objective_value=reported_objective(mapped, objective),
             iterations=_maybe_int(info.get("iter")),
             run_time_seconds=elapsed,
             setup_time_seconds=_maybe_float(info.get("timing", {}).get("tsetup")),
@@ -220,6 +258,23 @@ class ECOSSolverAdapter(SolverAdapter):
             info=info,
             kkt=kkt_dict,
         )
+
+
+# ECOS's internal names for its keyword arguments, as its value checks name
+# them ("'maxit' must be a nonnegative integer" for max_iters).
+_ECOS_SETTING_NAMES = frozenset({
+    "feastol", "abstol", "reltol", "feastol_inacc", "abstol_inacc", "reltol_inacc",
+    "maxit", "max_iters", "nitref", "verbose", "mi_max_iters", "mi_abs_eps", "mi_rel_eps",
+})
+
+
+def _is_ecos_setting_error(exc: Exception) -> bool:
+    """Whether ECOS's TypeError / ValueError is about a keyword argument."""
+    if isinstance(exc, TypeError) and is_setting_type_error(exc):
+        return True
+    text = str(exc)
+    quoted = text[1:].split("'", 1)[0] if text.startswith("'") else ""
+    return quoted in _ECOS_SETTING_NAMES
 
 
 def _qp_has_nonzero_p(qp: dict) -> bool:
@@ -323,8 +378,6 @@ def _qp_to_ecos_via_socp(qp: dict):
 
     socp_state = {
         "n_x": n,
-        "rank_p": k,
-        "r_factor": r_factor,
         "z_count": z_count,
         "n_lin": int(a_ineq_full.shape[0]),
     }
@@ -580,7 +633,8 @@ def _cone_to_ecos(cone_problem: dict):
     # Merge legacy free-variable cone key into the zero cone.
     z_count = int(cone.pop("f", 0)) + int(cone.pop("z", 0))
     l_count = int(cone.pop("l", 0))
-    q_list = list(cone.pop("q", []))
+    # A second-order cone of dimension 0 has no rows; ECOS refuses it.
+    q_list = [int(dim) for dim in cone.pop("q", []) if int(dim)]
     e_count = int(cone.pop("ep", 0)) + int(cone.pop("e", 0))
     unsupported = sorted(cone.keys())
     if unsupported:
@@ -661,22 +715,21 @@ def translate_settings(settings: dict) -> dict:
     actually inserted are reported.
     """
     translated: dict = {}
-
-    def put(key: str, value) -> None:
-        if value is not None and key not in settings:
-            settings[key] = value
-            translated[key] = value
-
-    max_iter = settings.pop("max_iter", None)
-    put("max_iters", None if max_iter is None else int(max_iter))
-    eps = settings.pop("eps", None)
-    eps_abs = settings.pop("eps_abs", eps)
-    eps_rel = settings.pop("eps_rel", eps)
-    put("feastol", None if eps_abs is None else float(eps_abs))
-    put("abstol", None if eps_abs is None else float(eps_abs))
-    put("reltol", None if eps_rel is None else float(eps_rel))
+    # ECOS takes max_iters 0 (it then reports its starting point).
+    max_iter = pop_max_iter(settings, minimum=0)
+    if max_iter is not None and settings.get("max_iters") is None:
+        settings["max_iters"] = max_iter
+        translated["max_iters"] = max_iter
+    if settings.get("max_iters") is not None:
+        settings["max_iters"] = coerce_int_setting("max_iters", settings["max_iters"], minimum=0)
+    translated.update(
+        translate_tolerance_aliases(settings, ("feastol", "abstol"), ("reltol",))
+    )
     return translated
 
+
+# ECOS's iteration cap when ``max_iters`` is not given.
+_ECOS_DEFAULT_MAX_ITERS = 100
 
 _ECOS_EXIT_FLAG_MAP = {
     0: status.OPTIMAL,                  # ECOS_OPTIMAL
@@ -691,9 +744,17 @@ _ECOS_EXIT_FLAG_MAP = {
     -4: status.SOLVER_ERROR,            # ECOS_SIGINT (interrupted)
     -7: status.SOLVER_ERROR,            # ECOS_FATAL
 }
+# "Close to" a solution or certificate: the reduced-tolerance verdicts.
+_ECOS_INACCURATE_FLAGS = frozenset({10, 11, 12})
 
 
-def _map_ecos_status(info: dict) -> str:
+def _map_ecos_status(info: dict, *, max_iters=None) -> str:
+    """Canonical status for ECOS's ``info``.
+
+    An inaccurate verdict (exit flag 10-12) from a solve that used up
+    ``max_iters`` is ``max_iter_reached``: ECOS stopped on its limit and
+    labelled the last iterate by its reduced tolerances.
+    """
     flag = info.get("exitFlag")
     if flag is None:
         return status.SOLVER_ERROR
@@ -701,6 +762,10 @@ def _map_ecos_status(info: dict) -> str:
         flag_int = int(flag)
     except (TypeError, ValueError):
         return status.SOLVER_ERROR
+    if flag_int in _ECOS_INACCURATE_FLAGS and max_iters is not None:
+        iterations = _maybe_int(info.get("iter"))
+        if iterations is not None and iterations >= int(max_iters):
+            return status.MAX_ITER_REACHED
     return _ECOS_EXIT_FLAG_MAP.get(flag_int, status.SOLVER_ERROR)
 
 
@@ -743,8 +808,8 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
         if mapped_status in status.ANY_FEASIBLE:
             # Stack equality and inequality duals back into the original
             # row order produced by qp_to_nonnegative_cone: [eq, finite_u, finite_l].
-            y_full = _qp_dual_in_native_order(qp, y_dual, z_dual, n_eq)
-            if y_full is None:
+            y_full = qp_dual_in_native_order(qp, y_dual, z_dual, n_eq)
+            if not finite_point(x, y_full):
                 return None
             return kkt.qp_residuals(
                 qp["P"] if qp.get("P") is not None else sp.csc_matrix((x.size, x.size)),
@@ -759,14 +824,14 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
             status.PRIMAL_INFEASIBLE,
             status.PRIMAL_INFEASIBLE_INACCURATE,
         }:
-            y_full = _qp_dual_in_native_order(qp, y_dual, z_dual, n_eq)
-            if y_full is None:
+            y_full = qp_dual_in_native_order(qp, y_dual, z_dual, n_eq)
+            if not finite_point(y_full):
                 return None
             return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y_full)
         if mapped_status in {
             status.DUAL_INFEASIBLE,
             status.DUAL_INFEASIBLE_INACCURATE,
-        }:
+        } and finite_point(x):
             return kkt.qp_dual_infeasibility_cert(
                 qp["P"] if qp.get("P") is not None else sp.csc_matrix((x.size, x.size)),
                 qp["q"],
@@ -789,7 +854,9 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
         and y_dual is not None
     ):
         y_full = _cone_dual_combined(y_dual, z_dual, cone_dict)
-        s_full = _cone_slack_combined(b_or_zero=None, s_slack=s_slack, cone_dict=cone_dict)
+        s_full = _cone_slack_combined(s_slack, cone_dict)
+        if not finite_point(x, y_full, s_full):
+            return None
         return kkt.cone_residuals(
             p,
             cone_problem["q"],
@@ -806,10 +873,12 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
         and (z_dual is not None or y_dual is not None)
     ):
         y_full = _cone_dual_combined(y_dual, z_dual, cone_dict)
+        if not finite_point(y_full):
+            return None
         return kkt.cone_primal_infeasibility_cert(
             cone_problem["A"], cone_problem["b"], _cone_dict_for_kkt(cone_dict), y_full
         )
-    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+    if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE} and finite_point(x):
         return kkt.cone_dual_infeasibility_cert(
             p,
             cone_problem["q"],
@@ -818,53 +887,6 @@ def _compute_kkt(problem, mapped_status, raw, dims, cone_dict, *, socp_state=Non
             x,
         )
     return None
-
-
-def _qp_dual_in_native_order(qp, y_dual, z_dual, n_eq):
-    """Reassemble the ECOS duals into the QP's native (eq, finite_u,
-    finite_l) row order, matching what ``qp_residuals`` expects.
-    """
-    a_native = sp.csc_matrix(qp["A"])
-    n_rows = a_native.shape[0]
-    if y_dual is None and z_dual is None:
-        return None
-    y_eq = np.asarray(y_dual, dtype=float) if y_dual is not None else np.zeros(n_eq)
-    z_ineq = np.asarray(z_dual, dtype=float) if z_dual is not None else np.zeros(0)
-
-    # Reconstruct the (eq, finite_u, finite_l) row layout used by
-    # qp_to_nonnegative_cone so we can fold the ECOS duals back into a
-    # length-n_rows vector aligned with the original A.
-    from solver_benchmarks.transforms.cones import split_qp_bounds
-
-    _a, _l, _u, eq, finite_l, finite_u = split_qp_bounds(qp)
-    eq_rows = np.flatnonzero(eq)
-    fu_rows = np.flatnonzero(finite_u)
-    fl_rows = np.flatnonzero(finite_l)
-
-    if eq_rows.size + fu_rows.size + fl_rows.size != (
-        eq_rows.size + z_ineq.size
-    ):
-        # Layouts disagree (shouldn't happen given our own transform).
-        return None
-
-    # ECOS form: min q^T x s.t. h - Gx in NN_+ with multiplier z >= 0,
-    # giving stationarity q + G^T z = 0. With G = [A_eq; A_finite_u;
-    # -A_finite_l] (the qp_to_nonnegative_cone layout), the QP-side
-    # convention y_qp = λ_u - λ_l requires:
-    #   y_qp[eq] = y_eq
-    #   y_qp[finite_u] = +z_u  (positive on upper bound active)
-    #   y_qp[finite_l] = -z_l  (negative on lower bound active)
-    y = np.zeros(n_rows)
-    if eq_rows.size:
-        y[eq_rows] += y_eq[: eq_rows.size]
-    cursor = 0
-    if fu_rows.size:
-        y[fu_rows] += z_ineq[cursor : cursor + fu_rows.size]
-        cursor += fu_rows.size
-    if fl_rows.size:
-        y[fl_rows] += -z_ineq[cursor : cursor + fl_rows.size]
-        cursor += fl_rows.size
-    return y
 
 
 def _cone_dual_combined(y_eq, z_ineq, cone_dict):
@@ -880,7 +902,7 @@ def _cone_dual_combined(y_eq, z_ineq, cone_dict):
     return np.concatenate(parts)
 
 
-def _cone_slack_combined(b_or_zero, s_slack, cone_dict):
+def _cone_slack_combined(s_slack, cone_dict):
     """ECOS reports s only for the inequality block (matching G, h);
     pad with zeros for the equality block so the combined slack
     aligns with the full row layout."""

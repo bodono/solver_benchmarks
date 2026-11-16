@@ -1,4 +1,13 @@
-"""GUROBI adapter."""
+"""GUROBI adapter.
+
+A license failure raised by the solve (the size-limited license ``pip install
+gurobipy`` ships with refuses larger models inside ``optimize()``) is a broken
+environment, not Gurobi failing the problem: it raises ``SolverUnavailable``.
+Any other ``GurobiError`` from the solve is ``solver_error``; other exceptions
+are left to raise. ``Threads`` is one unless ``threads`` or ``Threads`` is
+given (0: Gurobi's own choice). ``info["raw_status"]`` is the status name,
+``info["raw_status_code"]`` Gurobi's integer code.
+"""
 
 from __future__ import annotations
 
@@ -17,12 +26,17 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     EPS_ALIASES,
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
     refuse_settings,
     reported_objective,
     settings_with_defaults,
+    threads_or_default,
 )
 from .qp_split import normalize_qp_bounds
 
@@ -59,7 +73,7 @@ class GurobiSolverAdapter(SolverAdapter):
         try:
             model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
             try:
-                translated = _configure_gurobi(model, self.settings, grb)
+                translated, threads = _configure_gurobi(model, self.settings, grb)
 
                 variables = [
                     model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY)
@@ -102,11 +116,13 @@ class GurobiSolverAdapter(SolverAdapter):
                 try:
                     model.optimize()
                     resolved = _resolve_inf_or_unbd(model, grb, self.settings)
-                except Exception as exc:
+                except grb.GurobiError as exc:
+                    if _is_license_error(exc):
+                        raise SolverUnavailable(f"Gurobi license error: {exc}") from exc
                     return SolverResult(
                         status=status.SOLVER_ERROR,
                         run_time_seconds=time.perf_counter() - start,
-                        info={"error": str(exc)},
+                        info={"raw_status": "error", "error": str(exc), "threads": threads},
                     )
                 elapsed = time.perf_counter() - start
 
@@ -128,7 +144,9 @@ class GurobiSolverAdapter(SolverAdapter):
                     ),
                     run_time_seconds=elapsed,
                     info={
-                        "raw_status": int(model.Status),
+                        "raw_status": _status_name(model.Status, grb),
+                        "raw_status_code": int(model.Status),
+                        "threads": threads,
                         "solver": "gurobi",
                         "version": ".".join(str(part) for part in grb.gurobi.version()),
                         "solver_reported_runtime": _maybe_float(
@@ -191,17 +209,21 @@ def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
         y = np.zeros(qp["A"].shape[0])
         # Gurobi's row multipliers have the opposite sign to our convention.
         y[constraint_rows] = -duals
+        if not finite_point(x, y):
+            return None
         return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
     return None
 
 
-def _configure_gurobi(model, settings: dict, grb) -> dict:
-    """Apply ``settings`` to ``model``; return the aliases it translated.
+def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int]:
+    """Apply ``settings`` to ``model``; return the aliases it translated and
+    the thread count.
 
     ``max_iter`` caps both the barrier and the simplex iteration counts
     (unless either is given by its Gurobi name). The ``eps`` aliases are
     refused: Gurobi's tolerances are not an absolute/relative pair. A
-    parameter Gurobi rejects raises ValueError naming it.
+    parameter Gurobi rejects raises SolverConfigError naming it. ``Threads``
+    is one unless ``threads`` or ``Threads`` is given.
     """
     settings = settings_with_defaults(settings)
     refuse_settings(
@@ -211,8 +233,8 @@ def _configure_gurobi(model, settings: dict, grb) -> dict:
         "set its own tolerances instead (FeasibilityTol, OptimalityTol, BarConvTol)",
     )
     translated: dict = {}
-    if "max_iter" in settings:
-        max_iter = int(settings.pop("max_iter"))
+    max_iter = pop_max_iter(settings, minimum=0)
+    if max_iter is not None:
         given = {key.lower() for key in settings}
         for name in ("BarIterLimit", "IterationLimit"):
             if name.lower() not in given:
@@ -224,15 +246,60 @@ def _configure_gurobi(model, settings: dict, grb) -> dict:
     if time_limit is not None:
         model.setParam("TimeLimit", float(time_limit))
     threads = pop_threads(settings)
-    if threads is not None:
-        model.setParam("Threads", int(threads))
+    native_threads = [key for key in settings if key.lower() == "threads"]
+    if native_threads:
+        threads = coerce_int_setting(native_threads[0], settings[native_threads[0]], minimum=0)
+    else:
+        threads = threads_or_default(threads)
+        settings["Threads"] = threads
     settings.pop("high_accuracy", None)
     for key, value in settings.items():
         try:
             model.setParam(key, value)
         except grb.GurobiError as exc:
-            raise ValueError(f"Invalid Gurobi parameter {key!r}={value!r}: {exc}") from exc
-    return translated
+            raise SolverConfigError(f"Invalid Gurobi parameter {key!r}={value!r}: {exc}") from exc
+    return translated, threads
+
+
+# Gurobi error codes for license failures: no valid license, and a model too
+# large for the size-limited license that ships with the PyPI package.
+_LICENSE_ERRNOS = frozenset({10009, 10010})
+
+
+def _is_license_error(exc: Exception) -> bool:
+    errno = getattr(exc, "errno", None)
+    return errno in _LICENSE_ERRNOS or "license" in str(exc).lower()
+
+
+# Gurobi's optimization status codes, by name (gurobipy's GRB.Status).
+_STATUS_NAMES = (
+    "LOADED",
+    "OPTIMAL",
+    "INFEASIBLE",
+    "INF_OR_UNBD",
+    "UNBOUNDED",
+    "CUTOFF",
+    "ITERATION_LIMIT",
+    "NODE_LIMIT",
+    "TIME_LIMIT",
+    "SOLUTION_LIMIT",
+    "INTERRUPTED",
+    "NUMERIC",
+    "SUBOPTIMAL",
+    "INPROGRESS",
+    "USER_OBJ_LIMIT",
+    "WORK_LIMIT",
+    "MEM_LIMIT",
+)
+
+
+def _status_name(code, grb) -> str:
+    """Gurobi's name for a status code (e.g. ``"OPTIMAL"``), else the code."""
+    holder = getattr(grb.GRB, "Status", grb.GRB)
+    for name in _STATUS_NAMES:
+        if getattr(holder, name, None) == code:
+            return name
+    return str(code)
 
 
 def _map_gurobi_status(raw_status: int, grb) -> str:

@@ -67,8 +67,13 @@ Settings are CVXOPT's options (``maxiters``, ``abstol``, ``reltol``,
 call. The harness aliases ``max_iter`` / ``max_iters`` (-> ``maxiters``),
 ``eps`` / ``eps_abs`` (-> ``abstol`` and ``feastol``) and ``eps_rel``
 (-> ``reltol``) are translated (recorded in ``info.settings_translated``);
-any other name raises ``ValueError``, since CVXOPT would silently ignore
-it. Options are global state in CVXOPT (``cvxopt.solvers.options``); the
+any other name raises ``SolverConfigError``, since CVXOPT would silently
+ignore it. CVXOPT checks its option values (and ``kktsolver``) in the same
+call that solves, raising the ``ValueError`` it also raises on numerical
+trouble, so the adapter checks them first and raises ``SolverConfigError``
+for a bad value; a numerical ``ValueError`` / ``ArithmeticError`` from the
+solve is ``solver_error`` with the message on ``info["error"]``. Options are
+global state in CVXOPT (``cvxopt.solvers.options``); the
 adapter snapshots and restores them around each solve so sequential
 solves in the same process do not leak knobs into each other.
 """
@@ -90,13 +95,20 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    coerce_int_setting,
+    finite_point,
     mark_threads_ignored,
     mark_time_limit_ignored,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
+    reported_objective,
     settings_with_defaults,
+    translate_tolerance_aliases,
 )
+from .cone_layout import psd_triangle_to_full, qp_dual_in_native_order
 
 # Largest equality-only KKT system (n + p rows) the adapter hands to CVXOPT's
 # ``ldl`` KKT solver, which factors it as a dense matrix (32 MB at this size).
@@ -160,6 +172,7 @@ class CVXOPTSolverAdapter(SolverAdapter):
             # qr). PSD-only problems keep 'qr', which conelp solves better
             # (SDPLIB control1 and hinf9 are solver_error with chol).
             kktsolver = "chol"
+        _check_kktsolver(kktsolver, entry_point)
 
         def call(entry: str, kkt) -> dict:
             if entry == "conelp":
@@ -231,12 +244,16 @@ class CVXOPTSolverAdapter(SolverAdapter):
                             entry_point = "coneqp"
                             raw = check
             except (ArithmeticError, ValueError) as exc:
+                if isinstance(exc, ValueError) and _is_option_error(exc):
+                    # A value the checks above let through but CVXOPT refuses.
+                    raise SolverConfigError(f"CVXOPT rejected a setting value: {exc}") from exc
                 solver_error = f"cvxopt.{entry_point} raised {type(exc).__name__}: {exc}"
             elapsed = time.perf_counter() - start
 
         info = _flatten_info(raw)
         info["raw_status"] = raw.get("status")
         info["entry_point"] = entry_point
+        info["threads"] = None
         if discarded_claim is not None:
             info["conelp_discarded_claim"] = discarded_claim
         if cross_check is not None:
@@ -246,7 +263,8 @@ class CVXOPTSolverAdapter(SolverAdapter):
         if translated:
             info["settings_translated"] = translated
         if solver_error is not None:
-            info["solver_error"] = solver_error
+            info["raw_status"] = "error"
+            info["error"] = solver_error
         mark_time_limit_ignored(info, time_limit)
         mark_threads_ignored(info, threads)
 
@@ -260,11 +278,7 @@ class CVXOPTSolverAdapter(SolverAdapter):
         mapped = _map_cvxopt_status(raw, max_iters=max_iters, feastol=feastol)
         # The objective is reported only for a claimed solution; limit
         # iterates and certificates carry none (mirrors SCS / ECOS).
-        objective = (
-            _maybe_float(raw.get("primal objective"))
-            if mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
-            else None
-        )
+        objective = reported_objective(mapped, _maybe_float(raw.get("primal objective")))
 
         x = _matrix_to_array(raw.get("x"))
         y = _matrix_to_array(raw.get("y"))
@@ -345,37 +359,111 @@ def _resolve_options(settings: dict) -> tuple[dict, dict]:
     entries the aliases inserted. ``max_iter`` / ``max_iters`` become
     ``maxiters``; ``eps_abs`` (or ``eps``) supplies ``abstol`` and
     ``feastol`` and ``eps_rel`` (or ``eps``) supplies ``reltol``. A native
-    name always wins over an alias. Any other name raises ``ValueError``:
-    CVXOPT ignores keys it does not know, so a typo would otherwise run
-    silently at the defaults.
+    name always wins over an alias. Any other name raises
+    ``SolverConfigError``: CVXOPT ignores keys it does not know, so a typo
+    would otherwise run silently at the defaults. Values are checked against
+    the ranges CVXOPT enforces (``_check_options``).
     """
     settings = dict(settings)
-    max_iter = settings.pop("max_iter", None)
+    max_iter = pop_max_iter(settings)
     max_iters = settings.pop("max_iters", None)
-    eps = settings.pop("eps", None)
-    eps_abs = settings.pop("eps_abs", eps)
-    eps_rel = settings.pop("eps_rel", eps)
-    unknown = sorted(str(key) for key in settings if key not in _CVXOPT_OPTIONS)
+    if max_iters is not None:
+        max_iters = coerce_int_setting("max_iters", max_iters, minimum=1)
+    unknown = sorted(
+        str(key) for key in settings if key not in _CVXOPT_OPTIONS and key not in _EPS_NAMES
+    )
     if unknown:
-        raise ValueError(
+        raise SolverConfigError(
             f"Unrecognized CVXOPT settings {unknown!r}; expected CVXOPT options "
             f"{sorted(_CVXOPT_OPTIONS)!r}, kktsolver, or the aliases max_iter, "
             "eps, eps_abs, eps_rel"
         )
+    translated: dict = translate_tolerance_aliases(settings, ("abstol", "feastol"), ("reltol",))
     options = dict(settings)
-    translated: dict = {}
-
-    def put(key: str, value) -> None:
-        if value is not None and key not in options:
-            options[key] = value
-            translated[key] = value
-
     iteration_cap = max_iters if max_iters is not None else max_iter
-    put("maxiters", None if iteration_cap is None else int(iteration_cap))
-    put("abstol", None if eps_abs is None else float(eps_abs))
-    put("feastol", None if eps_abs is None else float(eps_abs))
-    put("reltol", None if eps_rel is None else float(eps_rel))
+    if iteration_cap is not None and options.get("maxiters") is None:
+        options["maxiters"] = iteration_cap
+        translated["maxiters"] = iteration_cap
+    # CVXOPT wants Python ints; a numpy integer or 100.0 is the same count.
+    for key, minimum in (("maxiters", 1), ("refinement", 0)):
+        if options.get(key) is not None:
+            options[key] = coerce_int_setting(key, options[key], minimum=minimum)
+    _check_options(options, translated)
     return options, translated
+
+
+_EPS_NAMES = frozenset({"eps", "eps_abs", "eps_rel"})
+
+
+def _is_real(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+# The ranges conelp / coneqp enforce on their options (cvxopt.coneprog).
+_OPTION_RANGES = {
+    "maxiters": ("an integer >= 1", lambda v: _is_int(v) and v >= 1),
+    "abstol": ("a real number", _is_real),
+    "reltol": ("a real number", _is_real),
+    "feastol": ("a positive real number", lambda v: _is_real(v) and v > 0),
+    "refinement": ("an integer >= 0", lambda v: _is_int(v) and v >= 0),
+    "kktreg": ("null or a real number >= 0", lambda v: v is None or (_is_real(v) and v >= 0)),
+}
+
+
+def _check_options(options: dict, translated: dict) -> None:
+    """Raise SolverConfigError for an option value CVXOPT would refuse.
+
+    CVXOPT raises the same ``ValueError`` for these as for numerical trouble
+    during the solve, so they are checked before it.
+    """
+    for key, (description, test) in _OPTION_RANGES.items():
+        if key in options and not test(options[key]):
+            source = " (set from an alias)" if key in translated else ""
+            raise SolverConfigError(
+                f"Invalid CVXOPT setting {key!r}={options[key]!r}{source}: must be {description}"
+            )
+    abstol = options.get("abstol", _CVXOPT_DEFAULT_ABSTOL)
+    reltol = options.get("reltol", _CVXOPT_DEFAULT_RELTOL)
+    if abstol <= 0 and reltol <= 0:
+        raise SolverConfigError(
+            f"Invalid CVXOPT settings abstol={abstol!r}, reltol={reltol!r}: at least one "
+            "must be positive"
+        )
+
+
+_CVXOPT_DEFAULT_ABSTOL = 1e-7
+_CVXOPT_DEFAULT_RELTOL = 1e-6
+# The KKT solvers each entry point accepts by name (coneqp has no 'qr').
+_KKT_SOLVERS = {
+    "conelp": ("ldl", "ldl2", "qr", "chol", "chol2"),
+    "coneqp": ("ldl", "ldl2", "chol", "chol2"),
+}
+
+
+def _check_kktsolver(kktsolver, entry_point: str) -> None:
+    """Raise SolverConfigError for a ``kktsolver`` CVXOPT would refuse."""
+    if kktsolver is None or callable(kktsolver):
+        return
+    accepted = _KKT_SOLVERS[entry_point]
+    if not isinstance(kktsolver, str) or kktsolver not in accepted:
+        raise SolverConfigError(
+            f"Invalid CVXOPT setting 'kktsolver'={kktsolver!r}: {entry_point} (used for this "
+            f"problem) accepts {list(accepted)} or a function"
+        )
+
+
+def _is_option_error(exc: ValueError) -> bool:
+    """Whether CVXOPT's ValueError is its refusal of an option or kktsolver."""
+    text = str(exc)
+    return (
+        text.startswith("options[")
+        or text.startswith("at least one of options")
+        or "is not a valid value for kktsolver" in text
+    )
 
 
 @contextmanager
@@ -488,13 +576,6 @@ def _is_finite_below(value, threshold: float) -> bool:
     return coerced is not None and coerced < threshold
 
 
-def _is_small(value, threshold: float) -> bool:
-    try:
-        return abs(float(value)) < threshold
-    except (TypeError, ValueError):
-        return False
-
-
 # ---------------------------------------------------------------------------
 # QP / CONE -> CVXOPT data.
 # ---------------------------------------------------------------------------
@@ -548,7 +629,7 @@ def _cone_to_cvxopt(cone_problem: dict, cvxopt):
     Cone keys handled: ``z`` (and legacy ``f``) → A,b; ``l`` → dims['l'];
     ``q`` → dims['q']; ``s`` → dims['s'] with the canonical
     PSD-triangle vec converted to CVXOPT's BLAS unpacked 'L' (column-
-    major full matrix) layout via ``_psd_triangle_to_full``. Other
+    major full matrix) layout via ``psd_triangle_to_full``. Other
     cone keys (e/ep for exponential, anything novel) yield a
     ``SKIPPED_UNSUPPORTED`` SolverResult.
     """
@@ -605,7 +686,7 @@ def _cone_to_cvxopt(cone_problem: dict, cvxopt):
         triangle_dim = sd * (sd + 1) // 2
         canonical_rows = a[cursor : cursor + triangle_dim, :]
         canonical_b = b[cursor : cursor + triangle_dim]
-        full = _psd_triangle_to_full(int(sd))
+        full = psd_triangle_to_full(int(sd))
         s_rows_list.append(full @ canonical_rows)
         s_b_list.append(full @ canonical_b)
         cursor += triangle_dim
@@ -656,39 +737,8 @@ def _cone_to_cvxopt(cone_problem: dict, cvxopt):
     )
 
 
-def _psd_triangle_to_full(dim: int) -> sp.csc_matrix:
-    """Map a length-``dim*(dim+1)/2`` PSD triangle vec (canonical
-    col-major lower with √2 off-diagonal scaling) to its
-    ``dim*dim`` full-matrix vec in column-major order.
-
-    Identical contract to ``sdpa_adapter._psd_triangle_to_full`` —
-    CVXOPT's BLAS unpacked 'L' layout is the same column-major full
-    layout SDPA uses, so the same transform applies.
-    """
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
-    col = 0
-    inv_sqrt2 = 1.0 / np.sqrt(2.0)
-    for j in range(dim):
-        for i in range(j, dim):
-            if i == j:
-                rows.append(i + j * dim)
-                cols.append(col)
-                data.append(1.0)
-            else:
-                rows.extend([i + j * dim, j + i * dim])
-                cols.extend([col, col])
-                data.extend([inv_sqrt2, inv_sqrt2])
-            col += 1
-    return sp.csc_matrix(
-        (data, (rows, cols)),
-        shape=(dim * dim, dim * (dim + 1) // 2),
-    )
-
-
 def _psd_full_to_triangle(dim: int) -> sp.csc_matrix:
-    """Inverse of ``_psd_triangle_to_full``: map BLAS unpacked 'L'
+    """Inverse of ``psd_triangle_to_full``: map BLAS unpacked 'L'
     (column-major full ``dim*dim``) back to the canonical
     ``dim*(dim+1)/2`` lower-triangle vec with ``√2`` off-diagonal
     scaling. Used to convert CVXOPT's PSD-cone duals and slacks back
@@ -828,8 +878,8 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
         qp = problem.qp
         n_eq = int(cone_dict.get("z", 0))
         if mapped_status in status.ANY_FEASIBLE:
-            y_full = _qp_dual_in_native_order(qp, y_eq, z_ineq, n_eq)
-            if y_full is None:
+            y_full = qp_dual_in_native_order(qp, y_eq, z_ineq, n_eq)
+            if not finite_point(x, y_full):
                 return None
             return kkt.qp_residuals(
                 qp["P"] if qp.get("P") is not None else sp.csc_matrix((x.size, x.size)),
@@ -844,14 +894,14 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
             status.PRIMAL_INFEASIBLE,
             status.PRIMAL_INFEASIBLE_INACCURATE,
         }:
-            y_full = _qp_dual_in_native_order(qp, y_eq, z_ineq, n_eq)
-            if y_full is None:
+            y_full = qp_dual_in_native_order(qp, y_eq, z_ineq, n_eq)
+            if not finite_point(y_full):
                 return None
             return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y_full)
         if mapped_status in {
             status.DUAL_INFEASIBLE,
             status.DUAL_INFEASIBLE_INACCURATE,
-        }:
+        } and finite_point(x):
             return kkt.qp_dual_infeasibility_cert(
                 qp["P"] if qp.get("P") is not None else sp.csc_matrix((x.size, x.size)),
                 qp["q"],
@@ -873,6 +923,8 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
     ):
         y_combined = _cone_dual_combined(y_eq, z_ineq, cone_dict)
         s_combined = _cone_slack_combined(s_slack, cone_dict)
+        if not finite_point(x, y_combined, s_combined):
+            return None
         return kkt.cone_residuals(
             p,
             cone_problem["q"],
@@ -888,62 +940,19 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
         status.PRIMAL_INFEASIBLE_INACCURATE,
     } and (z_ineq is not None or y_eq is not None):
         y_combined = _cone_dual_combined(y_eq, z_ineq, cone_dict)
+        if not finite_point(y_combined):
+            return None
         return kkt.cone_primal_infeasibility_cert(
             cone_problem["A"], cone_problem["b"], cone_dict, y_combined
         )
     if mapped_status in {
         status.DUAL_INFEASIBLE,
         status.DUAL_INFEASIBLE_INACCURATE,
-    }:
+    } and finite_point(x):
         return kkt.cone_dual_infeasibility_cert(
             p, cone_problem["q"], cone_problem["A"], cone_dict, x
         )
     return None
-
-
-def _qp_dual_in_native_order(qp, y_eq, z_ineq, n_eq):
-    """Reassemble the CVXOPT duals into the QP's native row order.
-
-    CVXOPT's coneqp form is ``Gx + s = h`` with ``s in K`` and Lagrange
-    multiplier ``z >= 0`` on the cone, giving stationarity
-    ``Px + q + G^T z + A^T y = 0``. With ``G = [A_finite_u; -A_finite_l]``
-    (qp_to_nonnegative_cone layout), the QP-side convention
-    ``y_qp = λ_u - λ_l`` requires:
-        y_qp[eq]       = y_eq
-        y_qp[finite_u] = +z_u
-        y_qp[finite_l] = -z_l
-    """
-    a_native = sp.csc_matrix(qp["A"])
-    n_rows = a_native.shape[0]
-    if y_eq is None and z_ineq is None:
-        return None
-
-    from solver_benchmarks.transforms.cones import split_qp_bounds
-
-    _a, _l, _u, eq, finite_l, finite_u = split_qp_bounds(qp)
-    eq_rows = np.flatnonzero(eq)
-    fu_rows = np.flatnonzero(finite_u)
-    fl_rows = np.flatnonzero(finite_l)
-    y_eq_arr = np.asarray(y_eq, dtype=float).ravel() if y_eq is not None else np.zeros(n_eq)
-    z_arr = np.asarray(z_ineq, dtype=float).ravel() if z_ineq is not None else np.zeros(0)
-
-    if (
-        eq_rows.size + fu_rows.size + fl_rows.size
-        != eq_rows.size + z_arr.size
-    ):
-        return None
-
-    y = np.zeros(n_rows)
-    if eq_rows.size:
-        y[eq_rows] += y_eq_arr[: eq_rows.size]
-    cursor = 0
-    if fu_rows.size:
-        y[fu_rows] += z_arr[cursor : cursor + fu_rows.size]
-        cursor += fu_rows.size
-    if fl_rows.size:
-        y[fl_rows] += -z_arr[cursor : cursor + fl_rows.size]
-        cursor += fl_rows.size
-    return y
 
 
 def _cone_dual_combined(y_eq, z_ineq, cone_dict):

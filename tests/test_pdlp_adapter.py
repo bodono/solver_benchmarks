@@ -257,8 +257,8 @@ def test_pdlp_preflight_does_not_count_entries_omitted_by_builder(monkeypatch, t
 
     if case == "unbounded_qp_rows":
         problem = _lp_problem(QP, sp.csc_matrix(np.ones((100, 2))))
-        problem.data["l"][:] = -mod.INF_BOUND
-        problem.data["u"][:] = mod.INF_BOUND
+        problem.data["l"][:] = -1.0e20
+        problem.data["u"][:] = 1.0e20
         model = mod._build_lp_model_from_qp(problem.data)
         assert not model.constraint
     else:
@@ -286,3 +286,97 @@ def test_parameters_text_extends_criteria_built_from_settings():
     crit = params.termination_criteria
     assert crit.simple_optimality_criteria.eps_optimal_absolute == 1e-8
     assert crit.eps_primal_infeasible == 1e-4 and crit.eps_dual_infeasible == 1e-4
+
+
+def _cone_qp(cone=None):
+    # min 1/2 x'Px + q'x s.t. x0 + x1 = 1, x >= 0 (optimum 1.875; the LP without
+    # P has optimum 1.0).
+    return ProblemData(
+        dataset_id="test",
+        name="cone_qp",
+        kind=CONE,
+        data={
+            "P": sp.csc_matrix([[4.0, 1.0], [1.0, 2.0]]),
+            "q": np.array([1.0, 1.0]),
+            "A": sp.csc_matrix([[1.0, 1.0], [-1.0, 0.0], [0.0, -1.0]]),
+            "b": np.array([1.0, 0.0, 0.0]),
+            "cone": cone or {"z": 1, "l": 2},
+        },
+    )
+
+
+def test_pdlp_skips_cone_problem_with_quadratic_objective(tmp_path):
+    # The cone path never read P and reported the LP's optimum (1.0) as optimal.
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    result = PDLPSolverAdapter({}).solve(_cone_qp(), tmp_path)
+    assert result.status == status.SKIPPED_UNSUPPORTED
+    assert "nonzero P" in result.info["reason"]
+
+
+def test_pdlp_ignores_cone_entries_without_rows(tmp_path):
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    problem = _cone_qp({"z": 1, "l": 2, "q": [], "ep": 0})
+    problem.data["P"] = None
+    result = PDLPSolverAdapter({}).solve(problem, tmp_path)
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(1.0, abs=1e-4)
+    assert result.kkt is not None
+
+
+@pytest.mark.parametrize("value", [0, True, -1, "soon"])
+def test_pdlp_legacy_time_limit_is_validated_like_time_limit(value, tmp_path):
+    # {solver_time_limit_sec: 0} stopped every solve at iteration 0, and
+    # True was read as one second.
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers.base import SolverConfigError
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    with pytest.raises(SolverConfigError, match="solver_time_limit_sec"):
+        PDLPSolverAdapter({"solver_time_limit_sec": value}).solve(_lp_problem(QP), tmp_path)
+
+
+def test_pdlp_legacy_time_limit_next_to_time_limit_is_accepted(tmp_path, monkeypatch):
+    # Both spellings together raised "Unsupported PDLP settings".
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers import pdlp_adapter as mod
+
+    seen = []
+    real = mod._set_time_limit
+    monkeypatch.setattr(mod, "_set_time_limit", lambda request, value: seen.append(value) or real(request, value))
+    result = mod.PDLPSolverAdapter({"time_limit": 5, "solver_time_limit_sec": 7}).solve(
+        _lp_problem(QP), tmp_path
+    )
+    assert result.status == status.OPTIMAL
+    assert seen == [5.0]
+    legacy = mod.PDLPSolverAdapter({"solver_time_limit_sec": 7}).solve(_lp_problem(QP), tmp_path)
+    assert legacy.status == status.OPTIMAL
+
+
+def test_pdlp_max_iter_translation_not_recorded_when_parameters_text_overrides_it(tmp_path):
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    result = PDLPSolverAdapter({
+        "max_iter": 64,
+        "parameters_text": "termination_criteria { iteration_limit: 128 }",
+    }).solve(_lp_problem(QP), tmp_path)
+    assert "iteration_limit" not in result.info.get("settings_translated", {})
+
+
+def test_pdlp_records_raw_status_threads_and_max_iter_translation(tmp_path):
+    pytest.importorskip("ortools")
+    from solver_benchmarks.solvers.pdlp_adapter import PDLPSolverAdapter
+
+    result = PDLPSolverAdapter({"max_iter": 500}).solve(_lp_problem(QP), tmp_path)
+    assert result.info["raw_status"] == "TERMINATION_REASON_OPTIMAL"
+    assert result.info["termination_reason"] == "TERMINATION_REASON_OPTIMAL"
+    assert result.info["settings_translated"] == {"iteration_limit": 500}
+    # PDLP's own default is one thread.
+    assert result.info["threads"] == 1
+    native = PDLPSolverAdapter({"iteration_limit": 500, "threads": 2}).solve(_lp_problem(QP), tmp_path)
+    assert "settings_translated" not in native.info
+    assert native.info["threads"] == 2

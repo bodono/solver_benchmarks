@@ -11,7 +11,11 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 
+from solver_benchmarks.analysis import kkt
+from solver_benchmarks.core import status
 from solver_benchmarks.transforms.cones import _INF_CUT, split_qp_bounds
+
+from .base import SolverConfigError, finite_point
 
 # Bounds at or beyond this magnitude are infinite. The datasets document
 # +-1e20 as the sentinel, some Maros-Meszaros files store it with a few ULPs
@@ -112,3 +116,41 @@ def dual_from_lower_upper(z_l, z_u) -> np.ndarray | None:
     lower = np.asarray(z_l if z_l is not None else 0.0, dtype=float)
     upper = np.asarray(z_u if z_u is not None else 0.0, dtype=float)
     return upper - lower
+
+
+def dense_backend_requested(settings: dict, solver: str) -> bool:
+    """Pop ``dense`` / ``backend`` and return whether the dense backend is asked for.
+
+    ``dense`` must be a boolean and ``backend`` ``"sparse"`` or ``"dense"``;
+    anything else (``dense: 'false'``, a misspelled backend) raises
+    ``SolverConfigError`` instead of silently picking a backend.
+    """
+    dense_flag = settings.pop("dense", None)
+    backend = settings.pop("backend", None)
+    if dense_flag is not None and not isinstance(dense_flag, bool):
+        raise SolverConfigError(f"{solver} setting 'dense' must be true or false (got {dense_flag!r})")
+    if backend is not None and str(backend).lower() not in {"sparse", "dense"}:
+        raise SolverConfigError(
+            f"{solver} setting 'backend' must be 'sparse' or 'dense' (got {backend!r})"
+        )
+    return bool(dense_flag) or (backend is not None and str(backend).lower() == "dense")
+
+
+def split_qp_kkt(mapped: str, qp: dict, x, y):
+    """KKT record for a split-QP adapter (PIQP, ProxQP) from ``x`` and the
+    combined dual ``y``: solution residuals for a status that may carry a
+    point, the certificate checks for infeasibility claims (``y`` a Farkas
+    certificate, ``x`` an unbounded ray), None if the vector is not finite."""
+    if mapped in status.ANY_FEASIBLE:
+        if not finite_point(x, y):
+            return None
+        return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
+    if mapped in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
+        if not finite_point(y):
+            return None
+        return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y)
+    if mapped in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
+        if not finite_point(x):
+            return None
+        return kkt.qp_dual_infeasibility_cert(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x)
+    return None

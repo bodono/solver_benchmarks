@@ -33,13 +33,18 @@ can be reproduced, but they will not run with the released packages:
   `adaptive_alpha`, `acceleration_trust_factor`, `metric_freeze_factor`,
   `rescaling_min_iters`, `scale_mode`, `soc_metric`, `tau_factor`, and
   `adaptive_diag_scale` values above 1 (released SCS accepts only 0 and 1).
-  Released SCS rejects them, so every solve that uses them fails as
-  `worker_error`. Each failure is retried on resume, up to
-  `run.max_worker_error_retries` times.
+  Released SCS rejects them, so the arms that use them are not run: the
+  first solve of such an arm stops that arm, the run finishes the other
+  arms (their results are written as usual) and then exits with an error
+  naming every rejected arm. Remove those arms to get a clean exit; a
+  re-run with them fails the same way and solves nothing new for them.
 - `qtqp_*.yaml` (apart from the two maintained sweeps above) pass
-  QTQP's `init_strategy`, which released QTQP 0.0.7 rejects, or select
-  `linear_solver: qdldl`. That backend needs the `qdldl` Python package
-  (`pip install qdldl`), which the `qtqp` extra does not install.
+  QTQP's `init_strategy`, which released QTQP 0.0.7 rejects (those arms are
+  not run, as above), or select `linear_solver: qdldl`. That backend needs
+  the `qdldl` Python package (`pip install qdldl`), which the `qtqp` extra
+  does not install; without it each solve of such an arm fails as
+  `worker_error`, retried on resume up to `run.max_worker_error_retries`
+  times.
 
 Each header says exactly what its config needs. Build or install that, then
 run the config as usual with `bench run`.

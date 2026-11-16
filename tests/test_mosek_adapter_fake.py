@@ -54,8 +54,20 @@ class _Error(Exception):
         self.msg = msg
 
 
-def _fake_mosek(*, optimize, solsta=_Solsta.optimal, x=(-1.0, -1.0)):
-    """A ``mosek`` stand-in whose ``Task.optimize`` runs ``optimize()``."""
+def _fake_mosek(*, optimize, solsta=_Solsta.optimal, x=(-1.0, -1.0), record=None, reject=()):
+    """A ``mosek`` stand-in whose ``Task.optimize`` runs ``optimize()``.
+
+    Parameters and row bounds the adapter sets go to ``record``; a parameter
+    named in ``reject`` is refused with ``mosek.Error``.
+    """
+    record = {} if record is None else record
+    record.setdefault("params", {})
+    record.setdefault("bounds", [])
+
+    def put_param(name, value):
+        if name in reject:
+            raise _Error(_Rescode.err_space, f"{name} is not a parameter")
+        record["params"][name] = value
 
     class Task:
         def __enter__(self):
@@ -70,6 +82,19 @@ def _fake_mosek(*, optimize, solsta=_Solsta.optimal, x=(-1.0, -1.0)):
 
         def optimize(self):
             return optimize()
+
+        def putintparam(self, param, value):
+            put_param(param, value)
+
+        putdouparam = putintparam
+
+        def putnaintparam(self, name, value):
+            put_param(name, value)
+
+        putnadouparam = putnastrparam = putnaintparam
+
+        def putconbound(self, row, key, lower, upper):
+            record["bounds"].append((key, lower, upper))
 
         def solutiondef(self, soltype):
             return soltype is _Soltype.itr
@@ -191,3 +216,94 @@ def test_mosek_limit_keeps_kkt_but_reports_no_objective(
     assert result.status == expected
     assert result.kkt is not None
     assert result.objective_value is None
+
+
+# ---------------------------------------------------------------------------
+# the shared settings
+
+
+def _solve_with(monkeypatch, fake, tmp_path: Path, settings, qp=None):
+    from solver_benchmarks.solvers.mosek_adapter import MosekSolverAdapter
+
+    monkeypatch.setitem(sys.modules, "mosek", fake)
+    problem = _small_qp() if qp is None else ProblemData("test", "qp", QP, qp)
+    return MosekSolverAdapter({"verbose": False, **settings}).solve(problem, tmp_path)
+
+
+def test_mosek_translates_max_iter_to_both_iteration_limits(monkeypatch, tmp_path):
+    # Was "Invalid MOSEK parameter 'max_iter'" while Gurobi, CPLEX and HiGHS
+    # translate it.
+    record: dict = {}
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, record=record)
+    result = _solve_with(monkeypatch, fake, tmp_path, {"max_iter": 50})
+    assert record["params"]["MSK_IPAR_INTPNT_MAX_ITERATIONS"] == 50
+    assert record["params"]["MSK_IPAR_SIM_MAX_ITERATIONS"] == 50
+    assert result.info["settings_translated"] == {
+        "MSK_IPAR_INTPNT_MAX_ITERATIONS": 50,
+        "MSK_IPAR_SIM_MAX_ITERATIONS": 50,
+    }
+
+
+def test_mosek_native_iteration_limit_wins_over_max_iter(monkeypatch, tmp_path):
+    record: dict = {}
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, record=record)
+    result = _solve_with(
+        monkeypatch, fake, tmp_path, {"max_iter": 50, "MSK_IPAR_INTPNT_MAX_ITERATIONS": 7}
+    )
+    assert record["params"]["MSK_IPAR_INTPNT_MAX_ITERATIONS"] == 7
+    assert result.info["settings_translated"] == {"MSK_IPAR_SIM_MAX_ITERATIONS": 50}
+
+
+@pytest.mark.parametrize("settings", [{"eps": 1e-6}, {"eps_abs": 1e-6, "eps_rel": 1e-6}])
+def test_mosek_refuses_eps_aliases_naming_its_tolerances(monkeypatch, tmp_path, settings):
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok)
+    with pytest.raises(SolverConfigError, match="MSK_DPAR_INTPNT_QO_TOL_REL_GAP"):
+        _solve_with(monkeypatch, fake, tmp_path, settings)
+
+
+def test_mosek_parameter_it_refuses_is_a_configuration_error(monkeypatch, tmp_path):
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, reject={"MSK_IPAR_BOGUS"})
+    with pytest.raises(SolverConfigError, match="MSK_IPAR_BOGUS"):
+        _solve_with(monkeypatch, fake, tmp_path, {"MSK_IPAR_BOGUS": 1})
+
+
+@pytest.mark.parametrize("settings, expected", [
+    ({}, 1),
+    ({"threads": 0}, 0),
+    ({"threads": 4}, 4),
+    ({"MSK_IPAR_NUM_THREADS": 2}, 2),
+])
+def test_mosek_threads_default_to_one(monkeypatch, tmp_path, settings, expected):
+    record: dict = {}
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, record=record)
+    result = _solve_with(monkeypatch, fake, tmp_path, settings)
+    assert result.info["threads"] == expected
+    set_values = [
+        value for name, value in record["params"].items()
+        if name in ("num_threads", "MSK_IPAR_NUM_THREADS")
+    ]
+    assert set_values == [expected]
+
+
+def test_mosek_uses_the_shared_infinity_cutoff(monkeypatch, tmp_path):
+    # MOSEK kept its own strict 1e20 cutoff, so a near-sentinel bound became
+    # a finite side of a ranged row.
+    record: dict = {}
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, record=record)
+    qp = _small_qp().data
+    qp = dict(qp, l=np.array([-9.999999999999998e19, -5.0]), u=np.array([5.0, 9.999999999999998e19]))
+    _solve_with(monkeypatch, fake, tmp_path, {}, qp)
+    assert [key for key, _, _ in record["bounds"]] == ["up", "lo"]
+
+
+def test_mosek_nan_point_has_no_kkt(monkeypatch, tmp_path):
+    fake = _fake_mosek(
+        optimize=lambda: _Rescode.trm_max_time, solsta=_Solsta.unknown, x=(float("nan"), -1.0)
+    )
+    result = _solve_with(monkeypatch, fake, tmp_path, {})
+    assert result.status == status.TIME_LIMIT
+    assert result.kkt is None

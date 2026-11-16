@@ -25,7 +25,9 @@ from solver_benchmarks.core.problem import QP, ProblemData
 
 
 class _GurobiError(Exception):
-    pass
+    def __init__(self, msg, errno=None):
+        super().__init__(msg)
+        self.errno = errno
 
 
 class _GRB:
@@ -123,6 +125,8 @@ class _GurobiModel:
     def optimize(self):
         self.log.append(("optimize", dict(self.params)))
         outcome = self.outcomes.pop(0)
+        if "raise" in outcome:
+            raise outcome["raise"]
         self.Status = outcome["Status"]
         self.IterCount = outcome.get("IterCount", 0)
         self.BarIterCount = outcome.get("BarIterCount", 0)
@@ -162,7 +166,11 @@ def _install_fake_gurobipy(monkeypatch, outcomes):
 # cplex
 
 
-class _CplexSolverError(Exception):
+class _CplexError(Exception):
+    """cplex.exceptions.CplexError: args are (message, environment, code)."""
+
+
+class _CplexSolverError(_CplexError):
     pass
 
 
@@ -279,6 +287,8 @@ class _CplexModel:
     def solve(self):
         self.log.append(("solve", dict(self.params)))
         self._outcome = self.outcomes.pop(0)
+        if "raise" in self._outcome:
+            raise self._outcome["raise"]
 
     def end(self):
         self.log.append(("end",))
@@ -290,7 +300,9 @@ def _install_fake_cplex(monkeypatch, outcomes):
     module = types.ModuleType("cplex")
     module.infinity = 1e20
     module.SparsePair = lambda ind, val: (list(ind), list(val))
-    module.exceptions = types.SimpleNamespace(CplexSolverError=_CplexSolverError)
+    module.exceptions = types.SimpleNamespace(
+        CplexError=_CplexError, CplexSolverError=_CplexSolverError
+    )
 
     def cplex_factory():
         instance = _CplexModel(list(outcomes), log)
@@ -605,7 +617,8 @@ def test_gurobi_resolves_inf_or_unbd_without_dual_reductions(monkeypatch, tmp_pa
     assert "DualReductions" not in optimizes[0][1]
     assert optimizes[1][1]["DualReductions"] == 0
     assert result.status == status.PRIMAL_INFEASIBLE
-    assert result.info["raw_status"] == _GRB.INFEASIBLE
+    assert result.info["raw_status"] == "INFEASIBLE"
+    assert result.info["raw_status_code"] == _GRB.INFEASIBLE
     assert result.info["inf_or_unbd_resolved"] is True
 
 
@@ -635,7 +648,8 @@ def test_cplex_resolves_infeasible_or_unbounded_without_reductions(monkeypatch, 
     assert "preprocessing.reduce" not in solves[0][1]
     assert solves[1][1]["preprocessing.reduce"] == 0
     assert result.status == status.DUAL_INFEASIBLE
-    assert result.info["raw_status"] == _CplexStatus.unbounded
+    assert result.info["raw_status"] == f"status {_CplexStatus.unbounded}"
+    assert result.info["raw_status_code"] == _CplexStatus.unbounded
     assert result.info["inf_or_unbd_resolved"] is True
 
 
@@ -664,3 +678,153 @@ def test_cplex_reports_simplex_iterations_for_simplex_solves(monkeypatch, tmp_pa
           "duals": [0.0] * 4, "iterations": 7, "barrier_iterations": 0}],
     )
     assert _solve("cplex", _small_qp(), tmp_path).iterations == 7
+
+
+# ---------------------------------------------------------------------------
+# license failures in the solve are an unavailable solver, not a solver error
+
+
+def test_gurobi_size_limited_license_is_an_unavailable_solver(monkeypatch, tmp_path):
+    # Was solver_error on every problem above the pip license's size limit.
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    error = _GurobiError(
+        "Model too large for size-limited license; visit https://gurobi.com/unrestricted "
+        "for more information",
+        errno=10010,
+    )
+    _install_fake_gurobipy(monkeypatch, [{"raise": error}])
+    with pytest.raises(SolverUnavailable, match="Gurobi license error"):
+        _solve("gurobi", _small_qp(), tmp_path)
+
+
+def test_gurobi_other_solver_errors_stay_solver_errors(monkeypatch, tmp_path):
+    _install_fake_gurobipy(monkeypatch, [{"raise": _GurobiError("Out of memory", errno=10001)}])
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    assert result.status == status.SOLVER_ERROR
+    assert result.info["error"] == "Out of memory"
+
+
+def test_gurobi_non_solver_exception_is_not_a_solver_error(monkeypatch, tmp_path):
+    # A harness bug must surface (worker_error), not be scored as Gurobi failing.
+    _install_fake_gurobipy(monkeypatch, [{"raise": KeyError("harness bug")}])
+    with pytest.raises(KeyError):
+        _solve("gurobi", _small_qp(), tmp_path)
+
+
+def test_cplex_community_edition_limit_is_an_unavailable_solver(monkeypatch, tmp_path):
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    error = _CplexSolverError(
+        "CPLEX Error  1016: Community Edition. Problem size limits exceeded. "
+        "Purchase at http://ibm.biz/error1016.",
+        None,
+        1016,
+    )
+    _install_fake_cplex(monkeypatch, [{"raise": error}])
+    with pytest.raises(SolverUnavailable, match="CPLEX license error"):
+        _solve("cplex", _small_qp(), tmp_path)
+
+
+def test_cplex_other_solver_errors_stay_solver_errors(monkeypatch, tmp_path):
+    _install_fake_cplex(monkeypatch, [{"raise": _CplexError("CPLEX Error  1001: Out of memory.", None, 1001)}])
+    result = _solve("cplex", _small_qp(), tmp_path)
+    assert result.status == status.SOLVER_ERROR
+    assert "Out of memory" in result.info["error"]
+
+
+def test_cplex_non_solver_exception_is_not_a_solver_error(monkeypatch, tmp_path):
+    _install_fake_cplex(monkeypatch, [{"raise": KeyError("harness bug")}])
+    with pytest.raises(KeyError):
+        _solve("cplex", _small_qp(), tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# threads: one unless configured; the value in effect is on info
+
+
+@pytest.mark.parametrize("settings, expected", [
+    ({}, 1),
+    ({"threads": 0}, 0),
+    ({"threads": 3}, 3),
+    ({"Threads": 4}, 4),
+])
+def test_gurobi_threads_default_to_one(monkeypatch, tmp_path, settings, expected):
+    models, _ = _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.OPTIMAL, "values": _OPTIMAL_POINT}]
+    )
+    result = _solve("gurobi", _small_qp(), tmp_path, settings)
+    threads_params = {k: v for k, v in models[0].params.items() if k.lower() == "threads"}
+    assert list(threads_params.values()) == [expected]
+    assert result.info["threads"] == expected
+
+
+@pytest.mark.parametrize("settings, expected", [({}, 1), ({"threads": 0}, 0), ({"threads": 6}, 6)])
+def test_cplex_threads_default_to_one(monkeypatch, tmp_path, settings, expected):
+    models, _ = _install_fake_cplex(
+        monkeypatch,
+        [{"status": _CplexStatus.optimal, "x": [-1.0, -1.0], "objective": -1.0,
+          "duals": [0.0] * 4}],
+    )
+    result = _solve("cplex", _small_qp(), tmp_path, settings)
+    assert models[0].params["threads"] == expected
+    assert result.info["threads"] == expected
+
+
+def test_gurobi_and_cplex_raw_status_is_a_name(monkeypatch, tmp_path):
+    _install_fake_gurobipy(monkeypatch, [{"Status": _GRB.OPTIMAL, "values": _OPTIMAL_POINT}])
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    assert result.info["raw_status"] == "OPTIMAL"
+    assert result.info["raw_status_code"] == _GRB.OPTIMAL
+    _install_fake_cplex(
+        monkeypatch,
+        [{"status": _CplexStatus.optimal, "x": [-1.0, -1.0], "objective": -1.0,
+          "duals": [0.0] * 4}],
+    )
+    result = _solve("cplex", _small_qp(), tmp_path)
+    assert isinstance(result.info["raw_status"], str)
+    assert result.info["raw_status_code"] == _CplexStatus.optimal
+
+
+def test_gurobi_nan_point_has_no_kkt(monkeypatch, tmp_path):
+    point = {"X": [float("nan"), -1.0], "Pi": [0.0, 0.0]}
+    _install_fake_gurobipy(monkeypatch, [{"Status": _GRB.TIME_LIMIT, "values": point}])
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    assert result.status == status.TIME_LIMIT
+    assert result.kkt is None
+
+
+def test_cuopt_records_raw_status_and_eps_translation(monkeypatch, tmp_path):
+    _install_fake_cuopt(
+        monkeypatch, {"status": "Optimal", "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
+    )
+    result = _solve("cuopt", _small_qp(), tmp_path, {"eps": 1e-6})
+    assert result.info["raw_status"] == "Optimal"
+    assert result.info["termination"] == "Optimal"
+    assert result.info["settings_translated"] == {"optimality_tolerance": 1e-6}
+    assert result.info["threads"] is None
+
+
+@pytest.mark.parametrize("error", [
+    _GurobiError("Error code 10010", errno=10010),  # the code alone
+    _GurobiError("No Gurobi license found (user x, host y)", errno=None),  # the text alone
+])
+def test_gurobi_license_error_by_code_or_by_text(monkeypatch, tmp_path, error):
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    _install_fake_gurobipy(monkeypatch, [{"raise": error}])
+    with pytest.raises(SolverUnavailable):
+        _solve("gurobi", _small_qp(), tmp_path)
+
+
+@pytest.mark.parametrize("error", [
+    _CplexSolverError("CPLEX Error  1016.", None, 1016),  # the code alone
+    _CplexSolverError("CPLEX Error: Community Edition. Problem size limits exceeded.", None, None),
+    _CplexSolverError("No license found for CPLEX.", None, None),
+])
+def test_cplex_license_error_by_code_or_by_text(monkeypatch, tmp_path, error):
+    from solver_benchmarks.solvers.base import SolverUnavailable
+
+    _install_fake_cplex(monkeypatch, [{"raise": error}])
+    with pytest.raises(SolverUnavailable):
+        _solve("cplex", _small_qp(), tmp_path)

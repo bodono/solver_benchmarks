@@ -2468,3 +2468,304 @@ def test_the_missing_data_error_keeps_did_you_mean(monkeypatch, tmp_path: Path, 
         run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
     message = str(raised.value)
     assert "'afirox' (did you mean 'afiro'?) locally: not downloaded yet, or misspelled" in message
+
+
+# --- a setting the adapter rejects stops that solver ----------------------------
+
+
+def _rejection_config(tmp_path: Path, solvers: dict, parallelism: int):
+    return parse_run_config(
+        {
+            "run": {
+                "dataset": "synthetic_qp",
+                "output_dir": str(tmp_path / "runs"),
+                "parallelism": parallelism,
+            },
+            "solvers": [
+                {"id": solver_id, "solver": "osqp", "settings": settings}
+                for solver_id, settings in solvers.items()
+            ],
+        }
+    )
+
+
+def _counting_real_worker(monkeypatch, calls: list):
+    from solver_benchmarks.core import runner
+
+    real = runner._run_subprocess
+
+    def counting(cmd, **kwargs):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        calls.append((payload["solver"]["id"], payload["problem"]))
+        return real(cmd, **kwargs)
+
+    monkeypatch.setattr(runner, "_run_subprocess", counting)
+
+
+def _rows(run_dir: Path) -> list[dict]:
+    results = run_dir / "results.jsonl"
+    if not results.exists():
+        return []
+    return [json.loads(line) for line in results.read_text().splitlines()]
+
+
+@pytest.mark.parametrize("parallelism", [1, 2])
+def test_a_rejected_setting_stops_only_that_solver(
+    monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int, capsys
+):
+    # A mistyped setting was a worker_error on every problem, retried on the
+    # next two resumes, and the run exited 0; stopping the whole run instead
+    # would lose the other solvers' results.
+    pytest.importorskip("osqp")
+    from solver_benchmarks.datasets import get_dataset
+
+    n_problems = len(get_dataset("synthetic_qp")(repo_root=repo_root).list_problems())
+    run_dir = tmp_path / "run"
+    calls: list = []
+    _counting_real_worker(monkeypatch, calls)
+    solvers = {"good": {}, "typo": {"max_itr": 5}}
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(
+            _rejection_config(tmp_path, solvers, parallelism),
+            run_dir=run_dir, repo_root=repo_root, stream_output=True,
+        )
+    message = str(raised.value)
+    assert "'typo' rejected its settings" in message and "max_itr" in message
+    assert "'good'" not in message
+    assert "SolverConfigError" not in message
+    rows = _rows(run_dir)
+    assert sorted(row["problem"] for row in rows if row["solver_id"] == "good") == sorted(
+        problem for solver_id, problem in calls if solver_id == "good"
+    )
+    assert len([row for row in rows if row["solver_id"] == "good"]) == n_problems
+    assert all(row["status"] != "worker_error" for row in rows)
+    assert not [row for row in rows if row["solver_id"] == "typo"]
+    assert 1 <= len([c for c in calls if c[0] == "typo"]) <= parallelism
+    assert not (run_dir / "results.parquet").exists()
+    errors = [e for e in _events(run_dir) if e["level"] == "error"]
+    assert len(errors) == 1 and errors[0]["solver_id"] == "typo"
+    assert errors[0]["message"].endswith("its remaining solves are not run")
+    printed = [line for line in capsys.readouterr().err.splitlines() if "[bench] error:" in line]
+    assert printed == [f"[bench] error: {errors[0]['message']}"]
+
+    # The same config completes nothing new and fails again after one solve.
+    calls.clear()
+    with pytest.raises(RuntimeError, match="'typo' rejected its settings"):
+        run_benchmark(_rejection_config(tmp_path, solvers, parallelism), run_dir=run_dir, repo_root=repo_root)
+    assert [c[0] for c in calls] == ["typo"] * len(calls) and 1 <= len(calls) <= parallelism
+    assert len(_rows(run_dir)) == n_problems
+
+    # The corrected config runs the missing solves.
+    calls.clear()
+    solvers["typo"] = {"max_iter": 5000}
+    run_benchmark(_rejection_config(tmp_path, solvers, parallelism), run_dir=run_dir, repo_root=repo_root)
+    assert sorted(c[0] for c in calls) == ["typo"] * n_problems
+    rows = _rows(run_dir)
+    assert len([row for row in rows if row["solver_id"] == "typo"]) == n_problems
+    assert (run_dir / "results.parquet").exists()
+
+
+@pytest.mark.parametrize("parallelism", [1, 3])
+def test_every_rejected_solver_is_named(monkeypatch, tmp_path: Path, repo_root: Path, parallelism: int):
+    pytest.importorskip("osqp")
+    run_dir = tmp_path / "run"
+    calls: list = []
+    _counting_real_worker(monkeypatch, calls)
+    solvers = {"typo_a": {"max_itr": 5}, "good": {}, "typo_b": {"eps_abss": 1e-6}}
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(_rejection_config(tmp_path, solvers, parallelism), run_dir=run_dir, repo_root=repo_root)
+    lines = str(raised.value).splitlines()
+    assert any("'typo_a'" in line and "max_itr" in line for line in lines)
+    assert any("'typo_b'" in line and "eps_abss" in line for line in lines)
+    assert {row["solver_id"] for row in _rows(run_dir)} == {"good"}
+    for solver_id in ("typo_a", "typo_b"):
+        assert 1 <= len([c for c in calls if c[0] == solver_id]) <= parallelism
+
+
+def test_cli_reports_rejected_settings_as_an_error(monkeypatch, tmp_path: Path, repo_root: Path):
+    pytest.importorskip("osqp")
+    import yaml
+
+    config_path = tmp_path / "typo.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs")},
+        "solvers": [
+            {"id": "good", "solver": "osqp"},
+            {"id": "osqp_typo", "solver": "osqp", "settings": {"max_itr": 5}},
+        ],
+    }))
+    result = CliRunner().invoke(
+        main, ["run", str(config_path), "--repo-root", str(repo_root), "--no-stream-output"]
+    )
+    assert result.exit_code != 0
+    assert "'osqp_typo' rejected its settings" in result.output
+    assert "max_itr" in result.output
+    # Without --run-dir the run directory is a new timestamped one: the error
+    # names it, so the run can be resumed after the settings are fixed.
+    (run_dir,) = [path for path in (tmp_path / "runs").iterdir() if path.is_dir()]
+    flat = " ".join(result.output.split())
+    assert f"results are in {run_dir}" in flat
+    assert f"--run-dir {run_dir}" in flat
+
+
+def _scripted_config_errors(monkeypatch, outcomes: dict, *, error: str, hold_first: bool = False):
+    """A worker stand-in: ``outcomes[problem]`` is "ok" or "config" (the
+    result worker.py writes for a SolverConfigError). With ``hold_first``
+    the runner's check of the first result waits until every scripted solve
+    is done, so later config errors are already finished when it rejects."""
+    import threading
+
+    from solver_benchmarks.core import runner
+
+    done = {problem: threading.Event() for problem in outcomes}
+
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        problem = payload["problem"]
+        kind = outcomes.get(problem, "ok")
+        metadata = {"resume_signature": payload.get("resume_signature")}
+        if kind == "config":
+            metadata["error_kind"] = "config"
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=problem,
+            problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"],
+            status="worker_error" if kind == "config" else "optimal",
+            objective_value=None if kind == "config" else 0.0, iterations=1,
+            run_time_seconds=0.01, artifact_dir=payload["artifacts_dir"],
+            error=error if kind == "config" else None, metadata=metadata,
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        if problem in done:
+            done[problem].set()
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setattr(runner, "_run_subprocess", run)
+    if hold_first:
+        real_discard = runner._RejectedSolvers.discard
+        held: list = []
+
+        def discard(self, result):
+            if not held:
+                held.append(result.problem)
+                for event in done.values():
+                    event.wait(10)
+            return real_discard(self, result)
+
+        monkeypatch.setattr(runner._RejectedSolvers, "discard", discard)
+
+
+def test_config_errors_finished_before_the_first_is_seen_are_discarded(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    # Two config-error results of one solver are done before the runner
+    # consumes the first: neither is written, the other results are.
+    names = sorted(p.name for p in dataset_registry.get_dataset("synthetic_qp")(
+        repo_root=repo_root).list_problems())
+    outcomes = {names[0]: "config", names[1]: "config"}
+    _scripted_config_errors(
+        monkeypatch, outcomes, error="SolverConfigError: Unrecognized settings ['max_itr']",
+        hold_first=True,
+    )
+    run_dir = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="'osqp' rejected its settings"):
+        run_benchmark(_synthetic_config(tmp_path, parallelism=3), run_dir=run_dir, repo_root=repo_root)
+    rows = _rows(run_dir)
+    assert all(row["status"] == "optimal" for row in rows)
+    assert not {names[0], names[1]} & {row["problem"] for row in rows}
+    assert len([e for e in _events(run_dir) if e["level"] == "error"]) == 1
+
+
+def test_rejection_message_is_one_line(monkeypatch, tmp_path: Path, repo_root: Path):
+    names = sorted(p.name for p in dataset_registry.get_dataset("synthetic_qp")(
+        repo_root=repo_root).list_problems())
+    _scripted_config_errors(
+        monkeypatch, {names[0]: "config"},
+        error="SolverConfigError: ProxQP rejected a setting value: solve(): incompatible\n"
+        "    1. solve(H: ...)\n    2. solve(...)",
+    )
+    run_dir = tmp_path / "run"
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(_synthetic_config(tmp_path), run_dir=run_dir, repo_root=repo_root)
+    solver_lines = [line for line in str(raised.value).splitlines() if line.startswith("- ")]
+    assert solver_lines == [
+        f"- solver 'osqp' rejected its settings (synthetic_qp/{names[0]}): "
+        "ProxQP rejected a setting value: solve(): incompatible"
+    ]
+    (event,) = [e for e in _events(run_dir) if e["level"] == "error"]
+    assert "\n" not in event["message"]
+
+def test_worker_marks_a_solver_config_error(tmp_path: Path, repo_root: Path):
+    pytest.importorskip("osqp")
+    from solver_benchmarks.worker import run_payload
+
+    payload = {
+        "run_id": "r", "dataset": "synthetic_qp", "dataset_name": "synthetic_qp",
+        "problem": "one_variable_lp", "repo_root": str(repo_root),
+        "artifacts_dir": str(tmp_path / "a"),
+        "solver": {"id": "osqp_typo", "solver": "osqp", "settings": {"max_itr": 5}},
+    }
+    result = run_payload(payload)
+    assert result.status == "worker_error"
+    assert result.metadata["error_kind"] == "config"
+    assert result.error.startswith("SolverConfigError: ")
+    # Any other worker error carries no such mark.
+    other = run_payload(dict(payload, problem="no_such_problem", solver=dict(payload["solver"], settings={})))
+    assert other.status == "worker_error"
+    assert "error_kind" not in other.metadata
+
+
+def test_a_rejected_solver_starts_few_workers_in_a_parallel_run(monkeypatch, tmp_path: Path, repo_root: Path):
+    # With more problems than workers, a rejected solver costs the solves
+    # already started (about ``parallelism``), not one per problem.
+    import threading
+    import time
+
+    from solver_benchmarks.core import runner
+
+    class ManyProblems:
+        def __init__(self, repo_root=None, **options):
+            pass
+
+        def list_problems(self):
+            return [ProblemSpec(dataset_id="many", name=f"p{i:02d}", kind=QP) for i in range(12)]
+
+    class Stub(SolverAdapter):
+        solver_name = "stub_rejected"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover - never run in-process
+            raise AssertionError
+
+    monkeypatch.setitem(dataset_registry.DATASETS, "many_problems", ManyProblems)
+    monkeypatch.setitem(solver_registry.SOLVERS, "stub_rejected", Stub)
+    started: list = []
+    lock = threading.Lock()
+
+    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
+        payload = json.loads(Path(cmd[-1]).read_text())
+        with lock:
+            started.append(payload["problem"])
+        time.sleep(0.05)  # keep a few solves in flight when the first lands
+        record = ProblemResult(
+            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
+            problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
+            solver=payload["solver"]["solver"], status="worker_error", objective_value=None,
+            iterations=None, run_time_seconds=None, artifact_dir=payload["artifacts_dir"],
+            error="SolverConfigError: Unrecognized settings ['max_itr']",
+            metadata={"resume_signature": payload.get("resume_signature"), "error_kind": "config"},
+        ).to_record()
+        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+
+    monkeypatch.setattr(runner, "_run_subprocess", run)
+    parallelism = 3
+    config = parse_run_config({
+        "run": {"dataset": "many_problems", "output_dir": str(tmp_path / "runs"),
+                "parallelism": parallelism},
+        "solvers": [{"id": "rejected", "solver": "stub_rejected", "settings": {"max_itr": 5}}],
+    })
+    with pytest.raises(RuntimeError, match="'rejected' rejected its settings"):
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert 1 <= len(started) <= parallelism + 2 < 12
+    assert _rows(tmp_path / "run") == []

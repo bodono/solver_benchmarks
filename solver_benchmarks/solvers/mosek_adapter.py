@@ -1,4 +1,16 @@
-"""MOSEK adapter."""
+"""MOSEK adapter.
+
+Settings are MOSEK parameter names (``MSK_DPAR_*``, ``MSK_IPAR_*``,
+``MSK_SPAR_*`` or the ``mosek.dparam`` / ``iparam`` / ``sparam`` members); a
+name or value MOSEK refuses raises ``SolverConfigError`` naming it. The shared
+``max_iter`` sets ``MSK_IPAR_INTPNT_MAX_ITERATIONS`` and
+``MSK_IPAR_SIM_MAX_ITERATIONS`` (a native name given alongside wins; recorded
+in ``info.settings_translated``), ``time_limit`` sets the optimizer time limit
+and ``threads`` ``MSK_IPAR_NUM_THREADS``, one unless ``threads`` or the native
+name is given (0: MOSEK's own choice). The ``eps`` aliases are refused: MOSEK's
+tolerances are not an absolute/relative pair. Bounds go through the shared
+infinity cutoff (``|bound| >= 1e19`` on the open side is infinite).
+"""
 
 from __future__ import annotations
 
@@ -15,12 +27,20 @@ from solver_benchmarks.core.problem import QP, ProblemData
 from solver_benchmarks.core.result import SolverResult
 
 from .base import (
+    EPS_ALIASES,
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
+    finite_point,
+    pop_max_iter,
     pop_threads,
     pop_time_limit,
+    refuse_settings,
+    reported_objective,
     settings_with_defaults,
+    threads_or_default,
 )
+from .qp_split import normalize_qp_bounds
 
 
 class MosekSolverAdapter(SolverAdapter):
@@ -47,14 +67,13 @@ class MosekSolverAdapter(SolverAdapter):
         a_mat = sp.coo_matrix(qp["A"])
         n = int(qp.get("n", q.shape[0]))
         m = int(qp.get("m", a_mat.shape[0]))
-        lower = np.asarray(qp["l"], dtype=float)
-        upper = np.asarray(qp["u"], dtype=float)
+        lower, upper = normalize_qp_bounds(qp["l"], qp["u"])
 
         # Wrap MOSEK Env / Task in `with` blocks so the C-level resources
         # and the streamprinter callback are released deterministically.
         # Otherwise long batch runs leak license tokens until GC fires.
         with mosek.Env() as env, env.Task() as task:
-            _configure_mosek(task, env, self.settings, mosek)
+            translated, threads = _configure_mosek(task, env, self.settings, mosek)
 
             task.appendcons(m)
             task.appendvars(n)
@@ -85,7 +104,7 @@ class MosekSolverAdapter(SolverAdapter):
                 return SolverResult(
                     status=status.SOLVER_ERROR,
                     run_time_seconds=time.perf_counter() - start,
-                    info={"error": str(exc)},
+                    info={"raw_status": "error", "error": str(exc), "threads": threads},
                 )
             elapsed = time.perf_counter() - start
 
@@ -96,16 +115,11 @@ class MosekSolverAdapter(SolverAdapter):
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
             # Only a claimed solution has an objective; a limit-hit point
             # keeps its residuals (and primal_obj) in the KKT record.
-            objective = (
-                task.getprimalobj(soltype)
-                if kkt_dict is not None
-                and mapped in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
-                else None
-            )
+            objective = task.getprimalobj(soltype) if kkt_dict is not None else None
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
-                objective_value=None if objective is None else float(objective),
+                objective_value=reported_objective(mapped, objective),
                 iterations=int(iterations) if iterations is not None else None,
                 run_time_seconds=elapsed,
                 info={
@@ -114,12 +128,29 @@ class MosekSolverAdapter(SolverAdapter):
                     "solver": "mosek",
                     "solver_reported_runtime": float(solver_reported_runtime),
                     "soltype": str(soltype),
+                    "threads": threads,
+                    **({"settings_translated": translated} if translated else {}),
                 },
             )
 
 
-def _configure_mosek(task, env, settings: dict, mosek) -> None:
+# MOSEK's iteration caps, set by the shared ``max_iter``.
+_MAX_ITER_PARAMS = ("MSK_IPAR_INTPNT_MAX_ITERATIONS", "MSK_IPAR_SIM_MAX_ITERATIONS")
+_NUM_THREADS_PARAM = "MSK_IPAR_NUM_THREADS"
+
+
+def _configure_mosek(task, env, settings: dict, mosek) -> tuple[dict, int]:
+    """Apply ``settings`` to ``task``; return the aliases it translated and
+    the thread count."""
     settings = settings_with_defaults(settings)
+    refuse_settings(
+        settings,
+        EPS_ALIASES,
+        "MOSEK",
+        "set its own tolerances instead (MSK_DPAR_INTPNT_QO_TOL_REL_GAP, "
+        "MSK_DPAR_INTPNT_QO_TOL_PFEAS, MSK_DPAR_INTPNT_QO_TOL_DFEAS, or the "
+        "MSK_DPAR_INTPNT_TOL_* ones for LPs)",
+    )
     if settings.pop("verbose", False):
         def streamprinter(text):
             print(text, end="")
@@ -133,15 +164,41 @@ def _configure_mosek(task, env, settings: dict, mosek) -> None:
     if time_limit is not None:
         task.putdouparam(mosek.dparam.optimizer_max_time, float(time_limit))
     threads = pop_threads(settings)
-    if threads is not None and threads >= 1:
-        task.putintparam(mosek.iparam.num_threads, int(threads))
+    given = {_param_name(key) for key in settings}
+    translated: dict = {}
+    max_iter = pop_max_iter(settings, minimum=0)
+    if max_iter is not None:
+        for name in _MAX_ITER_PARAMS:
+            if name not in given:
+                settings[name] = max_iter
+                translated[name] = max_iter
+    native_threads = [key for key in settings if _param_name(key) == _NUM_THREADS_PARAM]
+    if native_threads:
+        threads = settings[native_threads[0]]
+    else:
+        threads = threads_or_default(threads)
+        task.putintparam(mosek.iparam.num_threads, threads)
 
     settings.pop("high_accuracy", None)
     for key, value in settings.items():
-        if isinstance(key, str):
-            _handle_mosek_str_param(task, key.strip(), value)
-        else:
-            _handle_mosek_enum_param(task, key, value, mosek)
+        try:
+            if isinstance(key, str):
+                _handle_mosek_str_param(task, key.strip(), value)
+            else:
+                _handle_mosek_enum_param(task, key, value, mosek)
+        except getattr(mosek, "Error", ()) as exc:
+            raise SolverConfigError(f"Invalid MOSEK parameter {key!r}={value!r}: {exc}") from exc
+    return translated, threads
+
+
+def _param_name(key) -> str:
+    """``MSK_IPAR_NUM_THREADS`` for that string or for ``mosek.iparam.num_threads``."""
+    if isinstance(key, str):
+        return key.strip().upper()
+    prefix = {"iparam": "MSK_IPAR_", "dparam": "MSK_DPAR_", "sparam": "MSK_SPAR_"}.get(
+        type(key).__name__, ""
+    )
+    return f"{prefix}{getattr(key, 'name', key)}".upper()
 
 
 def _is_license_error(exc: Exception, mosek) -> bool:
@@ -157,8 +214,10 @@ def _is_license_error(exc: Exception, mosek) -> bool:
 
 
 def _mosek_bound(lower: float, upper: float, mosek):
-    l_val = float(lower) if lower > -1.0e20 else -np.inf
-    u_val = float(upper) if upper < 1.0e20 else np.inf
+    """Bound key and values for a row whose bounds went through
+    ``normalize_qp_bounds`` (an infinite side is +-inf)."""
+    l_val = float(lower)
+    u_val = float(upper)
     if abs(l_val - u_val) <= 1.0e-10:
         return mosek.boundkey.fx, l_val, u_val
     if l_val == -np.inf and u_val == np.inf:
@@ -213,6 +272,8 @@ def _select_mosek_solution(task, mosek, qp):
             return soltype, None
         x = np.asarray(task.getxx(soltype), dtype=float)
         y = -np.asarray(task.gety(soltype), dtype=float)
+        if not finite_point(x, y):
+            continue
         # Use the full original Hessian, not MOSEK's lower triangle.
         residuals = kkt.qp_residuals(
             qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y,
@@ -233,7 +294,7 @@ def _handle_mosek_str_param(task, param: str, value) -> None:
     elif param.startswith("MSK_SPAR_"):
         task.putnastrparam(param, value)
     else:
-        raise ValueError(f"Invalid MOSEK parameter {param!r}")
+        raise SolverConfigError(f"Invalid MOSEK parameter {param!r}")
 
 
 def _handle_mosek_enum_param(task, param, value, mosek) -> None:
@@ -244,4 +305,4 @@ def _handle_mosek_enum_param(task, param, value, mosek) -> None:
     elif isinstance(param, mosek.sparam):
         task.putstrparam(param, value)
     else:
-        raise ValueError(f"Invalid MOSEK parameter {param!r}")
+        raise SolverConfigError(f"Invalid MOSEK parameter {param!r}")

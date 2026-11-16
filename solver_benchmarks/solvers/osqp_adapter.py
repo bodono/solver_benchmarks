@@ -16,9 +16,11 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     SolverAdapter,
+    SolverConfigError,
     SolverUnavailable,
     finite_point,
     mark_threads_ignored,
+    normalize_max_iter,
     pop_threads,
     pop_time_limit,
     reported_objective,
@@ -56,6 +58,7 @@ class OSQPSolverAdapter(SolverAdapter):
             settings["time_limit"] = float(time_limit)
         # OSQP does not expose a thread count knob.
         threads = pop_threads(settings)
+        normalize_max_iter(settings)
         translated = translate_eps_alias(settings)
         p = sp.csc_matrix(qp["P"])
         a = sp.csc_matrix(qp["A"])
@@ -74,16 +77,27 @@ class OSQPSolverAdapter(SolverAdapter):
         try:
             solver.setup(p, qp["q"], a_kept, l[kept], u[kept], **settings)
             raw = solver.solve()
+        except ValueError as exc:
+            # osqp's wrapper refuses an unknown setting name before the solve.
+            if "setting" in str(exc).lower():
+                raise SolverConfigError(f"OSQP rejected the settings: {exc}") from exc
+            raise
+        except TypeError as exc:
+            # The settings binding refuses a value of the wrong type before
+            # the solve; the problem data the adapter builds is well typed.
+            raise SolverConfigError(
+                f"OSQP rejected a setting value in {sorted(settings)}: {exc}"
+            ) from exc
         except _osqp_exception(osqp) as exc:
             code = exc.args[0] if exc.args else None
             if code == _OSQP_SETTINGS_VALIDATION_ERROR:
-                raise ValueError(
+                raise SolverConfigError(
                     "OSQP rejected a setting value (see its message in stdout.log): "
                     f"{sorted(settings)}"
                 ) from exc
             # Data validation (e.g. l > u) and a non-convex P are the solver
             # failing on this problem, not a harness error.
-            error_info = {"raw_status": "error", "error": f"OSQPException: {code}"}
+            error_info = {"raw_status": "error", "error": f"OSQPException: {code}", "threads": None}
             mark_threads_ignored(error_info, threads)
             return SolverResult(
                 status=status.SOLVER_ERROR,
@@ -124,6 +138,7 @@ class OSQPSolverAdapter(SolverAdapter):
         kkt_dict = _compute_kkt(
             _certificate_kind(raw.info.status_val, osqp) or mapped, raw, qp, p, a, l, u, kept
         )
+        info["threads"] = None
         mark_threads_ignored(info, threads)
         if translated:
             info["settings_translated"] = translated
@@ -226,12 +241,12 @@ def _compute_kkt(mapped_status, raw, qp, p, a, l, u, kept):
         return kkt.qp_residuals(p, q, a, l, u, x, y)
     if mapped_status in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
         cert = scatter_rows(m, kept, getattr(raw, "prim_inf_cert", None))
-        if cert is None:
+        if not finite_point(cert):
             return None
         return kkt.qp_primal_infeasibility_cert(a, l, u, cert)
     if mapped_status in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
         cert = getattr(raw, "dual_inf_cert", None)
-        if cert is None:
+        if not finite_point(cert):
             return None
         return kkt.qp_dual_infeasibility_cert(p, q, a, l, u, cert)
     return None
