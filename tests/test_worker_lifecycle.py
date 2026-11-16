@@ -752,10 +752,13 @@ def test_an_empty_pythonpath_entry_does_not_put_the_data_root_on_the_worker_path
     assert not marker.exists(), marker.read_text()
 
 
+_NO_HANDOVER = "[bench env] no harness directory is handed to the environments"
+
+
 def test_bench_env_run_says_when_it_hands_over_no_harness(monkeypatch, tmp_path: Path, capsys):
     """Imported from site-packages, `bench env run` hands no directory to the
     environments; each runs the solver_benchmarks installed in it, and the
-    run says so."""
+    run says so once."""
     from solver_benchmarks.core import env_runner, runner
     from solver_benchmarks.core.config import parse_environment_run_config
 
@@ -765,15 +768,17 @@ def test_bench_env_run_says_when_it_hands_over_no_harness(monkeypatch, tmp_path:
     config = parse_environment_run_config(
         {"run": {"dataset": "synthetic_qp", "include": ["one_variable_eq"],
                  "output_dir": str(tmp_path / "runs")},
-         "environments": [{"id": "here", "python": sys.executable,
-                           "solvers": [{"id": "osqp", "solver": "osqp"}]}]}
+         "environments": [{"id": env_id, "python": sys.executable,
+                           "solvers": [{"id": f"osqp_{env_id}", "solver": "osqp"}]}
+                          for env_id in ("a", "b")]}
     )
     env_runner.run_environment_matrix(
         config, run_dir=tmp_path / "matrix", repo_root=REPO_ROOT, stream_output=False
     )
-    assert len(children) == 1
+    assert len(children) == 2
     err = capsys.readouterr().err
-    assert "site-packages" in err and "its own installed solver_benchmarks" in err
+    assert err.count(_NO_HANDOVER) == 1, err
+    assert "each environment runs the solver_benchmarks installed in it" in err
 
 
 def test_bench_env_run_is_quiet_about_a_handed_over_harness(monkeypatch, tmp_path: Path, capsys):
@@ -790,4 +795,44 @@ def test_bench_env_run_is_quiet_about_a_handed_over_harness(monkeypatch, tmp_pat
     env_runner.run_environment_matrix(
         config, run_dir=tmp_path / "matrix", repo_root=REPO_ROOT, stream_output=False
     )
-    assert "site-packages" not in capsys.readouterr().err
+    assert _NO_HANDOVER not in capsys.readouterr().err
+
+
+_SHOW_PYTHONPATH = "import os, sys; open(sys.argv[1], 'w').write(repr(os.environ.get('PYTHONPATH')))"
+
+
+@pytest.mark.parametrize("separators", [1, 2], ids=["sep", "sep-sep"])
+def test_a_separator_only_pythonpath_is_not_handed_to_a_worker(
+    monkeypatch, tmp_path: Path, separators: int
+):
+    """With no harness directory to hand over (site-packages install), an
+    inherited PYTHONPATH of only separators must not reach the worker: its
+    empty entries mean the working directory, the data root."""
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_harness_import_roots", lambda: ())
+    monkeypatch.setenv("PYTHONPATH", os.pathsep * separators)
+    seen = tmp_path / "seen"
+    result = runner._run_subprocess(
+        [sys.executable, "-c", _SHOW_PYTHONPATH, str(seen)],
+        cwd=tmp_path,
+        timeout=60.0,
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        stream_output=False,
+    )
+    assert result.returncode == 0
+    assert seen.read_text() == "None"
+
+
+@pytest.mark.parametrize("separators", [1, 2], ids=["sep", "sep-sep"])
+def test_a_separator_only_pythonpath_is_not_handed_to_a_matrix_child(
+    monkeypatch, tmp_path: Path, separators: int
+):
+    from solver_benchmarks.core import env_runner, runner
+
+    monkeypatch.setattr(runner, "_harness_import_roots", lambda: ())
+    monkeypatch.setenv("PYTHONPATH", os.pathsep * separators)
+    seen = tmp_path / "seen"
+    env_runner._run_child([sys.executable, "-c", _SHOW_PYTHONPATH, str(seen)], cwd=tmp_path)
+    assert seen.read_text() == "None"

@@ -67,9 +67,9 @@ def run_environment_matrix(
 
     if not harness_import_roots():
         print(
-            "[bench env] solver_benchmarks is imported from site-packages, so no harness "
-            "directory is handed to the environments: each environment runs its own "
-            "installed solver_benchmarks",
+            "[bench env] no harness directory is handed to the environments "
+            "(solver_benchmarks is not imported from a checkout or a PYTHONPATH "
+            "directory): each environment runs the solver_benchmarks installed in it",
             file=sys.stderr,
         )
     failures: list[tuple[str, str]] = []
@@ -175,6 +175,10 @@ def _run_child(cmd: list[str], *, cwd: Path) -> None:
     pythonpath = harness_pythonpath(os.environ.get("PYTHONPATH"))
     if pythonpath:
         env["PYTHONPATH"] = pythonpath
+    else:
+        # Separators only would put the data root (the working directory)
+        # on the child's sys.path.
+        env.pop("PYTHONPATH", None)
     process = subprocess.Popen(cmd, cwd=cwd, env=env)
     try:
         returncode = process.wait()

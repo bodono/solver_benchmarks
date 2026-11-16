@@ -1169,7 +1169,11 @@ harness's code with its own interpreter and installed packages (numpy, scipy,
 the solvers, and the harness's dependencies, which the `pip install -e .` in
 the examples installs). When `bench` is imported from site-packages nothing is
 handed over (the run prints a line saying so): each environment must have
-`solver_benchmarks` installed and runs that copy.
+`solver_benchmarks` installed and runs that copy. An inherited `PYTHONPATH`
+follows on each environment's `PYTHONPATH`, with relative entries taken
+relative to the directory the command is run from; empty entries are
+dropped, so a package reachable only through one must be listed explicitly
+(`.` or an absolute path).
 This keeps the benchmark independent of a specific environment manager. You can use `venv`, `uv`, conda, Docker, or
 pre-existing paths.
 

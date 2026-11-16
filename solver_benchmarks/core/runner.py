@@ -1674,7 +1674,7 @@ def harness_pythonpath(inherited: str | None = None) -> str:
     Empty entries of ``inherited`` are dropped: one means the working
     directory, which ``-P`` does not remove and which in a child is the data
     root. Relative entries are made absolute against this process's working
-    directory, which is what they meant on this process's own sys.path.
+    directory at the time the child is started.
     """
     roots = list(_harness_import_roots())
     for entry in (inherited or "").split(os.pathsep):
@@ -1778,6 +1778,10 @@ def _run_subprocess(
         pythonpath = harness_pythonpath(os.environ.get("PYTHONPATH"))
         if pythonpath:
             popen_kwargs["env"]["PYTHONPATH"] = pythonpath
+        else:
+            # An inherited value of separators only would put the data root
+            # (the working directory) back on the worker's sys.path.
+            popen_kwargs["env"].pop("PYTHONPATH", None)
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
         else:
