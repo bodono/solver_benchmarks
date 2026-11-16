@@ -434,7 +434,7 @@ def _write_pairwise_scatter(results, output_dir: Path, metric: str) -> Path | No
     for ax in axes.ravel()[len(pairs):]:
         ax.axis("off")
 
-    for ax, (solver_a, solver_b) in zip(axes.ravel(), pairs):
+    for ax, (solver_a, solver_b) in zip(axes.ravel(), pairs, strict=False):
         common = pivot[[solver_a, solver_b]].dropna()
         x = common[solver_a]
         y = common[solver_b]
@@ -588,7 +588,7 @@ def _write_kkt_residual_boxplot(results, output_dir: Path) -> Path | None:
         1, cols, figsize=(4.5 * cols, 4.5), constrained_layout=True, squeeze=False
     )
     drew_any = False
-    for ax, (col, label) in zip(axes.ravel(), available):
+    for ax, (col, label) in zip(axes.ravel(), available, strict=True):
         data = []
         labels = []
         for solver_id in solver_ids:
@@ -671,7 +671,7 @@ def _write_kkt_residual_heatmap(results, output_dir: Path) -> Path | None:
         squeeze=False,
     )
     cmap = plt.get_cmap("viridis").with_extremes(bad="#e5e7eb")
-    for ax, (label, pivot) in zip(axes.ravel(), pivots):
+    for ax, (label, pivot) in zip(axes.ravel(), pivots, strict=True):
         encoded = np.log10(pivot.astype(float))
         image = ax.imshow(encoded, aspect="auto", cmap=cmap, interpolation="nearest")
         ax.set_xticks(np.arange(len(pivot.columns)))
@@ -728,7 +728,7 @@ def _write_kkt_accuracy_profile(
         1, cols, figsize=(4.5 * cols, 4.5), constrained_layout=True, squeeze=False
     )
     drew_any = False
-    for ax, (col, label) in zip(axes.ravel(), available):
+    for ax, (col, label) in zip(axes.ravel(), available, strict=True):
         per_solver = []
         for solver_id in solver_ids:
             series = _floored_residuals(groups[solver_id][col])

@@ -35,7 +35,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, QP, ProblemData, cone_items_in_row_order
+from solver_benchmarks.core.problem import CONE, QP, ProblemData, as_list, cone_items_in_row_order
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 from solver_benchmarks.transforms.psd import (
@@ -415,7 +415,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
             row += dim
             continue
         if name == "q":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 dim = int(dim)
                 if dim:
                     cones.append(clarabel.SecondOrderConeT(dim))
@@ -424,7 +424,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
                 row += dim
             continue
         if name == "s":
-            for dim in _as_list(value):
+            for dim in as_list(value):
                 dim = int(dim)
                 triangle_dim = dim * (dim + 1) // 2
                 if dim:
@@ -443,7 +443,7 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
             row += 3 * count
             continue
         if name == "p":
-            alphas = [float(alpha) for alpha in _as_list(value)]
+            alphas = [float(alpha) for alpha in as_list(value)]
             dual = [alpha for alpha in alphas if not 0.0 < alpha < 1.0]
             if dual:
                 # SCS encodes the dual power cone as a negative alpha;
@@ -478,8 +478,3 @@ def _parse_cones(cone: dict, row_count: int, clarabel):
         )
     return cones, keep_rows, cone_dict
 
-
-def _as_list(value):
-    if isinstance(value, (list, tuple)):
-        return value
-    return [value]

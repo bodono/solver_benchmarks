@@ -330,7 +330,7 @@ def _render_markdown_report(
         )
     )
     lines.extend(_render_completion_block(tables))
-    lines.extend(_render_performance_plots_block(tables, output_dir, plot_outputs, metric))
+    lines.extend(_render_performance_plots_block(output_dir, plot_outputs, metric))
     lines.extend(_render_setup_solve_block(tables, output_dir, plot_outputs))
     lines.extend(_render_pairwise_block(tables, output_dir, plot_outputs, metric))
     lines.extend(_render_difficulty_scaling_block(tables, output_dir, plot_outputs, metric))
@@ -511,7 +511,6 @@ def _render_setup_solve_block(
 
 
 def _render_performance_plots_block(
-    tables: dict[str, pd.DataFrame],
     output_dir: Path,
     plot_outputs: list[Path],
     metric: str,
@@ -1808,7 +1807,7 @@ def _derived_run_lines(manifest: dict) -> list[str]:
     ]
     for step in steps:
         kind = step.get("kind")
-        title = {"kkt_verify": "`bench kkt-verify`", "merge": "`bench merge`"}.get(kind, f"`{kind}`")
+        title = {"kkt_verify": "`bench kkt-verify`", "merge": "`bench merge`"}.get(str(kind), f"`{kind}`")
         settings = []
         counts: dict[str, dict] = {}
         tables: dict[str, list[dict]] = {}

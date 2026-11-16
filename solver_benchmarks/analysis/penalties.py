@@ -66,10 +66,12 @@ def _largest_time_limit(config: dict) -> float:
     raws = [raw if raw is not None else run_limit for raw in raws] or [run_limit]
     limits = []
     for raw in raws:
+        if raw is None:
+            raise ValueError("A manifest has no valid timeout_seconds; pass --max-value explicitly")
         try:
             limit = float(raw)
-        except (TypeError, ValueError):
-            raise ValueError("A manifest has no valid timeout_seconds; pass --max-value explicitly")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("A manifest has no valid timeout_seconds; pass --max-value explicitly") from exc
         if isinstance(raw, bool) or not math.isfinite(limit) or limit <= 0:
             raise ValueError("Manifest timeout_seconds must be positive and finite; pass --max-value explicitly")
         limits.append(limit)

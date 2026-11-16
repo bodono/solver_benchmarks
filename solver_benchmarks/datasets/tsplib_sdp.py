@@ -77,7 +77,6 @@ class TSPLIBSDPDataset(Dataset):
         "external download from "
         "https://raw.githubusercontent.com/mastqe/tsplib/master/"
     )
-    data_patterns = ("*.tsp", "*.tsp.gz")
     prepare_command = "python scripts/prepare_tsplib_sdp.py"
     automatic_download = True
     subset_lists_problems = True

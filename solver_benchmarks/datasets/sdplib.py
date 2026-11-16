@@ -40,7 +40,6 @@ class SDPLIBDataset(Dataset):
         "bundled converted JLD2 archive; original SDPLIB is documented at "
         "https://vlsicad.eecs.umich.edu/BK/Slots/cache/www.nmt.edu/~borchers/sdplib.html"
     )
-    data_patterns = ("*.jld2", "*.dat-s", "*.dat-s.gz", "sdplib.tar")
     prepare_command = "python scripts/prepare_sdplib.py"
     option_names = frozenset({"subset", "blocks"})
     # ``feasible`` / ``infeasible`` / ``all`` share every problem, posed the

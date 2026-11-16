@@ -89,7 +89,7 @@ import scipy.sparse as sp
 
 from solver_benchmarks.analysis import kkt
 from solver_benchmarks.core import status
-from solver_benchmarks.core.problem import CONE, QP, ProblemData
+from solver_benchmarks.core.problem import CONE, QP, ProblemData, as_list
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
@@ -646,8 +646,10 @@ def _cone_to_cvxopt(cone_problem: dict, cvxopt):
 
     z_count = int(cone.pop("z", 0)) + int(cone.pop("f", 0))
     l_count = int(cone.pop("l", 0))
-    q_list = list(cone.pop("q", []))
-    s_list = list(cone.pop("s", []))
+    # A second-order cone of dimension 0 has no rows and CVXOPT refuses it;
+    # an empty PSD cone is dropped the same way.
+    q_list = [int(dim) for dim in as_list(cone.pop("q", [])) if int(dim)]
+    s_list = [int(dim) for dim in as_list(cone.pop("s", [])) if int(dim)]
     bad_keys = sorted(cone.keys())
     if bad_keys:
         return SolverResult(

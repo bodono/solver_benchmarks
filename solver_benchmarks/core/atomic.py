@@ -43,6 +43,7 @@ def atomic_write_stream(path: Path, write: Callable[[BinaryIO], object]) -> None
         mode: int | None = stat.S_IMODE(os.stat(path).st_mode)
     except FileNotFoundError:
         mode = None
+    tmp_name: str | None
     fd, tmp_name = _create_temporary(path)
     try:
         with os.fdopen(fd, "wb") as handle:

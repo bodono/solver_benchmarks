@@ -60,7 +60,7 @@ class HighsSolverAdapter(SolverAdapter):
         q = np.asarray(qp["q"], dtype=float)
         a = sp.csr_matrix(qp["A"])
         l, u = normalize_qp_bounds(qp["l"], qp["u"])
-        n = int(qp.get("n", q.shape[0]))
+        n = int(qp.get("n", int(q.shape[0])))
         m = int(qp.get("m", a.shape[0]))
 
         solver = highspy.Highs()

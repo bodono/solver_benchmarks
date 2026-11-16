@@ -135,23 +135,10 @@ def test_system_metadata_omits_hostname_by_default():
     assert "hostname" not in system_metadata()
 
 
-def test_system_metadata_includes_hostname_when_opt_in():
-    from solver_benchmarks.core.system_info import system_metadata
-
-    md = system_metadata(include_hostname=True)
-    assert "hostname" in md
-    # On a real system this is a non-empty string; the test machine
-    # could in principle have an empty hostname but that's vanishingly
-    # rare. Allow it just in case.
-    assert md["hostname"] is None or isinstance(md["hostname"], str)
-
-
 def test_system_metadata_python_executable_is_basename_by_default():
     """``python_executable`` should be the basename only (e.g.
     ``python3.12``) by default, since the full ``sys.executable``
-    path commonly contains a username or private installer path.
-    The full path is captured under ``python_executable_full`` only
-    when the caller opts in."""
+    path commonly contains a username or private installer path."""
     from solver_benchmarks.core.system_info import system_metadata
 
     md = system_metadata()
@@ -159,22 +146,7 @@ def test_system_metadata_python_executable_is_basename_by_default():
     # Basename has no path separators.
     assert executable is None or "/" not in executable
     assert executable is None or "\\" not in executable
-    # ``python_executable_full`` is suppressed by default.
     assert "python_executable_full" not in md
-
-
-def test_system_metadata_includes_full_python_path_when_opt_in():
-    """Privacy opt-in: ``include_full_python_path=True`` records the
-    full ``sys.executable`` under ``python_executable_full`` so
-    isolated infrastructure can preserve the install location for
-    reproducibility."""
-    import sys as _sys
-
-    from solver_benchmarks.core.system_info import system_metadata
-
-    md = system_metadata(include_full_python_path=True)
-    assert md["python_executable"] == _sys.executable
-    assert md["python_executable_full"] == _sys.executable
 
 
 def test_system_metadata_swallows_probe_exceptions(monkeypatch):
@@ -206,7 +178,7 @@ def test_system_metadata_is_json_serializable():
     field in ``system_metadata`` must be representable."""
     from solver_benchmarks.core.system_info import system_metadata
 
-    md = system_metadata(include_hostname=True)
+    md = system_metadata()
     # Round-trip; any unserializable type would raise.
     json.loads(json.dumps(md))
 

@@ -463,6 +463,58 @@ def test_parse_run_config_rejects_duplicate_dataset_names(tmp_path: Path):
         )
 
 
+_DUPLICATE_NAME = "Duplicate dataset name 'synthetic_qp'"
+_DUPLICATE_ID = "Duplicate dataset id in datasets list: 'synthetic_qp'"
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        (["synthetic_qp", "synthetic_qp"], _DUPLICATE_NAME),
+        ([{"name": "synthetic_qp"}, {"name": "synthetic_qp"}], _DUPLICATE_NAME),
+        (["synthetic_qp", {"name": "synthetic_qp", "id": "synthetic_qp"}], _DUPLICATE_ID),
+        ([{"name": "synthetic_qp", "id": "synthetic_qp"}, "synthetic_qp"], _DUPLICATE_NAME),
+        ([{"name": "synthetic_cone", "id": "synthetic_qp"}, "synthetic_qp"], _DUPLICATE_NAME),
+        (
+            [{"name": "synthetic_qp", "id": "a"}, {"name": "synthetic_cone", "id": "a"}],
+            "Duplicate dataset id in datasets list: 'a'",
+        ),
+        ([{"name": "synthetic_qp", "id": "a"}, "synthetic_qp"], ["a", "synthetic_qp"]),
+        (["synthetic_qp", {"name": "synthetic_qp", "id": "b"}], ["synthetic_qp", "b"]),
+        (
+            [{"name": "synthetic_qp", "id": "a"}, {"name": "synthetic_qp", "id": "b"}],
+            ["a", "b"],
+        ),
+    ],
+)
+def test_parse_run_config_duplicate_dataset_names_and_ids(tmp_path: Path, entries, expected):
+    raw = {
+        "run": {"datasets": entries, "output_dir": str(tmp_path / "runs")},
+        "solvers": [{"id": "scs", "solver": "scs"}],
+    }
+    if isinstance(expected, str):
+        with pytest.raises(ValueError) as excinfo:
+            parse_run_config(raw)
+        assert str(excinfo.value).startswith(expected)
+    else:
+        config = parse_run_config(raw)
+        assert [dataset.id for dataset in config.datasets] == expected
+
+
+def test_parse_run_config_empty_dataset_id_is_no_id(tmp_path: Path):
+    def parse(entries):
+        return parse_run_config(
+            {
+                "run": {"datasets": entries, "output_dir": str(tmp_path / "runs")},
+                "solvers": [{"id": "scs", "solver": "scs"}],
+            }
+        )
+
+    assert [d.id for d in parse([{"name": "synthetic_qp", "id": ""}]).datasets] == ["synthetic_qp"]
+    with pytest.raises(ValueError, match="Duplicate dataset name 'synthetic_qp'"):
+        parse([{"name": "synthetic_qp", "id": ""}, "synthetic_qp"])
+
+
 def test_run_config_dataset_property_errors_for_multiple(tmp_path: Path):
     config = parse_run_config(
         {
