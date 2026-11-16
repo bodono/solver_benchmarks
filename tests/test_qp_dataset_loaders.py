@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import scipy.io
+import scipy.sparse as sp
 
 from solver_benchmarks.datasets import cblib as cblib_module
 from solver_benchmarks.datasets import dc_opf as dc_opf_module
@@ -114,6 +115,33 @@ def _record(tag: str) -> str:
 class _Payload:
     def __reduce__(self):
         return (_record, ("ran",))
+
+
+@pytest.mark.parametrize(
+    ("arrays", "message"),
+    [
+        ({"G": np.eye(2)}, "G is given without h"),
+        ({"G": np.eye(2), "h": np.ones(1)}, "h has 1 entries but G has 2 rows"),
+        ({"A": np.ones((1, 3)), "b": np.ones(1)}, r"A has shape \(1, 3\) but q has 2 entries"),
+        ({"A": np.ones((1, 2))}, "A is given without b"),
+        ({"lb": np.zeros(3)}, "lb has 3 entries but q has 2"),
+        ({"ub": np.ones(1)}, "ub has 1 entries but q has 2"),
+        ({"P": np.eye(3)}, r"P has shape \(3, 3\) but q has 2 entries"),
+    ],
+)
+def test_npz_arrays_that_do_not_fit_together_are_rejected(tmp_path: Path, arrays, message):
+    path = tmp_path / "BAD.npz"
+    np.savez(path, **{"P": np.eye(2), "q": np.ones(2), **arrays})
+    with pytest.raises(ValueError, match=f"BAD.npz: {message}"):
+        read_mpc_qpbenchmark_npz(path)
+
+
+def test_npz_one_dimensional_rows_and_scalar_rhs_are_one_constraint(tmp_path: Path):
+    path = tmp_path / "ROW.npz"
+    np.savez(path, P=np.eye(2), q=np.ones(2), A=np.array([1.0, 1.0]), b=np.array(1.0))
+    qp, _ = read_mpc_qpbenchmark_npz(path)
+    assert qp["A"].shape == (1, 2)
+    assert qp["l"].tolist() == [1.0] and qp["u"].tolist() == [1.0]
 
 
 def test_npz_none_placeholders_load_as_missing(tmp_path: Path):
@@ -406,3 +434,66 @@ def test_dc_opf_downloads_are_checked_before_caching(tmp_path: Path, monkeypatch
     assert dc_opf_module.download_matpower_case("case9", tmp_path).exists()
     _fake_urlopen(monkeypatch, {"https": json.dumps({"case9": "feasible"}).encode()})
     assert dc_opf_module.download_feasibility_labels(tmp_path).exists()
+
+
+def _qp(**overrides):
+    qp = {
+        "P": sp.csc_matrix(np.eye(2)),
+        "q": np.ones(2),
+        "r": 0.0,
+        "A": sp.csc_matrix(np.ones((1, 2))),
+        "l": np.zeros(1),
+        "u": np.ones(1),
+        "n": 2,
+        "m": 1,
+        "obj_type": "min",
+    }
+    return {**qp, **overrides}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"P": sp.csc_matrix(np.eye(3))}, r"P has shape \(3, 3\) but q has 2 entries"),
+        ({"A": sp.csc_matrix(np.ones((1, 3)))}, r"A has shape \(1, 3\) but q has 2 entries"),
+        ({"l": np.zeros(2)}, r"l has shape \(2,\) but A has 1 rows"),
+        ({"u": np.ones((1, 1))}, r"u has shape \(1, 1\) but A has 1 rows"),
+        ({"u": np.array([np.nan])}, "u has NaN entries"),
+        ({"A": np.array([1.0, 1.0])}, r"A has shape \(2,\); it must be 2-D \(m x n\)"),
+    ],
+)
+def test_qp_problem_data_checks_its_layout(overrides, message):
+    from solver_benchmarks.core.problem import QP, ProblemData
+
+    ProblemData("d", "ok", QP, _qp())
+    with pytest.raises(ValueError, match=f"Problem 'bad': {message}"):
+        ProblemData("d", "bad", QP, _qp(**overrides))
+
+
+@pytest.mark.parametrize("subset", ["HS35.npz", ["HS35.npz"], "HS35.npz, QAFIRO"])
+def test_cutest_auto_prepare_reads_names_like_the_subset(tmp_path: Path, subset):
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.runner import _prepare_data
+
+    folder = tmp_path / "problem_classes" / "cutest_qp_data"
+    folder.mkdir(parents=True)
+    for name in ("HS35", "QAFIRO"):
+        np.savez(folder / f"{name}.npz", P=np.eye(1), q=np.ones(1))
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "cutest_qp",
+                "dataset_options": {"subset": subset, "data_root": str(tmp_path / "problem_classes")},
+                "auto_prepare_data": True,
+            },
+            "solvers": [{"id": "s", "solver": "clarabel"}],
+        }
+    )
+    dataset_config = config.datasets[0]
+    dataset = get_dataset("cutest_qp")(repo_root=tmp_path, **dataset_config.dataset_options)
+
+    _prepare_data(dataset, config, dataset_config)  # nothing is missing
+
+    assert not (folder / "EXPORT_README.md").exists()
+    with pytest.raises(RuntimeError, match="Missing: MISSING$|Missing: MISSING\\."):
+        dataset.prepare_data(["HS35.npz", "MISSING.npz"])

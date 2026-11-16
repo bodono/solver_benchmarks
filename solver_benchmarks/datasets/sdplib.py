@@ -10,6 +10,7 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.sdplib import (
     extract_from_tar,
+    extract_many_from_tar,
     list_sdplib_tar,
     read_sdplib_block_sizes,
     read_sdplib_jld2,
@@ -41,6 +42,10 @@ class SDPLIBDataset(Dataset):
     )
     data_patterns = ("*.jld2", "*.dat-s", "*.dat-s.gz", "sdplib.tar")
     prepare_command = "python scripts/prepare_sdplib.py"
+    option_names = frozenset({"subset", "blocks"})
+    # ``feasible`` / ``infeasible`` / ``all`` share every problem, posed the
+    # same way; ``blocks`` changes the problem and stays in the signature.
+    selection_options = frozenset({"subset"})
 
     @property
     def subset(self) -> str:
@@ -233,9 +238,8 @@ class SDPLIBDataset(Dataset):
         # A member that has an original beside the archive is never read
         # (and the three bundled originals replace members that cannot be).
         originals = {_original_stem(path) for path in self.folder.iterdir()} - {None}
-        for name in names:
-            if name not in originals:
-                extract_from_tar(self.tar_path, name, self.folder, expected_size=members[name])
+        wanted = [name for name in names if name not in originals]
+        extract_many_from_tar(self.tar_path, wanted, self.folder, expected_sizes=members)
 
     def missing_data_message(self) -> str:
         return (

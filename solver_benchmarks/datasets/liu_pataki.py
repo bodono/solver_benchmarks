@@ -26,6 +26,8 @@ class LiuPatakiDataset(Dataset):
     dataset_id = "liu_pataki"
     description = "Liu-Pataki infeasible and weakly infeasible SDP collection."
     data_patterns = ("*.mat",)
+    option_names = frozenset({"classification", "conditioning", "constraint_count", "block_dim"})
+    selection_options = option_names
 
     @property
     def folder(self) -> Path:

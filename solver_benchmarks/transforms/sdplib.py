@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import shutil
 import tarfile
@@ -76,20 +77,59 @@ def extract_from_tar(
     A new file gets the mode ``open()`` would give it (0o666 less the
     umask), so on a shared data directory other users can read what one
     user extracted.
+
+    The archive is read once, up to the member: the compressed archive
+    cannot seek back, so looking the member up by name first (which lists
+    the whole archive) and then reading it would decompress it twice.
     """
-    target = cache_dir / f"{name}.jld2"
-    if target.exists() and (expected_size is None or target.stat().st_size == int(expected_size)):
-        return target
-    member_name = f"{name}.jld2"
+    sizes = None if expected_size is None else {name: int(expected_size)}
+    return extract_many_from_tar(tar_path, [name], cache_dir, expected_sizes=sizes)[name]
+
+
+def extract_many_from_tar(
+    tar_path: Path,
+    names: Sequence[str],
+    cache_dir: Path,
+    expected_sizes: dict[str, int] | None = None,
+) -> dict[str, Path]:
+    """Extract members ``<name>.jld2`` for each of ``names`` in one pass over the archive.
+
+    Returns the path of each. Each file is written as ``extract_from_tar``
+    writes one, and one already at its target (with the expected size, when
+    ``expected_sizes`` gives it) is kept. Reading stops after the last
+    member wanted. A name with no member raises FileNotFoundError.
+    """
+    paths = {name: cache_dir / f"{name}.jld2" for name in names}
+    wanted = {
+        f"{name}.jld2": name
+        for name, target in paths.items()
+        if not (
+            target.exists()
+            and (
+                expected_sizes is None
+                or name not in expected_sizes
+                or target.stat().st_size == int(expected_sizes[name])
+            )
+        )
+    }
+    if not wanted:
+        return paths
     with tarfile.open(tar_path) as archive:
-        member = archive.getmember(member_name)
-        source = archive.extractfile(member)
-        if source is None:
-            raise FileNotFoundError(member_name)
-        # Copied in pieces: the largest member is 395 MB.
-        with source:
-            atomic_write_stream(target, lambda handle: shutil.copyfileobj(source, handle))
-    return target
+        for member in archive:
+            name = wanted.pop(member.name, None)
+            if name is None:
+                continue
+            source = archive.extractfile(member)
+            if source is None:
+                raise FileNotFoundError(member.name)
+            # Copied in pieces: the largest member is 395 MB.
+            with source:
+                atomic_write_stream(paths[name], functools.partial(shutil.copyfileobj, source))
+            if not wanted:
+                break
+    if wanted:
+        raise FileNotFoundError(f"{tar_path.name} has no member {', '.join(sorted(wanted))}")
+    return paths
 
 
 def read_sdplib_jld2(path: Path) -> dict:

@@ -10,7 +10,7 @@ from pathlib import Path
 from problem_classes.qplib import QPLIB
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes
+from .base import Dataset, atomic_write_bytes, normalize_name_subset
 
 QPLIB_BASE_URL = "https://qplib.zib.de/qplib"
 QPLIB_DEFAULT_SUBSET = ("8790", "8515", "8495")
@@ -44,6 +44,9 @@ class QPLIBDataset(Dataset):
     data_patterns = ("QPLIB_*.qplib",)
     prepare_command = "python scripts/prepare_qplib.py"
     automatic_download = True
+    subset_lists_problems = True
+    option_names = frozenset({"subset"})
+    selection_options = frozenset({"subset"})
 
     @property
     def folder(self) -> Path:
@@ -76,6 +79,9 @@ class QPLIBDataset(Dataset):
                 )
             )
         return specs
+
+    def requested_problem_names(self) -> set[str] | None:
+        return _subset_ids(self.folder, self.options.get("subset"))
 
     def load_problem(self, name: str) -> ProblemData:
         spec = self.problem_by_name(name)
@@ -119,7 +125,16 @@ class QPLIBDataset(Dataset):
 
 
 def qplib_index(folder: Path) -> dict[str, str]:
+    """The QPLIB IDs of the convex list, each with its category (``ccb``, ...).
+
+    Read from ``list_convex_qps.txt`` in ``folder`` when there is one, else
+    from the copy bundled in this checkout's ``problem_classes/qplib_data``,
+    whatever ``data_root`` is, so category subsets also work for data kept
+    elsewhere.
+    """
     path = folder / "list_convex_qps.txt"
+    if not path.exists():
+        path = _bundled_qplib_index()
     if not path.exists():
         return {problem_id: "convex" for problem_id in QPLIB_CONVEX_IDS}
     current_category = "uncategorized"
@@ -134,6 +149,15 @@ def qplib_index(folder: Path) -> dict[str, str]:
         if line.isdigit():
             index[line] = current_category
     return index
+
+
+def _bundled_qplib_index() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "problem_classes"
+        / "qplib_data"
+        / "list_convex_qps.txt"
+    )
 
 
 def download_qplib_problem(name: str, folder: Path) -> Path:
@@ -189,17 +213,15 @@ def _subset_ids(folder: Path, subset) -> set[str] | None:
     """The QPLIB IDs a ``subset`` option selects, or None for no filter.
 
     ``None``/``"all"``: no filter; ``"default"``: the default subset.
-    Otherwise a comma-separated string or a list, each item a category of
-    the index (``ccb``, any case) or a numeric ID.
+    Otherwise a comma-separated string, a list or a single value (an
+    integer ID as YAML reads ``subset: 8790``), each item a category of the
+    index (``ccb``, any case) or a numeric ID.
     """
-    if subset is None or subset == "all":
-        return None
     if subset == "default":
         return set(QPLIB_DEFAULT_SUBSET)
-    if isinstance(subset, str):
-        items = [item.strip() for item in subset.split(",") if item.strip()]
-    else:
-        items = [str(item).strip() for item in subset]
+    items = normalize_name_subset(subset)
+    if items is None:
+        return None
     categories = _qplib_categories(folder)
     ids: set[str] = set()
     for item in items:

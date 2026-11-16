@@ -151,6 +151,48 @@ def test_unknown_solver_and_dataset_names_fail_at_parse_time():
         )
 
 
+@pytest.mark.parametrize(
+    ("run", "message"),
+    [
+        (
+            {"dataset": "libsvm_qp", "dataset_options": {"kernal": "rbf"}},
+            "'kernal' (did you mean 'kernel'?)",
+        ),
+        (
+            {"dataset": "maros_meszaros", "dataset_options": {"subset": ["AUG2D", "CVXQP1_S"]}},
+            "Unknown dataset option for 'maros_meszaros': 'subset'",
+        ),
+        (
+            {"datasets": [{"name": "dimacs", "dataset_options": {"max_size": 0.1}}]},
+            "'max_size' (did you mean 'max_size_mb'?)",
+        ),
+        (
+            {"datasets": ["kennington"], "dataset_options": {"subset": "ken-07"}},
+            "run.dataset_options: 'subset' is not an option of any listed dataset (kennington)",
+        ),
+        ({"dataset": "netlib", "dataset_options": {"subset": "all"}}, "Unknown NETLIB subset 'all'"),
+    ],
+)
+def test_unknown_dataset_options_fail_at_parse_time(run, message):
+    with pytest.raises(ValueError) as excinfo:
+        parse_run_config({"run": run, "solvers": [{"id": "s", "solver": "scs"}]})
+    assert message in str(excinfo.value)
+
+
+def test_cli_reports_dataset_option_errors_without_a_traceback(tmp_path: Path):
+    path = tmp_path / "typo.yaml"
+    path.write_text(
+        f"run: {{dataset: libsvm_qp, output_dir: {tmp_path / 'runs'}, "
+        "dataset_options: {kernal: rbf, C: 10}}\n"
+        "solvers: [{id: s, solver: clarabel}]\n"
+    )
+    result = CliRunner().invoke(main, ["run", str(path)])
+    assert result.exit_code != 0
+    assert "kernal" in result.output and "kernel" in result.output
+    assert not isinstance(result.exception, (ValueError, KeyError))
+    assert not (tmp_path / "runs").exists()
+
+
 def test_cli_reports_config_errors_without_a_traceback(tmp_path: Path):
     path = tmp_path / "typo.yaml"
     path.write_text(

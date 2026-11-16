@@ -369,8 +369,11 @@ def test_results_from_before_the_corrected_conversion_are_not_resumed():
 
     # Signatures recorded before the change hashed the options as given.
     assert _signature_dataset_options("dimacs", {}) != {}
-    assert _signature_dataset_options("dimacs", {"subset": "all"}) != {"subset": "all"}
-    assert _signature_dataset_options("dimacs", {"subset": "all"})["subset"] == "all"
+    old_form = _signature_dataset_options("dimacs", {"subset": "all"}, legacy_selection=True)
+    assert old_form != {"subset": "all"}
+    assert old_form["subset"] == "all"
+    # DIMACS reads no subset: the current form leaves the name out.
+    assert "subset" not in _signature_dataset_options("dimacs", {"subset": "all"})
 
 
 def test_filtinf1_posed_problem_has_an_improving_ray():

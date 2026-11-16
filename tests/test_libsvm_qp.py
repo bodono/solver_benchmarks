@@ -530,3 +530,49 @@ def test_normalize_subset_accepts_list():
     from solver_benchmarks.datasets.libsvm_qp import _normalize_subset
 
     assert _normalize_subset(["heart", "splice"]) == {"heart", "splice"}
+
+
+def test_preparing_an_included_problem_downloads_its_data_set(monkeypatch, tmp_path: Path):
+    """``include: [svm_dual_a1a]`` asks for the LIBSVM data set ``a1a``."""
+    from solver_benchmarks.core.config import parse_run_config
+    from solver_benchmarks.core.runner import _prepare_data
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.datasets import libsvm_qp as module
+
+    urls = []
+
+    class _Response:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self.body
+
+    def fake_urlopen(url, timeout=None):
+        urls.append(url)
+        return _Response(b"+1 1:0.5 2:1.0\n-1 1:1.5\n")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "libsvm_qp",
+                "include": ["svm_dual_a1a", "markowitz_a1a"],
+                "dataset_options": {"subset": "a1a", "data_root": str(tmp_path)},
+            },
+            "solvers": [{"id": "clarabel", "solver": "clarabel"}],
+        }
+    )
+    dataset_config = config.datasets[0]
+    dataset = get_dataset("libsvm_qp")(**dataset_config.dataset_options)
+
+    _prepare_data(dataset, config, dataset_config)
+
+    assert urls == [f"{module.LIBSVM_BASE_URL}/a1a"]
+    assert [spec.name for spec in dataset.list_problems()] == ["svm_dual_a1a"]

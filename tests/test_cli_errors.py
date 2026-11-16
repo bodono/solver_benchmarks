@@ -157,3 +157,45 @@ def test_environment_config_mistakes_are_click_errors(tmp_path, text, expected):
     assert isinstance(result.exception, SystemExit), result.exception
     assert "Error:" in result.output and expected in result.output
     assert not (tmp_path / "run").exists()
+
+
+def test_data_status_of_every_dataset_gives_each_only_the_options_it_takes(repo_root):
+    result = CliRunner().invoke(
+        cli.main, ["data", "status", "--repo-root", str(repo_root), "--option", "subset=all"]
+    )
+    assert result.exit_code == 0, result.output
+    rows = {line.split("\t")[0]: line.split("\t") for line in result.output.splitlines()}
+    assert set(rows) == set(dataset_registry.DATASETS) - {"miplib_lp_relaxation"} | {"miplib"}
+    # SDPLIB reads subset=all: the feasible problems and the four infeasible ones.
+    assert rows["sdplib"][2] == "92"
+    # Maros-Meszaros has no subset; NETLIB rejects the value and keeps its default.
+    assert rows["maros_meszaros"][2] == "138"
+    assert rows["netlib"][2] == "93"
+
+
+def test_data_status_of_one_dataset_rejects_an_option_it_does_not_take(repo_root):
+    result = CliRunner().invoke(
+        cli.main, ["data", "status", "maros_meszaros", "--repo-root", str(repo_root), "--option", "subset=x"]
+    )
+    assert result.exit_code == 1
+    assert "Unknown dataset option for 'maros_meszaros': 'subset'" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_data_status_of_every_dataset_skips_one_that_rejects_the_value(repo_root):
+    result = CliRunner().invoke(
+        cli.main, ["data", "status", "--repo-root", str(repo_root), "--option", "subset=feasible"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "note: qplib skipped: QPLIB problem names must be numeric IDs" in result.output
+    rows = [line.split("\t")[0] for line in result.output.splitlines() if "\t" in line]
+    assert "qplib" not in rows
+    assert {"netlib", "sdplib", "tsplib_sdp", "maros_meszaros"} <= set(rows)
+
+
+def test_data_status_of_every_dataset_rejects_an_option_no_dataset_reads(repo_root):
+    result = CliRunner().invoke(
+        cli.main, ["data", "status", "--repo-root", str(repo_root), "--option", "subst=all"]
+    )
+    assert result.exit_code == 1
+    assert "No dataset reads the option 'subst' (did you mean 'subset'?)" in result.output

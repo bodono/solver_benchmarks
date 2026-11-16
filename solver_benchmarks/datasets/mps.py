@@ -11,8 +11,10 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import numpy as np
 import scipy.sparse as sp
@@ -22,7 +24,7 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.emps import decode_emps, is_emps_header
 
-from .base import Dataset, atomic_write_bytes, validate_gzip_payload
+from .base import Dataset, atomic_write_bytes, group_problem_files, validate_gzip_payload
 
 
 class MPSLPDataset(Dataset):
@@ -30,6 +32,7 @@ class MPSLPDataset(Dataset):
     dataset_id: str
     description: str
     data_patterns = ("*.mps", "*.mps.gz")
+    option_names = frozenset({"folder", "add_quadratic"})
 
     @property
     def folder(self) -> Path:
@@ -43,26 +46,20 @@ class MPSLPDataset(Dataset):
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():
             return []
-        candidates: dict[str, list[Path]] = {}
-        for path in sorted(self.folder.iterdir()):
-            name = _mps_name(path)
-            if name is None:
-                continue
-            candidates.setdefault(name, []).append(path)
         return [
             ProblemSpec(
                 dataset_id=self.dataset_id,
                 name=name,
                 kind=QP,
-                path=(path := _preferred_mps_path(paths)),
+                path=path,
                 metadata={
                     "source": str(path),
                     "format": "mps",
-                    **_mps_candidate_size_metadata(paths),
+                    **size,
                     **self.expected_metadata(),
                 },
             )
-            for name, paths in sorted(candidates.items())
+            for name, (path, size) in group_problem_files(self.folder, (".mps", ".mps.gz")).items()
         ]
 
     def expected_metadata(self) -> dict:
@@ -99,10 +96,26 @@ class MPSLPDataset(Dataset):
         return ProblemData(self.dataset_id, name, QP, qp, metadata=metadata)
 
 
+NETLIB_SUBSETS = ("feasible", "infeasible")
+
+
 class NetlibDataset(MPSLPDataset):
     dataset_id = "netlib"
     description = "NETLIB LP dataset."
     problem_folder = "netlib_data/feasible"
+    # ``subset`` chooses between two folders that share problem names
+    # (``greenbea`` is in both, as different problems), so it is not a
+    # selection-only option.
+    option_names = frozenset({"subset", "infeasible", "add_quadratic"})
+
+    @classmethod
+    def validate_options(cls, options: dict[str, Any]) -> None:
+        super().validate_options(options)
+        subset = options.get("subset")
+        if subset is not None and subset not in NETLIB_SUBSETS:
+            raise ValueError(
+                f"Unknown NETLIB subset {subset!r}; expected one of {', '.join(NETLIB_SUBSETS)}"
+            )
 
     @property
     def folder(self) -> Path:
@@ -164,23 +177,46 @@ class MiplibDataset(MPSLPDataset):
         *,
         all_problems: bool = False,
     ) -> None:
+        """Download the requested MIPLIB benchmark instances that are missing.
+
+        ``all_problems``, or ``max_size_mb`` without problem names, requests
+        the benchmark index, and with ``max_size_mb`` only its instances
+        whose ``.mps.gz`` is at most that large: a file already on disk is
+        sized on disk, and only the missing ones by a HEAD request. When the
+        index cannot be fetched but instances are on disk, those are used,
+        with a warning, so a machine without network can still run them.
+        """
         names = list(problem_names or [])
         max_size_mb = self.options.get("max_size_mb")
 
-        if all_problems:
-            names = _miplib_remote_problem_names()
+        if all_problems or (not names and max_size_mb is not None):
+            names = self._benchmark_index_names()
         elif not names:
-            if max_size_mb is None:
-                names = list(MIPLIB_DEFAULT_SUBSET)
-            else:
-                names = _miplib_remote_problem_names()
+            names = list(MIPLIB_DEFAULT_SUBSET)
 
         if max_size_mb is not None and (all_problems or not problem_names):
-            names = _miplib_names_under_size(names, max_size_mb)
+            names = _miplib_names_under_size(names, max_size_mb, self.folder)
 
         self.folder.mkdir(parents=True, exist_ok=True)
         for name in names:
             _download_miplib_problem(name, self.folder)
+
+    def _benchmark_index_names(self) -> list[str]:
+        try:
+            return _miplib_remote_problem_names()
+        except RuntimeError as exc:
+            local = (
+                sorted(group_problem_files(self.folder, (".mps", ".mps.gz")))
+                if self.folder.is_dir()
+                else []
+            )
+            if not local:
+                raise
+            warnings.warn(
+                f"{exc}; using the {len(local)} MIPLIB instances already in {self.folder}",
+                stacklevel=3,
+            )
+            return local
 
 
 class MittelmannDataset(MPSLPDataset):
@@ -220,25 +256,6 @@ def _mps_name(path: Path) -> str | None:
     return None
 
 
-def _preferred_mps_path(paths: list[Path]) -> Path:
-    for path in paths:
-        if path.name.endswith(".mps"):
-            return path
-    return paths[0]
-
-
-def _mps_candidate_size_metadata(paths: list[Path]) -> dict[str, int]:
-    sizes = []
-    for path in paths:
-        try:
-            sizes.append(path.stat().st_size)
-        except OSError:
-            pass
-    if not sizes:
-        return {}
-    return {"size_bytes": min(sizes)}
-
-
 def _mittelmann_remote_problem_names() -> list[str]:
     html = urllib.request.urlopen("https://plato.asu.edu/ftp/lptestset/", timeout=30).read()
     names = []
@@ -267,13 +284,33 @@ def _miplib_remote_problem_names() -> list[str]:
     return sorted(set(names))
 
 
-def _miplib_names_under_size(names: list[str], max_size_mb: float) -> list[str]:
+def _miplib_names_under_size(
+    names: list[str], max_size_mb: float, folder: Path | None = None
+) -> list[str]:
+    """The names whose ``.mps.gz`` is at most ``max_size_mb``.
+
+    A problem present in ``folder`` is sized on disk (the smaller copy, as
+    the listing sizes it); the others are asked for by HEAD request, a few
+    at a time.
+    """
     threshold_bytes = float(max_size_mb) * 1.0e6
-    return [
-        name
-        for name in names
-        if _miplib_remote_size_bytes(name) <= threshold_bytes
-    ]
+    local = (
+        group_problem_files(folder, (".mps", ".mps.gz"))
+        if folder is not None and folder.is_dir()
+        else {}
+    )
+    sizes: dict[str, int] = {}
+    missing = []
+    for name in names:
+        size = local.get(_mps_name(Path(_miplib_problem_filename(name))) or name, (None, {}))[1]
+        if "size_bytes" in size:
+            sizes[name] = size["size_bytes"]
+        else:
+            missing.append(name)
+    if missing:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            sizes.update(zip(missing, pool.map(_miplib_remote_size_bytes, missing)))
+    return [name for name in names if sizes[name] <= threshold_bytes]
 
 
 def _miplib_remote_size_bytes(name: str) -> int:
@@ -298,7 +335,8 @@ def _miplib_remote_size_bytes(name: str) -> int:
 def _download_miplib_problem(name: str, folder: Path) -> None:
     filename = _miplib_problem_filename(name)
     target = folder / filename
-    if target.exists():
+    # A plain copy is the same problem, already present.
+    if target.exists() or (folder / filename.removesuffix(".gz")).exists():
         return
     folder.mkdir(parents=True, exist_ok=True)
     url = _miplib_problem_url(filename)

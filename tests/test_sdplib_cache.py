@@ -155,3 +155,66 @@ def test_extracted_members_and_the_index_get_the_mode_open_would_give(tmp_path: 
     finally:
         os.umask(previous)
     assert sorted(path.name for path in cache.iterdir()) == ["a.jld2", "sdplib.tar.index.json"]
+
+
+def _count_member_reads(monkeypatch) -> list[str]:
+    """Record each member the archive reader goes past, once (``next`` hands
+    the first member out a second time, from the header read on opening)."""
+    read: list[str] = []
+    real_next = tarfile.TarFile.next
+
+    def counting_next(self):
+        member = real_next(self)
+        if member is not None and member.name not in read:
+            read.append(member.name)
+        return member
+
+    monkeypatch.setattr(tarfile.TarFile, "next", counting_next)
+    return read
+
+
+def test_extraction_reads_the_archive_once_and_stops_at_the_member(tmp_path: Path, monkeypatch):
+    """Looking the member up by name first listed the whole archive, and the
+    gzip stream then had to be decompressed again from the start to read it."""
+    tar_path = _tar(tmp_path / "sdplib.tar", {"a.jld2": b"1", "b.jld2": b"22", "c.jld2": b"333"})
+    read = _count_member_reads(monkeypatch)
+
+    path = extract_from_tar(tar_path, "b", tmp_path / ".cache")
+
+    assert path.read_bytes() == b"22"
+    assert read == ["a.jld2", "b.jld2"]
+
+
+def test_extracting_a_missing_member_raises(tmp_path: Path):
+    tar_path = _tar(tmp_path / "sdplib.tar", {"a.jld2": b"1"})
+    with pytest.raises(FileNotFoundError, match="nope"):
+        extract_from_tar(tar_path, "nope", tmp_path / ".cache")
+    assert not (tmp_path / ".cache" / "nope.jld2").exists()
+
+
+def test_preparing_several_problems_reads_the_archive_once(tmp_path: Path, monkeypatch):
+    folder = tmp_path / "problem_classes" / "sdplib_data"
+    folder.mkdir(parents=True)
+    _tar(folder / "sdplib.tar", {"a.jld2": b"1", "b.jld2": b"22", "c.jld2": b"333", "d.jld2": b"4"})
+    (folder / "a.jld2").write_bytes(b"1")  # already extracted, complete
+    dataset = get_dataset("sdplib")(repo_root=tmp_path, data_root=tmp_path / "problem_classes")
+    dataset._member_sizes()  # index the archive first, as listing does
+    opened = []
+    real_open = tarfile.open
+
+    def counting_open(*args, **kwargs):
+        opened.append(args)
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(sdplib_module.tarfile, "open", counting_open)
+    read = _count_member_reads(monkeypatch)
+
+    dataset.prepare_data(["a", "b", "c"])
+
+    assert len(opened) == 1
+    assert read == ["a.jld2", "b.jld2", "c.jld2"]  # stops after the last one wanted
+    assert {path.name: path.read_bytes() for path in folder.glob("*.jld2")} == {
+        "a.jld2": b"1",
+        "b.jld2": b"22",
+        "c.jld2": b"333",
+    }

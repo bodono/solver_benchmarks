@@ -473,12 +473,16 @@ EOF
         read_tsplib_weights(path)
 
 
-def test_tsplib_name_recognizes_extensions(tmp_path: Path):
-    from solver_benchmarks.datasets.tsplib_sdp import _tsplib_name
+def test_listing_recognizes_extensions(tmp_path: Path):
+    folder = tmp_path / "tsplib_data"
+    folder.mkdir()
+    for name in ("burma14.tsp", "gr17.tsp.gz", "not_a_tsplib.txt"):
+        (folder / name).write_text("")
+    from solver_benchmarks.datasets import get_dataset
 
-    assert _tsplib_name(tmp_path / "burma14.tsp") == "burma14"
-    assert _tsplib_name(tmp_path / "burma14.tsp.gz") == "burma14"
-    assert _tsplib_name(tmp_path / "not_a_tsplib.txt") is None
+    dataset = get_dataset("tsplib_sdp")(repo_root=tmp_path, data_root=tmp_path)
+
+    assert [spec.name for spec in dataset.list_problems()] == ["burma14", "gr17"]
 
 
 def test_normalize_subset_none_means_no_filter():

@@ -405,3 +405,216 @@ def test_append_after_a_torn_line_starts_a_new_line(fake_worker, tmp_path: Path)
     assert [row["problem"] for row in load_results(store.run_dir).to_dict("records")] == [
         "a", "b", "c"
     ]
+
+
+class _SubsetDataset(Dataset):
+    """Three QPs and a ``subset`` option that only chooses which are listed."""
+
+    dataset_id = "resume_subset_fixture"
+    description = "three QPs, selected by name"
+    option_names = frozenset({"subset", "scale"})
+    selection_options = frozenset({"subset"})
+
+    def list_problems(self):
+        subset = self.options.get("subset")
+        return [
+            ProblemSpec(dataset_id="resume_subset_fixture", name=name, kind=QP)
+            for name in ("p1", "p2", "p3")
+            if subset is None or name in subset
+        ]
+
+    def load_problem(self, name):  # pragma: no cover - the worker is stubbed
+        raise AssertionError
+
+
+def _subset_config(tmp_path: Path, subset, **options):
+    # max_size_mb makes the signature that hashed ``subset`` differ from the
+    # first legacy form too, as for most bundled configs.
+    return parse_run_config(
+        {
+            "run": {
+                "dataset": "resume_subset_fixture",
+                "output_dir": str(tmp_path / "runs"),
+                "dataset_options": {"subset": subset, "max_size_mb": 5.0, **options},
+            },
+            "solvers": [{"id": "s", "solver": "toggle"}],
+        }
+    )
+
+
+@pytest.fixture
+def subset_dataset(monkeypatch, fake_worker):
+    monkeypatch.setitem(dataset_registry.DATASETS, "resume_subset_fixture", _SubsetDataset)
+    return fake_worker
+
+
+def _solved(calls) -> list[str]:
+    return sorted(call["problem"] for call in calls)
+
+
+def test_widening_a_subset_solves_only_the_new_problems(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    store = run_benchmark(_subset_config(tmp_path, ["p1"]), run_dir=tmp_path / "run",
+                          repo_root=repo_root)
+    first = _rows(store.results_jsonl_path)
+
+    run_benchmark(_subset_config(tmp_path, ["p1", "p2"]), run_dir=store.run_dir,
+                  repo_root=repo_root)
+
+    assert _solved(subset_dataset.calls) == ["p1", "p2"]  # p1 once, in the first run
+    assert [row["problem"] for row in _rows(store.results_jsonl_path)] == ["p1", "p2"]
+    assert _rows(store.results_jsonl_path)[0] == first[0]
+    assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+
+def test_an_option_that_changes_the_problem_still_supersedes(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    store = run_benchmark(_subset_config(tmp_path, ["p1"], scale=1), run_dir=tmp_path / "run",
+                          repo_root=repo_root)
+    run_benchmark(_subset_config(tmp_path, ["p1"], scale=2), run_dir=store.run_dir,
+                  repo_root=repo_root)
+    assert _solved(subset_dataset.calls) == ["p1", "p1"]
+
+
+def _run_before_selection_options_left_the_signature(tmp_path: Path, subset) -> ResultStore:
+    """A run directory as the previous release left it: rows carrying the
+    signature that still hashed ``subset``, and a manifest with the
+    signature mapping of the release before (empty for a new directory)."""
+    config = _subset_config(tmp_path, subset)
+    old = solve_signature(config, config.datasets[0], config.solvers[0], legacy_selection=True)
+    assert old != solve_signature(config, config.datasets[0], config.solvers[0])
+    assert old != solve_signature(config, config.datasets[0], config.solvers[0], legacy=True)
+    store = ResultStore.create(config, run_dir=tmp_path / "run")
+    manifest = json.loads(store.manifest_path.read_text())
+    assert manifest[LEGACY_SIGNATURES_KEY] == {}
+    for problem in subset:
+        store.write_result(
+            ProblemResult(
+                run_id=store.run_id, dataset="resume_subset_fixture", problem=problem,
+                problem_kind=QP, solver_id="s", solver="toggle", status="optimal",
+                objective_value=0.0, iterations=1, run_time_seconds=0.01,
+                metadata={"resume_signature": old},
+            )
+        )
+    return store
+
+
+def test_rows_that_hashed_the_subset_stay_complete(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    store = _run_before_selection_options_left_the_signature(tmp_path, ["p1", "p2"])
+    original = _rows(store.results_jsonl_path)
+
+    run_benchmark(_subset_config(tmp_path, ["p1", "p2"]), run_dir=store.run_dir,
+                  repo_root=repo_root)
+
+    assert subset_dataset.calls == []
+    assert _rows(store.results_jsonl_path) == original
+    assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+
+def test_rows_that_hashed_the_subset_survive_widening_it(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    store = _run_before_selection_options_left_the_signature(tmp_path, ["p1"])
+    original = _rows(store.results_jsonl_path)
+
+    run_benchmark(_subset_config(tmp_path, ["p1", "p2"]), run_dir=store.run_dir,
+                  repo_root=repo_root)
+    assert _solved(subset_dataset.calls) == ["p2"]
+    # The manifest carries the mapping forward to later resumes.
+    run_benchmark(_subset_config(tmp_path, ["p1", "p2", "p3"]), run_dir=store.run_dir,
+                  repo_root=repo_root)
+
+    assert _solved(subset_dataset.calls) == ["p2", "p3"]
+    assert _rows(store.results_jsonl_path)[0] == original[0]
+    assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+
+def test_selection_options_leave_the_signature_but_netlib_subset_does_not():
+    def signature(dataset, options):
+        config = parse_run_config(
+            {
+                "run": {"dataset": dataset, "dataset_options": options},
+                "solvers": [{"id": "s", "solver": "scs"}],
+            }
+        )
+        return solve_signature(config, config.datasets[0], config.solvers[0])
+
+    # ``greenbea`` is in both NETLIB folders, as different problems.
+    assert signature("netlib", {"subset": "feasible"}) != signature("netlib", {"subset": "infeasible"})
+    assert signature("qplib", {"subset": ["8790"]}) == signature("qplib", {"subset": "8790,8515"})
+    assert signature("sdplib", {"subset": "feasible"}) == signature("sdplib", {"subset": "all"})
+    assert signature("sdplib", {"blocks": "merged"}) != signature("sdplib", {})
+    assert signature("cblib", {"subset_kind": "lp", "include_unsupported": True}) == signature(
+        "cblib", {}
+    )
+    assert signature("liu_pataki", {"constraint_count": 10, "classification": "weak"}) == signature(
+        "liu_pataki", {}
+    )
+    assert signature("libsvm_qp", {"subset": "heart"}) == signature("libsvm_qp", {})
+    assert signature("libsvm_qp", {"kind": "markowitz"}) != signature("libsvm_qp", {})
+    assert signature("libsvm_qp", {"C": 10.0}) != signature("libsvm_qp", {})
+
+
+def test_a_row_in_the_form_that_hashed_the_subset_counts_without_a_manifest_mapping(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    """Each row is also checked against that earlier form of the current
+    config, as for the first legacy form, when the manifest cannot say."""
+    store = _run_before_selection_options_left_the_signature(tmp_path, ["p1"])
+    manifest = json.loads(store.manifest_path.read_text())
+    del manifest["config"]
+    store.manifest_path.write_text(json.dumps(manifest))
+
+    run_benchmark(_subset_config(tmp_path, ["p1"]), run_dir=store.run_dir, repo_root=repo_root)
+
+    assert subset_dataset.calls == []
+    assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+
+def _run_with_an_ignored_option(tmp_path: Path, ignored: dict) -> ResultStore:
+    """A run directory the previous release wrote from a config with an option
+    the dataset did not read (accepted then, rejected now): its manifest
+    records the option and its rows carry the signature that hashed it."""
+    from solver_benchmarks.core.config import manifest_solve_signatures
+
+    store = ResultStore.create(_subset_config(tmp_path, ["p1"]), run_dir=tmp_path / "run")
+    manifest = json.loads(store.manifest_path.read_text())
+    manifest["config"]["datasets"][0]["dataset_options"].update(ignored)
+    store.manifest_path.write_text(json.dumps(manifest))
+    (old,) = manifest_solve_signatures(manifest["config"], legacy_selection=True).values()
+    store.write_result(
+        ProblemResult(
+            run_id=store.run_id, dataset="resume_subset_fixture", problem="p1",
+            problem_kind=QP, solver_id="s", solver="toggle", status="optimal",
+            objective_value=0.0, iterations=1, run_time_seconds=0.01,
+            metadata={"resume_signature": old},
+        )
+    )
+    return store
+
+
+def test_removing_an_option_the_dataset_ignored_keeps_its_rows(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    store = _run_with_an_ignored_option(tmp_path, {"sclae": 2})
+
+    run_benchmark(_subset_config(tmp_path, ["p1"]), run_dir=store.run_dir, repo_root=repo_root)
+
+    assert subset_dataset.calls == []
+    assert not (store.run_dir / "results.superseded.jsonl").exists()
+
+
+def test_correcting_a_typo_to_an_option_that_changes_the_problem_supersedes(
+    subset_dataset, tmp_path: Path, repo_root: Path
+):
+    store = _run_with_an_ignored_option(tmp_path, {"sclae": 2})
+
+    run_benchmark(_subset_config(tmp_path, ["p1"], scale=2), run_dir=store.run_dir,
+                  repo_root=repo_root)
+
+    assert _solved(subset_dataset.calls) == ["p1"]
+    assert len(_rows(store.run_dir / "results.superseded.jsonl")) == 1

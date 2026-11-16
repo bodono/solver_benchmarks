@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import scipy.sparse as sp
 
 QP = "qp"
@@ -53,6 +54,8 @@ class ProblemData:
     def __post_init__(self) -> None:
         if self.kind == CONE:
             check_cone_layout(self.name, self.data)
+        elif self.kind == QP:
+            check_qp_layout(self.name, self.data)
 
     @property
     def qp(self) -> dict[str, Any]:
@@ -168,6 +171,46 @@ def check_cone_layout(name: str, cone_problem: dict[str, Any]) -> None:
         raise ValueError(
             f"Problem {name!r}: b has {int(b_size)} entries but A has {int(shape[0])} rows"
         )
+
+
+def check_qp_layout(name: str, qp: dict[str, Any]) -> None:
+    """Reject a QP whose arrays do not fit together.
+
+    With ``n`` the length of ``q``, ``P`` must be ``n x n`` and ``A``
+    ``m x n``, ``l`` and ``u`` must have one entry per row of ``A``, and no
+    bound may be NaN (an absent bound is an infinite one). Only the arrays
+    present are checked. Without this, a loader's mismatch shows up as a
+    broadcasting error inside each solver adapter instead of naming the
+    problem.
+    """
+    q = qp.get("q")
+    if q is None:
+        return
+    n = int(np.size(q))
+    p_shape = getattr(qp.get("P"), "shape", None)
+    if p_shape is not None and tuple(p_shape) != (n, n):
+        raise ValueError(f"Problem {name!r}: P has shape {tuple(p_shape)} but q has {n} entries")
+    a_shape = getattr(qp.get("A"), "shape", None)
+    if a_shape is None:
+        return
+    if len(a_shape) != 2:
+        raise ValueError(
+            f"Problem {name!r}: A has shape {tuple(a_shape)}; it must be 2-D (m x n), "
+            "one row per constraint"
+        )
+    if int(a_shape[1]) != n:
+        raise ValueError(f"Problem {name!r}: A has shape {tuple(a_shape)} but q has {n} entries")
+    m = int(a_shape[0])
+    for key in ("l", "u"):
+        if qp.get(key) is None:
+            continue
+        bound = np.asarray(qp[key], dtype=float)
+        if bound.shape != (m,):
+            raise ValueError(
+                f"Problem {name!r}: {key} has shape {bound.shape} but A has {m} rows"
+            )
+        if np.isnan(bound).any():
+            raise ValueError(f"Problem {name!r}: {key} has NaN entries")
 
 
 def _as_list(value: Any) -> list[Any]:

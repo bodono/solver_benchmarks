@@ -14,6 +14,7 @@ class MarosMeszarosDataset(Dataset):
     dataset_id = "maros_meszaros"
     description = "Maros-Meszaros convex QP collection."
     data_patterns = ("*.mat",)
+    option_names = frozenset[str]()
 
     @property
     def folder(self) -> Path:

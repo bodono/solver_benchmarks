@@ -121,15 +121,15 @@ Current maintained adapters:
 | Kennington | `kennington` | LP as QP | Standard NETLIB Kennington subset (16 instances). Bundled in the repo as decoded MPS — NETLIB hosts these in EMPS (compressed-MPS) format, which HiGHS cannot read, so the prepare path copies from the bundled checkout instead of fetching from the network (the EMPS decoder in `transforms/emps.py`, used for Mittelmann's EMPS files, would also decode the NETLIB originals). |
 | Liu-Pataki | `liu_pataki` | Cone/SDP | Bundled infeasible and weakly infeasible SeDuMi `.mat` SDP instances; converted to canonical PSD triangle cones. |
 | MIPLIB root LP relaxation | `miplib` or `miplib_lp_relaxation` | LP as QP | Integrality is ignored; root-node LP relaxation only; downloads official MIPLIB 2017 benchmark `.mps.gz` files on request. |
-| QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb`. A download is parsed before it is cached, and only a transport failure (not an HTTP error such as a 404) is retried over plain HTTP. |
+| QPLIB | `qplib` | QP | Uses QPLIB parser without CVXPY; supports category filters such as `subset: ccb` (categories come from `list_convex_qps.txt` in the data folder, else from the one bundled in the checkout, so they also work with another `data_root`). A download is parsed before it is cached, and only a transport failure (not an HTTP error such as a 404) is retried over plain HTTP. |
 | Mittelmann | `mittelmann` | LP as QP | External ASU lptestset downloads; default prepare downloads `qap15`. |
 | Mittelmann SDP | `mittelmann_sdp` | Cone/SDP | Mittelmann's SDP test set in SDPA-S sparse format; downloads from `plato.asu.edu`. The default subset is truss topology design (`trto3`, `buck3`), `rose13`, `cnhil8`, `biggs` and one maxcut relaxation (`G40mc`, a PSD block of order 2000); some take a minute or more. Each file's problem `min c'x` s.t. `sum_k x_k F_k - F_0` PSD is posed, as for SDPLIB. A plain `.dat-s` is preferred to a `.dat-s.gz` of the same name. |
 | SDPLIB | `sdplib` | Cone/SDP | Reads converted `.jld2` files (or original `.dat-s` files placed beside the archive); requires `h5py`. Problems are posed with the block structure the original SDPLIB files declare (several semidefinite blocks, and diagonal blocks as nonnegative rows); the converted files store each constraint as one matrix and record the structure apart, as `blockvec`. `dataset_options.subset: feasible` (default), `infeasible` (the four instances `infd1`, `infd2`, `infp1`, `infp2`) or `all`. `dataset_options.blocks: merged` poses each problem read from the archive as one semidefinite block of the full order instead, as results from before the loader gave the block-diagonal problems their declared blocks were produced (an original `.dat-s` file has no merged form). |
 | TSPLIB MaxCut SDP | `tsplib_sdp` | Cone/SDP | Goemans-Williamson MaxCut SDP relaxations of TSPLIB instances; supports EUC_2D/3D, MAN/MAX, GEO, ATT, and EXPLICIT weight types. |
-| DIMACS | `dimacs` | Cone | Reads SeDuMi-format `.mat` and `.mat.gz` and poses the file's dual, `maximize b'y` subject to `c - A'y in K*`, as `minimize -b'y`: rows in SeDuMi's order (free, linear, second-order, PSD), each PSD block as the scaled lower triangle of its symmetric part. The recorded objective is minus the published optimum. `filtinf1`, the library's infeasible variant of `filter48_socp`, is recorded as expected infeasible. Rotated Lorentz cones are not yet supported. |
+| DIMACS | `dimacs` | Cone | Reads SeDuMi-format `.mat` and `.mat.gz` and poses the file's dual, `maximize b'y` subject to `c - A'y in K*`, as `minimize -b'y`: rows in SeDuMi's order (free, linear, second-order, PSD), each PSD block as the scaled lower triangle of its symmetric part. The recorded objective is `-max b'y` of the SeDuMi pair: minus the challenge's published value for the instances published as `min c'x` (`nb`, `nql*`, `qssp*`, `truss*`, `sched*`, ...), and equal to it for `hamming_*` and `torus*`, which are published as the theta number or max-cut bound, the value `-max b'y`. `filtinf1`, the library's infeasible variant of `filter48_socp`, is recorded as expected infeasible. Rotated Lorentz cones are not yet supported. |
 | CBLIB | `cblib` | Cone | Downloads CBF files; the parser handles continuous linear (`L=`/`L+`/`L-`/`F`), second-order (`Q`), and exponential (`EXP`/`EXP*`) cone instances. Instances using other cone kinds (PSD, integer, etc.) are *hidden* from `list_problems()` by default; pass `dataset_options.include_unsupported=true` to surface them with `metadata["supported"]=False`. Listing reads only each file's header (the sections before the first coordinate section); a file that cannot be read is skipped with a warning, and a plain `.cbf` is preferred to a `.cbf.gz` of the same name. A maximisation is posed as the minimisation of minus its objective, with `original_obj_type: max` in the metadata. |
-| MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`, at a pinned commit (`MPC_QPBENCHMARK_REVISION`). `.npz` files are read without unpickling: an object array is accepted only as a `None` placeholder for a missing array. `P` may be the whole symmetric Hessian or one triangle of it, which is mirrored; a `P` that is neither is rejected. |
-| LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. |
+| MPC QP Benchmark | `mpc_qpbenchmark` | QP | Downloads structured MPC QPs from `qpsolvers/mpc_qpbenchmark`, at a pinned commit (`MPC_QPBENCHMARK_REVISION`). `.npz` files are read without unpickling: an object array is accepted only as a `None` placeholder for a missing array. `P` may be the whole symmetric Hessian or one triangle of it, which is mirrored; a `P` that is neither is rejected, and so is a file whose arrays do not fit together (`P` not `n x n` for `n = len(q)`, `G` or `A` without `n` columns, `G` without `h` or `A` without `b`, a right-hand side or `lb`/`ub` of the wrong length), with an error naming the file and the array. |
+| LIBSVM-derived QP | `libsvm_qp` | QP | SVM dual or Markowitz portfolio QPs built from LIBSVM datasets; produces realistic ML/finance-shaped QPs absent from classical test sets. Problems are named `<kind>_<data set>` (`svm_dual_heart`). Without `subset` the dataset lists its six default data sets; another one is selected by naming its data set in `subset` (`subset: a1a`), and `include: [svm_dual_a1a]` alone is an error that says so. Preparing a problem named that way (from `include`, once the subset selects it) downloads its data set. |
 | DC OPF | `dc_opf` | QP | DC Optimal Power Flow problems from evaluated MATPOWER cases (`.mat` files downloaded from a pinned snapshot into `dc_opf_data/<revision>/`; the `.m` files bundled in `dc_opf_data/` are MATPOWER's sources of the default cases, kept for reference and not read). An LP when every generator cost is linear or piecewise linear, a QP when costs are quadratic. Sparse power-balance equalities, line-flow inequality limits, generator box bounds. What a case marks as out of service is left out, as MATPOWER does: an isolated bus (type 4) with its demand and the branches and generators attached to it, and a generator that is off, which stays as a variable fixed at zero and adds nothing to the cost. |
 | CUTEst QP exports | `cutest_qp` | QP | Local export target only; no automatic CUTEst downloader. Read with the MPC `.npz` schema: `P` dense, the whole symmetric Hessian or one triangle. Preparing checks that the requested exports exist; when some are missing it names them and writes `EXPORT_README.md`, with the schema, into `cutest_qp_data/`. |
 | Synthetic smoke test | `synthetic_qp` | QP | Tiny deterministic test problem. |
@@ -172,13 +172,23 @@ are prepared explicitly. The convention is:
   requested data from an automatically downloadable dataset is missing, the
   command exits with an actionable error that includes the exact
   `bench data prepare ...` command and the equivalent
-  `bench run CONFIG --prepare-data` command.
+  `bench run CONFIG --prepare-data` command. That holds for each problem asked
+  for by name, through `include` or a `subset` that names problems: if some of
+  them are on disk and others are not, the run stops naming the missing ones
+  instead of solving only the rest. For a dataset that cannot download its data
+  (`cutest_qp`), the problems present are solved and the missing ones get a
+  warning naming the dataset's prepare command. Subset problems that
+  `include` / `exclude` leave out are neither checked nor prepared. A name the
+  dataset cannot have (a bundled dataset lists all it has, and a dataset with a
+  name subset lists only those) fails the run with a suggestion, and says how
+  to add it to the subset when it is outside it.
 - `bench run CONFIG --prepare-data` or `run.auto_prepare_data: true` prepares
   data implied by the config before solving. If `include` is set, those problem
   names are prepared. If `dataset_options.subset: all` is set, the dataset's
   full remote index is prepared. If the subset names problems, those are
-  prepared: a single name, a list or a comma-separated string, for the datasets
-  whose `subset` takes problem names (`qplib`, where a category such as `ccb`
+  prepared: a single name (a number such as `subset: 8790` included), a list
+  or a comma-separated string, for the datasets whose `subset` takes problem
+  names (`qplib`, where a category such as `ccb`
   also works, `mpc_qpbenchmark`, `cutest_qp`, `cblib`, `mittelmann_sdp`,
   `tsplib_sdp`, `dc_opf` and `libsvm_qp`). Otherwise the dataset's small
   default subset is prepared. Requested problems that are already present are
@@ -301,8 +311,12 @@ default and hides anything else (PSD, integer, etc.). Set
 with `metadata["supported"]=False`. Mittelmann `--all` follows the ASU lptestset
 index. MIPLIB `--all` follows the official MIPLIB 2017 benchmark v2 instance
 list, and `bench data prepare miplib --option max_size_mb=5` downloads only
-benchmark instances whose compressed `.mps.gz` file is at most 5 MB. QPLIB
-`--all` uses `problem_classes/qplib_data/list_convex_qps.txt`.
+benchmark instances whose compressed `.mps.gz` file is at most 5 MB: an
+instance already on disk is sized there, and only the missing ones are asked
+for by HEAD request. When the benchmark index cannot be fetched but instances
+are on disk, those are used, with a warning. QPLIB `--all` uses
+`list_convex_qps.txt` from the data folder, else the one bundled in
+`problem_classes/qplib_data`.
 
 Benchmark runs can opt into preparation:
 
@@ -338,7 +352,12 @@ bench list problems dc_opf
 ```
 
 Dataset options are passed as `key=value` on the CLI or as `dataset_options` in
-config files.
+config files. Each dataset accepts only the options listed below for it (and the
+two generic ones): a misspelt or unknown option is an error that suggests the
+closest name, raised when the config is parsed, so `kernal: rbf` does not
+silently run the default linear kernel. NETLIB's `subset` must be `feasible` or
+`infeasible`. A run directory recorded before options were checked is still
+read by the analysis commands, with the options its manifest holds.
 
 Useful dataset options:
 
@@ -347,6 +366,9 @@ Useful dataset options:
 | All file-backed datasets | `max_size_mb=<number>` | Drop problems whose backing file exceeds the threshold (see below). |
 | All file-backed datasets | `data_root=<path>` | Read the dataset's files under `<path>` instead of `<repo_root>/problem_classes`. In a config file, a relative path is resolved under the repository root, like `run.output_dir`; `bench run --data-root` resolves it against the current directory. |
 | `netlib` | `subset=feasible` or `subset=infeasible` | Select NETLIB feasibility subset. |
+| `netlib` | `infeasible=true` | The infeasible subset, when `subset` is not given. |
+| `netlib`, `kennington`, `miplib`, `mittelmann` | `add_quadratic=true` | Add the identity to `P`, turning each LP into a QP with the same constraints. |
+| `kennington`, `miplib`, `mittelmann` | `folder=<name>` | Read the problems from `<data_root>/<name>` instead of the dataset's own folder. |
 | `sdplib` | `subset=feasible`, `subset=infeasible` or `subset=all` | Select the SDPLIB feasibility subset (default `feasible`). |
 | `sdplib` | `blocks=declared` or `blocks=merged` | Pose each problem with SDPLIB's declared blocks (default), or as the single merged block the converted archive stores. 39 of the 92 problems differ: `arch*`, `control*`, `hinf*`, `truss*` and `ss30`. Results for those 39 are not comparable between the two forms (statuses, iterations and times all change), so a run directory started before the loader gave these problems their declared blocks resumes its SDPLIB rows only under `blocks=merged`. Under the default they are run again and the merged-form rows move to `results.superseded.jsonl`, so use a new run directory to keep both forms. `bench merge` warns when the runs it combines posed a problem with different numbers of rows. |
 | `qplib` | `subset=default`, `all`, or a category (`ccb`, `ccl`, `dcl`, ...), an ID, or a list or comma-separated string of them | Filter convex QPLIB instances. |
@@ -394,16 +416,18 @@ Notes on the semantics:
   `bench data status` reports the visible count after filters and notes when
   only a subset of locally listed problems is visible.
 - By default the threshold is compared against the on-disk size of the
-  selected `ProblemSpec.path`.
+  selected `ProblemSpec.path`. A problem stored both plain and gzipped
+  (`p.mat` and `p.mat.gz`, `p.cbf` and `p.cbf.gz`, ...) is read from the plain
+  file but filtered by the size of the smaller copy, in the DIMACS, CBLIB,
+  Mittelmann SDP, TSPLIB and MPS (`netlib`, `kennington`, `miplib`,
+  `mittelmann`) datasets.
 - Datasets can advertise a more precise comparison size via
   `ProblemSpec.metadata["size_bytes"]`. The runner and listing/status tools
   prefer that value when present. This is used for archive-backed datasets
   such as `sdplib.tar`, where the threshold applies to each archive member
   (an original SDPLIB file that replaces a member is filtered by the member's
   size, not its own),
-  and for MPS datasets that have both `.mps` and `.mps.gz` encodings of the
-  same problem, where the smallest available local encoding is used for the
-  size decision.
+  and for the plain and gzipped copies of one problem described above.
 - The synthetic datasets (`synthetic_qp`, `synthetic_cone`) have no backing file and are unaffected.
 
 ## Supported Solvers
@@ -515,8 +539,8 @@ as YAML 1.2 and JSON read them:
 | `run.dataset` | Dataset ID from `bench list datasets`. Use `datasets` instead to run several. |
 | `run.datasets` | List of dataset entries. Each entry is either a dataset ID string, or a mapping with `name` plus optional `id`, `dataset_options`, `include`, and `exclude`. Mutually exclusive with `dataset`. |
 | `run.output_dir` | Root directory for immutable runs. Relative paths are resolved under the repository root, not next to the config file. Defaults to `results`. |
-| `run.dataset_options` | Dataset-specific options, such as `subset: feasible`. Treated as defaults for entries in `datasets`. |
-| `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. Names are case-sensitive. A name that matches no problem fails the run with a suggestion, unless the dataset downloads or prepares its data (it may just not be local yet), which gets a warning; a name removed by `max_size_mb` gets a warning. |
+| `run.dataset_options` | Dataset options, such as `subset: feasible`. With `datasets`, defaults for the listed datasets that read each option (an entry's own `dataset_options` override them); an option no listed dataset reads is an error. |
+| `run.include` | Optional list of problem names to run. Empty means all. Used as a fallback for any dataset whose own `include` is unset. Names are case-sensitive. A name that matches no problem fails the run with a suggestion, unless the dataset downloads or prepares its data (it may just not be local yet): then a dataset that downloads automatically stops the run with the command that prepares it (or prepares it first under `--prepare-data`), and one prepared by hand gets a warning; a name removed by `max_size_mb` gets a warning. |
 | `run.exclude` | Optional list of problem names to skip. Unioned with each dataset entry's `exclude`. A name that matches no problem gets a warning. |
 | `run.parallelism` | Number of concurrent subprocess solves. |
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
@@ -624,8 +648,11 @@ Behavior:
   optional `id`, `dataset_options`, `include`, and `exclude`. Each entry must
   have a unique identity within a config: by default that is `name`, but you
   can set `id` to disambiguate two entries that share an adapter (see below).
-- Run-level `dataset_options` are applied as defaults; entries can override or
-  extend them per dataset.
+- Run-level `dataset_options` are applied as defaults to the listed datasets
+  that read each option, and entries can override or extend them per dataset:
+  with `datasets: [netlib, maros_meszaros]`, a run-level `subset: feasible`
+  selects the feasible NETLIB problems and leaves Maros-Meszaros, which has no
+  `subset`, whole. An option that no listed dataset reads is an error.
 - Run-level `include` is used as a fallback only for datasets whose own
   `include` is unset, so per-dataset selections do not bleed across datasets.
   Each of its names must match a problem in at least one of those datasets;
@@ -818,11 +845,19 @@ If `resume: true`, already completed `(dataset, problem, solver_id)` triples in
 `results.jsonl` are skipped when their solve settings match the current config:
 the solver, its settings, the effective timeout and the dataset options, except
 `data_root` and `max_size_mb`, which only say where the files are and which
-problems are listed. Rows written by earlier releases, which also hashed those
-two options, still count when everything else matches, also after either option
-changes: the first resume in such a directory works out, from the manifest the
-earlier release left, which current signature those rows' signatures stand for,
-and records it in the manifest for later resumes. A row solved under other settings is superseded: the
+problems are listed, and the options that only choose which of a dataset's
+problems are listed: `subset` of `qplib`, `cblib`, `mpc_qpbenchmark`,
+`cutest_qp`, `mittelmann_sdp`, `tsplib_sdp`, `dc_opf`, `libsvm_qp` and `sdplib`,
+`cblib`'s `subset_kind` and `include_unsupported`, and the four `liu_pataki`
+filters. Widening a subset therefore solves only the problems it adds. NETLIB's
+`subset` stays in the signature (its two folders share problem names for
+different problems), as do the options that change the problem posed, such as
+`libsvm_qp`'s `kind` or `sdplib`'s `blocks`. Rows written by earlier releases,
+which also hashed the location options or the selection options, still count
+when everything else matches, also after those options change: the first resume
+in such a directory works out, from the manifest the earlier release left,
+which current signature those rows' signatures stand for, and records it in the
+manifest for later resumes. A row solved under other settings is superseded: the
 triple is solved again, and at the end of the run the old rows whose
 replacements were written move from `results.jsonl` to
 `results.superseded.jsonl` in one rewrite, so reports only see results for the
@@ -1098,7 +1133,7 @@ Data-management commands:
 
 | Command | Arguments | Purpose |
 |---|---|---|
-| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible after options and generic filters, the data path, source, exact preparation command when one exists, and status message. Omit `DATASET` to check all datasets. |
+| `bench data status [DATASET]` | `--repo-root PATH`, `--option key=value` | Report whether local data is available, how many problems are visible after options and generic filters, the data path, source, exact preparation command when one exists, and status message. Omit `DATASET` to check all datasets: each then gets only the `--option`s it reads, a dataset that rejects the value given is skipped with a note, and an option no dataset reads is an error. |
 | `bench data prepare DATASET` | `--repo-root PATH`, `--option key=value`, `--problem NAME`, `--all` default false | Download or prepare missing data for datasets that support automatic preparation. Repeat `--problem` for selected instances. Use `--all` only when you intentionally want every known remote problem. |
 
 Run and analysis commands:

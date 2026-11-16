@@ -201,3 +201,81 @@ def test_merged_expected_groups_keep_filters_and_solver_associations(tmp_path):
     # planned-job completion counts preserve the associations above.
     gm = shifted_geomean(pd.DataFrame(), max_value=1000, expected=expected)
     assert gm["failure_count"].tolist() == [2, 2]
+
+
+def _run_with_options_now_rejected(tmp_path):
+    """A run directory an earlier release wrote from a config with options the
+    datasets ignored: ``subset`` on Maros-Meszaros (a run-level default) and
+    the typo ``kernal`` on libsvm_qp. Both are rejected in a new config."""
+    run = tmp_path / "old_run"
+    run.mkdir()
+    config = {
+        "timeout_seconds": 300,
+        "datasets": [
+            {"name": "maros_meszaros", "id": "maros_meszaros", "include": ["AUG2D", "CVXQP1_S"],
+             "dataset_options": {"subset": "feasible"}},
+            {"name": "libsvm_qp", "id": "libsvm_qp",
+             "dataset_options": {"kernal": "rbf", "subset": "heart,diabetes"}},
+            {"name": "netlib", "id": "netlib", "include": ["afiro"],
+             "dataset_options": {"subset": "all"}},
+        ],
+        "solvers": [{"id": "s", "solver": "scs", "settings": {}}],
+    }
+    (run / "manifest.json").write_text(json.dumps({"config": config}))
+    observed = {"dataset": "maros_meszaros", "problem": "AUG2D", "solver_id": "s",
+                "status": "optimal", "run_time_seconds": 1.0}
+    (run / "results.jsonl").write_text(json.dumps(observed) + "\n")
+    return run
+
+
+def test_a_run_whose_manifest_has_options_now_rejected_is_still_read(tmp_path, repo_root):
+    run = _run_with_options_now_rejected(tmp_path)
+
+    completion = completion_summary(run, repo_root=repo_root).set_index("dataset")
+    assert completion.loc["maros_meszaros", "expected"] == 2
+    assert completion.loc["maros_meszaros", "completed"] == 1
+    assert completion.loc["libsvm_qp", "expected"] == 2
+    # NETLIB read the subset as a folder name, which does not exist: the
+    # include list stands in for it, as for any missing data directory.
+    assert completion.loc["netlib", "expected"] == 1
+    missing = missing_results(run, repo_root=repo_root)
+    assert sorted(missing["problem"]) == ["CVXQP1_S", "afiro", "svm_dual_diabetes", "svm_dual_heart"]
+    for command in (["summary", str(run)], ["missing", str(run)]):
+        result = CliRunner().invoke(main, [*command, "--repo-root", str(repo_root)])
+        assert result.exit_code == 0, result.output
+    write_run_report(run, repo_root=repo_root)
+    assert (run / "report" / "completion.csv").is_file()
+
+
+def test_a_run_of_bundled_data_is_read_without_the_data(tmp_path, monkeypatch):
+    """An install without the checkout's data reads a run as if its data
+    directory were missing, instead of failing."""
+    from solver_benchmarks.datasets import base as base_module
+
+    monkeypatch.setattr(base_module, "_installed_checkout", lambda: None)
+    run = tmp_path / "run"
+    run.mkdir()
+    config = {"datasets": [{"id": "lp", "name": "netlib", "include": ["afiro"]},
+                           {"id": "qp", "name": "maros_meszaros"}],
+              "solvers": [{"id": "s", "solver": "scs"}]}
+    (run / "manifest.json").write_text(json.dumps({"config": config}))
+    expected = expected_results(run, repo_root=tmp_path)
+    assert expected.to_dict("records") == [{"dataset": "lp", "problem": "afiro", "solver_id": "s"}]
+    result = CliRunner().invoke(main, ["missing", str(run), "--repo-root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+
+def test_recorded_options_go_through_a_subclass_constructor():
+    from solver_benchmarks.datasets.synthetic import SyntheticQPDataset
+
+    class _WithInit(SyntheticQPDataset):
+        option_names = None
+
+        def __init__(self, repo_root=None, **options):
+            super().__init__(repo_root=repo_root, **options)
+            self.extra = options.get("extra")
+
+    dataset = _WithInit.from_recorded_options(options={"extra": 3})
+    assert dataset.extra == 3
+    plain = SyntheticQPDataset.from_recorded_options(options={"unread": 1})
+    assert plain.options == {"unread": 1}

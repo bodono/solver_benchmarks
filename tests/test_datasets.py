@@ -1,5 +1,6 @@
 import gzip
 import io
+import re
 import tarfile
 from pathlib import Path
 
@@ -9,12 +10,16 @@ import scipy.io
 from click.testing import CliRunner
 
 from solver_benchmarks.cli import main
+from solver_benchmarks.core.config import parse_run_config
+from solver_benchmarks.core.data_prepare import data_prepare_selection
 from solver_benchmarks.datasets import cblib as cblib_module
 from solver_benchmarks.datasets import dimacs as dimacs_module
 from solver_benchmarks.datasets import get_dataset, list_datasets
 from solver_benchmarks.datasets import mpc_qpbenchmark as mpc_module
 from solver_benchmarks.datasets import mps as mps_module
 from solver_benchmarks.datasets import qplib as qplib_module
+from solver_benchmarks.datasets import registry as dataset_registry
+from solver_benchmarks.datasets.dc_opf import MATPOWER_REVISION
 from solver_benchmarks.solvers import get_solver, list_solvers
 
 _TINY_MPS = """\
@@ -1109,3 +1114,320 @@ def test_explicit_roots_work_without_a_checkout(tmp_path, monkeypatch, repo_root
     result = runner.invoke(main, ["data", "status", "netlib", "--repo-root", str(repo_root)])
     assert result.exit_code == 0, result.output
     assert "\tavailable\t" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Dataset options: names are validated, subsets accept a single scalar name.
+# ---------------------------------------------------------------------------
+
+def test_every_registered_dataset_declares_the_options_it_reads():
+    """The names each dataset module reads from ``options`` are the names its
+    classes declare (with the generic ones the base class reads)."""
+    import inspect
+    import sys
+
+    from solver_benchmarks.datasets.base import GENERIC_OPTIONS
+
+    modules: dict[str, set[str]] = {}
+    for name, cls in dataset_registry.DATASETS.items():
+        assert cls.option_names is not None, name
+        for klass in cls.__mro__:
+            if isinstance(klass.__dict__.get("option_names"), frozenset):
+                modules.setdefault(klass.__module__, set()).update(klass.option_names)
+    pattern = re.compile(r"""options(?:\.get\(|\[)["']([A-Za-z_]+)["']""")
+    for module, declared in modules.items():
+        read = set(pattern.findall(inspect.getsource(sys.modules[module])))
+        assert read - GENERIC_OPTIONS == declared, module
+
+
+@pytest.mark.parametrize(
+    ("dataset", "options", "message"),
+    [
+        ("libsvm_qp", {"kernal": "rbf"}, "'kernal' (did you mean 'kernel'?)"),
+        ("libsvm_qp", {"c": 10.0}, "'c' (did you mean 'C'?)"),
+        ("sdplib", {"block": "merged"}, "'block' (did you mean 'blocks'?)"),
+        ("maros_meszaros", {"max_size": 0.1}, "'max_size' (did you mean 'max_size_mb'?)"),
+        ("maros_meszaros", {"subset": ["AUG2D"]}, "'subset'"),
+        ("kennington", {"subset": "ken-07"}, "'subset'"),
+        ("dimacs", {"subset": "default"}, "'subset'"),
+        ("liu_pataki", {"subset": "infeas_clean_10_10_1"}, "'subset'"),
+        ("mittelmann", {"subset": ["qap15"]}, "'subset'"),
+        ("miplib", {"subset": "markshare_4_0"}, "'subset'"),
+    ],
+)
+def test_an_option_the_dataset_does_not_read_is_rejected(dataset, options, message):
+    with pytest.raises(ValueError, match="Unknown dataset option") as excinfo:
+        get_dataset(dataset)(**options)
+    assert message in str(excinfo.value)
+    assert dataset in str(excinfo.value)
+
+
+@pytest.mark.parametrize("subset", ["all", "feasable", ["afiro", "adlittle"]])
+def test_netlib_rejects_a_subset_that_is_not_a_feasibility_class(subset):
+    with pytest.raises(ValueError, match="Unknown NETLIB subset"):
+        get_dataset("netlib")(subset=subset)
+
+
+def test_netlib_accepts_its_two_subsets(repo_root: Path):
+    for subset in ("feasible", "infeasible"):
+        assert get_dataset("netlib")(repo_root=repo_root, subset=subset).list_problems()
+
+
+def _readme_dataset_options() -> list[tuple[str, str]]:
+    """``(dataset, option)`` for each row of the README's dataset options table."""
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    table = readme.split("Useful dataset options:", 1)[1].split("### ", 1)[0]
+    pairs = []
+    for line in table.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or not cells[1].startswith("`"):
+            continue
+        datasets = (
+            list_datasets()
+            if cells[0] == "All file-backed datasets"
+            else re.findall(r"`([a-z_]+)`", cells[0])
+        )
+        for option in sorted(set(re.findall(r"`([A-Za-z_]+)=", cells[1]))):
+            pairs.extend((dataset, option) for dataset in datasets)
+    return pairs
+
+
+def test_every_option_the_readme_documents_is_accepted():
+    pairs = _readme_dataset_options()
+    assert ("libsvm_qp", "C") in pairs and ("cblib", "include_unsupported") in pairs
+    for dataset, option in pairs:
+        value = "feasible" if (dataset, option) == ("netlib", "subset") else "x"
+        get_dataset(dataset).validate_options({option: value})
+
+
+def _name_subset_file(tmp_path: Path, dataset: str, name: str) -> None:
+    root = tmp_path / "problem_classes"
+    files = {
+        "qplib": root / "qplib_data" / f"QPLIB_{name}.qplib",
+        "cutest_qp": root / "cutest_qp_data" / f"{name}.npz",
+        "mpc_qpbenchmark": root / "mpc_qpbenchmark_data" / f"{name}.npz",
+        "cblib": root / "cblib_data" / f"{name}.cbf",
+        "mittelmann_sdp": root / "mittelmann_sdp_data" / f"{name}.dat-s",
+        "tsplib_sdp": root / "tsplib_data" / f"{name}.tsp",
+        "dc_opf": root / "dc_opf_data" / MATPOWER_REVISION / f"{name}.mat",
+        "libsvm_qp": root / "libsvm_data" / f"{name}.libsvm",
+    }
+    path = files[dataset]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("VER\n3\nVAR\n1 1\nL+ 1\n" if dataset == "cblib" else "")
+
+
+_NAME_SUBSET_DATASETS = (
+    "qplib",
+    "cutest_qp",
+    "mpc_qpbenchmark",
+    "cblib",
+    "mittelmann_sdp",
+    "tsplib_sdp",
+    "dc_opf",
+    "libsvm_qp",
+)
+
+
+@pytest.mark.parametrize("dataset", _NAME_SUBSET_DATASETS)
+def test_a_scalar_subset_is_the_single_name_it_spells(tmp_path: Path, dataset):
+    """YAML reads ``subset: 8790`` as an int, and so does ``--option subset=8790``."""
+    for name in ("8790", "8515"):
+        _name_subset_file(tmp_path, dataset, name)
+    instance = get_dataset(dataset)(
+        repo_root=tmp_path, data_root=tmp_path / "problem_classes", subset=8790
+    )
+    expected = "svm_dual_8790" if dataset == "libsvm_qp" else "8790"
+    assert [spec.name for spec in instance.list_problems()] == [expected]
+    assert instance.requested_problem_names() == {expected}
+
+
+def test_a_numeric_qplib_subset_works_from_a_config_and_the_cli(tmp_path: Path, monkeypatch):
+    _name_subset_file(tmp_path, "qplib", "8790")
+    _name_subset_file(tmp_path, "qplib", "8515")
+    config = parse_run_config(
+        {
+            "run": {"dataset": "qplib", "dataset_options": {"subset": 8790}},
+            "solvers": [{"id": "s", "solver": "clarabel"}],
+        }
+    )
+    options = config.datasets[0].dataset_options
+    dataset = get_dataset("qplib")(repo_root=tmp_path, **options)
+    assert [spec.name for spec in dataset.list_problems()] == ["8790"]
+
+    result = CliRunner().invoke(
+        main, ["list", "problems", "qplib", "--repo-root", str(tmp_path), "--option", "subset=8790"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [line.split("\t")[0] for line in result.output.splitlines()] == ["8790"]
+
+    downloads = []
+    monkeypatch.setattr(qplib_module, "download_qplib_problem", lambda name, folder: downloads.append(name))
+    get_dataset("qplib")(repo_root=tmp_path, subset=8515).prepare_data()
+    assert downloads == ["8515"]
+
+
+def test_requested_problem_names(tmp_path: Path):
+    def requested(dataset, **options):
+        return get_dataset(dataset)(repo_root=tmp_path, **options).requested_problem_names()
+
+    # Nothing on disk: the names come from the option alone.
+    assert requested("qplib", subset=["ccb", "8495"]) == {"8790", "8792", "8991", "8495"}
+    assert requested("qplib", subset="all") is None
+    assert requested("qplib") is None
+    assert requested("cutest_qp", subset="default") == {"HS35", "HS35MOD", "QAFIRO", "QPCBLEND"}
+    assert requested("cblib", subset="nb.cbf.gz, qssp30") == {"nb", "qssp30"}
+    assert requested("libsvm_qp", subset="a1a", kind="markowitz") == {"markowitz_a1a"}
+    assert requested("dc_opf", subset="feasible") is None
+    assert requested("dc_opf", subset="case9") == {"case9"}
+    assert requested("sdplib", subset="infeasible") is None
+    assert requested("maros_meszaros") is None
+
+
+def test_a_single_name_subset_is_prepared_by_name_where_the_subset_lists_problems():
+    def selection(dataset, subset):
+        config = parse_run_config(
+            {
+                "run": {"dataset": dataset, "dataset_options": {"subset": subset}},
+                "solvers": [{"id": "s", "solver": "clarabel"}],
+            }
+        )
+        return data_prepare_selection(config, config.datasets[0])
+
+    for dataset in _NAME_SUBSET_DATASETS:
+        lists = get_dataset(dataset).subset_lists_problems
+        assert lists == (dataset != "dc_opf"), dataset
+    assert selection("mpc_qpbenchmark", "LIPMWALK0") == (["LIPMWALK0"], False)
+    assert selection("cutest_qp", "HS35") == (["HS35"], False)
+    assert selection("tsplib_sdp", "burma14") == (["burma14"], False)
+    assert selection("qplib", "ccb") == (["ccb"], False)
+    # ``feasible`` is a class of cases, not a case name.
+    assert selection("dc_opf", "feasible") == (None, False)
+
+
+def test_qplib_category_subsets_work_under_another_data_root(tmp_path: Path, monkeypatch):
+    """The category list is bundled with the checkout, not with the data."""
+    data_root = tmp_path / "elsewhere"
+    folder = data_root / "qplib_data"
+    folder.mkdir(parents=True)
+    for problem_id in ("8790", "8495"):
+        (folder / f"QPLIB_{problem_id}.qplib").write_text("")
+    dataset = get_dataset("qplib")(repo_root=tmp_path, data_root=data_root, subset="ccb")
+
+    assert [spec.name for spec in dataset.list_problems()] == ["8790"]
+    assert dataset.list_problems()[0].metadata["qplib_category"] == "ccb"
+
+    downloads = []
+    monkeypatch.setattr(qplib_module, "download_qplib_problem", lambda name, folder: downloads.append(name))
+    dataset.prepare_data()
+    assert downloads == ["8790", "8792", "8991"]
+
+
+@pytest.mark.parametrize(
+    ("dataset", "folder", "plain", "gz"),
+    [
+        ("dimacs", "dimacs_data", "p.mat", "p.mat.gz"),
+        ("mittelmann_sdp", "mittelmann_sdp_data", "p.dat-s", "p.dat-s.gz"),
+        ("tsplib_sdp", "tsplib_data", "p.tsp", "p.tsp.gz"),
+        ("mittelmann", "mittelmann", "p.mps", "p.mps.gz"),
+    ],
+)
+def test_a_plain_and_gzipped_pair_is_filtered_by_the_smaller_copy(
+    tmp_path: Path, dataset, folder, plain, gz
+):
+    path = tmp_path / "problem_classes" / folder
+    path.mkdir(parents=True)
+    (path / plain).write_bytes(b"x" * 50_000)
+    (path / gz).write_bytes(b"x" * 500)
+    instance = get_dataset(dataset)(
+        repo_root=tmp_path, data_root=tmp_path / "problem_classes", max_size_mb=0.001
+    )
+
+    (spec,) = instance.visible_problems()
+    assert spec.name == "p"
+    assert spec.path == path / plain  # read from the plain copy
+    assert spec.metadata["size_bytes"] == 500
+
+
+def test_miplib_prepare_sizes_local_files_on_disk_and_heads_only_missing_ones(
+    monkeypatch, tmp_path: Path
+):
+    folder = tmp_path / "problem_classes" / "miplib_data"
+    folder.mkdir(parents=True)
+    (folder / "local_small.mps.gz").write_bytes(b"x" * 10)
+    (folder / "local_large.mps.gz").write_bytes(b"x" * 2_000_000)
+    heads = []
+
+    def remote_size(name):
+        heads.append(name)
+        return {"remote_small": 100, "remote_large": 5_000_000}[name]
+
+    downloads = []
+    monkeypatch.setattr(
+        mps_module,
+        "_miplib_remote_problem_names",
+        lambda: ["local_large", "local_small", "remote_large", "remote_small"],
+    )
+    monkeypatch.setattr(mps_module, "_miplib_remote_size_bytes", remote_size)
+    monkeypatch.setattr(mps_module, "_download_miplib_problem", lambda name, f: downloads.append(name))
+    dataset = get_dataset("miplib")(
+        repo_root=tmp_path, data_root=tmp_path / "problem_classes", max_size_mb=1.0
+    )
+
+    dataset.prepare_data()
+
+    assert sorted(heads) == ["remote_large", "remote_small"]
+    assert downloads == ["local_small", "remote_small"]
+
+
+def test_miplib_prepare_without_network_uses_the_local_instances(monkeypatch, tmp_path: Path):
+    folder = tmp_path / "problem_classes" / "miplib_data"
+    folder.mkdir(parents=True)
+    (folder / "a.mps.gz").write_bytes(b"x" * 10)
+    (folder / "b.mps.gz").write_bytes(b"x" * 10)
+
+    def offline():
+        raise RuntimeError("Could not fetch MIPLIB benchmark index: no network")
+
+    def no_request(*args, **kwargs):
+        raise AssertionError("no request expected")
+
+    downloads = []
+    monkeypatch.setattr(mps_module, "_miplib_remote_problem_names", offline)
+    monkeypatch.setattr(mps_module, "_miplib_remote_size_bytes", no_request)
+    monkeypatch.setattr(mps_module, "_download_miplib_problem", lambda name, f: downloads.append(name))
+    dataset = get_dataset("miplib")(
+        repo_root=tmp_path, data_root=tmp_path / "problem_classes", max_size_mb=5.0
+    )
+
+    with pytest.warns(UserWarning, match="no network; using the 2 MIPLIB instances"):
+        dataset.prepare_data()
+    assert downloads == ["a", "b"]
+
+    # With nothing on disk, the failure stands.
+    empty = get_dataset("miplib")(repo_root=tmp_path, data_root=tmp_path / "none", max_size_mb=5.0)
+    with pytest.raises(RuntimeError, match="no network"):
+        empty.prepare_data()
+
+
+def test_miplib_prepare_without_network_counts_plain_instances(monkeypatch, tmp_path: Path):
+    folder = tmp_path / "problem_classes" / "miplib_data"
+    folder.mkdir(parents=True)
+    (folder / "plain.mps").write_bytes(b"x" * 10)
+
+    def offline(*args, **kwargs):
+        raise RuntimeError("Could not fetch MIPLIB benchmark index: no network")
+
+    def no_request(*args, **kwargs):
+        raise AssertionError("no request expected")
+
+    monkeypatch.setattr(mps_module, "_miplib_remote_problem_names", offline)
+    monkeypatch.setattr(mps_module, "_miplib_remote_size_bytes", no_request)
+    monkeypatch.setattr(mps_module.urllib.request, "urlopen", no_request)
+    dataset = get_dataset("miplib")(
+        repo_root=tmp_path, data_root=tmp_path / "problem_classes", max_size_mb=5.0
+    )
+
+    with pytest.warns(UserWarning, match="using the 1 MIPLIB instances"):
+        dataset.prepare_data()
+    assert sorted(path.name for path in folder.iterdir()) == ["plain.mps"]

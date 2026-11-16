@@ -7,6 +7,7 @@ import re
 import urllib.error
 import urllib.request
 import warnings
+import zlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from .base import (
     Dataset,
     atomic_write_bytes,
     filter_problem_specs_by_size,
+    group_problem_files,
+    normalize_name_subset,
     validate_gzip_payload,
 )
 
@@ -46,6 +49,8 @@ class CBLIBDataset(Dataset):
     prepare_command = "python scripts/prepare_cblib.py"
     automatic_download = True
     subset_lists_problems = True
+    option_names = frozenset({"subset", "subset_kind", "include_unsupported"})
+    selection_options = frozenset({"subset", "subset_kind", "include_unsupported"})
 
     @property
     def folder(self) -> Path:
@@ -65,26 +70,42 @@ class CBLIBDataset(Dataset):
         """
         if not self.folder.is_dir():
             return []
-        paths: dict[str, Path] = {}
-        for path in sorted(self.folder.iterdir()):
-            name = _cbf_name(path)
-            if name is None:
-                continue
-            existing = paths.get(name)
-            if existing is None or (existing.name.endswith(".gz") and not path.name.endswith(".gz")):
-                paths[name] = path
         specs = []
-        for name, path in sorted(paths.items()):
-            spec = self._spec_for(name, path)
+        for name, (path, size) in group_problem_files(self.folder, (".cbf", ".cbf.gz")).items():
+            spec = self._spec_for(name, path, size=size)
             if spec is not None:
                 specs.append(spec)
         return specs
 
-    def _spec_for(self, name: str, path: Path, *, skip_unreadable: bool = True) -> ProblemSpec | None:
+    def requested_problem_names(self) -> set[str] | None:
+        """The names the subset asks for, less those whose file is present
+        but which the other options leave out (``subset_kind``, an
+        unsupported or unreadable instance): those are not missing."""
+        names = _normalize_subset(self.options.get("subset"))
+        if names is None:
+            return None
+        requested = set()
+        for name in names:
+            present = [path for path in (self.folder / f"{name}.cbf", self.folder / f"{name}.cbf.gz")
+                       if path.is_file()]
+            if not present or self._spec_for(name, present[0]) is not None:
+                requested.add(name)
+        return requested
+
+    def _spec_for(
+        self,
+        name: str,
+        path: Path,
+        *,
+        size: dict[str, int] | None = None,
+        skip_unreadable: bool = True,
+    ) -> ProblemSpec | None:
         """The spec of one file, or None when the dataset options leave it out.
 
-        A file that cannot be read is left out with a warning, or with
-        ``skip_unreadable=False`` raises.
+        A file that cannot be read (a damaged gzip stream included) is left
+        out with a warning, or with ``skip_unreadable=False`` raises.
+        ``size`` is the size metadata for the size filter, when the caller
+        has it (see ``group_problem_files``).
 
         ``subset_kind`` filters by cone shape rather than by name. Accepted
         values: ``expcone`` (instances using EXP / EXP* cones), ``socp``
@@ -102,7 +123,7 @@ class CBLIBDataset(Dataset):
             if not self.options.get("include_unsupported", False):
                 return None
             metadata = {"supported": False}
-        except (OSError, EOFError, ValueError) as exc:
+        except (OSError, EOFError, ValueError, zlib.error) as exc:
             if not skip_unreadable:
                 raise
             warnings.warn(f"Skipping unreadable CBLIB file {path.name}: {exc}", stacklevel=3)
@@ -114,15 +135,21 @@ class CBLIBDataset(Dataset):
             name=name,
             kind=CONE,
             path=path,
-            metadata={"source": str(path), "format": "cbf", **metadata},
+            metadata={"source": str(path), "format": "cbf", **(size or {}), **metadata},
         )
 
     def load_problem(self, name: str) -> ProblemData:
         # Resolve the one file rather than list the folder: listing inspects
         # every file, and each worker loads one problem.
         candidates = [self.folder / f"{name}.cbf", self.folder / f"{name}.cbf.gz"]
-        path = next((path for path in candidates if path.is_file()), None)
-        spec = self._spec_for(name, path, skip_unreadable=False) if path is not None else None
+        present = [path for path in candidates if path.is_file()]
+        path = present[0] if present else None
+        size = {"size_bytes": min(int(p.stat().st_size) for p in present)} if present else None
+        spec = (
+            self._spec_for(name, path, size=size, skip_unreadable=False)
+            if path is not None
+            else None
+        )
         visible = filter_problem_specs_by_size(
             [spec] if spec is not None else [], self.options.get("max_size_mb")
         )
@@ -576,14 +603,6 @@ def _ints(line: str, expected: int) -> tuple[int, ...]:
     return values
 
 
-def _cbf_name(path: Path) -> str | None:
-    if path.name.endswith(".cbf.gz"):
-        return path.name[: -len(".cbf.gz")]
-    if path.name.endswith(".cbf"):
-        return path.name[: -len(".cbf")]
-    return None
-
-
 def _strip_cbf_suffix(name: str) -> str:
     for suffix in (".cbf.gz", ".cbf"):
         if name.endswith(suffix):
@@ -592,10 +611,6 @@ def _strip_cbf_suffix(name: str) -> str:
 
 
 def _normalize_subset(value) -> set[str] | None:
-    if value is None or value == "all":
-        return None
-    if value == "default":
-        return set(CBLIB_DEFAULT_SUBSET)
-    if isinstance(value, str):
-        return {_strip_cbf_suffix(item.strip()) for item in value.split(",") if item.strip()}
-    return {_strip_cbf_suffix(str(item)) for item in value}
+    return normalize_name_subset(
+        value, default=CBLIB_DEFAULT_SUBSET, strip_suffixes=(".cbf.gz", ".cbf")
+    )

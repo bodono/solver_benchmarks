@@ -14,6 +14,7 @@ class SyntheticQPDataset(Dataset):
     dataset_id = "synthetic_qp"
     description = "Tiny deterministic QP smoke-test dataset."
     data_source = "generated in code"
+    option_names = frozenset[str]()
 
     def list_problems(self) -> list[ProblemSpec]:
         return [
@@ -78,6 +79,7 @@ class SyntheticConeDataset(Dataset):
     dataset_id = "synthetic_cone"
     description = "Tiny deterministic cone smoke-test dataset."
     data_source = "generated in code"
+    option_names = frozenset[str]()
 
     def list_problems(self) -> list[ProblemSpec]:
         return [

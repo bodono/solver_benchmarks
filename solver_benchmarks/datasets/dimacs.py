@@ -15,7 +15,13 @@ import scipy.sparse as sp
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, ProblemData, ProblemSpec
 
-from .base import Dataset, atomic_write_bytes, loadmat, validate_gzip_payload
+from .base import (
+    Dataset,
+    atomic_write_bytes,
+    group_problem_files,
+    loadmat,
+    validate_gzip_payload,
+)
 
 DIMACS_BASE_URL = "https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances"
 DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")
@@ -32,6 +38,7 @@ class DIMACSDataset(Dataset):
     data_source = "bundled data; official source https://archive.dimacs.rutgers.edu/Challenges/Seventh/Instances/"
     data_patterns = ("*.mat", "*.mat.gz")
     prepare_command = "python scripts/prepare_dimacs.py"
+    option_names = frozenset[str]()
 
     @classmethod
     def signature_options(cls, options: dict[str, Any]) -> dict[str, Any]:
@@ -57,19 +64,10 @@ class DIMACSDataset(Dataset):
     def list_problems(self) -> list[ProblemSpec]:
         if not self.folder.is_dir():
             return []
-        paths: dict[str, Path] = {}
-        for path in sorted(self.folder.iterdir()):
-            if path.name.endswith(".mat.gz"):
-                name = path.name[: -len(".mat.gz")]
-            elif path.name.endswith(".mat"):
-                name = path.stem
-            else:
-                continue
-            existing = paths.get(name)
-            if existing is None or (existing.name.endswith(".gz") and not path.name.endswith(".gz")):
-                paths[name] = path
         specs = []
-        for name, path in sorted(paths.items()):
+        # A plain .mat beside its .mat.gz is read, and the problem is
+        # filtered by size as the smaller (compressed) copy.
+        for name, (path, size) in group_problem_files(self.folder, (".mat", ".mat.gz")).items():
             specs.append(
                 ProblemSpec(
                     dataset_id=self.dataset_id,
@@ -79,6 +77,7 @@ class DIMACSDataset(Dataset):
                     metadata={
                         "source": str(path),
                         "format": "mat",
+                        **size,
                         **(
                             {"expected_status": status.EXPECT_INFEASIBLE}
                             if name in DIMACS_INFEASIBLE
@@ -128,8 +127,13 @@ def _read_dimacs(path: Path) -> dict:
     for a file whose constraint matrices are not symmetric as stored: in
     ``fap09`` and ``fap25`` each one is a single entry ``E_ij``.
 
-    The objective recorded for a run is that of the minimisation, ``-b'y``:
-    minus the optimum published for the challenge.
+    The objective recorded for a run is that of the minimisation, ``-b'y``,
+    that is ``-max b'y``. The challenge publishes most instances as the
+    optimum of ``min c'x`` (equal to ``max b'y``), so the recorded objective
+    is minus the published value; the theta-number and max-cut instances
+    (``hamming_*``, ``torus*``) are published as the theta number or max-cut
+    bound, the value ``-max b'y``, so for those the recorded objective equals
+    the published value.
     """
     data = _loadmat_maybe_gzip(path)
     raw_a = data["A"].T if "A" in data else data["At"]

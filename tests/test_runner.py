@@ -1898,11 +1898,12 @@ class _DownloadableDataset(Dataset):
         raise AssertionError
 
 
-def test_an_include_name_a_downloadable_dataset_does_not_list_is_a_warning(
-    monkeypatch, tmp_path: Path, repo_root: Path, capsys
+def test_an_include_name_a_downloadable_dataset_does_not_list_is_missing_data(
+    monkeypatch, tmp_path: Path, repo_root: Path
 ):
     """A downloadable dataset lists what is local: a missing name may simply
-    not be downloaded yet, so it cannot be called a typo."""
+    not be downloaded yet, so it cannot be called a typo. It is requested
+    data that is missing, which stops the run with the command to prepare it."""
     from solver_benchmarks.core import runner
 
     calls: list[str] = []
@@ -1915,11 +1916,14 @@ def test_an_include_name_a_downloadable_dataset_does_not_list_is_a_warning(
             "solvers": [{"id": "osqp", "solver": "osqp"}],
         }
     )
-    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True)
-    assert calls == ["local"]
-    warnings = [e["message"] for e in _events(store.run_dir) if e["level"] == "warning"]
-    assert any("'remote_one'" in message and "bench data prepare" in message for message in warnings), warnings
-    assert "'remote_one'" in capsys.readouterr().err
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root, prepare_data_command="RERUN")
+    message = str(raised.value)
+    assert "does not have the requested problem 'remote_one' locally" in message
+    assert "bench data prepare downloadable_fixture" in message and "--problem remote_one" in message
+    assert "RERUN" in message
+    assert calls == []
+    assert not (tmp_path / "run" / "results.jsonl").exists()
 
 
 def test_an_exclude_name_that_matches_no_problem_is_a_warning(monkeypatch, tmp_path: Path, repo_root: Path, capsys):
@@ -2107,7 +2111,7 @@ def test_a_mistyped_include_name_is_an_error_on_a_dataset_that_knows_all_its_nam
         run_benchmark(config(["kennington"], include=["ken-07", "KEN-11"]), run_dir=tmp_path / "c", repo_root=repo_root)
 
 
-def test_a_known_name_that_is_not_local_yet_is_a_warning_with_a_command_that_applies(
+def test_a_known_name_that_is_not_local_yet_is_an_error_with_a_command_that_applies(
     monkeypatch, tmp_path: Path, repo_root: Path
 ):
     import shutil
@@ -2126,9 +2130,341 @@ def test_a_known_name_that_is_not_local_yet_is_a_warning_with_a_command_that_app
             "solvers": [{"id": "scs", "solver": "scs"}],
         }
     )
-    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
-    assert calls == ["ken-07"]
-    (warning,) = [e["message"] for e in _events(store.run_dir) if e["level"] == "warning"]
-    assert "'ken-11'" in warning
-    assert "bench data prepare kennington" in warning and "--problem ken-11" in warning
-    assert "DATASET" not in warning
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    message = str(raised.value)
+    assert "'ken-11'" in message
+    assert "bench data prepare kennington" in message and "--problem ken-11" in message
+    assert "DATASET" not in message
+    assert calls == []
+
+    # Preparing first (Kennington copies from the checkout) solves both.
+    prepared = parse_run_config(
+        {
+            "run": {"dataset": "kennington", "dataset_options": {"data_root": str(data_root)},
+                    "include": ["ken-07", "ken-11"], "output_dir": str(tmp_path / "runs"),
+                    "auto_prepare_data": True},
+            "solvers": [{"id": "scs", "solver": "scs"}],
+        }
+    )
+    store = run_benchmark(prepared, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert sorted(calls) == ["ken-07", "ken-11"]
+    assert not [e for e in _events(store.run_dir) if e["level"] == "warning"]
+
+
+# --- requested problems that are not on disk ------------------------------------
+
+
+def _qplib_config(tmp_path: Path, **run):
+    return parse_run_config(
+        {
+            "run": {
+                "dataset": "qplib",
+                "dataset_options": {"subset": [8790, 8515, 8495], "data_root": str(tmp_path / "data")},
+                "output_dir": str(tmp_path / "runs"),
+                **run,
+            },
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+
+
+def _qplib_files(tmp_path: Path, *ids: str) -> Path:
+    folder = tmp_path / "data" / "qplib_data"
+    folder.mkdir(parents=True, exist_ok=True)
+    for problem_id in ids:
+        (folder / f"QPLIB_{problem_id}.qplib").write_text("")
+    return folder
+
+
+def test_subset_problems_a_downloadable_dataset_does_not_have_stop_the_run(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    """One of three requested QPLIB problems is on disk: the run used to solve
+    that one and say nothing about the other two."""
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    _qplib_files(tmp_path, "8790")
+
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(_qplib_config(tmp_path), run_dir=tmp_path / "run", repo_root=repo_root,
+                      prepare_data_command="bench run cfg.yaml --prepare-data")
+    message = str(raised.value)
+    assert "does not have the requested problems '8495', '8515' locally" in message
+    assert "bench data prepare qplib" in message
+    assert "--problem 8495 --problem 8515" in message
+    assert "bench run cfg.yaml --prepare-data" in message
+    assert calls == []
+
+
+def test_subset_problems_are_prepared_first_with_auto_prepare(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    from solver_benchmarks.core import runner
+    from solver_benchmarks.datasets import qplib as qplib_module
+
+    calls: list[str] = []
+    downloads: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    folder = _qplib_files(tmp_path, "8790")
+
+    def fake_download(name, target_folder):
+        downloads.append(name)
+        (target_folder / f"QPLIB_{name}.qplib").write_text("")
+
+    monkeypatch.setattr(qplib_module, "download_qplib_problem", fake_download)
+    store = run_benchmark(_qplib_config(tmp_path, auto_prepare_data=True), run_dir=tmp_path / "run",
+                          repo_root=repo_root)
+
+    assert sorted(downloads) == ["8495", "8515"]
+    assert sorted(calls) == ["8495", "8515", "8790"]
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "QPLIB_8495.qplib", "QPLIB_8515.qplib", "QPLIB_8790.qplib",
+    ]
+    assert not [e for e in _events(store.run_dir) if e["level"] == "warning"]
+
+
+def test_subset_problems_a_manual_dataset_does_not_have_are_a_warning(
+    monkeypatch, tmp_path: Path, repo_root: Path, capsys
+):
+    """CUTEst exports cannot be downloaded: the run solves what is there,
+    says which requested problems are missing and how they are made, and the
+    completion report plans the same problems."""
+    import numpy as np
+
+    from solver_benchmarks.analysis.tables import completion_summary, missing_results
+    from solver_benchmarks.core import runner
+
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    folder = tmp_path / "data" / "cutest_qp_data"
+    folder.mkdir(parents=True)
+    np.savez(folder / "HS35.npz", P=np.eye(1), q=np.ones(1))
+    config = parse_run_config(
+        {
+            "run": {
+                "dataset": "cutest_qp",
+                "dataset_options": {"subset": "HS35,QAFIRO,HS35MOD", "data_root": str(tmp_path / "data")},
+                "output_dir": str(tmp_path / "runs"),
+            },
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root, stream_output=True)
+
+    assert calls == ["HS35"]
+    (warning,) = [e for e in _events(store.run_dir) if e["level"] == "warning"]
+    assert warning["problems"] == ["HS35MOD", "QAFIRO"]
+    assert "python scripts/prepare_cutest_qp.py" in warning["message"]
+    assert "[bench] warning: Dataset 'cutest_qp' does not have 'HS35MOD', 'QAFIRO'" in capsys.readouterr().err
+    assert completion_summary(store.run_dir, repo_root=repo_root)["expected"].sum() == 1
+    assert missing_results(store.run_dir, repo_root=repo_root).empty
+
+
+def test_a_run_level_include_only_downloadable_datasets_may_have_is_missing_data(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    monkeypatch.setitem(dataset_registry.DATASETS, "downloadable_fixture", _DownloadableDataset)
+    config = parse_run_config(
+        {
+            "run": {"datasets": ["downloadable_fixture", "synthetic_qp"],
+                    "include": ["local", "one_variable_eq", "remote_one"],
+                    "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    with pytest.raises(RuntimeError, match="'downloadable_fixture'.*requested problem 'remote_one'"):
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+
+
+class _KnownNamesDataset(Dataset):
+    """Knows its full set of names and selects them with a subset."""
+
+    dataset_id = "known_names_fixture"
+    description = "Two possible problems, one local."
+    automatic_download = True
+    option_names = frozenset({"subset"})
+
+    def known_problem_names(self):
+        return {"alpha", "beta"}
+
+    def requested_problem_names(self):
+        return set(self.options.get("subset") or ())
+
+    def list_problems(self):
+        return [ProblemSpec(dataset_id="known_names_fixture", name="alpha", kind=QP)]
+
+    def load_problem(self, name):  # pragma: no cover - the worker is stubbed
+        raise AssertionError
+
+
+def test_a_subset_name_the_dataset_cannot_have_is_a_typo(monkeypatch, tmp_path: Path, repo_root: Path):
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    monkeypatch.setitem(dataset_registry.DATASETS, "known_names_fixture", _KnownNamesDataset)
+    config = parse_run_config(
+        {
+            "run": {"dataset": "known_names_fixture", "dataset_options": {"subset": ["alpha", "Beta"]},
+                    "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    with pytest.raises(RuntimeError, match=r"no problem named 'Beta' \(did you mean 'beta'\?\) \(its subset option\)"):
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+
+
+@pytest.mark.parametrize("auto_prepare", [False, True])
+@pytest.mark.parametrize(
+    "filters", [{"include": ["8790"]}, {"exclude": ["8515", "8495"]}], ids=["include", "exclude"]
+)
+def test_subset_problems_the_filters_leave_out_are_not_missing(
+    monkeypatch, tmp_path: Path, repo_root: Path, auto_prepare, filters
+):
+    """A name subset narrowed by include / exclude to what is on disk runs,
+    and preparation fetches nothing the run will not solve."""
+    from solver_benchmarks.core import runner
+    from solver_benchmarks.datasets import qplib as qplib_module
+
+    calls: list[str] = []
+    downloads: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+    monkeypatch.setattr(qplib_module, "download_qplib_problem", lambda name, folder: downloads.append(name))
+    _qplib_files(tmp_path, "8790")
+
+    store = run_benchmark(_qplib_config(tmp_path, auto_prepare_data=auto_prepare, **filters),
+                          run_dir=tmp_path / "run", repo_root=repo_root)
+
+    assert calls == ["8790"]
+    assert downloads == []
+    assert not [e for e in _events(store.run_dir) if "locally" in e["message"]]
+
+
+def test_a_missing_subset_problem_the_run_would_solve_still_stops_it(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    _qplib_files(tmp_path, "8790")
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(_qplib_config(tmp_path, include=["8790", "8515"]), run_dir=tmp_path / "run",
+                      repo_root=repo_root)
+    headline = str(raised.value).splitlines()[0]
+    assert "does not have the requested problem '8515' locally" in headline
+    assert "8495" not in headline
+
+
+def test_an_include_name_outside_the_subset_is_not_missing_data(monkeypatch, tmp_path: Path, repo_root: Path):
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    _qplib_files(tmp_path, "8790", "8515")
+    config = parse_run_config(
+        {
+            "run": {"dataset": "qplib",
+                    "dataset_options": {"subset": [8790], "data_root": str(tmp_path / "data")},
+                    "include": ["8790", "8515"], "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    message = str(raised.value)
+    assert "no problem named '8515'" in message
+    assert "outside dataset_options.subset: add 8515 to it" in message
+
+
+def _libsvm_config(tmp_path: Path, **run):
+    options = {"data_root": str(tmp_path / "data"), **run.pop("dataset_options", {})}
+    return parse_run_config(
+        {
+            "run": {"dataset": "libsvm_qp", "dataset_options": options,
+                    "output_dir": str(tmp_path / "runs"), **run},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+
+
+@pytest.mark.parametrize("on_disk", [False, True])
+@pytest.mark.parametrize("auto_prepare", [False, True])
+def test_a_libsvm_include_outside_the_default_six_says_how_to_select_it(
+    monkeypatch, tmp_path: Path, repo_root: Path, on_disk, auto_prepare
+):
+    """Without ``subset`` libsvm_qp lists its six defaults: ``svm_dual_a1a``
+    cannot be listed whatever is on disk, and the error says so. Following
+    its advice (``subset: a1a``) then runs the problem."""
+    from solver_benchmarks.core import runner
+    from solver_benchmarks.datasets import libsvm_qp as libsvm_module
+
+    calls: list[str] = []
+    urls: list[str] = []
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker(calls=calls))
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b"+1 1:0.5\n-1 1:1.5\n"
+
+    def fake_urlopen(url, timeout=None):
+        urls.append(url)
+        return _Response()
+
+    monkeypatch.setattr(libsvm_module.urllib.request, "urlopen", fake_urlopen)
+    folder = tmp_path / "data" / "libsvm_data"
+    folder.mkdir(parents=True)
+    (folder / "heart.libsvm").write_text("+1 1:0.5\n-1 1:1.5\n")
+    if on_disk:
+        (folder / "a1a.libsvm").write_text("+1 1:0.5\n-1 1:1.5\n")
+
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(
+            _libsvm_config(tmp_path, include=["svm_dual_a1a"], auto_prepare_data=auto_prepare),
+            run_dir=tmp_path / "run", repo_root=repo_root,
+        )
+    message = str(raised.value)
+    assert "no problem named 'svm_dual_a1a'" in message
+    assert "not in the dataset's default subset" in message and "subset: a1a" in message
+
+    store = run_benchmark(
+        _libsvm_config(tmp_path, include=["svm_dual_a1a"], auto_prepare_data=True,
+                       dataset_options={"subset": "a1a"}),
+        run_dir=tmp_path / "run2", repo_root=repo_root,
+    )
+    assert calls == ["svm_dual_a1a"]
+    assert urls == ([] if on_disk else [f"{libsvm_module.LIBSVM_BASE_URL}/a1a"])
+    assert not [e for e in _events(store.run_dir) if e["level"] == "warning"]
+
+
+def test_the_missing_data_error_keeps_did_you_mean(monkeypatch, tmp_path: Path, repo_root: Path):
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_run_subprocess", _fake_worker())
+    _qplib_files(tmp_path, "8790")
+    config = parse_run_config(
+        {
+            "run": {"datasets": ["qplib", "netlib"],
+                    "dataset_options": {"data_root": str(tmp_path / "data")},
+                    "include": ["8790", "afiro", "afirox"], "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    import shutil
+
+    netlib = tmp_path / "data" / "netlib_data" / "feasible"
+    netlib.mkdir(parents=True)
+    shutil.copy(repo_root / "problem_classes" / "netlib_data" / "feasible" / "afiro.mps.gz", netlib)
+    with pytest.raises(RuntimeError) as raised:
+        run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    message = str(raised.value)
+    assert "'afirox' (did you mean 'afiro'?) locally: not downloaded yet, or misspelled" in message
