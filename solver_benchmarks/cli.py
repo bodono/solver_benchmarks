@@ -23,6 +23,7 @@ from solver_benchmarks.analysis.profiles import (
 )
 from solver_benchmarks.analysis.tables import (
     completion_summary,
+    expected_problems_unknown,
     expected_results,
     failure_rates,
     missing_results,
@@ -354,34 +355,52 @@ def env_run_cmd(
     click.echo(str(out))
 
 
+def _analysis_data_root_option(command):
+    """``--data-root`` of the commands that analyse a run directory."""
+    return click.option(
+        "--data-root",
+        type=click.Path(path_type=Path),
+        default=None,
+        callback=lambda _ctx, _param, value: value.resolve() if value is not None else None,
+        help=(
+            "Directory used in place of problem_classes/ to list every dataset of the run, "
+            "instead of the data_root the run recorded (as for bench run --data-root)."
+        ),
+    )(command)
+
+
 @main.command("summary")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
-def summary_cmd(run_dir: Path, repo_root: Path | None) -> None:
+@_analysis_data_root_option
+def summary_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -> None:
     df = load_results(run_dir)
     summary = status_counts(df)
     if summary.empty:
         click.echo("No results found.")
         return
-    metrics = solver_metrics(df, expected=expected_results(run_dir, repo_root=repo_root))
+    metrics = solver_metrics(df, expected=expected_results(run_dir, repo_root=repo_root, data_root=data_root))
     if not metrics.empty:
         click.echo("Solver metrics:")
         click.echo(metrics.to_string(index=False))
         click.echo()
     click.echo("Status counts:")
     click.echo(summary.to_string(index=False))
-    completion = completion_summary(run_dir, df, repo_root=repo_root)
+    completion = completion_summary(run_dir, df, repo_root=repo_root, data_root=data_root)
     if not completion.empty:
         click.echo("\nCompletion:")
         click.echo(completion.to_string(index=False))
+    for message in expected_problems_unknown(run_dir, repo_root=repo_root, data_root=data_root).values():
+        click.echo(message)
 
 
 @main.command("failures")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
-def failures_cmd(run_dir: Path, repo_root: Path | None) -> None:
+@_analysis_data_root_option
+def failures_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -> None:
     df = load_results(run_dir)
-    failures = failure_rates(df, expected=expected_results(run_dir, repo_root=repo_root))
+    failures = failure_rates(df, expected=expected_results(run_dir, repo_root=repo_root, data_root=data_root))
     if failures.empty:
         click.echo("No results found.")
         return
@@ -391,22 +410,29 @@ def failures_cmd(run_dir: Path, repo_root: Path | None) -> None:
 @main.command("missing")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
-def missing_cmd(run_dir: Path, repo_root: Path | None) -> None:
+@_analysis_data_root_option
+def missing_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -> None:
     df = load_results(run_dir)
-    missing = missing_results(run_dir, df, repo_root=repo_root)
-    if missing.empty:
+    missing = missing_results(run_dir, df, repo_root=repo_root, data_root=data_root)
+    unknown = expected_problems_unknown(run_dir, repo_root=repo_root, data_root=data_root)
+    if not missing.empty:
+        click.echo(missing.to_string(index=False))
+    elif not unknown:
         click.echo("No missing results.")
-        return
-    click.echo(missing.to_string(index=False))
+    for message in unknown.values():
+        click.echo(message)
 
 
 @main.command("profile")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--metric", default="run_time_seconds")
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
-def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None) -> None:
+@_analysis_data_root_option
+def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None, data_root: Path | None) -> None:
     df = load_results(run_dir)
-    profile = performance_profile(df, metric=metric, expected=expected_results(run_dir, repo_root=repo_root))
+    profile = performance_profile(
+        df, metric=metric, expected=expected_results(run_dir, repo_root=repo_root, data_root=data_root)
+    )
     out = run_dir / f"performance_profile_{metric}.csv"
     profile.to_csv(out, index=False)
     click.echo(str(out))
@@ -423,6 +449,7 @@ def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None) -> None:
     help="Use only successful solves instead of penalizing failures.",
 )
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
+@_analysis_data_root_option
 def geomean_cmd(
     run_dir: Path,
     metric: str,
@@ -430,6 +457,7 @@ def geomean_cmd(
     max_value: float | None,
     success_only: bool,
     repo_root: Path | None,
+    data_root: Path | None,
 ) -> None:
     df = load_results(run_dir)
     try:
@@ -442,7 +470,7 @@ def geomean_cmd(
                 run_dir, metric=metric, max_value=max_value, penalize_failures=not success_only,
             ),
             penalize_failures=not success_only,
-            expected=expected_results(run_dir, repo_root=repo_root),
+            expected=expected_results(run_dir, repo_root=repo_root, data_root=data_root),
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -458,9 +486,24 @@ def geomean_cmd(
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option("--max-value", type=float, default=None, help="Exact failure penalty for the selected metric.")
-def plot_cmd(run_dir: Path, metric: str, output_dir: Path | None, repo_root: Path | None, max_value: float | None) -> None:
+@_analysis_data_root_option
+def plot_cmd(
+    run_dir: Path,
+    metric: str,
+    output_dir: Path | None,
+    repo_root: Path | None,
+    max_value: float | None,
+    data_root: Path | None,
+) -> None:
     try:
-        paths = write_analysis_plots(run_dir, metric=metric, output_dir=output_dir, repo_root=repo_root, max_value=max_value)
+        paths = write_analysis_plots(
+            run_dir,
+            metric=metric,
+            output_dir=output_dir,
+            repo_root=repo_root,
+            data_root=data_root,
+            max_value=max_value,
+        )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     if not paths:
@@ -594,12 +637,14 @@ def _derive_errors() -> Iterator[None]:
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option("--max-value", type=float, default=None, help="Exact failure penalty for the selected metric.")
+@_analysis_data_root_option
 def report_cmd(
     run_dir: Path,
     metric: str,
     output_dir: Path | None,
     repo_root: Path | None,
     max_value: float | None,
+    data_root: Path | None,
 ) -> None:
     try:
         paths = write_run_report(
@@ -607,6 +652,7 @@ def report_cmd(
             metric=metric,
             output_dir=output_dir,
             repo_root=repo_root,
+            data_root=data_root,
             max_value=max_value,
         )
     except ValueError as exc:

@@ -56,6 +56,7 @@ def write_run_report(
     output_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
     max_value: float | None = None,
+    data_root: str | Path | None = None,
 ) -> list[Path]:
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir / "report"
@@ -65,7 +66,7 @@ def write_run_report(
     if results.empty:
         return []
 
-    expected = expected_results(run_dir, repo_root=repo_root)
+    expected = expected_results(run_dir, repo_root=repo_root, data_root=data_root)
     # Without a recorded time limit only the penalized time geomean is left
     # out (with a note); every other table and plot is still written.
     geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
@@ -85,8 +86,8 @@ def write_run_report(
     tables = {
         **_solver_summary_tables(solves, metric=metric, expected=expected, geomean_options=geomean_options),
         "status_counts.csv": status_counts(results),
-        "completion.csv": completion_summary(run_dir, results, repo_root=repo_root),
-        "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root),
+        "completion.csv": completion_summary(run_dir, results, repo_root=repo_root, data_root=data_root),
+        "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root, data_root=data_root),
         f"performance_profile_{metric}.csv": performance_profile(solves, metric=metric, expected=expected),
         f"pairwise_speedups_{metric}.csv": pairwise_speedups(solves, metric=metric),
         f"performance_ratios_{metric}.csv": performance_ratio_matrix(
@@ -173,6 +174,7 @@ def write_run_report(
         metric=metric,
         output_dir=output_dir,
         repo_root=repo_root,
+        data_root=data_root,
         max_value=max_value,
         results=scored,
         expected=expected,
@@ -451,19 +453,29 @@ def _render_scope_block(
 
 
 def _render_completion_block(tables: dict[str, pd.DataFrame]) -> list[str]:
-    lines: list[str] = []
-    lines.extend(
-        _section_table(
-            "Run Completion",
-            tables.get("completion.csv", pd.DataFrame()),
-            source_link="completion.csv",
-            intro=(
-                "Use this first to confirm the run is complete. `missing = 0`, "
-                "`unexpected = 0`, and `duplicate_rows = 0` are the expected clean state."
-            ),
-        )
+    completion = tables.get("completion.csv", pd.DataFrame())
+    intro = (
+        "Use this first to confirm the run is complete. `missing = 0`, "
+        "`unexpected = 0`, and `duplicate_rows = 0` are the expected clean state."
     )
+    unknown = _datasets_with_unknown_expected(completion)
+    if unknown:
+        intro += (
+            " Expected problems are unknown for "
+            + ", ".join(f"`{dataset}`" for dataset in unknown)
+            + ": none of its problems were found where the report was made (pass `--repo-root` or "
+            "`--data-root`), so its `expected`, `missing` and `unexpected` cells are empty."
+        )
+    lines: list[str] = []
+    lines.extend(_section_table("Run Completion", completion, source_link="completion.csv", intro=intro))
     return lines
+
+
+def _datasets_with_unknown_expected(completion: pd.DataFrame) -> list[str]:
+    """Datasets whose completion rows have no expected count (see ``completion_summary``)."""
+    if completion.empty or "expected" not in completion or "dataset" not in completion:
+        return []
+    return sorted({str(dataset) for dataset in completion.loc[completion["expected"].isna(), "dataset"]})
 
 
 def _render_setup_solve_block(
@@ -1293,8 +1305,17 @@ def _executive_summary_text(
         missing = _int_sum(completion, "missing")
         unexpected = _int_sum(completion, "unexpected")
         duplicates = _int_sum(completion, "duplicate_rows")
+        unknown = _datasets_with_unknown_expected(completion)
+        if unknown:
+            summary += (
+                " Expected problems are unknown for dataset"
+                f"{'' if len(unknown) == 1 else 's'} "
+                + ", ".join(f"`{dataset}`" for dataset in unknown)
+                + " (none of its problems found), so completion cannot be checked there."
+            )
         if missing == 0 and unexpected == 0 and duplicates == 0:
-            summary += " Completion checks found no missing, unexpected, or duplicate rows."
+            if not unknown:
+                summary += " Completion checks found no missing, unexpected, or duplicate rows."
         else:
             summary += (
                 " Completion checks found "
@@ -1328,10 +1349,21 @@ def _run_scope_table(
         ("solver_benchmarks version", BENCHMARK_VERSION),
     ]
     if not completion.empty:
+        unknown = _datasets_with_unknown_expected(completion)
+
+        def counted(column: str):
+            # A dataset whose expected problems are unknown has no count.
+            count = _int_sum(completion, column)
+            if not unknown:
+                return count
+            if set(unknown) >= {str(dataset) for dataset in completion["dataset"]}:
+                return "unknown"
+            return f"{count} (unknown for {', '.join(unknown)})"
+
         rows.extend(
             [
-                ("Missing expected rows", _int_sum(completion, "missing")),
-                ("Unexpected rows", _int_sum(completion, "unexpected")),
+                ("Missing expected rows", counted("missing")),
+                ("Unexpected rows", counted("unexpected")),
                 ("Duplicate rows", _int_sum(completion, "duplicate_rows")),
             ]
         )

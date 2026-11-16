@@ -522,3 +522,62 @@ def test_subset_default_is_the_curated_default_subset(tmp_path: Path):
     _write_tsp(folder, "tiny4", TINY_EUC2D)
     names = [spec.name for spec in _local_dataset(folder, subset="default").list_problems()]
     assert names == ["gr17"]
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def test_download_refuses_a_body_that_is_not_a_tsplib_file(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import tsplib_sdp as module
+
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda url, timeout=None: _FakeResponse(b"<html><body>Sign in to continue</body></html>"),
+    )
+    folder = tmp_path / "tsplib_data"
+
+    with pytest.raises(RuntimeError, match="'gr17' did not download as a TSPLIB file"):
+        module.download_tsplib_instance("gr17", folder)
+
+    assert not (folder / "gr17.tsp").exists()
+
+
+def test_download_caches_a_valid_tsplib_body(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import tsplib_sdp as module
+
+    monkeypatch.setattr(
+        module.urllib.request,
+        "urlopen",
+        lambda url, timeout=None: _FakeResponse(TINY_EUC2D.encode()),
+    )
+    folder = tmp_path / "tsplib_data"
+
+    target = module.download_tsplib_instance("tiny4", folder)
+
+    assert target == folder / "tiny4.tsp"
+    assert target.read_text() == TINY_EUC2D
+
+
+def test_download_refuses_a_tsplib_body_with_a_node_beyond_its_dimension(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import tsplib_sdp as module
+
+    body = TINY_EUC2D.replace("4 1.0 1.0", "9 1.0 1.0").encode()
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda url, timeout=None: _FakeResponse(body))
+    folder = tmp_path / "tsplib_data"
+
+    with pytest.raises(RuntimeError, match="'tiny4' did not download as a TSPLIB file"):
+        module.download_tsplib_instance("tiny4", folder)
+
+    assert not (folder / "tiny4.tsp").exists()

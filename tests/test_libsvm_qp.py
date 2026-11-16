@@ -576,3 +576,61 @@ def test_preparing_an_included_problem_downloads_its_data_set(monkeypatch, tmp_p
 
     assert urls == [f"{module.LIBSVM_BASE_URL}/a1a"]
     assert [spec.name for spec in dataset.list_problems()] == ["svm_dual_a1a"]
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def test_download_keeps_a_name_with_parent_components_inside_the_folder(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import libsvm_qp as module
+
+    urls = []
+
+    def fake_urlopen(url, timeout=None):
+        urls.append(url)
+        return _FakeResponse(b"+1 1:0.5 2:1\n-1 1:0.1\n")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    folder = tmp_path / "data" / "problem_classes" / "libsvm_data"
+    folder.mkdir(parents=True)
+
+    target = module.download_libsvm_dataset("../../../escaped", folder)
+
+    assert target == folder / "escaped.libsvm"
+    assert target.exists()
+    assert not (tmp_path / "escaped.libsvm").exists()
+    assert urls == [f"{module.LIBSVM_BASE_URL}/escaped"]
+
+
+def test_download_does_not_follow_a_url_given_as_the_name(monkeypatch, tmp_path: Path):
+    from solver_benchmarks.datasets import libsvm_qp as module
+
+    urls = []
+
+    def fake_urlopen(url, timeout=None):
+        urls.append(url)
+        return _FakeResponse(b"+1 1:0.5 2:1\n-1 1:0.1\n")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    folder = tmp_path / "libsvm_data"
+    folder.mkdir()
+
+    module.download_libsvm_dataset("https://example.invalid/anything", folder)
+    module.download_libsvm_dataset("heart", folder)
+
+    assert urls == [
+        f"{module.LIBSVM_BASE_URL}/anything",
+        module.LIBSVM_DEFAULT_SUBSET["heart"],
+    ]
+    assert sorted(path.name for path in folder.iterdir()) == ["anything.libsvm", "heart.libsvm"]

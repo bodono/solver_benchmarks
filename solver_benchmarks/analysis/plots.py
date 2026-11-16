@@ -111,6 +111,7 @@ def write_analysis_plots(
     metric: str = "run_time_seconds",
     output_dir: str | Path | None = None,
     repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
     max_value: float | None = None,
     results: pd.DataFrame | None = None,
     expected: pd.DataFrame | None = None,
@@ -121,7 +122,9 @@ def write_analysis_plots(
     ``results``, ``expected`` and ``geomean_options`` let a caller that has
     them already (``bench report``) skip loading them again. Without a
     usable time limit (and no ``max_value``) the penalized time geomean is
-    skipped with a warning; every other plot is still written.
+    skipped with a warning; every other plot is still written. ``repo_root``
+    and ``data_root`` locate the datasets listed for the planned solves (see
+    ``expected_results``).
 
     Duplicated solves are resolved once, by ``metric``, and every plot draws
     that one row per solve. A plot of ``metric`` (see :func:`plot_names`)
@@ -138,7 +141,7 @@ def write_analysis_plots(
         return []
 
     if expected is None:
-        expected = expected_results(run_dir, repo_root=repo_root)
+        expected = expected_results(run_dir, repo_root=repo_root, data_root=data_root)
     if geomean_options is None:
         geomean_options = penalized_geomean_options(run_dir, metric=metric, max_value=max_value)
     scored = with_expected_outcomes(results)

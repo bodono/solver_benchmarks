@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import stat
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
@@ -30,6 +32,10 @@ def atomic_write_stream(path: Path, write: Callable[[BinaryIO], object]) -> None
     (``KeyboardInterrupt`` included), the temporary file is removed and
     ``path`` is left as it was. The temporary file is named
     ``.<name>.<random>.tmp``, so a glob for ``path``'s suffix never matches it.
+    A process killed without unwinding leaves it behind;
+    ``remove_stale_temporaries`` removes such files once they are old. If
+    the temporary file is gone at the final rename (another process removed
+    it) and ``path`` exists, the write counts as done.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,7 +56,14 @@ def atomic_write_stream(path: Path, write: Callable[[BinaryIO], object]) -> None
                 pass
         if mode is not None:
             os.chmod(tmp_name, mode)
-        os.replace(tmp_name, path)
+        try:
+            os.replace(tmp_name, path)
+        except FileNotFoundError:
+            # ``remove_stale_temporaries`` of another process took the
+            # temporary file of a writer it judged dead; that process has
+            # written ``path`` meanwhile, which then is complete.
+            if not path.exists():
+                raise
         tmp_name = None
     finally:
         if tmp_name is not None:
@@ -62,6 +75,38 @@ def atomic_write_stream(path: Path, write: Callable[[BinaryIO], object]) -> None
 
 def atomic_write_text(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"))
+
+
+def remove_stale_temporaries(path: Path, max_age_seconds: float) -> list[Path]:
+    """Remove temporary files of ``atomic_write_stream`` for ``path`` left by a killed writer.
+
+    A writer killed with SIGKILL (or SIGTERM without a handler) never runs
+    the cleanup that removes its ``.<name>.<random>.tmp``. This removes such
+    siblings of ``path`` that were last modified more than
+    ``max_age_seconds`` ago; a writer still copying keeps updating its
+    file's modification time, so a generous age never removes the file of a
+    live writer. Files that cannot be inspected or removed are left alone.
+    Returns the paths removed.
+    """
+    path = Path(path)
+    pattern = re.compile(rf"\.{re.escape(path.name)}\.[0-9a-f]{{12}}\.tmp")
+    cutoff = time.time() - max_age_seconds
+    removed: list[Path] = []
+    try:
+        entries = list(os.scandir(path.parent))
+    except OSError:
+        return removed
+    for entry in entries:
+        if not pattern.fullmatch(entry.name):
+            continue
+        try:
+            if not entry.is_file(follow_symlinks=False) or entry.stat(follow_symlinks=False).st_mtime > cutoff:
+                continue
+            os.unlink(entry.path)
+        except OSError:
+            continue
+        removed.append(Path(entry.path))
+    return removed
 
 
 def _create_temporary(path: Path) -> tuple[int, str]:

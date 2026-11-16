@@ -140,8 +140,12 @@ def download_feasibility_labels(folder: Path) -> Path:
 
 
 def download_matpower_case(name: str, folder: Path) -> Path:
-    """Download an evaluated MATPOWER case from the pinned data snapshot."""
-    target = folder / f"{name}.mat"
+    """Download an evaluated MATPOWER case from the pinned data snapshot.
+
+    Only the final path component of ``name`` is used, so a name
+    containing ``../`` cannot write outside ``folder``.
+    """
+    target = folder / f"{Path(name).name}.mat"
     if not target.exists():
         with urllib.request.urlopen(f"{MATPOWER_BASE_URL}/{target.name}", timeout=120) as response:
             body = response.read()

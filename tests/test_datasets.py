@@ -426,6 +426,134 @@ def test_netlib_dataset_loads_gzipped_mps_problem(tmp_path: Path):
     assert problem.qp["q"].tolist() == [1.0, 2.0]
 
 
+def _assert_same_problem(loaded, reference) -> None:
+    assert (loaded.dataset_id, loaded.name, loaded.kind) == (
+        reference.dataset_id,
+        reference.name,
+        reference.kind,
+    )
+    assert loaded.metadata == reference.metadata
+    assert loaded.qp.keys() == reference.qp.keys()
+    for key, value in reference.qp.items():
+        other = loaded.qp[key]
+        if hasattr(value, "toarray"):
+            assert other.shape == value.shape and (other != value).nnz == 0, key
+        elif isinstance(value, np.ndarray):
+            np.testing.assert_array_equal(other, value, err_msg=key)
+        else:
+            assert other == value, key
+
+
+def _load_counting_listings(monkeypatch, dataset, name):
+    """``dataset.load_problem(name)`` and the folders it listed meanwhile."""
+    listed = []
+    real = mps_module.group_problem_files
+
+    def counting(folder, suffixes):
+        listed.append(folder)
+        return real(folder, suffixes)
+
+    monkeypatch.setattr(mps_module, "group_problem_files", counting)
+    loaded = dataset.load_problem(name)
+    monkeypatch.setattr(mps_module, "group_problem_files", real)
+    return loaded, listed
+
+
+def _load_from_listing(dataset, name):
+    """The problem as ``load_problem`` gives it when it looks the name up in the listing."""
+    dataset._problem_from_its_files = lambda _name: None
+    try:
+        return dataset.load_problem(name)
+    finally:
+        del dataset._problem_from_its_files
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "options", "problem"),
+    [
+        ("netlib", {}, "afiro"),
+        ("netlib", {"subset": "infeasible"}, "itest2"),
+        ("kennington", {}, "cre-c"),
+    ],
+)
+def test_mps_load_problem_finds_its_file_without_listing_the_folder(
+    monkeypatch, repo_root: Path, dataset_name: str, options: dict, problem: str
+):
+    dataset = get_dataset(dataset_name)(
+        repo_root=repo_root, data_root=repo_root / "problem_classes", **options
+    )
+    reference = _load_from_listing(dataset, problem)
+
+    loaded, listed = _load_counting_listings(monkeypatch, dataset, problem)
+
+    assert listed == []
+    _assert_same_problem(loaded, reference)
+    assert loaded.metadata["source"].endswith(f"{problem}.mps.gz")
+
+
+def test_mps_load_problem_of_a_plain_and_gzipped_pair_matches_the_listing(monkeypatch, tmp_path: Path):
+    data_root = tmp_path / "problem_classes"
+    folder = data_root / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    (folder / "tiny.mps").write_text(_TINY_MPS)
+    (folder / "tiny.mps.gz").write_bytes(gzip.compress(_TINY_MPS.encode()))
+    (folder / "zipped.mps.gz").write_bytes(gzip.compress(_TINY_MPS.encode()))
+    dataset = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root)
+
+    for name in ("tiny", "zipped"):
+        reference = _load_from_listing(dataset, name)
+        loaded, listed = _load_counting_listings(monkeypatch, dataset, name)
+        assert listed == []
+        _assert_same_problem(loaded, reference)
+    assert loaded.metadata["size_bytes"] == (folder / "zipped.mps.gz").stat().st_size
+    tiny = dataset.load_problem("tiny")
+    assert tiny.metadata["source"] == str(folder / "tiny.mps")
+    assert tiny.metadata["size_bytes"] == (folder / "tiny.mps.gz").stat().st_size
+
+    # A problem the size filter leaves out, or one that is not there, is
+    # still not found.
+    small = get_dataset("netlib")(repo_root=tmp_path, data_root=data_root, max_size_mb=1e-6)
+    with pytest.raises(KeyError):
+        small.load_problem("tiny")
+    with pytest.raises(KeyError):
+        dataset.load_problem("absent")
+
+
+def test_mps_load_problem_reads_only_what_the_listing_lists(repo_root: Path):
+    dataset = get_dataset("netlib")(repo_root=repo_root, data_root=repo_root / "problem_classes")
+    # A name with path components would reach a file of another folder (and
+    # pose it with this folder's expected outcome).
+    assert (repo_root / "problem_classes" / "netlib_data" / "infeasible" / "itest2.mps.gz").exists()
+    with pytest.raises(KeyError):
+        dataset.load_problem("../infeasible/itest2")
+
+    class WithoutAfiro(type(dataset)):
+        def list_problems(self):
+            return [spec for spec in super().list_problems() if spec.name != "afiro"]
+
+    hiding = WithoutAfiro(repo_root=repo_root, data_root=repo_root / "problem_classes")
+    with pytest.raises(KeyError):
+        hiding.load_problem("afiro")
+    assert hiding.load_problem("adlittle").name == "adlittle"
+
+
+def test_mps_listing_computes_the_shared_metadata_once(monkeypatch, repo_root: Path):
+    dataset = get_dataset("netlib")(repo_root=repo_root, data_root=repo_root / "problem_classes")
+    calls = []
+    real = type(dataset).expected_metadata
+
+    def counting(self):
+        calls.append(1)
+        return real(self)
+
+    monkeypatch.setattr(type(dataset), "expected_metadata", counting)
+    specs = dataset.list_problems()
+
+    assert len(specs) > 90
+    assert len(calls) == 1
+    assert {spec.metadata["expected_status"] for spec in specs} == {"optimal"}
+
+
 def test_bundled_netlib_greenbea_infeasible_variant_is_infeasible(
     tmp_path: Path, repo_root: Path
 ):

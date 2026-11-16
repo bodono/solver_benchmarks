@@ -567,3 +567,38 @@ def test_normalize_subset_accepts_comma_string_and_list():
 
     assert _normalize_subset("case5, case9") == {"case5", "case9"}
     assert _normalize_subset(["case14"]) == {"case14"}
+
+
+def test_download_keeps_a_name_with_parent_components_inside_the_folder(monkeypatch, tmp_path: Path):
+    import io
+
+    from solver_benchmarks.datasets import dc_opf as module
+
+    payload = io.BytesIO()
+    savemat(payload, {"mpc": TWO_BUS})
+    urls = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return payload.getvalue()
+
+    def fake_urlopen(url, timeout=None):
+        urls.append(url)
+        return _Response()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+    folder = tmp_path / "data" / "problem_classes" / "dc_opf_data" / "rev"
+    folder.mkdir(parents=True)
+
+    target = module.download_matpower_case("../../../../escaped_case", folder)
+
+    assert target == folder / "escaped_case.mat"
+    assert target.exists()
+    assert not (tmp_path / "escaped_case.mat").exists()
+    assert urls == [f"{module.MATPOWER_BASE_URL}/escaped_case.mat"]
