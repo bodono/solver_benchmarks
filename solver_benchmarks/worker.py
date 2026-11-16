@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
@@ -112,6 +113,10 @@ def run_payload(payload: dict) -> ProblemResult:
         error = None
         if solver_result.status == status.SKIPPED_UNSUPPORTED:
             error = str(solver_result.info.get("reason", "Unsupported solve"))
+        kkt = to_jsonable(solver_result.kkt) if solver_result.kkt else None
+        point_objective = _point_objective(problem, kkt)
+        if point_objective is not None:
+            kkt["primal_obj_reported"] = point_objective
         return ProblemResult(
             run_id=payload["run_id"],
             dataset=payload["dataset"],
@@ -129,7 +134,7 @@ def run_payload(payload: dict) -> ProblemResult:
             artifact_dir=str(artifacts_dir),
             metadata=metadata,
             info=to_jsonable(solver_result.info),
-            kkt=to_jsonable(solver_result.kkt) if solver_result.kkt else None,
+            kkt=kkt,
         )
     except Exception as exc:
         traceback.print_exc()
@@ -166,6 +171,21 @@ def _reported_objective(problem, objective):
     if data.get("obj_type") == "max":
         value = -value
     return value
+
+
+def _point_objective(problem, kkt):
+    """The returned point's objective (``kkt.primal_obj``) as ``objective_value`` reports it.
+
+    ``objective_value`` is only reported for a solution, so this is what
+    ``bench kkt-verify --promote`` gives a limit stop it promotes to
+    optimal. None when the record has no finite primal objective.
+    """
+    if not kkt:
+        return None
+    value = kkt.get("primal_obj")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return _reported_objective(problem, value)
 
 
 def _problem_dimensions(problem):

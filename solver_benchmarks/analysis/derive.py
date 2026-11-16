@@ -6,7 +6,8 @@ Both operations write a new run directory holding ``results.jsonl``, a
 config and events. Per-solve artifacts are not copied; result rows keep
 their original ``artifact_dir``. The directory is assembled next to its
 destination and moved into place at the end, so a failure leaves neither a
-partial directory nor a damaged earlier one.
+partial directory nor a damaged earlier one. With ``overwrite``, only an
+empty directory or an earlier derived run is ever replaced.
 """
 
 from __future__ import annotations
@@ -54,6 +55,16 @@ _CERTIFICATE_DEMOTION = {
     status.PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE_INACCURATE,
     status.DUAL_INFEASIBLE: status.DUAL_INFEASIBLE_INACCURATE,
 }
+# With promote, the converse: inaccurate certificate statuses whose
+# certificate is fully checked and passes become the accurate status.
+_CERTIFICATE_PROMOTION = {inaccurate: accurate for accurate, inaccurate in _CERTIFICATE_DEMOTION.items()}
+# Limit statuses whose record may hold a certificate instead of a point;
+# such a row is promoted to the certificate's status under the same rule.
+_LIMIT_STATUSES = {status.MAX_ITER_REACHED, status.TIME_LIMIT}
+# Where the worker records the returned point's objective in the convention
+# of objective_value (constant term and sense applied); a row promoted to
+# optimal without an objective takes it from there.
+_POINT_OBJECTIVE = "primal_obj_reported"
 _COPIED_FILES = ("run_config.yaml", "run_config.json", "events.jsonl")
 
 
@@ -94,7 +105,19 @@ def _read_manifest(run_dir: Path) -> dict[str, Any]:
     path = run_dir / "manifest.json"
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DeriveInputError(f"cannot read {path}: {exc}") from exc
+    try:
+        manifest = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise DeriveInputError(
+            f"{path} is not valid JSON ({exc.msg}: line {exc.lineno} column {exc.colno}); was it cut short?"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise DeriveInputError(f"{path} does not hold a JSON object")
+    return manifest
 
 
 def _check_no_overlap(out_dir: Path, sources: Iterable[Path]) -> None:
@@ -124,8 +147,29 @@ class DeriveInputError(ValueError):
 
 
 def _refuse_existing(out_dir: Path, overwrite: bool) -> None:
-    if out_dir.exists() and not overwrite:
+    """Refuse an existing ``out_dir`` unless ``overwrite`` may replace it.
+
+    Only an empty directory or a derived run (its manifest has ``derived``)
+    is ever replaced: the output path is the run directory itself, and a
+    base run or a directory of other files given there by mistake must not
+    be deleted.
+    """
+    if not out_dir.exists():
+        return
+    if not overwrite:
         raise OutputExistsError(out_dir)
+    refusal = "refusing to replace it: only an empty directory or a run written by merge or kkt-verify is replaced"
+    if not out_dir.is_dir():
+        raise DeriveInputError(f"{out_dir} is not a directory; {refusal}")
+    entries = sorted(path.name for path in out_dir.iterdir())
+    if not entries:
+        return
+    if "manifest.json" in entries and _read_manifest(out_dir).get("derived"):
+        return
+    if "manifest.json" in entries or "results.jsonl" in entries:
+        raise DeriveInputError(f"{out_dir} is a run directory, not a derived run; {refusal}")
+    shown = ", ".join(entries[:5]) + (", ..." if len(entries) > 5 else "")
+    raise DeriveInputError(f"{out_dir} is not a run directory (it holds {shown}); {refusal}")
 
 
 def _check_is_run(run_dir: Path) -> None:
@@ -424,9 +468,19 @@ def kkt_verify(
     With ``promote``, the converse also applies: a solve the solver itself
     reported as inaccurate, iteration-limited or time-limited, but whose
     returned point does pass the check, becomes ``optimal`` (its recorded
-    time is what it took to produce that point). Success then means one
-    thing for every solver: the returned point satisfies the KKT conditions
-    to ``tol``. A row returned after the run's time limit is never promoted
+    time is what it took to produce that point). If it has no
+    ``objective_value`` (adapters report one only for a solution), it takes
+    the point's objective that the worker recorded as
+    ``kkt.primal_obj_reported`` and ``metadata.kkt_verify.objective_from``
+    says so; rows of older runs without that field stay without one. Likewise
+    a ``primal_infeasible_inaccurate`` / ``dual_infeasible_inaccurate`` row
+    whose certificate is fully checked and passes ``tol`` becomes
+    ``primal_infeasible`` / ``dual_infeasible``, and so does an iteration- or
+    time-limited row whose record holds such a certificate instead of a
+    point (OSQP records its inaccurate certificates so); a missing or partly
+    checked certificate is never promoted. Success then means one thing for every
+    solver: the returned point or certificate satisfies the check to
+    ``tol``. A row returned after the run's time limit is never promoted
     (the limit is every solver's budget): the runner marks it with
     ``info.exceeded_time_limit``, or, in older runs, records a conclusion
     reached after the limit as time_limit with ``info.status_before_timeout``.
@@ -439,7 +493,9 @@ def kkt_verify(
     Every solver in a comparison is held to the same ``tol`` regardless of
     what its own tolerance settings mean, which is what makes timings
     across solvers comparable. Unparseable lines (a torn last line) are
-    skipped and counted under ``skipped_lines``.
+    skipped and counted under ``skipped_lines``. An existing ``out_dir`` is
+    replaced only with ``overwrite``, and only if it is empty or a derived
+    run.
     """
     src = Path(run_dir)
     out = Path(out_dir)
@@ -467,20 +523,45 @@ def kkt_verify(
     for row in records:
         solver_id = str(row.get("solver_id"))
         row_status = row.get("status")
-        if row_status in PROMOTABLE and promote:
+        if promote and (row_status in PROMOTABLE or row_status in _CERTIFICATE_PROMOTION):
             if _returned_after_time_limit(row):
                 annotate(row, reason="returned after the time limit; not promoted")
                 count(over_time_limit, solver_id)
                 continue
+            kkt = row.get("kkt") or {}
+            target = _CERTIFICATE_PROMOTION.get(row_status)
+            if row_status in _LIMIT_STATUSES and kkt.get("certificate") in _CERTIFICATE_DEMOTION:
+                # A limit stop that returned a certificate (OSQP records its
+                # inaccurate certificates so) is judged as one.
+                target = kkt["certificate"]
+            if target is not None:
+                cert, complete = certificate_check(kkt)
+                checked_fields.add("cert_res")
+                # A missing or partly checked certificate is never promoted,
+                # nor one of the other kind.
+                if complete and cert is not None and cert <= tol and kkt.get("certificate") == target:
+                    annotate(row, fields=["cert_res"], worst=cert, worst_field="cert_res",
+                             reason=f"certificate residual {cert:.3e} <= {tol:.1e}")
+                    row["status"] = target
+                    count(promoted, solver_id)
+                continue
             check = check_residuals(row, fields)
             checked_fields.update(check.checked)
             if check.complete and check.worst is not None and check.worst <= tol:
+                details: dict[str, Any] = {}
+                point_objective = (row.get("kkt") or {}).get(_POINT_OBJECTIVE)
+                if row.get("objective_value") is None and point_objective is not None:
+                    # Only a solution has an objective_value, so a limit
+                    # stop has none; the point it returned is now one.
+                    row["objective_value"] = point_objective
+                    details["objective_from"] = f"kkt.{_POINT_OBJECTIVE}"
                 annotate(
                     row,
                     fields=check.checked,
                     worst=check.worst,
                     worst_field=check.worst_field,
                     reason=f"worst relative residual {check.worst:.3e} ({check.worst_field}) <= {tol:.1e}",
+                    **details,
                 )
                 row["status"] = status.OPTIMAL
                 count(promoted, solver_id)

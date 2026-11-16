@@ -43,7 +43,10 @@ class SolverAdapter(ABC):
 # finite, so ``bench kkt-verify --promote`` judges every solver's limit-hit
 # iterate by the same check. Only a solution, though, has an objective value:
 # ``objective_value`` is reported for these statuses and is None for limits,
-# certificates and errors (the point's own objective is on kkt.primal_obj).
+# certificates and errors (the point's own objective is on kkt.primal_obj,
+# and the worker records it in the convention of objective_value as
+# kkt.primal_obj_reported, which kkt-verify --promote uses for a row it
+# promotes to optimal).
 OBJECTIVE_STATUSES = frozenset({status.OPTIMAL, status.OPTIMAL_INACCURATE})
 
 
