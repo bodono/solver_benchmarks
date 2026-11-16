@@ -339,6 +339,28 @@ def test_merge_reports_problems_posed_in_different_forms(tmp_path):
     assert manifest["derived"]["mixed_forms"] == ["d/hinf1"]
 
 
+def test_bench_merge_reports_rows_and_warns_about_torn_lines_and_mixed_forms(tmp_path):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.cli import main
+
+    def row(problem, solver_id, rows_posed):
+        return {**_row(problem, solver_id), "metadata": {"m": rows_posed}}
+
+    a = _write_run(tmp_path, "a", [row("hinf1", "s1", 105), row("truss1", "s1", 19)])
+    b = _write_run(tmp_path, "b", [row("hinf1", "s2", 41)])
+    with (b / "results.jsonl").open("a") as handle:
+        handle.write('{"dataset": "d", "problem": "tru')  # a write cut short
+    result = CliRunner().invoke(main, ["merge", str(tmp_path / "merged"), str(a), str(b)])
+
+    assert result.exit_code == 0, result.output
+    assert f"{tmp_path / 'merged'}: 3 rows from 2 runs" in result.stdout
+    assert "warning: skipped 1 unparseable result lines" in result.stderr
+    assert ("warning: 1 problems were posed with different numbers of rows across these runs, "
+            "so their results are not comparable: d/hinf1") in result.stderr
+    assert len((tmp_path / "merged" / "results.jsonl").read_text().splitlines()) == 3
+
+
 def _read_rows(path):
     return {(r["problem"], r["solver_id"]): r for r in map(json.loads, (path / "results.jsonl").read_text().splitlines())}
 
@@ -766,18 +788,13 @@ def test_promote_fills_the_objective_from_the_recorded_point(tmp_path):
 def _require_solvers(*names):
     """Skip unless the named solvers are installed; with
     BENCH_REQUIRE_ALL_SOLVERS set, fail instead (as the integration tests do)."""
-    import os
-
-    import pytest
+    from conftest import skip_or_fail_missing_solver
 
     from solver_benchmarks.solvers import get_solver
 
     for name in names:
         if not get_solver(name).is_available():
-            message = f"{name} is not installed (or does not import)"
-            if os.environ.get("BENCH_REQUIRE_ALL_SOLVERS"):
-                pytest.fail(f"{message}, and BENCH_REQUIRE_ALL_SOLVERS is set")
-            pytest.skip(message)
+            skip_or_fail_missing_solver(name)
 
 
 def _fake_dataset(monkeypatch, problems):

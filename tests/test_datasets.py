@@ -1538,6 +1538,77 @@ def test_miplib_prepare_without_network_uses_the_local_instances(monkeypatch, tm
         empty.prepare_data()
 
 
+class _FakeResponse:
+    def __init__(self, body=b"", headers=None):
+        self._body = body
+        self.headers = headers or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def test_miplib_download_keeps_only_a_complete_gzip_payload(monkeypatch, tmp_path: Path):
+    requested = []
+    body = {"payload": b"<html>Not Found</html>"}
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        return _FakeResponse(body["payload"])
+
+    monkeypatch.setattr(mps_module.urllib.request, "urlopen", urlopen)
+    with pytest.raises(RuntimeError, match="'markshare_4_0' did not download as gzip data"):
+        mps_module._download_miplib_problem("markshare_4_0", tmp_path)
+    assert requested == [f"{mps_module.MIPLIB_INSTANCE_BASE_URL}/markshare_4_0.mps.gz"]
+    assert list(tmp_path.iterdir()) == []
+
+    complete = gzip.compress(b"NAME markshare\nENDATA\n")
+    body["payload"] = complete[:-4]  # cut short: no CRC/size trailer
+    with pytest.raises(RuntimeError, match="did not download as gzip data"):
+        mps_module._download_miplib_problem("markshare_4_0", tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+    body["payload"] = complete
+    mps_module._download_miplib_problem("markshare_4_0", tmp_path)
+    assert (tmp_path / "markshare_4_0.mps.gz").read_bytes() == complete
+
+
+def test_miplib_index_and_size_requests_report_bad_answers(monkeypatch):
+    import urllib.error
+
+    answers = {}
+
+    def urlopen(request, timeout):
+        answer = answers["next"]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(mps_module.urllib.request, "urlopen", urlopen)
+    answers["next"] = _FakeResponse(b"b.mps.gz\na.mps.gz\n a.mps.gz README.txt\n")
+    assert mps_module._miplib_remote_problem_names() == ["a", "b"]
+    answers["next"] = urllib.error.URLError("no route to host")
+    with pytest.raises(RuntimeError, match="Could not fetch MIPLIB benchmark index"):
+        mps_module._miplib_remote_problem_names()
+
+    answers["next"] = _FakeResponse(headers={"Content-Length": "1234"})
+    assert mps_module._miplib_remote_size_bytes("a") == 1234
+    answers["next"] = _FakeResponse(headers={})
+    with pytest.raises(RuntimeError, match="did not report a Content-Length for 'a'"):
+        mps_module._miplib_remote_size_bytes("a")
+    answers["next"] = _FakeResponse(headers={"Content-Length": "12kB"})
+    with pytest.raises(RuntimeError, match="invalid Content-Length for 'a'"):
+        mps_module._miplib_remote_size_bytes("a")
+    answers["next"] = urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+    with pytest.raises(RuntimeError, match="Could not fetch MIPLIB size for 'a'"):
+        mps_module._miplib_remote_size_bytes("a")
+
+
 def test_miplib_prepare_without_network_counts_plain_instances(monkeypatch, tmp_path: Path):
     folder = tmp_path / "problem_classes" / "miplib_data"
     folder.mkdir(parents=True)

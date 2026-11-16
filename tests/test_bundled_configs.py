@@ -17,8 +17,9 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
-from solver_benchmarks.core.config import load_run_config
+from solver_benchmarks.core.config import load_environment_run_config, load_run_config
 from solver_benchmarks.datasets import get_dataset
 from solver_benchmarks.solvers import get_solver
 
@@ -70,6 +71,15 @@ def _variants(paths: list[Path]) -> dict[tuple[str, str], tuple[dict, list[str]]
             key = (solver.solver, json.dumps(solver.settings, sort_keys=True, default=str))
             variants.setdefault(key, (dict(solver.settings), []))[1].append(path.name)
     return variants
+
+
+@pytest.mark.parametrize("path", _config_paths(), ids=lambda path: str(path.relative_to(CONFIGS)))
+def test_every_config_parses(path: Path):
+    # Experimental configs and environment-matrix configs too.
+    if "environments" in yaml.safe_load(path.read_text()):
+        load_environment_run_config(path)
+    else:
+        load_run_config(path)
 
 
 def test_configs_readme_lists_exactly_the_maintained_configs():

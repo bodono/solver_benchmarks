@@ -13,7 +13,6 @@ import json
 import os
 import re
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -58,37 +57,14 @@ class _ToggleSolver(SolverAdapter):
 
 
 @pytest.fixture
-def fake_worker(monkeypatch):
-    """Stub the worker subprocess; each call records the payload and writes
-    a result whose status and run time come from ``outcome``."""
-    calls: list[dict] = []
-    outcome = {"status": "optimal", "run_time_seconds": 0.01}
-
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        calls.append(payload)
-        stdout_path.write_text(f"attempt {len(calls)}\n")
-        stderr_path.write_text("")
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            objective_value=0.0,
-            iterations=1,
-            artifact_dir=payload["artifacts_dir"],
-            **outcome,
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, timed_out=False)
-
+def fake_worker(fake_worker, monkeypatch):
+    """The shared worker stub (conftest.py) over this file's dataset and
+    solver; each call records the payload and writes a result whose status
+    and run time come from ``fake_worker.outcome``."""
     monkeypatch.setitem(dataset_registry.DATASETS, "resume_fixture", _TwoProblemDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "toggle", _ToggleSolver)
     monkeypatch.setattr(_ToggleSolver, "available", True)
-    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", run)
-    return SimpleNamespace(calls=calls, outcome=outcome)
+    return fake_worker
 
 
 def _config(tmp_path: Path, *, settings=None, dataset_options=None, timeout=None, resume=True):

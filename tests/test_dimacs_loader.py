@@ -159,7 +159,7 @@ def test_rotated_cones_are_refused(tmp_path: Path):
 
 
 @pytest.mark.parametrize("name", sorted(PUBLISHED_OPTIMUM))
-def test_bundled_problem_reaches_its_published_optimum(name: str):
+def test_bundled_problem_reaches_its_published_optimum(tmp_path, name: str):
     # nb_L1, qssp30 and sched_50_50_scaled have linear and second-order rows,
     # the pair that used to reach Clarabel in the wrong order (it reported
     # dual infeasibility on two of them and an optimum of 0 on qssp30).
@@ -169,7 +169,7 @@ def test_bundled_problem_reaches_its_published_optimum(name: str):
     from solver_benchmarks.core import status
 
     problem = get_dataset("dimacs")().load_problem(name)
-    result = get_solver("clarabel")({"verbose": False}).solve(problem, Path("."))
+    result = get_solver("clarabel")({"verbose": False}).solve(problem, tmp_path)
 
     assert result.status in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
     # The tolerances are set by what a mis-posed problem gives, not by what
@@ -376,11 +376,21 @@ def test_results_from_before_the_corrected_conversion_are_not_resumed():
     assert "subset" not in _signature_dataset_options("dimacs", {"subset": "all"})
 
 
-def test_filtinf1_posed_problem_has_an_improving_ray():
+@pytest.mark.slow
+@pytest.mark.timeout(900)
+def test_filtinf1_posed_problem_has_an_improving_ray(tmp_path):
     """Why filtinf1 is recorded as infeasible: there is a direction d with
     -A d in K and q'd = -1, so the problem posed here (the SeDuMi dual) has
     no optimum, and the SeDuMi primal no feasible point. filter48_socp, its
-    feasible sibling, has no such direction."""
+    feasible sibling, has no such direction.
+
+    The check solves for the direction (tens of seconds each). A stored
+    direction cannot replace the solve: filtinf1 is only weakly infeasible,
+    so Clarabel's direction has norm about 2e8 and, scaled to q'd = -1, its
+    -A d lies about 2e-7 from K, which is double-precision rounding at that
+    norm (a direction maximising the margin into K has a negative margin).
+    Any infeasible status for filter48_socp counts, so a Clarabel release
+    that reports it as inaccurately infeasible still passes."""
     pytest.importorskip("clarabel")
     from solver_benchmarks.core import status
     from solver_benchmarks.core.problem import CONE, ProblemData
@@ -402,7 +412,7 @@ def test_filtinf1_posed_problem_has_an_improving_ray():
             "obj_type": "min",
         }
         ray = ProblemData("dimacs", f"{name}_ray", CONE, data, metadata={})
-        return get_solver("clarabel")({"verbose": False}).solve(ray, Path(".")).status
+        return get_solver("clarabel")({"verbose": False}).solve(ray, tmp_path).status
 
     assert ray_status("filtinf1") in {status.OPTIMAL, status.OPTIMAL_INACCURATE}
-    assert ray_status("filter48_socp") == status.PRIMAL_INFEASIBLE
+    assert ray_status("filter48_socp") in status.ANY_INFEASIBLE

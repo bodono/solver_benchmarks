@@ -318,72 +318,8 @@ def _install_fake_cplex(monkeypatch, outcomes):
 # cuOpt
 
 
-class _CuOptModel:
-    def __init__(self):
-        self.calls = {}
-
-    def __getattr__(self, name):
-        if not name.startswith("set_"):
-            raise AttributeError(name)
-
-        def record(*args):
-            self.calls[name] = args
-
-        return record
-
-
-class _CuOptSettings:
-    _KNOWN = {
-        "time_limit",
-        "iteration_limit",
-        "num_cpu_threads",
-        "log_to_console",
-        "method",
-        "absolute_primal_tolerance",
-        "absolute_dual_tolerance",
-        "absolute_gap_tolerance",
-        "relative_primal_tolerance",
-        "relative_dual_tolerance",
-        "relative_gap_tolerance",
-    }
-
-    def __init__(self):
-        self.params = {}
-
-    def set_optimality_tolerance(self, value):
-        self.params["optimality_tolerance"] = value
-
-    def set_parameter(self, key, value):
-        if key not in self._KNOWN:
-            raise ValueError(f"Invalid parameter {key}")
-        self.params[key] = value
-
-
-def _install_fake_cuopt(monkeypatch, outcome):
-    from solver_benchmarks.solvers import cuopt_adapter
-
-    record: dict = {}
-
-    def solve(model, opts):
-        record["model"] = model
-        record["settings"] = opts.params
-        return types.SimpleNamespace(
-            get_termination_status=lambda: types.SimpleNamespace(name=outcome["status"]),
-            get_solve_time=lambda: 0.01,
-            get_primal_objective=lambda: outcome.get("objective", 0.0),
-            get_dual_objective=lambda: outcome.get("objective", 0.0),
-            get_lp_stats=lambda: {"nb_iterations": outcome.get("iterations", 3)},
-            get_primal_solution=lambda: outcome.get("x", []),
-            get_dual_solution=lambda: outcome.get("y", []),
-        )
-
-    fakes = (
-        types.SimpleNamespace(DataModel=_CuOptModel),
-        types.SimpleNamespace(Solve=solve),
-        types.SimpleNamespace(SolverSettings=_CuOptSettings),
-    )
-    monkeypatch.setattr(cuopt_adapter, "_import_cuopt", lambda: fakes)
-    return record
+# The cuOpt fake (FakeCuOpt, the fake_cuopt fixture) is shared with
+# test_cuopt_adapter.py and lives in conftest.py.
 
 
 # ---------------------------------------------------------------------------
@@ -445,16 +381,14 @@ def test_cplex_treats_near_sentinel_bounds_as_infinite(monkeypatch, tmp_path):
     assert result.kkt is not None and result.kkt["dual_res_rel"] == 0.0
 
 
-def test_cuopt_treats_near_sentinel_bounds_as_infinite(monkeypatch, tmp_path):
-    record = _install_fake_cuopt(
-        monkeypatch, {"status": "Optimal", "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
-    )
+def test_cuopt_treats_near_sentinel_bounds_as_infinite(fake_cuopt, tmp_path):
+    fake = fake_cuopt.returns("Optimal", x=[-1.0, -1.0], y=[0.0, 0.0], objective=-1.0)
     qp = _small_qp()
     qp["l"] = np.array([-9.999999999999998e19, -5.0])
     qp["u"] = np.array([5.0, 5e19])
     _solve("cuopt", qp, tmp_path)
-    (lower,) = record["model"].calls["set_constraint_lower_bounds"]
-    (upper,) = record["model"].calls["set_constraint_upper_bounds"]
+    (lower,) = fake.model_calls["set_constraint_lower_bounds"]
+    (upper,) = fake.model_calls["set_constraint_upper_bounds"]
     assert lower.tolist() == [-np.inf, -5.0]
     assert upper.tolist() == [5.0, np.inf]
 
@@ -503,18 +437,16 @@ def test_cplex_objective_only_with_a_solution(monkeypatch, tmp_path, raw, expect
     ("IterationLimit", status.MAX_ITER_REACHED, None),
     ("NumericalError", status.SOLVER_ERROR, None),
 ])
-def test_cuopt_objective_only_with_a_solution(monkeypatch, tmp_path, raw, expected, objective):
-    _install_fake_cuopt(
-        monkeypatch, {"status": raw, "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
-    )
+def test_cuopt_objective_only_with_a_solution(fake_cuopt, tmp_path, raw, expected, objective):
+    fake_cuopt.returns(raw, x=[-1.0, -1.0], y=[0.0, 0.0], objective=-1.0)
     result = _solve("cuopt", _small_qp(), tmp_path)
     assert result.status == expected
     assert result.objective_value == objective
     assert result.kkt is not None and result.kkt["primal_obj"] == pytest.approx(-1.0)
 
 
-def test_cuopt_infeasible_has_no_objective(monkeypatch, tmp_path):
-    _install_fake_cuopt(monkeypatch, {"status": "PrimalInfeasible", "objective": 3.0})
+def test_cuopt_infeasible_has_no_objective(fake_cuopt, tmp_path):
+    fake_cuopt.returns("PrimalInfeasible", objective=3.0)
     result = _solve("cuopt", _small_qp(), tmp_path)
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.objective_value is None
@@ -586,18 +518,16 @@ def test_cplex_unknown_parameter_is_a_value_error(monkeypatch, tmp_path, key):
         _solve("cplex", _small_qp(), tmp_path, {key: 1})
 
 
-def test_cuopt_translates_max_iter_to_iteration_limit(monkeypatch, tmp_path):
-    record = _install_fake_cuopt(
-        monkeypatch, {"status": "Optimal", "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
-    )
+def test_cuopt_translates_max_iter_to_iteration_limit(fake_cuopt, tmp_path):
+    fake = fake_cuopt.returns("Optimal", x=[-1.0, -1.0], y=[0.0, 0.0], objective=-1.0)
     result = _solve("cuopt", _small_qp(), tmp_path, {"max_iter": 40, "time_limit": 2})
-    assert record["settings"]["iteration_limit"] == 40
-    assert record["settings"]["time_limit"] == 2.0
+    assert fake.parameters["iteration_limit"] == 40
+    assert fake.parameters["time_limit"] == 2.0
     assert result.info["settings_translated"] == {"iteration_limit": 40}
 
 
-def test_cuopt_unknown_parameter_is_a_value_error(monkeypatch, tmp_path):
-    _install_fake_cuopt(monkeypatch, {"status": "Optimal"})
+def test_cuopt_unknown_parameter_is_a_value_error(fake_cuopt, tmp_path):
+    fake_cuopt.returns("Optimal")
     with pytest.raises(ValueError, match="iteration_limt"):
         _solve("cuopt", _small_qp(), tmp_path, {"iteration_limt": 3})
 
@@ -794,10 +724,8 @@ def test_gurobi_nan_point_has_no_kkt(monkeypatch, tmp_path):
     assert result.kkt is None
 
 
-def test_cuopt_records_raw_status_and_eps_translation(monkeypatch, tmp_path):
-    _install_fake_cuopt(
-        monkeypatch, {"status": "Optimal", "x": [-1.0, -1.0], "y": [0.0, 0.0], "objective": -1.0}
-    )
+def test_cuopt_records_raw_status_and_eps_translation(fake_cuopt, tmp_path):
+    fake_cuopt.returns("Optimal", x=[-1.0, -1.0], y=[0.0, 0.0], objective=-1.0)
     result = _solve("cuopt", _small_qp(), tmp_path, {"eps": 1e-6})
     assert result.info["raw_status"] == "Optimal"
     assert result.info["termination"] == "Optimal"

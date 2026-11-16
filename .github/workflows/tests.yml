@@ -144,13 +144,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,all]" "pytest-cov>=4.0"
 
-      # The one job that also runs the tests marked slow.
+      # The one job that also runs the tests marked slow. Worker subprocesses
+      # are not traced: coverage's subprocess patch made the worker-heavy test
+      # files about half again slower.
       - name: Run tests with coverage
         run: |
           python -m pytest -m "not network" \
             --cov=solver_benchmarks \
+            --cov=problem_classes \
             --cov-report=term-missing \
-            --cov-fail-under=70
+            --cov-fail-under=90
 
   dataset-download-smoke:
     name: Dataset download smoke

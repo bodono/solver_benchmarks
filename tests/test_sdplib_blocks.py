@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import shutil
-import tarfile
 from pathlib import Path
 
 import numpy as np
 import pytest
 import scipy.sparse as sp
+from conftest import sdplib_archive_dataset
 
 from solver_benchmarks.core.config import _stable_digest, parse_run_config, solve_signature
 from solver_benchmarks.datasets import get_dataset
@@ -203,18 +202,6 @@ def test_block_sizes_that_are_not_sizes_are_rejected(tmp_path: Path, blockvec):
         read_sdplib_block_sizes(_write_jld2_like(tmp_path / "bad.jld2", blockvec))
 
 
-def _archive_dataset(repo_root: Path, tmp_path: Path, **options):
-    """The SDPLIB dataset over the bundled archive, extracting into tmp_path, not the source tree."""
-    archive = repo_root / "problem_classes/sdplib_data/sdplib.tar"
-    if not archive.exists():
-        pytest.skip("bundled SDPLIB archive is not present")
-    folder = tmp_path / "problem_classes" / "sdplib_data"
-    folder.mkdir(parents=True, exist_ok=True)
-    if not (folder / "sdplib.tar").exists():
-        (folder / "sdplib.tar").symlink_to(archive)
-    return get_dataset("sdplib")(repo_root=repo_root, data_root=tmp_path / "problem_classes", **options)
-
-
 @pytest.mark.parametrize(
     ("name", "cone", "merged_order"),
     [
@@ -228,7 +215,7 @@ def _archive_dataset(repo_root: Path, tmp_path: Path, **options):
 def test_bundled_problems_load_with_declared_blocks(
     repo_root: Path, tmp_path: Path, name: str, cone: dict, merged_order: int
 ):
-    declared = _archive_dataset(repo_root, tmp_path, subset="all").load_problem(name)
+    declared = sdplib_archive_dataset(repo_root, tmp_path, subset="all").load_problem(name)
     assert declared.cone["cone"] == cone and list(declared.cone["cone"]) == list(cone)
     assert declared.metadata["block_structure"] == "declared"
     assert declared.metadata["num_blocks"] == len(DECLARED[name])
@@ -236,7 +223,7 @@ def test_bundled_problems_load_with_declared_blocks(
     rows = cone.get("l", 0) + sum(order * (order + 1) // 2 for order in cone["s"])
     assert declared.cone["A"].shape[0] == declared.cone["m"] == declared.cone["b"].size == rows
 
-    merged = _archive_dataset(repo_root, tmp_path, subset="all", blocks="merged").load_problem(name)
+    merged = sdplib_archive_dataset(repo_root, tmp_path, subset="all", blocks="merged").load_problem(name)
     assert merged.cone["cone"] == {"s": [merged_order]}
     assert merged.metadata["block_structure"] == "merged"
     assert merged.metadata["num_blocks"] == 1 and merged.metadata["block_orders"] == [merged_order]
@@ -247,48 +234,27 @@ def test_bundled_problems_load_with_declared_blocks(
     assert np.count_nonzero(merged.cone["b"]) == np.count_nonzero(declared.cone["b"])
 
 
-def _recorded_blocks(archive: Path, scratch: Path) -> dict[str, tuple[int, ...] | None]:
-    """The block record of every archive member, in one pass over the archive.
-
-    Each member is copied to a scratch file, read and removed, so the pass
-    costs one decompression of the archive and never holds a member in memory
-    (the largest is 395 MB).
-    """
-    recorded = {}
-    scratch.mkdir(parents=True, exist_ok=True)
-    target = scratch / "member.jld2"
-    with tarfile.open(archive) as tar:
-        for member in tar:
-            if not member.name.endswith(".jld2"):
-                continue
-            source = tar.extractfile(member)
-            assert source is not None, member.name
-            with source, open(target, "wb") as sink:
-                shutil.copyfileobj(source, sink)
-            recorded[Path(member.name).stem] = read_sdplib_block_sizes(target)
-            target.unlink()
-    return recorded
-
-
-# Minutes on its own, and two to three times that under coverage tracing.
+# The archive pass (sdplib_archive_members, shared with the other slow SDPLIB
+# test) takes minutes, and two to three times that under coverage tracing.
 @pytest.mark.slow
 @pytest.mark.timeout(900)
-def test_every_bundled_problem_records_its_blocks_and_splits(repo_root: Path, tmp_path: Path):
+def test_every_bundled_problem_records_its_blocks_and_splits(
+    repo_root: Path, tmp_path: Path, sdplib_archive_members
+):
     # Reads the record of every archive member and compares it with what the
     # original SDPLIB files declare on their third line (the fixture holds
     # those, read from the originals, not from the archive). Then loads the
     # 39 problems that have more than one block: a record that did not fit
     # the stored matrices would leave a nonzero outside the blocks (and
     # raise) or change the row count.
-    dataset = _archive_dataset(repo_root, tmp_path, subset="all")
-    archive = repo_root / "problem_classes/sdplib_data/sdplib.tar"
+    dataset = sdplib_archive_dataset(repo_root, tmp_path, subset="all")
     declared = {
         name: tuple(sizes)
         for name, sizes in json.loads(
             (repo_root / "tests/fixtures/sdplib_declared_blocks.json").read_text()
         ).items()
     }
-    recorded = _recorded_blocks(archive, tmp_path / "scratch")
+    recorded = {name: member["blocks"] for name, member in sdplib_archive_members.items()}
     assert len(recorded) == 92 and recorded == declared
     assert all(DECLARED[name] == recorded[name] for name in DECLARED)
     with_diagonal = {name for name, sizes in recorded.items() if any(size < 0 for size in sizes)}
@@ -305,7 +271,7 @@ def test_every_bundled_problem_records_its_blocks_and_splits(repo_root: Path, tm
 
 
 def test_unknown_blocks_option_is_rejected_at_planning(repo_root: Path, tmp_path: Path):
-    dataset = _archive_dataset(repo_root, tmp_path, blocks="merge")
+    dataset = sdplib_archive_dataset(repo_root, tmp_path, blocks="merge")
     with pytest.raises(ValueError, match="Unknown SDPLIB blocks option"):
         dataset.list_problems()
 

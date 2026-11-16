@@ -2020,14 +2020,23 @@ pytest -m "not network"
 `-m "not network"` leaves out the tests marked `network`. They download from
 external dataset hosts and fail offline or behind a proxy, so CI runs them only
 on the weekly schedule (`pytest -m network tests/test_dataset_downloads.py`).
-The two tests marked `slow` read every member of the SDPLIB archive and take
-minutes each. For a quick run, use `pytest -m "not network and not slow"`, as the
-CI matrix jobs do; the coverage job runs the slow tests on every pull request.
+The tests marked `slow` take a minute or more: two read every member of the
+SDPLIB archive, and one has Clarabel look for an improving direction of two
+DIMACS problems. For a quick run, use `pytest -m "not network and not slow"`, as
+the CI matrix jobs do; the coverage job runs the slow tests on every pull request.
 
-The solver integration tests run once per solver and skip a solver that is not
-installed. Set `BENCH_REQUIRE_ALL_SOLVERS=1` to make a missing solver fail
-instead. CI sets it in the jobs that install every extra, because there a
-missing solver means a packaging or import regression.
+Most tests that need a solver skip when it is not installed (or does not
+import); the runner tests in `tests/test_runner.py` that solve with OSQP need it
+installed.
+Set `BENCH_REQUIRE_ALL_SOLVERS=1` (any value but empty, `0`, `false`, `no` or
+`off`) to make those skips fail instead, across the whole suite: a skip whose
+reason is an open-source solver that is not installed or does not import
+(`pytest.importorskip`, "... not installed"), or an OSQP build that never stops
+at a tested status, fails and names the solver. Only the solvers the `all`
+extra installs on the running Python and platform count; skips for the
+commercial solvers (Gurobi, MOSEK, CPLEX, cuOpt), for absent data and for the
+platform stay skips. CI sets it in the jobs that install every extra, because
+there a missing solver means a packaging or import regression.
 
 Current tests cover:
 

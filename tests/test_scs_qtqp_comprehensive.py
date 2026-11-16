@@ -209,16 +209,22 @@ def test_scs_num_threads_probe_caches_after_first_call(monkeypatch):
     call must not run the probe again — otherwise every solve with
     ``threads`` would pay the probe cost."""
     pytest.importorskip("scs")
+    import types
+
     import solver_benchmarks.solvers.scs_adapter as scs_mod
 
     # Force a fresh probe.
     monkeypatch.setattr(scs_mod, "_SCS_NUM_THREADS_SUPPORTED", None)
     first = scs_mod._scs_supports_num_threads()
-    # Replace SCS so that a cache-bypass would crash; the cached path
-    # must short-circuit before touching the module.
-    monkeypatch.setattr(scs_mod, "scs", None, raising=False)
+    # Replace SCS with a stand-in that records every solve: the cached path
+    # must short-circuit before importing it.
+    probes = []
+    monkeypatch.setitem(
+        sys.modules, "scs", types.SimpleNamespace(SCS=lambda *args, **kwargs: probes.append(kwargs))
+    )
     second = scs_mod._scs_supports_num_threads()
     assert first == second
+    assert probes == []
 
 
 def test_scs_num_threads_probe_returns_false_when_scs_missing(monkeypatch):
@@ -307,7 +313,7 @@ def test_scs_solve_raises_solver_unavailable_when_module_missing(
 # ---------------------------------------------------------------------------
 
 
-def test_scs_translates_time_limit_aliases_into_native_kwarg(tmp_path):
+def test_scs_translates_time_limit_aliases_into_native_kwarg(tmp_path, monkeypatch):
     """SCS' native time-limit knob is ``time_limit_secs`` (note trailing
     s); the adapter accepts the cross-adapter aliases. Verify the
     translation by intercepting scs.solve."""
@@ -326,21 +332,15 @@ def test_scs_translates_time_limit_aliases_into_native_kwarg(tmp_path):
     fake_scs.solve = fake_solve
     fake_scs.SCS = MagicMock(side_effect=RuntimeError("not used"))
 
-    import sys as _sys
-
-    _sys.modules["scs"] = fake_scs
-    try:
-        adapter = scs_mod.SCSSolverAdapter({"time_limit": 7.5, "verbose": False})
-        adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
-    finally:
-        # Restore real SCS so later tests aren't poisoned.
-        _sys.modules.pop("scs", None)
+    monkeypatch.setitem(sys.modules, "scs", fake_scs)
+    adapter = scs_mod.SCSSolverAdapter({"time_limit": 7.5, "verbose": False})
+    adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
     assert captured.get("time_limit_secs") == pytest.approx(7.5)
     # The cross-adapter alias must be popped, not forwarded.
     assert "time_limit" not in captured
 
 
-def test_scs_log_csv_filename_true_routes_to_artifacts_dir(tmp_path):
+def test_scs_log_csv_filename_true_routes_to_artifacts_dir(tmp_path, monkeypatch):
     """When the user sets ``log_csv_filename: True`` (truthy sentinel),
     the adapter must rewrite it to a real path under artifacts_dir
     instead of forwarding the literal True (which would crash SCS)."""
@@ -358,16 +358,11 @@ def test_scs_log_csv_filename_true_routes_to_artifacts_dir(tmp_path):
     fake_scs = MagicMock()
     fake_scs.solve = fake_solve
 
-    import sys as _sys
-
-    _sys.modules["scs"] = fake_scs
-    try:
-        adapter = scs_mod.SCSSolverAdapter(
-            {"log_csv_filename": True, "verbose": False}
-        )
-        adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
-    finally:
-        _sys.modules.pop("scs", None)
+    monkeypatch.setitem(sys.modules, "scs", fake_scs)
+    adapter = scs_mod.SCSSolverAdapter(
+        {"log_csv_filename": True, "verbose": False}
+    )
+    adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
     routed = captured.get("log_csv_filename")
     assert isinstance(routed, str)
     assert routed.startswith(str(tmp_path))
@@ -395,14 +390,9 @@ def test_scs_threads_setting_forwards_when_probe_supports(tmp_path, monkeypatch)
     fake_scs = MagicMock()
     fake_scs.solve = fake_solve
 
-    import sys as _sys
-
-    _sys.modules["scs"] = fake_scs
-    try:
-        adapter = scs_mod.SCSSolverAdapter({"threads": 4, "verbose": False})
-        adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
-    finally:
-        _sys.modules.pop("scs", None)
+    monkeypatch.setitem(sys.modules, "scs", fake_scs)
+    adapter = scs_mod.SCSSolverAdapter({"threads": 4, "verbose": False})
+    adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
     assert captured.get("num_threads") == 4
 
 
@@ -698,26 +688,28 @@ def test_qtqp_normalize_settings_no_linear_solver_is_noop():
 
 
 def test_qtqp_writes_trace_jsonl_when_solve_emits_stats(tmp_path):
-    """If QTQP's solve produces stats rows, the adapter must persist
-    them as JSONL inside artifacts_dir (one row per line)."""
+    """With ``collect_stats: true`` QTQP's solve produces stats rows, and
+    the adapter must persist them as JSONL inside artifacts_dir (one row
+    per line). Without it there are no rows and no file."""
     pytest.importorskip("qtqp")
     from solver_benchmarks.solvers.qtqp_adapter import QTQPSolverAdapter
 
-    adapter = QTQPSolverAdapter({"verbose": False})
-    result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
+    adapter = QTQPSolverAdapter({"verbose": False, "collect_stats": True})
+    result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path / "stats")
     assert result.status == status.OPTIMAL
-    trace_path = tmp_path / "trace.jsonl"
-    if result.trace:
-        assert trace_path.exists()
-        lines = trace_path.read_text().strip().splitlines()
-        assert len(lines) == len(result.trace)
-        # Every row must be a JSON object the adapter could later read back.
-        for line in lines:
-            json.loads(line)
-    else:
-        # Empty trace is a valid no-op: _write_trace must not create
-        # an empty file in that case.
-        assert not trace_path.exists()
+    assert result.trace
+    lines = (tmp_path / "stats" / "trace.jsonl").read_text().strip().splitlines()
+    assert len(lines) == len(result.trace)
+    # Every row must be a JSON object the adapter could later read back.
+    assert [json.loads(line) for line in lines] == json.loads(json.dumps(result.trace))
+
+    # An empty trace is a no-op: _write_trace must not create an empty file.
+    result = QTQPSolverAdapter({"verbose": False}).solve(
+        _make_qp_problem(_small_qp()), tmp_path / "plain"
+    )
+    assert result.status == status.OPTIMAL
+    assert not result.trace
+    assert not (tmp_path / "plain" / "trace.jsonl").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +717,7 @@ def test_qtqp_writes_trace_jsonl_when_solve_emits_stats(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_qtqp_handles_empty_stats_solution_gracefully(tmp_path):
+def test_qtqp_handles_empty_stats_solution_gracefully(tmp_path, monkeypatch):
     """If QTQP returns a Solution with no stats rows, the adapter must
     fall back to ``objective=None``, ``iterations=None``, and an empty
     info beyond the raw_status. Validates lines 79-81 of the adapter.
@@ -754,14 +746,9 @@ def test_qtqp_handles_empty_stats_solution_gracefully(tmp_path):
         LinearSolver=SimpleNamespace(QDLDL="qdldl_enum"),
     )
 
-    import sys as _sys
-
-    _sys.modules["qtqp"] = fake_qtqp
-    try:
-        adapter = QTQPSolverAdapter({"verbose": False})
-        result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
-    finally:
-        _sys.modules.pop("qtqp", None)
+    monkeypatch.setitem(sys.modules, "qtqp", fake_qtqp)
+    adapter = QTQPSolverAdapter({"verbose": False})
+    result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
     assert result.objective_value is None
     assert result.iterations is None
     # raw_status survives and so does the time_limit/threads ignored
@@ -796,16 +783,11 @@ def test_qtqp_records_time_limit_and_threads_ignored(tmp_path, monkeypatch):
         LinearSolver=SimpleNamespace(QDLDL="qdldl_enum"),
     )
 
-    import sys as _sys
-
-    _sys.modules["qtqp"] = fake_qtqp
-    try:
-        adapter = QTQPSolverAdapter(
-            {"verbose": False, "time_limit": 5.0, "threads": 4}
-        )
-        result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
-    finally:
-        _sys.modules.pop("qtqp", None)
+    monkeypatch.setitem(sys.modules, "qtqp", fake_qtqp)
+    adapter = QTQPSolverAdapter(
+        {"verbose": False, "time_limit": 5.0, "threads": 4}
+    )
+    result = adapter.solve(_make_qp_problem(_small_qp()), tmp_path)
     assert result.info.get("time_limit_ignored") is True
     assert result.info.get("time_limit_seconds") == 5.0
     assert result.info.get("threads_ignored") is True
@@ -1008,29 +990,39 @@ def test_qtqp_cone_dict_includes_zero_cone_when_equality_present(tmp_path):
     assert result.objective_value == pytest.approx(0.25, abs=1e-4)
 
 
-def test_qtqp_cone_dict_omits_zero_keys(tmp_path):
+def test_qtqp_cone_dict_omits_zero_keys(tmp_path, monkeypatch):
     """If z=0 (no equality rows) the cone_dict must not contain a
     ``z`` key — sending an empty zero cone to the KKT helper would
     confuse downstream tooling. Same for the nonnegative branch."""
     pytest.importorskip("qtqp")
+    from solver_benchmarks.solvers import qtqp_adapter
     from solver_benchmarks.solvers.qtqp_adapter import QTQPSolverAdapter
 
-    # Use a QP with bounds only on the lower side so the
-    # qp_to_nonnegative_cone transform yields all NN rows (no z).
-    qp = {
-        "P": sp.csc_matrix(np.eye(2)),
-        "q": np.array([1.0, 1.0]),
-        "A": sp.csc_matrix(np.eye(2)),
-        "l": np.array([0.0, 0.0]),
-        "u": np.array([np.inf, np.inf]),
-        "n": 2,
-        "m": 2,
-        "obj_type": "min",
-    }
-    adapter = QTQPSolverAdapter({"verbose": False})
-    result = adapter.solve(_make_qp_problem(qp), tmp_path)
-    assert result.status == status.OPTIMAL
-    # If kkt dict came back, it shows the cone construction worked.
-    if result.kkt is not None:
-        # Implicitly: no crash means the cone_dict was well-formed.
+    cones = []
+    real_compute_kkt = qtqp_adapter._compute_kkt
+
+    def compute_kkt(mapped, solution, p, c, a, b, cone_dict):
+        cones.append(dict(cone_dict))
+        return real_compute_kkt(mapped, solution, p, c, a, b, cone_dict)
+
+    monkeypatch.setattr(qtqp_adapter, "_compute_kkt", compute_kkt)
+    # Bounds only on the lower side: qp_to_nonnegative_cone yields
+    # nonnegative rows only (no z). Then equality rows only (no l).
+    for lower, upper, expected in (
+        ([0.0, 0.0], [np.inf, np.inf], {"l": 2}),
+        ([1.0, 1.0], [1.0, 1.0], {"z": 2}),
+    ):
+        qp = {
+            "P": sp.csc_matrix(np.eye(2)),
+            "q": np.array([1.0, 1.0]),
+            "A": sp.csc_matrix(np.eye(2)),
+            "l": np.array(lower),
+            "u": np.array(upper),
+            "n": 2,
+            "m": 2,
+            "obj_type": "min",
+        }
+        result = QTQPSolverAdapter({"verbose": False}).solve(_make_qp_problem(qp), tmp_path)
+        assert result.status == status.OPTIMAL
+        assert cones[-1] == expected
         assert np.isfinite(result.kkt["primal_res_rel"])

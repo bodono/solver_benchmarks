@@ -5,15 +5,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-import yaml
 from click.testing import CliRunner
+from conftest import FakeWorker
 
 from solver_benchmarks.cli import main
 from solver_benchmarks.core.config import (
-    load_environment_run_config,
     load_run_config,
     parse_environment_run_config,
     parse_run_config,
@@ -25,23 +23,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def _minimal(**run):
     return {"run": {"dataset": "synthetic_qp", **run}, "solvers": [{"id": "s", "solver": "scs"}]}
-
-
-@pytest.mark.parametrize(
-    "path",
-    sorted(
-        path
-        for path in (REPO_ROOT / "configs").rglob("*")
-        if path.suffix in {".yaml", ".yml", ".json"}
-    ),
-    ids=lambda path: str(path.relative_to(REPO_ROOT / "configs")),
-)
-def test_every_bundled_config_parses(path: Path):
-    raw = yaml.safe_load(path.read_text())
-    if "environments" in raw:
-        load_environment_run_config(path)
-    else:
-        load_run_config(path)
 
 
 def test_yaml_exponent_floats_parse_as_floats(tmp_path: Path):
@@ -257,7 +238,6 @@ def test_ids_that_share_an_artifact_directory_are_rejected_across_environments()
 def test_relative_data_root_resolves_against_the_repo_root(monkeypatch, tmp_path: Path):
     """Like run.output_dir, and as before when run from the repository root:
     not against the config file's directory or the caller's."""
-    from solver_benchmarks.core.result import ProblemResult
     from solver_benchmarks.core.runner import run_benchmark
 
     repo = tmp_path / "repo"
@@ -280,19 +260,8 @@ def test_relative_data_root_resolves_against_the_repo_root(monkeypatch, tmp_path
     config = load_run_config(path)
     assert config.datasets[0].dataset_options["data_root"] == "mydata"
 
-    payloads = []
-
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        payloads.append(payload)
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-            problem_kind=payload["problem_kind"], solver_id="s", solver="scs",
-            status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.01,
-            artifact_dir=payload["artifacts_dir"],
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, timed_out=False)
+    fake = FakeWorker()
+    payloads = fake.calls
 
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake)
     store = run_benchmark(config, repo_root=repo)
@@ -308,22 +277,15 @@ def test_run_finds_bundled_data_from_outside_the_repository(
 ):
     """bench run without --repo-root defaults like the other commands: the
     current directory if it holds problem_classes, else the package's repo."""
-    from solver_benchmarks.core.result import ProblemResult
     from solver_benchmarks.core.runner import run_benchmark
 
     seen = {}
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
+    worker = FakeWorker()
+
+    def fake(cmd, *, cwd, **kwargs):
         seen["cwd"] = cwd
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-            problem_kind=payload["problem_kind"], solver_id="s", solver="scs",
-            status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.01,
-            artifact_dir=payload["artifacts_dir"],
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, timed_out=False)
+        return worker(cmd, **kwargs)
 
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", fake)
     monkeypatch.chdir(tmp_path)

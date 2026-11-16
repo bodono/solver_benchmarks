@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import scipy.sparse as sp
+from conftest import FakeWorker
 
 from solver_benchmarks.core.config import (
     DatasetConfig,
@@ -92,36 +93,11 @@ def test_run_benchmark_logs_aggregate_progress(monkeypatch, tmp_path: Path, caps
 
     subprocess_stream_flags = []
 
-    def fake_run_subprocess(
-        cmd,
-        *,
-        cwd,
-        timeout,
-        stdout_path,
-        stderr_path,
-        stream_output,
-        env=None,
-    ):
+    worker = FakeWorker()
+
+    def fake_run_subprocess(cmd, *, stream_output, **kwargs):
         subprocess_stream_flags.append(stream_output)
-        payload = json.loads(Path(cmd[-1]).read_text())
-        artifact_dir = Path(payload["artifacts_dir"])
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="optimal",
-            objective_value=0.0,
-            iterations=1,
-            run_time_seconds=0.01,
-            artifact_dir=str(artifact_dir),
-        ).to_record()
-        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-        stdout_path.write_text("")
-        stderr_path.write_text("")
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+        return worker(cmd, **kwargs)
 
     monkeypatch.setitem(dataset_registry.DATASETS, "fake_dataset", FakeDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "fake_solver", FakeSolver)
@@ -206,36 +182,11 @@ def test_resume_progress_uses_total_expected_denominator(
 
     subprocess_payloads = []
 
-    def fake_run_subprocess(
-        cmd,
-        *,
-        cwd,
-        timeout,
-        stdout_path,
-        stderr_path,
-        stream_output,
-        env=None,
-    ):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        subprocess_payloads.append(payload)
-        artifact_dir = Path(payload["artifacts_dir"])
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="optimal",
-            objective_value=0.0,
-            iterations=1,
-            run_time_seconds=0.02,
-            artifact_dir=str(artifact_dir),
-        ).to_record()
-        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-        stdout_path.write_text("")
-        stderr_path.write_text("")
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+    worker = FakeWorker()
+
+    def fake_run_subprocess(cmd, **kwargs):
+        subprocess_payloads.append(json.loads(Path(cmd[-1]).read_text()))
+        return worker(cmd, **kwargs)
 
     monkeypatch.setitem(dataset_registry.DATASETS, "fake_resume", FakeDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "fake_solver", FakeSolver)

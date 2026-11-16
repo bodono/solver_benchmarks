@@ -120,8 +120,8 @@ def test_run_subprocess_timeout_kills_grandchildren(tmp_path: Path, helper_setup
         helper_setup=helper_setup,
         parent_body="sys.stdout.write('parent_started\\n'); sys.stdout.flush()\ntime.sleep(60)\n",
     )
-    # Generous: the timeout only has to cover interpreter start and the fork.
-    result = _run(script, tmp_path, timeout=5.0)
+    # The timeout only has to cover interpreter start and the fork.
+    result = _run(script, tmp_path, timeout=2.0)
     assert result.timed_out is True
     _assert_helper_dies(tmp_path)
 
@@ -259,6 +259,61 @@ def test_a_worker_temporary_files_are_removed_with_it(system_tmp: Path, tmp_path
     assert not written.exists()
     assert list(system_tmp.iterdir()) == []
 
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only: relies on process groups")
+def test_terminate_process_sigkills_a_worker_that_ignores_sigterm(tmp_path: Path, monkeypatch):
+    import signal
+
+    from solver_benchmarks.core import runner
+
+    monkeypatch.setattr(runner, "_KILL_GRACE_SECONDS", 0.3)
+    ready = tmp_path / "ready"
+    process = subprocess.Popen(
+        [sys.executable, "-c",
+         "import pathlib, signal, sys, time\n"
+         "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+         "pathlib.Path(sys.argv[1]).write_text('ready')\n"
+         "time.sleep(60)\n",
+         str(ready)],
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 20
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "the worker never started"
+        started = time.monotonic()
+        assert runner._terminate_process(process) == -signal.SIGKILL
+        assert time.monotonic() - started < 4  # the grace, not the final wait
+        assert process.poll() == -signal.SIGKILL
+    finally:
+        process.kill()
+        process.wait()
+
+
+def test_tee_stream_keeps_draining_when_the_log_cannot_be_written():
+    """A full disk must not stop the reader: the pipe would fill and block
+    the worker, or close and kill it with EPIPE."""
+    import io
+    from collections import deque
+
+    from solver_benchmarks.core.runner import _tee_stream
+
+    class FullDisk:
+        writes = 0
+
+        def write(self, text):
+            FullDisk.writes += 1
+            raise OSError(28, "No space left on device")
+
+    source = io.StringIO("".join(f"line {i}\n" for i in range(50)))
+    sink = io.StringIO()
+    tail: deque[str] = deque(maxlen=1000)
+    _tee_stream(source, FullDisk(), sink, tail, True)
+    assert len(tail) == 50 and tail[-1] == "line 49\n"
+    assert sink.getvalue().count("\n") == 50
+    assert FullDisk.writes == 1  # the log is given up on after the first failure
+    assert source.closed
 
 
 class _OneProblemDataset:

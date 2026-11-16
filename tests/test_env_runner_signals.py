@@ -20,37 +20,66 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX signals")
 # A stand-in for a child `bench run`: on SIGTERM it records that it cleaned up
 # (as the real child kills its workers) and exits; otherwise it sleeps.
 _CHILD = """
-import pathlib, signal, sys, time
+import os, pathlib, signal, sys, time
 marker = pathlib.Path(sys.argv[1])
 ignore = sys.argv[2] == "ignore"
 def stop(signum, frame):
     marker.write_text("cleaned up")
     sys.exit(0)
 signal.signal(signal.SIGTERM, signal.SIG_IGN if ignore else stop)
-marker.with_suffix(".ready").write_text("ready")
+marker.with_suffix(".ready").write_text(str(os.getpid()))
 time.sleep(60)
 """
 
 
-def _signal_self_when_ready(marker: Path, signum: int) -> threading.Thread:
-    def send():
-        deadline = time.monotonic() + 20
-        while not marker.with_suffix(".ready").exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        os.kill(os.getpid(), signum)
+@pytest.fixture
+def signal_self_when_ready():
+    """``start(marker, signum)`` sends ``signum`` to this process once the
+    child has written its ``.ready`` marker.
 
-    thread = threading.Thread(target=send, daemon=True)
-    thread.start()
-    return thread
+    The signal is sent only while the test runs and a handler other than the
+    one in place at ``start`` is installed: a late or unhandled SIGTERM would
+    end the whole pytest session, and a SIGINT would abort it. Teardown
+    cancels and joins the thread.
+    """
+    cancel = threading.Event()
+    lock = threading.Lock()
+    threads: list[threading.Thread] = []
+
+    def start(marker: Path, signum: int) -> None:
+        handler_at_start = signal.getsignal(signum)
+
+        def send():
+            ready = marker.with_suffix(".ready")
+            deadline = time.monotonic() + 20
+            while not ready.exists():
+                if cancel.is_set() or time.monotonic() > deadline:
+                    return
+                time.sleep(0.02)
+            with lock:
+                if not cancel.is_set() and signal.getsignal(signum) is not handler_at_start:
+                    os.kill(os.getpid(), signum)
+
+        thread = threading.Thread(target=send, daemon=True)
+        thread.start()
+        threads.append(thread)
+
+    yield start
+    with lock:
+        cancel.set()
+    for thread in threads:
+        thread.join()
 
 
 @pytest.mark.parametrize("signum, expected", [
     (signal.SIGTERM, SystemExit),
     (signal.SIGINT, KeyboardInterrupt),
 ])
-def test_a_stop_signal_is_forwarded_so_the_child_can_clean_up(tmp_path, signum, expected):
+def test_a_stop_signal_is_forwarded_so_the_child_can_clean_up(
+    tmp_path, signum, expected, signal_self_when_ready
+):
     marker = tmp_path / "child"
-    _signal_self_when_ready(marker, signum)
+    signal_self_when_ready(marker, signum)
     started = time.monotonic()
     with pytest.raises(expected):
         with terminate_like_interrupt():
@@ -59,16 +88,27 @@ def test_a_stop_signal_is_forwarded_so_the_child_can_clean_up(tmp_path, signum, 
     assert time.monotonic() - started < 15
 
 
-def test_a_child_that_ignores_sigterm_is_killed_after_the_grace(tmp_path, monkeypatch):
+def test_a_child_that_ignores_sigterm_is_killed_after_the_grace(
+    tmp_path, monkeypatch, signal_self_when_ready
+):
     monkeypatch.setattr(env_runner, "_CHILD_SHUTDOWN_SECONDS", 0.5)
     marker = tmp_path / "child"
-    _signal_self_when_ready(marker, signal.SIGTERM)
+    signal_self_when_ready(marker, signal.SIGTERM)
     started = time.monotonic()
     with pytest.raises(SystemExit):
         with terminate_like_interrupt():
             env_runner._run_child([sys.executable, "-c", _CHILD, str(marker), "ignore"], cwd=tmp_path)
     assert not marker.exists()
     assert time.monotonic() - started < 15
+    # The child is gone (killed and reaped), not left sleeping.
+    pid = int(marker.with_suffix(".ready").read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail(f"the child {pid} outlived the grace")
 
 
 def test_run_child_reports_a_failing_child(tmp_path):
@@ -83,6 +123,9 @@ def test_only_the_first_stop_signal_unwinds_and_handlers_are_restored():
     previous = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
     with pytest.raises(SystemExit) as raised:
         with terminate_like_interrupt():
+            # Without the handlers, these signals would end the pytest session.
+            assert signal.getsignal(signal.SIGTERM) is not previous[1]
+            assert signal.getsignal(signal.SIGINT) is not previous[0]
             try:
                 os.kill(os.getpid(), signal.SIGTERM)
                 time.sleep(1)

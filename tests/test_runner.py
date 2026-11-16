@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
+from conftest import FakeWorker
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.cli import main
@@ -89,27 +90,11 @@ def test_resume_reuses_legacy_rows_when_solve_signature_is_compatible(
 
     calls: list[str] = []
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        calls.append(payload["solver"]["id"])
-        artifact_dir = Path(payload["artifacts_dir"])
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="optimal",
-            objective_value=0.0,
-            iterations=1,
-            run_time_seconds=0.01,
-            artifact_dir=str(artifact_dir),
-        ).to_record()
-        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-        stdout_path.write_text("")
-        stderr_path.write_text("")
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+    worker = FakeWorker()
+
+    def fake_run_subprocess(cmd, **kwargs):
+        calls.append(json.loads(Path(cmd[-1]).read_text())["solver"]["id"])
+        return worker(cmd, **kwargs)
 
     monkeypatch.setitem(dataset_registry.DATASETS, "resume_ds", ResumeDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "resume_solver", ResumeSolver)
@@ -199,27 +184,11 @@ def test_resume_supersedes_legacy_rows_when_solver_settings_change(
 
     calls: list[dict] = []
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        calls.append(payload["solver"])
-        artifact_dir = Path(payload["artifacts_dir"])
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="optimal",
-            objective_value=0.0,
-            iterations=1,
-            run_time_seconds=0.01,
-            artifact_dir=str(artifact_dir),
-        ).to_record()
-        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-        stdout_path.write_text("")
-        stderr_path.write_text("")
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+    worker = FakeWorker()
+
+    def fake_run_subprocess(cmd, **kwargs):
+        calls.append(json.loads(Path(cmd[-1]).read_text())["solver"])
+        return worker(cmd, **kwargs)
 
     monkeypatch.setitem(dataset_registry.DATASETS, "resume_ds", ResumeDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "resume_solver", ResumeSolver)
@@ -446,17 +415,13 @@ def test_resume_caps_deterministic_worker_errors_and_can_extend_budget(
 
     calls = []
 
-    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        calls.append(payload["problem"])
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-            problem_kind=payload["problem_kind"], solver_id="broken", solver="broken",
-            status="worker_error", objective_value=None, iterations=None, run_time_seconds=None,
-            error="deterministic adapter exception", artifact_dir=payload["artifacts_dir"],
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, timed_out=False)
+    worker = FakeWorker()
+    worker.outcome = {"status": "worker_error", "objective_value": None, "iterations": None,
+                      "run_time_seconds": None, "error": "deterministic adapter exception"}
+
+    def subprocess(cmd, **kwargs):
+        calls.append(json.loads(Path(cmd[-1]).read_text())["problem"])
+        return worker(cmd, **kwargs)
 
     monkeypatch.setitem(solver_registry.SOLVERS, "broken", BrokenSolver)
     monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", subprocess)
@@ -836,12 +801,21 @@ def test_skip_only_runs_write_parquet_so_load_results_sees_every_skip(
 
 
 def test_run_benchmark_unlinks_stale_parquet_at_start_and_writes_at_end(
-    tmp_path: Path, repo_root: Path
+    fake_worker, monkeypatch, tmp_path: Path, repo_root: Path
 ):
     """Pin the success-sentinel contract: a leftover parquet from a
     prior aborted attempt must be removed at the start of run_benchmark
     so it cannot be mistaken for the completion of *this* run, and the
     parquet must reappear at the end with the new run's content."""
+
+    class SentinelSolver(SolverAdapter):
+        solver_name = "sentinel_stub"
+        supported_problem_kinds = {QP}
+
+        def solve(self, problem, artifacts_dir):  # pragma: no cover - the worker is stubbed
+            raise AssertionError
+
+    monkeypatch.setitem(solver_registry.SOLVERS, "sentinel_stub", SentinelSolver)
     config = parse_run_config(
         {
             "run": {
@@ -850,13 +824,7 @@ def test_run_benchmark_unlinks_stale_parquet_at_start_and_writes_at_end(
                 "include": ["one_variable_eq"],
                 "parallelism": 1,
             },
-            "solvers": [
-                {
-                    "id": "scs_sentinel",
-                    "solver": "scs",
-                    "settings": {"verbose": False, "max_iters": 1000},
-                }
-            ],
+            "solvers": [{"id": "sentinel", "solver": "sentinel_stub", "settings": {}}],
         }
     )
 
@@ -865,9 +833,17 @@ def test_run_benchmark_unlinks_stale_parquet_at_start_and_writes_at_end(
     stale_parquet = run_dir / "results.parquet"
     stale_parquet.write_bytes(b"definitely-not-a-parquet-file")
     stale_mtime_ns = stale_parquet.stat().st_mtime_ns
+    present_during_solve = []
 
+    def worker(cmd, **kwargs):
+        present_during_solve.append(stale_parquet.exists())
+        return fake_worker(cmd, **kwargs)
+
+    monkeypatch.setattr("solver_benchmarks.core.runner._run_subprocess", worker)
     store = run_benchmark(config, run_dir=run_dir, repo_root=repo_root)
 
+    # Gone while the run was under way, so an interrupted run leaves none.
+    assert present_during_solve == [False]
     assert store.results_parquet_path == stale_parquet
     assert stale_parquet.exists()
     # The byte payload was overwritten, not patched: the old contents
@@ -1293,32 +1269,7 @@ def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path, rep
     monkeypatch.setitem(dataset_registry.DATASETS, "ds_b", _FakeDatasetB)
     monkeypatch.setitem(solver_registry.SOLVERS, "stub", _StubSolver)
 
-    def _fake_run_subprocess(
-        cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None
-    ):
-        from types import SimpleNamespace
-
-        payload_path = Path(cmd[-1])
-        payload = json.loads(payload_path.read_text())
-        artifact_dir = Path(payload["artifacts_dir"])
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="optimal",
-            objective_value=0.0,
-            iterations=1,
-            run_time_seconds=0.01,
-            artifact_dir=str(artifact_dir),
-        ).to_record()
-        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-        stdout_path.write_text("")
-        stderr_path.write_text("")
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+    _fake_run_subprocess = FakeWorker()
 
     monkeypatch.setattr(
         "solver_benchmarks.core.runner._run_subprocess", _fake_run_subprocess
@@ -1347,7 +1298,7 @@ def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path, rep
     assert b_rows == ["prob_one", "prob_two"]
 
 
-def test_runner_resume_keys_are_dataset_aware(monkeypatch, tmp_path: Path):
+def test_runner_resume_keys_are_dataset_aware(fake_worker, monkeypatch, tmp_path: Path, repo_root: Path):
     """Resume must not conflate identically-named problems across datasets."""
 
     class _DatasetA:
@@ -1408,6 +1359,12 @@ def test_runner_resume_keys_are_dataset_aware(monkeypatch, tmp_path: Path):
     assert ("ds_a", "shared", "stub_solver") in completed
     assert ("ds_b", "shared", "stub_solver") not in completed
 
+    # Resuming solves only ds_b's problem of the same name.
+    store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+    assert [(call["dataset"], call["problem"]) for call in fake_worker.calls] == [("ds_b", "shared")]
+    rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+    assert sorted(row["dataset"] for row in rows) == ["ds_a", "ds_b"]
+
 
 def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatch, tmp_path: Path, repo_root: Path):
     """Same registry name listed twice with distinct ids must produce two
@@ -1434,30 +1391,7 @@ def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatc
     monkeypatch.setitem(dataset_registry.DATASETS, "configurable", _ConfigurableDataset)
     monkeypatch.setitem(solver_registry.SOLVERS, "stub", _StubSolver)
 
-    def _fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        from types import SimpleNamespace
-
-        payload_path = Path(cmd[-1])
-        payload = json.loads(payload_path.read_text())
-        artifact_dir = Path(payload["artifacts_dir"])
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        record = ProblemResult(
-            run_id=payload["run_id"],
-            dataset=payload["dataset"],
-            problem=payload["problem"],
-            problem_kind=payload["problem_kind"],
-            solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="optimal",
-            objective_value=0.0,
-            iterations=1,
-            run_time_seconds=0.01,
-            artifact_dir=str(artifact_dir),
-        ).to_record()
-        (artifact_dir / "worker_result.json").write_text(json.dumps(record))
-        stdout_path.write_text("")
-        stderr_path.write_text("")
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+    _fake_run_subprocess = FakeWorker()
 
     monkeypatch.setattr(
         "solver_benchmarks.core.runner._run_subprocess", _fake_run_subprocess
@@ -1794,6 +1728,59 @@ def test_environment_install_paths_with_spaces_stay_one_argument(monkeypatch, tm
     ]
 
 
+def _one_environment_config(tmp_path: Path, **run):
+    return parse_environment_run_config(
+        {
+            "run": {"dataset": "synthetic_qp", "output_dir": str(tmp_path / "runs"), **run},
+            "environments": [
+                {"id": "current", "python": sys.executable,
+                 "solvers": [{"id": "scs_current", "solver": "scs"}]},
+            ],
+        }
+    )
+
+
+def test_environment_matrix_without_a_run_dir_makes_one_under_output_dir(
+    monkeypatch, tmp_path: Path, repo_root: Path
+):
+    from solver_benchmarks.core import env_runner
+
+    commands = []
+    monkeypatch.setattr(env_runner, "_run_child", lambda cmd, cwd: commands.append(cmd))
+    run_dir = run_environment_matrix(
+        _one_environment_config(tmp_path, name="mx"), repo_root=repo_root, stream_output=False
+    )
+    assert run_dir.parent == (tmp_path / "runs").resolve()
+    assert run_dir.name.startswith("mx_env_")
+    assert (run_dir / "current_config.json").exists()
+    (cmd,) = commands
+    assert cmd[cmd.index("--run-dir") + 1] == str(run_dir)
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_environment_matrix_with_resume_false_refuses_a_run_dir_with_results(
+    monkeypatch, tmp_path: Path, repo_root: Path, resume: bool
+):
+    from solver_benchmarks.core import env_runner
+
+    commands = []
+    monkeypatch.setattr(env_runner, "_run_child", lambda cmd, cwd: commands.append(cmd))
+    run_dir = tmp_path / "matrix"
+    run_dir.mkdir()
+    (run_dir / "results.jsonl").write_text(
+        json.dumps({"dataset": "synthetic_qp", "problem": "one_variable_eq",
+                    "solver_id": "scs_current", "status": "optimal"}) + "\n"
+    )
+    config = _one_environment_config(tmp_path, resume=resume)
+    if resume:
+        run_environment_matrix(config, run_dir=run_dir, repo_root=repo_root, stream_output=False)
+        assert len(commands) == 1
+    else:
+        with pytest.raises(RuntimeError, match="run.resume is false"):
+            run_environment_matrix(config, run_dir=run_dir, repo_root=repo_root, stream_output=False)
+        assert commands == []
+
+
 def test_check_schema_version_accepts_int_and_none():
     from solver_benchmarks.core.result import PROBLEM_RESULT_SCHEMA_VERSION
     from solver_benchmarks.core.runner import _check_schema_version
@@ -1875,26 +1862,85 @@ def test_load_worker_result_records_malformed_schema_version_as_worker_error(
     assert "not an integer" in result.error
 
 
+_WORKER_RECORD = {
+    "run_id": "r", "dataset": "d", "problem": "p", "problem_kind": QP, "solver_id": "s",
+    "solver": "scs", "status": "optimal", "objective_value": 1.5, "iterations": 7,
+    "run_time_seconds": 0.25, "metadata": {"m": 3},
+}
+
+
+@pytest.mark.parametrize("case, text, expected_error", [
+    ("missing file", None, "Could not read worker_result.json"),
+    ("truncated", '{"status": "opt', "Could not parse worker_result.json"),
+    ("required field missing",
+     json.dumps({k: v for k, v in _WORKER_RECORD.items() if k != "status"}),
+     "Could not construct ProblemResult"),
+])
+def test_load_worker_result_records_an_unusable_file_as_a_worker_error(
+    tmp_path: Path, case, text, expected_error
+):
+    from solver_benchmarks.core.config import DatasetConfig, SolverConfig
+    from solver_benchmarks.core.runner import _load_worker_result
+    from solver_benchmarks.core.storage import ResultStore
+
+    path = tmp_path / "worker_result.json"
+    if text is not None:
+        path.write_text(text)
+    store = ResultStore(run_id="r", run_dir=tmp_path)
+    result = _load_worker_result(
+        path, store=store, dataset_config=DatasetConfig(name="synthetic_qp", id="d"),
+        problem=ProblemSpec(dataset_id="d", name="p", kind=QP),
+        solver_config=SolverConfig(id="s", solver="scs"), artifacts_dir=tmp_path,
+        environment_id=None, environment_metadata=None, resume_signature="sig",
+    )
+    assert result.status == "worker_error"
+    assert result.error.startswith(expected_error), result.error
+    assert (result.problem, result.solver_id, result.artifact_dir) == ("p", "s", str(tmp_path))
+    assert result.metadata["resume_signature"] == "sig"
+
+
+@pytest.mark.parametrize("extra, metadata", [
+    ({"field_from_a_newer_worker": 1}, {"m": 3, "resume_signature": "sig"}),
+    ({"metadata": 3}, {"resume_signature": "sig"}),
+    ({"metadata": None}, {"resume_signature": "sig"}),
+])
+def test_load_worker_result_drops_unknown_keys_and_non_dict_metadata(tmp_path: Path, extra, metadata):
+    from solver_benchmarks.core.config import DatasetConfig, SolverConfig
+    from solver_benchmarks.core.runner import _load_worker_result
+    from solver_benchmarks.core.storage import ResultStore
+
+    path = tmp_path / "worker_result.json"
+    path.write_text(json.dumps({**_WORKER_RECORD, **extra}))
+    result = _load_worker_result(
+        path, store=ResultStore(run_id="r", run_dir=tmp_path),
+        dataset_config=DatasetConfig(name="synthetic_qp", id="d"),
+        problem=ProblemSpec(dataset_id="d", name="p", kind=QP),
+        solver_config=SolverConfig(id="s", solver="scs"), artifacts_dir=tmp_path,
+        environment_id=None, environment_metadata=None, resume_signature="sig",
+    )
+    assert (result.status, result.objective_value, result.iterations) == ("optimal", 1.5, 7)
+    assert result.error is None
+    assert result.metadata == metadata
+
+
 def _fake_worker(statuses=None, calls=None):
     """A ``_run_subprocess`` stand-in that records the problem it was asked to
     solve and writes a worker result with ``statuses[problem]`` (default optimal)."""
-    statuses = statuses or {}
+    worker = FakeWorker()
+    for problem, status in (statuses or {}).items():
+        worker.outcomes[problem] = {
+            "status": status,
+            "error": "cone 's' not supported." if status == "skipped_unsupported" else None,
+        }
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
+    def run(cmd, **kwargs):
+        # This call's problem: under parallelism, worker.problems[-1] may be
+        # another thread's.
+        problem = json.loads(Path(cmd[-1]).read_text())["problem"]
+        result = worker(cmd, **kwargs)
         if calls is not None:
-            calls.append(payload["problem"])
-        status = statuses.get(payload["problem"], "optimal")
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-            problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"], status=status,
-            objective_value=0.0 if status == "optimal" else None, iterations=1,
-            run_time_seconds=0.01, artifact_dir=payload["artifacts_dir"],
-            error="cone 's' not supported." if status == "skipped_unsupported" else None,
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+            calls.append(problem)
+        return result
 
     return run
 
@@ -2198,6 +2244,29 @@ def test_fail_on_unsupported_fails_on_a_skip_the_adapter_reports(
     rows = [json.loads(line) for line in (tmp_path / "run" / "results.jsonl").read_text().splitlines()]
     assert ("one_variable_eq", "skipped_unsupported") in [(r["problem"], r["status"]) for r in rows]
     assert not (tmp_path / "run" / "results.parquet").exists()
+
+
+@pytest.mark.parametrize("fail_on_unsupported", [True, False])
+def test_fail_on_unsupported_fails_on_a_problem_kind_the_solver_does_not_take(
+    fake_worker, tmp_path: Path, repo_root: Path, fail_on_unsupported: bool
+):
+    # OSQP takes QPs only; the planner knows before any solve runs.
+    config = parse_run_config(
+        {
+            "run": {"dataset": "synthetic_cone", "fail_on_unsupported": fail_on_unsupported,
+                    "output_dir": str(tmp_path / "runs")},
+            "solvers": [{"id": "osqp", "solver": "osqp"}],
+        }
+    )
+    if fail_on_unsupported:
+        with pytest.raises(RuntimeError, match=r"'osqp' does not support 'cone'.*'one_variable_cone_lp'"):
+            run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+        assert not (tmp_path / "run" / "results.jsonl").exists()
+    else:
+        store = run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
+        (row,) = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
+        assert row["status"] == "skipped_unsupported"
+    assert fake_worker.calls == []
 
 
 def test_fail_on_unsupported_fails_for_a_solver_that_is_not_installed(
@@ -2854,26 +2923,20 @@ def _scripted_config_errors(monkeypatch, outcomes: dict, *, error: str, hold_fir
 
     done = {problem: threading.Event() for problem in outcomes}
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
-        problem = payload["problem"]
-        kind = outcomes.get(problem, "ok")
-        metadata = {"resume_signature": payload.get("resume_signature")}
+    worker = FakeWorker()
+    for problem, kind in outcomes.items():
         if kind == "config":
-            metadata["error_kind"] = "config"
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=problem,
-            problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"],
-            status="worker_error" if kind == "config" else "optimal",
-            objective_value=None if kind == "config" else 0.0, iterations=1,
-            run_time_seconds=0.01, artifact_dir=payload["artifacts_dir"],
-            error=error if kind == "config" else None, metadata=metadata,
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
+            worker.outcomes[problem] = {"status": "worker_error", "objective_value": None,
+                                        "error": error, "metadata": {"error_kind": "config"}}
+
+    def run(cmd, **kwargs):
+        # This call's problem: under parallelism, worker.problems[-1] may be
+        # another thread's.
+        problem = json.loads(Path(cmd[-1]).read_text())["problem"]
+        result = worker(cmd, **kwargs)
         if problem in done:
             done[problem].set()
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+        return result
 
     monkeypatch.setattr(runner, "_run_subprocess", run)
     if hold_first:
@@ -2983,24 +3046,21 @@ def test_a_rejected_solver_starts_few_workers_in_a_parallel_run(monkeypatch, tmp
     def rejection_recorded() -> bool:
         return events.exists() and "rejected its settings" in events.read_text()
 
-    def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
-        payload = json.loads(Path(cmd[-1]).read_text())
+    worker = FakeWorker()
+    worker.outcome = {
+        "status": "worker_error", "objective_value": None, "iterations": None,
+        "run_time_seconds": None, "error": "SolverConfigError: Unrecognized settings ['max_itr']",
+        "metadata": {"error_kind": "config"},
+    }
+
+    def run(cmd, **kwargs):
         with lock:
-            started.append(payload["problem"])
+            started.append(json.loads(Path(cmd[-1]).read_text())["problem"])
             first = len(started) == 1
         deadline = time.monotonic() + 60.0
         while not first and not rejection_recorded() and time.monotonic() < deadline:
             time.sleep(0.005)
-        record = ProblemResult(
-            run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-            problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
-            solver=payload["solver"]["solver"], status="worker_error", objective_value=None,
-            iterations=None, run_time_seconds=None, artifact_dir=payload["artifacts_dir"],
-            error="SolverConfigError: Unrecognized settings ['max_itr']",
-            metadata={"resume_signature": payload.get("resume_signature"), "error_kind": "config"},
-        ).to_record()
-        (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-        return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
+        return worker(cmd, **kwargs)
 
     monkeypatch.setattr(runner, "_run_subprocess", run)
     parallelism = 3

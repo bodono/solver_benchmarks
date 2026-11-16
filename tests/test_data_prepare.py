@@ -234,18 +234,6 @@ def test_auto_prepare_failure_is_a_clear_error(monkeypatch, tmp_path, repo_root)
 
 
 def _no_worker(cmd, **kwargs):
-    import json
-    from pathlib import Path
-    from types import SimpleNamespace
+    from conftest import FakeWorker
 
-    from solver_benchmarks.core.result import ProblemResult
-
-    payload = json.loads(Path(cmd[-1]).read_text())
-    record = ProblemResult(
-        run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
-        problem_kind=payload["problem_kind"], solver_id="scs", solver="scs", status="optimal",
-        objective_value=0.0, iterations=1, run_time_seconds=0.01,
-        artifact_dir=payload["artifacts_dir"],
-    ).to_record()
-    (Path(payload["artifacts_dir"]) / "worker_result.json").write_text(json.dumps(record))
-    return SimpleNamespace(returncode=0, timed_out=False)
+    return FakeWorker()(cmd, **kwargs)

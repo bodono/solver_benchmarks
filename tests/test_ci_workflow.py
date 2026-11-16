@@ -1,6 +1,6 @@
 """Keep .github/workflows/tests.yml in step with how the suite is organised.
 
-Tests marked ``slow`` take minutes (they read every member of the SDPLIB
+Tests marked ``slow`` take minutes (most read every member of the SDPLIB
 archive) and run in one job only, the coverage job, so the four matrix jobs
 stay well inside the per-test timeout and the slow tests still run, under
 coverage, on every pull request. Under coverage tracing they take two to
@@ -126,3 +126,61 @@ def test_only_pull_request_runs_cancel_each_other():
     concurrency = WORKFLOW["concurrency"]
     assert "github.event_name" in concurrency["group"]
     assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+
+
+def test_the_open_source_solver_list_covers_every_registered_solver():
+    # BENCH_REQUIRE_ALL_SOLVERS fails a skip only for the solvers conftest.py
+    # lists; a new open-source adapter must be added there.
+    from conftest import COMMERCIAL_SOLVERS, OPEN_SOURCE_SOLVER_PACKAGES
+
+    from solver_benchmarks.solvers import list_solvers
+
+    assert COMMERCIAL_SOLVERS <= set(list_solvers())
+    assert set(OPEN_SOURCE_SOLVER_PACKAGES) == set(list_solvers()) - COMMERCIAL_SOLVERS
+    all_extra = {req.name for req in _extra("all")}
+    assert {package for package, _ in OPEN_SOURCE_SOLVER_PACKAGES.values()} <= all_extra
+    assert not {"gurobipy", "Mosek", "cplex"} & all_extra
+
+
+def _ci_pythons(job: str) -> list[str]:
+    setup = [step for step in WORKFLOW["jobs"][job]["steps"]
+             if step.get("uses", "").startswith("actions/setup-python")]
+    version = setup[0]["with"]["python-version"]
+    if version == "${{ matrix.python-version }}":
+        return WORKFLOW["jobs"][job]["strategy"]["matrix"]["python-version"]
+    return [version]
+
+
+def test_every_open_source_solver_is_required_in_the_jobs_that_require_them():
+    # The jobs install the `all` extra on Linux: every open-source solver is
+    # installed there on every tested Python, so each one's skips fail.
+    from conftest import OPEN_SOURCE_SOLVER_PACKAGES, solvers_installed_by_all_extra
+    from packaging.markers import default_environment
+
+    for job in ("tests", "coverage"):
+        assert WORKFLOW["jobs"][job]["runs-on"] == "ubuntu-latest"
+        assert any('".[test,all]"' in run for run in _runs(job)), job
+        for python in _ci_pythons(job):
+            env = {**default_environment(), "python_version": python,
+                   "python_full_version": f"{python}.0", "sys_platform": "linux",
+                   "platform_system": "Linux", "os_name": "posix"}
+            assert solvers_installed_by_all_extra(tuple(env.items())) == set(OPEN_SOURCE_SOLVER_PACKAGES), (job, python)
+
+
+def test_a_solver_the_all_extra_leaves_out_is_not_required():
+    # proxsuite has no Windows wheel on Python 3.14, so the extra skips it there.
+    from conftest import OPEN_SOURCE_SOLVER_PACKAGES, solvers_installed_by_all_extra
+    from packaging.markers import default_environment
+
+    env = {**default_environment(), "python_version": "3.14", "python_full_version": "3.14.0",
+           "sys_platform": "win32", "platform_system": "Windows", "os_name": "nt"}
+    assert solvers_installed_by_all_extra(tuple(env.items())) == set(OPEN_SOURCE_SOLVER_PACKAGES) - {"proxqp"}
+
+
+
+def test_coverage_job_measures_the_package_and_the_readers():
+    (command,) = [run for run in _runs("coverage") if "python -m pytest" in run]
+    assert {"--cov=solver_benchmarks", "--cov=problem_classes"} <= set(command.split())
+    gate = re.search(r"--cov-fail-under=(\d+)", command)
+    # Both packages measure about 93%; keep the gate a few points under that.
+    assert gate and int(gate.group(1)) >= 90, command

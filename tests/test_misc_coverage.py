@@ -184,3 +184,18 @@ def test_kkt_certificate_summary_empty_frame_returns_empty_table():
     summary = kkt_certificate_summary(pd.DataFrame())
     assert summary.empty
     assert "cert_valid" in summary.columns
+
+
+def test_to_jsonable_summarises_arrays_over_100_entries():
+    import json
+
+    import numpy as np
+
+    from solver_benchmarks.core.result import to_jsonable
+
+    assert to_jsonable(np.arange(100.0)) == list(range(100))
+    big = np.arange(202, dtype=np.int32).reshape(2, 101)
+    summary = to_jsonable({"x": big, "nan": np.array([np.nan] * 101)})
+    assert summary["x"] == {"shape": [2, 101], "dtype": "int32", "preview": list(range(100))}
+    assert summary["nan"]["preview"] == [None] * 100
+    json.dumps(summary, allow_nan=False)
