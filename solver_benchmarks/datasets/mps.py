@@ -24,7 +24,14 @@ from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import QP, ProblemData, ProblemSpec
 from solver_benchmarks.transforms.emps import decode_emps, is_emps_header
 
-from .base import Dataset, atomic_write_bytes, group_problem_files, validate_gzip_payload
+from .base import (
+    Dataset,
+    _smallest_size_metadata,
+    atomic_write_bytes,
+    filter_problem_specs_by_size,
+    group_problem_files,
+    validate_gzip_payload,
+)
 
 
 class MPSLPDataset(Dataset):
@@ -44,30 +51,60 @@ class MPSLPDataset(Dataset):
         return self.folder
 
     def list_problems(self) -> list[ProblemSpec]:
-        if not self.folder.is_dir():
+        # The folder and the expected outcome are the same for every problem;
+        # with a data_root, each look-up of the folder resolves the path.
+        folder = self.folder
+        if not folder.is_dir():
             return []
+        expected = self.expected_metadata()
         return [
-            ProblemSpec(
-                dataset_id=self.dataset_id,
-                name=name,
-                kind=QP,
-                path=path,
-                metadata={
-                    "source": str(path),
-                    "format": "mps",
-                    **size,
-                    **self.expected_metadata(),
-                },
-            )
-            for name, (path, size) in group_problem_files(self.folder, (".mps", ".mps.gz")).items()
+            self._problem_spec(name, path, size, expected)
+            for name, (path, size) in group_problem_files(folder, (".mps", ".mps.gz")).items()
         ]
+
+    def _problem_spec(self, name: str, path: Path, size: dict, expected: dict) -> ProblemSpec:
+        return ProblemSpec(
+            dataset_id=self.dataset_id,
+            name=name,
+            kind=QP,
+            path=path,
+            metadata={
+                "source": str(path),
+                "format": "mps",
+                **size,
+                **expected,
+            },
+        )
 
     def expected_metadata(self) -> dict:
         """Known outcome shared by every problem of this collection, if any."""
         return {}
 
+    def _problem_from_its_files(self, name: str) -> ProblemSpec | None:
+        """The spec ``list_problems`` gives ``name``, from ``<folder>/<name>.mps[.gz]`` alone.
+
+        A worker loads one problem; listing the folder stats every file in
+        it. None when neither file is there, the size filter leaves the
+        problem out, or a subclass lists its problems another way: the caller
+        then looks the name up in the listing.
+        """
+        if type(self).list_problems is not MPSLPDataset.list_problems or Path(name).name != name:
+            return None
+        folder = self.folder
+        paths = [
+            path
+            for path in (folder / f"{name}.mps", folder / f"{name}.mps.gz")
+            if os.path.lexists(path)
+        ]
+        if not paths:
+            return None
+        spec = self._problem_spec(name, paths[0], _smallest_size_metadata(paths), self.expected_metadata())
+        if not filter_problem_specs_by_size([spec], self.options.get("max_size_mb")):
+            return None
+        return spec
+
     def load_problem(self, name: str) -> ProblemData:
-        spec = self.problem_by_name(name)
+        spec = self._problem_from_its_files(name) or self.problem_by_name(name)
         assert spec.path is not None
         # The minimisation the harness solves: for a file that states a
         # maximisation, the costs, the constant and a quadratic term are

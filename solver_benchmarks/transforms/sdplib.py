@@ -12,7 +12,17 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
-from solver_benchmarks.core.atomic import atomic_write_bytes, atomic_write_stream
+from solver_benchmarks.core.atomic import (
+    atomic_write_bytes,
+    atomic_write_stream,
+    remove_stale_temporaries,
+)
+
+# A temporary file of an extraction older than this was left by a worker that
+# was killed during the copy. A live copy writes to its file continuously (the
+# largest member, 395 MB, takes seconds), so an hour without a write cannot be
+# a live extraction, even on a slow or heavily loaded machine.
+STALE_TEMPORARY_AGE_SECONDS = 3600.0
 
 
 def list_sdplib_tar(tar_path: Path, index_path: Path | None = None) -> dict[str, int]:
@@ -71,7 +81,9 @@ def extract_from_tar(
     onto ``<name>.jld2`` once complete, so a reader never sees a partial
     file: a second worker loading the same problem meanwhile extracts its
     own copy, and a worker killed during the copy leaves nothing at the
-    target. A file already at the target is used as it is, unless
+    target; its temporary file (``.<name>.jld2.<random>.tmp``) is removed
+    by a later call once it is an hour old (``STALE_TEMPORARY_AGE_SECONDS``).
+    A file already at the target is used as it is, unless
     ``expected_size`` (the member's size) is given and differs, as for a
     file truncated by an interrupted copy before extraction was atomic.
     A new file gets the mode ``open()`` would give it (0o666 less the
@@ -100,6 +112,10 @@ def extract_many_from_tar(
     member wanted. A name with no member raises FileNotFoundError.
     """
     paths = {name: cache_dir / f"{name}.jld2" for name in names}
+    # Also when nothing is extracted: the temporary files of a killed copy
+    # stay behind after another worker has extracted the member.
+    for target in paths.values():
+        remove_stale_temporaries(target, STALE_TEMPORARY_AGE_SECONDS)
     wanted = {
         f"{name}.jld2": name
         for name, target in paths.items()

@@ -56,7 +56,8 @@ LIBSVM_BASE_URL = (
 # produce dense small QPs solvable in well under a second by IPM
 # solvers. Each entry maps the dataset id (used as the problem name)
 # to either the LIBSVM filename hosted at ``LIBSVM_BASE_URL`` or an
-# absolute URL for mirrors of files with problematic upstream TLS.
+# absolute URL for mirrors of files with problematic upstream TLS
+# (the ``heart`` mirror tracks a branch, not a pinned commit).
 LIBSVM_DEFAULT_SUBSET: dict[str, str] = {
     "heart": "https://raw.githubusercontent.com/cjlin1/libsvm/master/heart_scale",
     "breast-cancer": "breast-cancer",
@@ -230,16 +231,20 @@ def download_libsvm_dataset(name: str, folder: Path) -> Path:
     we still validate the response by parsing the first non-empty
     line so a truncated download surfaces immediately.
     """
-    remote_filename = LIBSVM_DEFAULT_SUBSET.get(name, name)
+    # Only the final path component is used, so a name containing
+    # ``../`` cannot write outside ``folder``; an absolute URL is
+    # followed only when it comes from ``LIBSVM_DEFAULT_SUBSET``.
+    name = Path(name).name
     target = folder / f"{name}.libsvm"
     if target.exists():
         return target
-    if remote_filename.startswith(("http://", "https://")):
-        url = remote_filename
+    default_source = LIBSVM_DEFAULT_SUBSET.get(name)
+    if default_source is not None and default_source.startswith(("http://", "https://")):
+        url = default_source
         source_name = Path(urlparse(url).path).name
     else:
-        url = f"{LIBSVM_BASE_URL}/{remote_filename}"
-        source_name = remote_filename
+        source_name = default_source if default_source is not None else name
+        url = f"{LIBSVM_BASE_URL}/{source_name}"
     with urllib.request.urlopen(url, timeout=60) as response:
         body = response.read()
     if source_name.endswith(".gz") or url.endswith(".gz"):

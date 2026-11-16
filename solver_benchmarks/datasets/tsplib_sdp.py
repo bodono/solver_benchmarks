@@ -42,6 +42,7 @@ from .base import (
     validate_gzip_payload,
 )
 
+# Tracks the mirror's master branch, not a pinned commit.
 TSPLIB_BASE_URL = "https://raw.githubusercontent.com/mastqe/tsplib/master"
 
 TSPLIB_DEFAULT_SUBSET: dict[str, str] = {
@@ -168,8 +169,19 @@ def download_tsplib_instance(name: str, folder: Path) -> Path:
     url = f"{TSPLIB_BASE_URL}/{remote_filename}"
     with urllib.request.urlopen(url, timeout=120) as response:
         body = response.read()
+    text_body = body
     if remote_filename.endswith(".gz"):
         validate_gzip_payload(body)
+        text_body = gzip.decompress(body)
+    # Parse before caching: an error page or a truncated body would
+    # otherwise be cached and fail every later load, since preparation
+    # skips files that exist.
+    try:
+        _parse_tsplib_weights(text_body.decode("utf-8", errors="replace"))
+    except (ValueError, IndexError) as exc:
+        raise RuntimeError(
+            f"TSPLIB instance {name!r} did not download as a TSPLIB file: {exc}"
+        ) from exc
     folder.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(target, body)
     return target

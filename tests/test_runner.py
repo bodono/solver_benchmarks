@@ -2717,7 +2717,9 @@ def test_worker_marks_a_solver_config_error(tmp_path: Path, repo_root: Path):
 
 def test_a_rejected_solver_starts_few_workers_in_a_parallel_run(monkeypatch, tmp_path: Path, repo_root: Path):
     # With more problems than workers, a rejected solver costs the solves
-    # already started (about ``parallelism``), not one per problem.
+    # already started (about ``parallelism``), not one per problem. The first
+    # solve returns at once; every later one stays in flight until the runner
+    # has recorded the rejection, so the count does not depend on timing.
     import threading
     import time
 
@@ -2741,12 +2743,19 @@ def test_a_rejected_solver_starts_few_workers_in_a_parallel_run(monkeypatch, tmp
     monkeypatch.setitem(solver_registry.SOLVERS, "stub_rejected", Stub)
     started: list = []
     lock = threading.Lock()
+    events = tmp_path / "run" / "events.jsonl"
+
+    def rejection_recorded() -> bool:
+        return events.exists() and "rejected its settings" in events.read_text()
 
     def run(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output):
         payload = json.loads(Path(cmd[-1]).read_text())
         with lock:
             started.append(payload["problem"])
-        time.sleep(0.05)  # keep a few solves in flight when the first lands
+            first = len(started) == 1
+        deadline = time.monotonic() + 60.0
+        while not first and not rejection_recorded() and time.monotonic() < deadline:
+            time.sleep(0.005)
         record = ProblemResult(
             run_id=payload["run_id"], dataset=payload["dataset"], problem=payload["problem"],
             problem_kind=payload["problem_kind"], solver_id=payload["solver"]["id"],
@@ -2767,5 +2776,7 @@ def test_a_rejected_solver_starts_few_workers_in_a_parallel_run(monkeypatch, tmp
     })
     with pytest.raises(RuntimeError, match="'rejected' rejected its settings"):
         run_benchmark(config, run_dir=tmp_path / "run", repo_root=repo_root)
-    assert 1 <= len(started) <= parallelism + 2 < 12
+    # The first solve, one more its thread may start before the rejection is
+    # recorded, and the one each other thread holds.
+    assert 1 <= len(started) <= parallelism + 1 < 12
     assert _rows(tmp_path / "run") == []

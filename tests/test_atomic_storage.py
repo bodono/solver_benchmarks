@@ -557,3 +557,37 @@ def test_load_results_and_write_parquet_share_the_chunked_reader(tmp_path: Path,
     store.write_parquet()
     assert chunks == [3, 3, 1]
     assert len(pd.read_parquet(store.results_parquet_path)) == len(expected)
+
+
+def test_atomic_write_stream_whose_temporary_was_taken_by_a_finished_writer(tmp_path: Path):
+    """A stalled writer whose temporary another process's sweep removed, after
+    that process wrote the target: the write counts as done."""
+    from solver_benchmarks.core.atomic import atomic_write_stream
+
+    target = tmp_path / "big.jld2"
+
+    def stalled(handle):
+        handle.write(b"partial")
+        (temporary,) = tmp_path.glob(".big.jld2.*.tmp")
+        temporary.unlink()  # another worker's remove_stale_temporaries
+        target.write_bytes(b"complete")  # and its finished copy
+
+    atomic_write_stream(target, stalled)
+
+    assert target.read_bytes() == b"complete"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["big.jld2"]
+
+
+def test_atomic_write_stream_whose_temporary_vanished_without_a_target_fails(tmp_path: Path):
+    from solver_benchmarks.core.atomic import atomic_write_stream
+
+    target = tmp_path / "big.jld2"
+
+    def stalled(handle):
+        handle.write(b"partial")
+        (temporary,) = tmp_path.glob(".big.jld2.*.tmp")
+        temporary.unlink()
+
+    with pytest.raises(FileNotFoundError):
+        atomic_write_stream(target, stalled)
+    assert not target.exists()

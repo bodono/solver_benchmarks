@@ -21,6 +21,7 @@ from solver_benchmarks.analysis.tables import (
     claimed_optimal_kkt_thresholds,
     completion_summary,
     difficulty_scaling,
+    expected_results,
     failure_rates,
     failures_with_successful_alternatives,
     missing_results,
@@ -1934,3 +1935,211 @@ def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path, r
     markdown = (report_dir / "index.md").read_text()
 
     assert "## By Dataset" not in markdown
+
+
+def _run_recorded_elsewhere(tmp_path: Path, repo_root: Path) -> tuple[Path, Path, Path]:
+    """A run whose manifest records the data_root of another machine.
+
+    Returns the run directory, a checkout holding the data under
+    ``problem_classes`` and a moved data directory holding the same data.
+    clarabel solved all three problems, highs only afiro.
+    """
+    names = ["afiro", "adlittle", "blend"]
+    checkout = tmp_path / "checkout"
+    moved = tmp_path / "moved_data"
+    for data_root in (checkout / "problem_classes", moved):
+        folder = data_root / "netlib_data" / "feasible"
+        folder.mkdir(parents=True)
+        for name in names:
+            source = repo_root / "problem_classes" / "netlib_data" / "feasible" / f"{name}.mps.gz"
+            (folder / source.name).write_bytes(source.read_bytes())
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = {
+        "run_id": "run",
+        "config": {
+            "name": "netlib",
+            "datasets": [
+                {
+                    "id": "netlib",
+                    "name": "netlib",
+                    "include": [],
+                    "exclude": [],
+                    "dataset_options": {"data_root": str(tmp_path / "cluster" / "scratch" / "data")},
+                }
+            ],
+            "timeout_seconds": 60.0,
+            "solvers": [
+                {"id": "clarabel", "solver": "clarabel", "settings": {}},
+                {"id": "highs", "solver": "highs", "settings": {}},
+            ],
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    rows = [
+        {
+            "run_id": "run", "dataset": "netlib", "problem": name, "problem_kind": "qp",
+            "solver_id": solver_id, "solver": solver_id, "status": "optimal",
+            "objective_value": 1.0, "iterations": 5, "run_time_seconds": 0.1,
+            "metadata": {}, "info": {}, "kkt": None,
+        }
+        for solver_id, solved in (("clarabel", names), ("highs", ["afiro"]))
+        for name in solved
+    ]
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return run_dir, checkout, moved
+
+
+def _missing_lines(output: str) -> list[str]:
+    return [" ".join(line.split()) for line in output.splitlines() if line.strip().startswith(("clarabel", "highs"))]
+
+
+@pytest.mark.parametrize("recorded_root_exists", [False, True])
+def test_recorded_data_root_missing_here_falls_back_to_the_repo_root(
+    tmp_path: Path, repo_root: Path, caplog, recorded_root_exists: bool
+):
+    """The recorded data_root does not exist here, or exists without the dataset's folder."""
+    import logging
+
+    from solver_benchmarks.analysis import tables as tables_module
+
+    run_dir, checkout, _ = _run_recorded_elsewhere(tmp_path, repo_root)
+    if recorded_root_exists:
+        (tmp_path / "cluster" / "scratch" / "data").mkdir(parents=True)
+
+    with caplog.at_level(logging.WARNING, logger=tables_module.__name__):
+        missing = CliRunner().invoke(main, ["missing", str(run_dir), "--repo-root", str(checkout)])
+        summary = CliRunner().invoke(main, ["summary", str(run_dir), "--repo-root", str(checkout)])
+
+    assert missing.exit_code == 0, missing.output
+    assert _missing_lines(missing.output) == ["highs netlib adlittle", "highs netlib blend"]
+    assert summary.exit_code == 0, summary.output
+    assert "clarabel netlib 3 3 0 0 0 True" in _missing_lines(summary.output)
+    assert "highs netlib 3 1 2 0 0 False" in _missing_lines(summary.output)
+    warnings = [record.getMessage() for record in caplog.records if "does not hold it on this machine" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "'netlib'" in warnings[0] and str(tmp_path / "cluster" / "scratch" / "data") in warnings[0]
+
+
+def test_data_root_option_overrides_the_recorded_data_root(tmp_path: Path, repo_root: Path, caplog):
+    import logging
+
+    from solver_benchmarks.analysis import tables as tables_module
+
+    run_dir, _, moved = _run_recorded_elsewhere(tmp_path, repo_root)
+    empty_checkout = tmp_path / "empty_checkout"
+    empty_checkout.mkdir()
+
+    with caplog.at_level(logging.WARNING, logger=tables_module.__name__):
+        missing = CliRunner().invoke(
+            main, ["missing", str(run_dir), "--repo-root", str(empty_checkout), "--data-root", str(moved)]
+        )
+        failures = CliRunner().invoke(
+            main, ["failures", str(run_dir), "--repo-root", str(empty_checkout), "--data-root", str(moved)]
+        )
+
+    assert missing.exit_code == 0, missing.output
+    assert _missing_lines(missing.output) == ["highs netlib adlittle", "highs netlib blend"]
+    assert failures.exit_code == 0, failures.output
+    # The two unrecorded highs solves count as failures.
+    assert completion_summary(run_dir, repo_root=empty_checkout, data_root=moved)["expected"].tolist() == [3, 3]
+    assert expected_results(run_dir, repo_root=empty_checkout, data_root=moved).shape[0] == 6
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_unknown_expected_problems_are_reported_not_called_complete(tmp_path: Path, repo_root: Path):
+    run_dir, _, _ = _run_recorded_elsewhere(tmp_path, repo_root)
+    empty_checkout = tmp_path / "empty_checkout"
+    empty_checkout.mkdir()
+    message = (
+        "expected problems unknown for dataset netlib: "
+        f"{empty_checkout.resolve() / 'problem_classes' / 'netlib_data' / 'feasible'} not found"
+    )
+
+    missing = CliRunner().invoke(main, ["missing", str(run_dir), "--repo-root", str(empty_checkout)])
+    summary = CliRunner().invoke(main, ["summary", str(run_dir), "--repo-root", str(empty_checkout)])
+
+    assert missing.exit_code == 0, missing.output
+    assert "No missing results." not in missing.output
+    assert message in missing.output
+    assert summary.exit_code == 0, summary.output
+    assert message in summary.output
+    completion = completion_summary(run_dir, repo_root=empty_checkout)
+    assert completion["complete"].tolist() == [False, False]
+    assert completion["expected"].isna().all() and completion["missing"].isna().all()
+    assert completion["completed"].tolist() == [3, 1]
+
+    paths = write_run_report(run_dir, repo_root=empty_checkout)
+    index = next(path for path in paths if path.name == "index.md").read_text()
+    assert "Expected problems are unknown for dataset `netlib`" in index
+    assert "Completion checks found no missing" not in index
+    assert "| Missing expected rows | unknown |" in index
+    assert "| Unexpected rows | unknown |" in index
+    scope = pd.read_csv(next(path for path in paths if path.name == "run_scope.csv"))
+    scope_values = dict(zip(scope["field"], scope["value"]))
+    assert scope_values["Missing expected rows"] == "unknown"
+    assert scope_values["Unexpected rows"] == "unknown"
+
+
+def test_dataset_folder_without_its_problems_is_unknown_not_complete(tmp_path: Path, repo_root: Path):
+    """The folders of the downloaded datasets are in every checkout, empty."""
+    run_dir, _, _ = _run_recorded_elsewhere(tmp_path, repo_root)
+    checkout = tmp_path / "plain_checkout"
+    folder = checkout / "problem_classes" / "netlib_data" / "feasible"
+    folder.mkdir(parents=True)
+    (folder / ".gitignore").write_text("*\n")
+
+    missing = CliRunner().invoke(main, ["missing", str(run_dir), "--repo-root", str(checkout)])
+    summary = CliRunner().invoke(main, ["summary", str(run_dir), "--repo-root", str(checkout)])
+
+    message = f"expected problems unknown for dataset netlib: no problems found in {folder.resolve()}"
+    assert missing.exit_code == 0, missing.output
+    assert "No missing results." not in missing.output
+    assert message in missing.output
+    assert message in summary.output
+    completion = completion_summary(run_dir, repo_root=checkout)
+    assert completion["complete"].tolist() == [False, False]
+    assert completion["expected"].isna().all()
+
+
+def test_mixed_run_scope_qualifies_counts_of_unknown_datasets(tmp_path: Path, repo_root: Path):
+    run_dir, _, moved = _run_recorded_elsewhere(tmp_path, repo_root)
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    known = dict(manifest["config"]["datasets"][0], id="netlib_here", dataset_options={"data_root": str(moved)})
+    manifest["config"]["datasets"].append(known)
+    (run_dir / "manifest.json").write_text(json.dumps(manifest))
+    empty_checkout = tmp_path / "empty_checkout"
+    empty_checkout.mkdir()
+
+    paths = write_run_report(run_dir, repo_root=empty_checkout)
+
+    scope = pd.read_csv(next(path for path in paths if path.name == "run_scope.csv"))
+    scope_values = dict(zip(scope["field"], scope["value"]))
+    # netlib_here has no rows: 3 problems for each of 2 solvers are missing.
+    assert scope_values["Missing expected rows"] == "6 (unknown for netlib)"
+    assert scope_values["Unexpected rows"] == "0 (unknown for netlib)"
+
+
+def test_recorded_data_root_of_a_generated_dataset_is_not_warned_about(tmp_path: Path, caplog):
+    import logging
+
+    from solver_benchmarks.analysis import tables as tables_module
+
+    config = {
+        "datasets": [
+            {
+                "id": "synthetic_qp",
+                "name": "synthetic_qp",
+                "include": [],
+                "exclude": [],
+                "dataset_options": {"data_root": str(tmp_path / "gone")},
+            }
+        ]
+    }
+    unknown: dict = {}
+    with caplog.at_level(logging.WARNING, logger=tables_module.__name__):
+        expected = tables_module._expected_by_dataset(config, unknown=unknown)
+
+    assert expected["synthetic_qp"]
+    assert unknown == {}
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]

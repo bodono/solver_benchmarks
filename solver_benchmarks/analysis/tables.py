@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 from collections.abc import Iterable
 from itertools import combinations
 from pathlib import Path
@@ -26,6 +27,8 @@ from solver_benchmarks.datasets.base import NoBundledDataError, filter_problem_s
 
 # Status of a planned solve with no recorded result (see complete_results).
 NOT_ATTEMPTED = "not_attempted"
+
+logger = logging.getLogger(__name__)
 
 
 def one_row_per_solve(
@@ -591,7 +594,11 @@ def _completed_by_pair(
 
 
 def expected_jobs(
-    manifest: dict, *, repo_root: str | Path | None = None
+    manifest: dict,
+    *,
+    repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+    unknown: dict[str, str] | None = None,
 ) -> dict[tuple[str, str], set[str]]:
     """Return ``{(solver_id, dataset_id): expected problem names}`` for a manifest.
 
@@ -601,6 +608,8 @@ def expected_jobs(
     groups; the expectation is then the union of the groups, so shards that
     ran different solvers on different datasets, or different problem
     selections per solver, do not cross into jobs nobody planned.
+
+    ``data_root`` and ``unknown`` are as for ``_expected_by_dataset``.
     """
     config = manifest.get("config") or {}
     selections = (manifest.get("derived") or {}).get("selections") or [
@@ -611,7 +620,12 @@ def expected_jobs(
     ]
     jobs: dict[tuple[str, str], set[str]] = {}
     for group in selections:
-        expected = _expected_by_dataset({"datasets": group.get("datasets") or []}, repo_root=repo_root)
+        expected = _expected_by_dataset(
+            {"datasets": group.get("datasets") or []},
+            repo_root=repo_root,
+            data_root=data_root,
+            unknown=unknown,
+        )
         for solver_id in group.get("solvers") or []:
             for dataset_id, problems in expected.items():
                 jobs.setdefault((str(solver_id), str(dataset_id)), set()).update(problems)
@@ -622,11 +636,49 @@ def expected_jobs(
 def _expected_jobs_cached(
     manifest_path_str: str,
     repo_root_str: str | None,
+    data_root_str: str | None,
     manifest_mtime_ns: int,  # noqa: ARG001  (cache invalidator)
-) -> dict[tuple[str, str], set[str]]:
-    """Cached ``expected_jobs``, keyed like ``_expected_by_dataset_cached``."""
+) -> tuple[dict[tuple[str, str], set[str]], dict[str, str]]:
+    """Cached ``expected_jobs``, keyed like ``_expected_by_dataset_cached``.
+
+    Returns the jobs and ``{dataset_id: message}`` for the datasets whose
+    expected problems are unknown (see ``_expected_by_dataset``).
+    """
     manifest = json.loads(Path(manifest_path_str).read_text())
-    return expected_jobs(manifest, repo_root=repo_root_str)
+    unknown: dict[str, str] = {}
+    jobs = expected_jobs(manifest, repo_root=repo_root_str, data_root=data_root_str, unknown=unknown)
+    return jobs, unknown
+
+
+def _jobs_for_run(
+    manifest_path: Path, repo_root: str | Path | None, data_root: str | Path | None
+) -> tuple[dict[tuple[str, str], set[str]], dict[str, str]]:
+    return _expected_jobs_cached(
+        str(manifest_path.resolve()),
+        str(repo_root) if repo_root is not None else None,
+        str(data_root) if data_root is not None else None,
+        manifest_path.stat().st_mtime_ns,
+    )
+
+
+def expected_problems_unknown(
+    run_dir: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+) -> dict[str, str]:
+    """``{dataset_id: message}`` for the datasets of a run whose expected problems are unknown.
+
+    That is the case when no data for the dataset is found on this machine
+    and the run's ``include`` list cannot stand in for the listing. Completion
+    of such a dataset cannot be checked: ``completion_summary`` leaves its
+    counts empty and marks it incomplete, and ``missing_results`` has no rows
+    for it.
+    """
+    manifest_path = Path(run_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return {}
+    return dict(_jobs_for_run(manifest_path, repo_root, data_root)[1])
 
 
 def _ordered_jobs(jobs: dict[tuple[str, str], set[str]], manifest_path: Path) -> list[tuple[str, str]]:
@@ -650,7 +702,14 @@ def completion_summary(
     results: pd.DataFrame | None = None,
     *,
     repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
 ) -> pd.DataFrame:
+    """Expected, completed, missing, unexpected and duplicated rows per (solver, dataset).
+
+    A dataset whose expected problems are unknown (``expected_problems_unknown``)
+    gets empty ``expected``, ``missing`` and ``unexpected`` counts and
+    ``complete`` False.
+    """
     run_dir = Path(run_dir)
     if results is None:
         from solver_benchmarks.analysis.load import load_results
@@ -670,11 +729,7 @@ def completion_summary(
     if not manifest_path.exists():
         return pd.DataFrame(columns=columns)
 
-    jobs = _expected_jobs_cached(
-        str(manifest_path.resolve()),
-        str(repo_root) if repo_root is not None else None,
-        manifest_path.stat().st_mtime_ns,
-    )
+    jobs, unknown = _jobs_for_run(manifest_path, repo_root, data_root)
 
     has_dataset_col = not results.empty and "dataset" in results.columns
     completed_by_pair, duplicates_by_pair = _completed_by_pair(results, has_dataset_col)
@@ -689,6 +744,20 @@ def completion_summary(
         )
         completed_problems = completed_by_pair.get(key, set())
         duplicate_rows = duplicates_by_pair.get(key, 0)
+        if dataset_name in unknown:
+            rows.append(
+                {
+                    "solver_id": solver_id,
+                    "dataset": dataset_name,
+                    "expected": None,
+                    "completed": len(completed_problems),
+                    "missing": None,
+                    "unexpected": None,
+                    "duplicate_rows": duplicate_rows,
+                    "complete": False,
+                }
+            )
+            continue
         missing = len(expected_set - completed_problems)
         unexpected = len(completed_problems - expected_set)
         rows.append(
@@ -706,7 +775,10 @@ def completion_summary(
             }
         )
 
-    return pd.DataFrame(rows, columns=columns)
+    table = pd.DataFrame(rows, columns=columns)
+    if unknown:
+        table = table.astype({"expected": "Int64", "missing": "Int64", "unexpected": "Int64"})
+    return table
 
 
 def missing_results(
@@ -714,7 +786,13 @@ def missing_results(
     results: pd.DataFrame | None = None,
     *,
     repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
 ) -> pd.DataFrame:
+    """Expected ``(solver, dataset, problem)`` results the run has not recorded.
+
+    A dataset whose expected problems are unknown (``expected_problems_unknown``)
+    has no rows here.
+    """
     run_dir = Path(run_dir)
     if results is None:
         from solver_benchmarks.analysis.load import load_results
@@ -725,11 +803,7 @@ def missing_results(
     if not manifest_path.exists():
         return pd.DataFrame(columns=columns)
 
-    jobs = _expected_jobs_cached(
-        str(manifest_path.resolve()),
-        str(repo_root) if repo_root is not None else None,
-        manifest_path.stat().st_mtime_ns,
-    )
+    jobs, _ = _jobs_for_run(manifest_path, repo_root, data_root)
 
     has_dataset_col = not results.empty and "dataset" in results.columns
     completed_by_pair, _ = _completed_by_pair(results, has_dataset_col)
@@ -1348,8 +1422,22 @@ def _quantile(values: pd.Series, q: float):
     return None if values.empty else float(values.quantile(q))
 
 
+@functools.cache
+def _warn_once(message: str) -> None:
+    """Log ``message`` as a warning the first time it comes up in this process.
+
+    The expected problems of a run are worked out by more than one cached
+    helper per command; each would otherwise repeat the same warning.
+    """
+    logger.warning(message)
+
+
 def _expected_by_dataset(
-    config: dict, *, repo_root: str | Path | None = None
+    config: dict,
+    *,
+    repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
+    unknown: dict[str, str] | None = None,
 ) -> dict[str, set[str]]:
     """Return ``{dataset_id: set_of_expected_problem_names}`` for a manifest.
 
@@ -1358,21 +1446,44 @@ def _expected_by_dataset(
     ``manifest_dataset_entries``. Keys are dataset *ids* (the per-entry
     identity stamped into result rows), which equal the registry ``name``
     unless the config gave the entry an explicit ``id``.
+
+    The datasets are listed where they are on this machine. ``data_root``
+    replaces the ``data_root`` every entry recorded, as ``bench run
+    --data-root`` sets it. Without it, a recorded ``data_root`` under which
+    the dataset's folder does not exist here (a run made on another machine)
+    is dropped with a warning, and the dataset is looked for under
+    ``<repo_root>/problem_classes``. A dataset that reads no files keeps it
+    silently.
+
+    A dataset whose folder is not found has an empty expected set, unless its
+    ``include`` list (without a size filter) supplies the names; so has one
+    whose folder holds none of its problems (the folders of the downloaded
+    datasets are in every checkout, empty). The expected problems of either
+    are unknown: a warning says so, and when ``unknown`` is given its id is
+    added there with that message.
     """
     expected: dict[str, set[str]] = {}
     for entry in manifest_dataset_entries(config):
         include = set(entry.get("include") or [])
         exclude = set(entry.get("exclude") or [])
-        options = entry.get("dataset_options", {})
+        options = dict(entry.get("dataset_options") or {})
+        if data_root is not None:
+            options["data_root"] = str(data_root)
         dataset_cls = get_dataset(entry["name"])
-        # The options are the ones the run recorded: read them as the run
-        # did, without the checks a new config gets.
-        from_recorded = getattr(dataset_cls, "from_recorded_options", None)
-        dataset = (
-            from_recorded(repo_root=repo_root, options=options)
-            if from_recorded is not None
-            else dataset_cls(repo_root=repo_root, **options)
+        dataset = _recorded_dataset(dataset_cls, repo_root, options)
+        # Under a data_root the data_dir is known without the checkout's data.
+        recorded_dir = (
+            getattr(dataset, "data_dir", None) if data_root is None and options.get("data_root") else None
         )
+        if recorded_dir is not None and not recorded_dir.exists():
+            _warn_once(
+                f"data_root {options['data_root']} recorded for dataset {entry['id']!r} "
+                f"does not hold it on this machine ({recorded_dir} not found); looking for "
+                "the dataset under the repository root instead (pass --data-root to name "
+                "its data directory)"
+            )
+            del options["data_root"]
+            dataset = _recorded_dataset(dataset_cls, repo_root, options)
         try:
             data_dir = getattr(dataset, "data_dir", None)
             data_missing = data_dir is not None and not data_dir.exists()
@@ -1381,9 +1492,16 @@ def _expected_by_dataset(
             # An install without the checkout's data, and no data root given:
             # the data is missing, as when its directory is absent.
             data_missing, specs = True, []
+            data_dir = dataset.repo_root / "problem_classes"
         if data_missing and include and options.get("max_size_mb") is None:
             expected[entry["id"]] = include - exclude
             continue
+        if data_missing or (data_dir is not None and not specs):
+            reason = f"{data_dir} not found" if data_missing else f"no problems found in {data_dir}"
+            message = f"expected problems unknown for dataset {entry['id']}: {reason}"
+            _warn_once(message)
+            if unknown is not None:
+                unknown[str(entry["id"])] = message
         problems = [problem.name for problem in specs]
         if include:
             problems = [name for name in problems if name in include]
@@ -1392,16 +1510,26 @@ def _expected_by_dataset(
         specs_by_name = {problem.name: problem for problem in specs}
         filtered_specs = filter_problem_specs_by_size(
             [specs_by_name[name] for name in problems],
-            entry.get("dataset_options", {}).get("max_size_mb"),
+            options.get("max_size_mb"),
         )
         expected[entry["id"]] = {problem.name for problem in filtered_specs}
     return expected
+
+
+def _recorded_dataset(dataset_cls, repo_root: str | Path | None, options: dict):
+    # The options are the ones the run recorded: read them as the run did,
+    # without the checks a new config gets.
+    from_recorded = getattr(dataset_cls, "from_recorded_options", None)
+    if from_recorded is not None:
+        return from_recorded(repo_root=repo_root, options=options)
+    return dataset_cls(repo_root=repo_root, **options)
 
 
 @functools.lru_cache(maxsize=8)
 def _expected_by_dataset_cached(
     manifest_path_str: str,
     repo_root_str: str | None,
+    data_root_str: str | None,
     manifest_mtime_ns: int,  # noqa: ARG001  (cache invalidator)
 ) -> dict[str, set[str]]:
     """Cached wrapper around ``_expected_by_dataset``.
@@ -1422,11 +1550,14 @@ def _expected_by_dataset_cached(
     through; that's fine because every in-tree caller does so.
     """
     config = json.loads(Path(manifest_path_str).read_text())["config"]
-    return _expected_by_dataset(config, repo_root=repo_root_str)
+    return _expected_by_dataset(config, repo_root=repo_root_str, data_root=data_root_str)
 
 
 def expected_results(
-    run_dir: str | Path, *, repo_root: str | Path | None = None
+    run_dir: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+    data_root: str | Path | None = None,
 ) -> pd.DataFrame | None:
     """Expected comparison identities, including entirely unrecorded solves.
 
@@ -1436,6 +1567,7 @@ def expected_results(
     functions subsequently pad the combined problem/solver population, unlike
     completion reports, which count only planned jobs.
     Without a manifest, callers fall back to the observed problem/solver sets.
+    ``data_root`` is as for ``_expected_by_dataset``.
     """
     manifest_path = Path(run_dir) / "manifest.json"
     if not manifest_path.exists():
@@ -1445,7 +1577,9 @@ def expected_results(
     selections = (manifest.get("derived") or {}).get("selections")
     if selections:
         groups = [
-            (_expected_by_dataset({"datasets": group.get("datasets") or []}, repo_root=repo_root),
+            (_expected_by_dataset(
+                {"datasets": group.get("datasets") or []}, repo_root=repo_root, data_root=data_root
+            ),
              group.get("solvers") or [])
             for group in selections
         ]
@@ -1453,6 +1587,7 @@ def expected_results(
         groups = [(_expected_by_dataset_cached(
             str(manifest_path.resolve()),
             str(repo_root) if repo_root is not None else None,
+            str(data_root) if data_root is not None else None,
             manifest_path.stat().st_mtime_ns,
         ), [solver["id"] for solver in config.get("solvers", [])])]
     rows = [

@@ -218,3 +218,36 @@ def test_preparing_several_problems_reads_the_archive_once(tmp_path: Path, monke
         "b.jld2": b"22",
         "c.jld2": b"333",
     }
+
+
+@pytest.mark.parametrize("already_extracted", [False, True])
+def test_extraction_removes_stale_temporaries_of_killed_copies_only(tmp_path: Path, already_extracted: bool):
+    """A worker killed mid-copy leaves ``.p.jld2.<hex>.tmp``; an old one is removed.
+
+    A recent one may belong to a worker still copying and is kept, and so are
+    files that only look similar. Stale ones go also when the member is
+    already extracted, as when another worker finished the copy.
+    """
+    import time
+
+    tar_path = _tar(tmp_path / "sdplib.tar", {"p.jld2": b"abcdef"})
+    cache = tmp_path / ".cache"
+    cache.mkdir()
+    if already_extracted:
+        (cache / "p.jld2").write_bytes(b"abcdef")
+    stale = cache / ".p.jld2.0123456789ab.tmp"
+    fresh = cache / ".p.jld2.ba9876543210.tmp"
+    other_member = cache / ".q.jld2.0123456789ab.tmp"
+    not_a_temporary = cache / ".p.jld2.notours.tmp"
+    for path in (stale, fresh, other_member, not_a_temporary):
+        path.write_bytes(b"partial")
+    two_hours_ago = time.time() - 2 * 3600
+    for path in (stale, other_member, not_a_temporary):
+        os.utime(path, (two_hours_ago, two_hours_ago))
+
+    target = extract_from_tar(tar_path, "p", cache, expected_size=6)
+
+    assert target.read_bytes() == b"abcdef"
+    assert sorted(path.name for path in cache.iterdir()) == sorted(
+        ["p.jld2", fresh.name, other_member.name, not_a_temporary.name]
+    )
