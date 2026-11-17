@@ -76,10 +76,11 @@ def _qp_with_free_and_sentinel_rows(free: float, one_sided: float) -> dict:
 _TIGHT = {
     "osqp": {"eps_abs": 1e-9, "eps_rel": 1e-9, "polish": True, "max_iter": 100000},
     "proxqp": {"eps_abs": 1e-9, "eps_rel": 1e-9},
+    "scs": {"eps_abs": 1e-9, "eps_rel": 1e-9},
 }
 
 
-@pytest.mark.parametrize("solver_name", ["osqp", "piqp", "proxqp", "highs"])
+@pytest.mark.parametrize("solver_name", ["osqp", "piqp", "proxqp", "highs", "scs"])
 @pytest.mark.parametrize(
     "free, one_sided",
     [(np.inf, np.inf), (1e20, 1e20), (9.999999999999998e19, 5e19)],
@@ -154,6 +155,87 @@ def test_split_adapters_do_not_receive_free_rows(solver_name, tmp_path, monkeypa
     assert shapes == [(2, 3)]
     assert result.status == status.OPTIMAL
     assert result.kkt["dual_bound_res_rel"] < 1e-8
+
+
+def test_scs_does_not_receive_free_rows(tmp_path, monkeypatch):
+    scs = pytest.importorskip("scs")
+    received = {}
+    real = scs.solve
+
+    def recording(data, cone, **settings):
+        received.update(A=data["A"].copy(), cone=dict(cone))
+        return real(data, cone, **settings)
+
+    monkeypatch.setattr(scs, "solve", recording)
+    qp = _qp_with_free_and_sentinel_rows(1e20, 1e20)
+    result = _solve("scs", qp, tmp_path, {"eps_abs": 1e-8, "eps_rel": 1e-8})
+    # One equality, the box cone's t row and two inequalities: the two free
+    # rows are left out.
+    assert received["A"].shape == (4, 3)
+    assert received["cone"]["z"] == 1
+    assert received["cone"]["bl"] == [-np.inf, -np.inf]
+    assert received["cone"]["bu"] == [0.5, 1.0]
+    assert result.status == status.OPTIMAL
+    # Duals are reported for every original row; dropped rows carry zero.
+    assert result.kkt["dual_bound_res_rel"] < 1e-8
+    assert result.kkt["dual_res_rel"] < 1e-6
+
+
+def test_scs_with_equalities_and_free_rows_only(tmp_path, monkeypatch):
+    # Once the free rows are gone only the zero cone is left (no box cone).
+    scs = pytest.importorskip("scs")
+    cones = []
+    real = scs.solve
+
+    def recording(data, cone, **settings):
+        cones.append(dict(cone))
+        return real(data, cone, **settings)
+
+    monkeypatch.setattr(scs, "solve", recording)
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.array([1.0, -1.0]),
+        "A": sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+        "l": np.array([1.0, -1e20, -np.inf]),
+        "u": np.array([1.0, 1e20, np.inf]),
+    }
+    result = _solve("scs", qp, tmp_path, {"eps_abs": 1e-8, "eps_rel": 1e-8})
+    assert cones == [{"z": 1}]
+    assert result.status == status.OPTIMAL
+    # min 0.5|x|^2 + x0 - x1 s.t. x0 + x1 = 1: x = (-0.5, 1.5), objective -0.75.
+    assert result.objective_value == pytest.approx(-0.75, abs=1e-6)
+    assert result.kkt["dual_res_rel"] < 1e-6
+
+
+def test_scs_primal_infeasibility_certificate_with_free_rows(tmp_path):
+    # x0 >= 1 and x0 <= 0, with free rows in between: the certificate SCS
+    # returns for the kept rows must still check on the original rows.
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.array([0.0, 0.0]),
+        "A": sp.csc_matrix([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]),
+        "l": np.array([1.0, -1e20, -np.inf, -np.inf]),
+        "u": np.array([np.inf, 1e20, 0.0, np.inf]),
+    }
+    result = _solve("scs", qp, tmp_path, {"eps_abs": 1e-8, "eps_rel": 1e-8})
+    assert result.status == status.PRIMAL_INFEASIBLE, result.info
+    assert result.kkt is not None
+    assert result.kkt["certificate"] == "primal_infeasible"
+    assert result.kkt["valid"] is True
+
+
+def test_scs_with_only_free_rows(tmp_path):
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.array([1.0, -1.0]),
+        "A": sp.csc_matrix([[1.0, 1.0]]),
+        "l": np.array([-1e20]),
+        "u": np.array([1e20]),
+    }
+    result = _solve("scs", qp, tmp_path, {"eps_abs": 1e-8, "eps_rel": 1e-8})
+    assert result.status == status.OPTIMAL
+    assert result.objective_value == pytest.approx(-1.0, abs=1e-6)
+    assert result.kkt["dual_res_rel"] < 1e-6
 
 
 def test_highs_treats_near_sentinel_bounds_as_infinite(tmp_path, monkeypatch):
