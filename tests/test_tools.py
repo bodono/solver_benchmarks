@@ -734,6 +734,13 @@ def test_bench_modal_threaded_scs_builds(monkeypatch, mode):
     assert f"'threads {mode} _scs_mkl '" in commands[checks[0]]
     assert all(compile(c.split("\n", 1)[1].rsplit("\nPY", 1)[0], "check", "exec") for c in
                (commands[checks[0]], commands[checks[1]]))
+    # Modal writes each command as a Dockerfile RUN, where nothing may follow a
+    # heredoc's terminator: every heredoc command ends with it, and its script compiles.
+    heredocs = [c for c in commands if "<<'PY'" in c]
+    assert len(heredocs) >= 5
+    for c in heredocs:
+        assert c.endswith("\nPY"), c
+        compile(c.split("\n", 1)[1].rsplit("\nPY", 1)[0], "heredoc", "exec")
 
 
 @pytest.mark.parametrize("environ, pins, threads", [

@@ -285,9 +285,10 @@ def _scs_thread_checks(module: str, args: list[str], *, need: tuple[str, ...]) -
         f"'threads {SCS_BUILD_THREADS} {module} ' + {' '.join(args)!r} + '\\nlibs ' + ' '.join(libs) + '\\n')\n"
         "PY"
     )
-    # min trace(X_1 + ... + X_k) s.t. X_i + B_i PSD: k blocks of n, solved in a few iterations
-    sdp = (
-        "python - <<'PY'\n"
+    # min trace(X_1 + ... + X_k) s.t. X_i + B_i PSD: k blocks of n, solved in a few iterations.
+    # The pipeline sits on the heredoc's first line: Modal writes each command as a
+    # Dockerfile RUN, where nothing may follow the terminator line.
+    sdp_body = (
         "import os, numpy as np, scipy.sparse as sp, scs\n"
         "k, n = int(os.environ['K']), int(os.environ['N']); m = n * (n + 1) // 2\n"
         "c1 = np.zeros(m); i = 0\n"
@@ -297,10 +298,11 @@ def _scs_thread_checks(module: str, args: list[str], *, need: tuple[str, ...]) -
         "print(scs.solve(data, {'s': [n] * k}, verbose=True, max_iters=50)['info']['lin_sys_solver'])\n"
         "PY"
     )
-    steps = [check, f"cat {SCS_BUILD_RECORD}", f"(K=8 N=40 OMP_NUM_THREADS=4 {sdp}\n) | grep -E 'psd|lin-sys' || true"]
+    steps = [check, f"cat {SCS_BUILD_RECORD}",
+             "K=8 N=40 OMP_NUM_THREADS=4 python - <<'PY' 2>&1 | grep -E 'psd|lin-sys' || true\n" + sdp_body]
     if module == "_scs_mkl":  # one block, projected by MKL's LAPACK on its own threads
-        steps.append(f"(K=1 N=200 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 MKL_DYNAMIC=FALSE MKL_VERBOSE=1 {sdp}\n) "
-                     "| grep -m 3 -iE 'syev.*NThr' || true")
+        steps.append("K=1 N=200 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 MKL_DYNAMIC=FALSE MKL_VERBOSE=1 "
+                     "python - <<'PY' 2>&1 | grep -m 3 -iE 'syev.*NThr' || true\n" + sdp_body)
     return steps
 
 
