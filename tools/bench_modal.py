@@ -119,7 +119,7 @@ def _req_name(req: str) -> str:
 
 def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[str, str]]]:
     """(scs-python commit to build, {image key: {package: version or specifier}})."""
-    ref = (environ.get("SCS_PYTHON_REF") or "").strip()
+    ref = _full_sha("SCS_PYTHON_REF", environ.get("SCS_PYTHON_REF"))
     path = (environ.get("BENCH_MODAL_PINS") or "").strip()
     if not path:
         return ref, {}
@@ -130,7 +130,7 @@ def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[
     unknown = set(data) - {"scs_python_ref", "pins", "comment"}
     if unknown:
         raise SystemExit(f"BENCH_MODAL_PINS={path}: unknown keys {sorted(unknown)}")
-    file_ref = str(data.get("scs_python_ref") or "").strip()
+    file_ref = _full_sha(f"{path}: scs_python_ref", data.get("scs_python_ref"))
     if ref and file_ref and ref != file_ref:
         raise SystemExit(f"SCS_PYTHON_REF={ref} but {path} gives scs_python_ref {file_ref}")
     pins: dict[str, dict[str, str]] = {}
@@ -140,7 +140,20 @@ def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[
         if not isinstance(entries, dict) or not all(isinstance(v, str) and v.strip() for v in entries.values()):
             raise SystemExit(f"BENCH_MODAL_PINS={path}: pins of {image!r} must map package names to versions")
         pins[image] = {_norm(name): spec.strip() for name, spec in entries.items()}
+    if (ref or file_ref) and any("scs" in entries for entries in pins.values()):
+        raise SystemExit(f"BENCH_MODAL_PINS={path}: pins scs, but SCS is built from scs-python "
+                         f"{ref or file_ref}; drop the scs pin")
     return ref or file_ref, pins
+
+
+def _full_sha(what: str, value) -> str:
+    """A full 40-hex commit or empty. ``git fetch origin <sha>`` (the image build)
+    fetches only full SHAs, and a branch name would keep the image layer's command
+    the same while the branch moves, so Modal's cache would reuse an old build."""
+    ref = str(value or "").strip()
+    if ref and not re.fullmatch(r"[0-9a-f]{40}", ref):
+        raise SystemExit(f"{what}={ref!r}: give the full 40-character commit SHA")
+    return ref
 
 
 SCS_PYTHON_REF, PINS = _load_image_config(os.environ)
@@ -386,6 +399,12 @@ MAX_IN_FLIGHT = {"cpu": 16, "cpu_big": 8, "pdlp": 8, "gpu": 2, "cuopt": 1, "qtqp
 HARD_CAPS = {"cpu": 32, "cpu_big": 16, "pdlp": 8, "qtqp_cpu": 8, "cpo3_cpu": 8, "gpu": 10, "cuopt": 10, "qtqp_gpu": 10}
 GPU_LIMIT = 10  # GPU containers at once, all GPU kinds together
 MAX_HOST_TRIES = 40  # distinct wrong-host containers per shard (one container can reject several)
+# A container whose stop did not take effect can return the same requeued shard
+# again and again without adding a try; this many wrong-host results per allowed
+# try (so 120 at the default 40) ends the shard as failed instead of letting it
+# loop until the budget guard trips. Higher tolerates more rejected inputs per
+# container; lower fails a shard sooner when containers drain slowly.
+WRONG_HOST_RESULTS_PER_TRY = 3
 MAX_POLL_ERRORS = 30  # consecutive transient errors polling one call (about 10 minutes)
 THREAD_VARS = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "RAYON_NUM_THREADS")
 SHARD_TIMEOUT = 20 * 3600
@@ -723,6 +742,20 @@ def _parse_max_in_flight(text: str) -> dict[str, int]:
     return caps
 
 
+_FAMILY_MODEL = re.compile(r"\d+/\d+")
+
+
+def _check_host_requirement(name: str, req_cpu: str, req_gpu: str) -> None:
+    """Refuse a malformed requirement at launch: a typo would match no host and cost
+    max_host_tries cold starts per shard before failing."""
+    if req_cpu and not _FAMILY_MODEL.fullmatch(req_cpu.strip()):
+        raise SystemExit(f"{name}: require_cpu {req_cpu!r} is not FAMILY/MODEL (e.g. 25/1)")
+    if req_gpu:
+        gpu, _, cpu = req_gpu.partition("|")
+        if not gpu.strip() or (cpu and not _FAMILY_MODEL.fullmatch(cpu.strip())):
+            raise SystemExit(f"{name}: require_gpu {req_gpu!r} is not 'GPU NAME' or 'GPU NAME|FAMILY/MODEL'")
+
+
 def _prepare_shards(shards: list[dict], *, cpu_kind: str = "cpu", big: str = "", threads: int = 0,
                     require_cpu: str = "", require_gpu: str = "", scs_python_ref: str = "") -> list[dict]:
     """Give each shard its runner kind and its run controls; refuse a spec this run cannot honour."""
@@ -740,6 +773,10 @@ def _prepare_shards(shards: list[dict], *, cpu_kind: str = "cpu", big: str = "",
         req_gpu = s.get("require_gpu", require_gpu if kind in GPU_KINDS else "")
         if req_gpu and kind not in GPU_KINDS:
             raise SystemExit(f"{s['name']}: require_gpu on a {kind} shard, which runs on a CPU host")
+        if req_gpu and req_cpu:
+            raise SystemExit(f"{s['name']}: require_cpu on a {kind} shard; give the host CPU in require_gpu "
+                             "as 'GPU NAME|FAMILY/MODEL'")
+        _check_host_requirement(s["name"], req_cpu, req_gpu)
         want_ref = str(s.get("scs_python_ref") or "")
         if want_ref and not (scs_python_ref and (scs_python_ref.startswith(want_ref) or want_ref.startswith(scs_python_ref))):
             raise SystemExit(f"{s['name']} needs scs-python {want_ref}; the images build "
@@ -753,6 +790,7 @@ def _orchestrate(shards: list[dict], runners: Mapping, *, campaign: str, budget_
     """Spawn the shards within the caps and the budget, poll them, queue wrong-host ones again."""
     pending = deque(shards)
     tries: Counter = Counter()  # distinct wrong-host containers per shard
+    wrong_results: Counter = Counter()  # every wrong-host result per shard
     seen_tasks: set = set()
     poll_errors: Counter = Counter()  # consecutive transient poll errors per call
     running: dict = {}  # call -> (shard, start)
@@ -828,13 +866,19 @@ def _orchestrate(shards: list[dict], runners: Mapping, *, campaign: str, budget_
                 if key not in seen_tasks:
                     seen_tasks.add(key)
                     tries[sh["name"]] += 1
+                wrong_results[sh["name"]] += 1
                 want = sh["controls"]["require_gpu"] or sh["controls"]["require_cpu"]
-                if tries[sh["name"]] < max_host_tries:
+                # Also bound the results themselves: a wrong-host container whose
+                # stop did not take effect would keep taking the requeued shard,
+                # adding no new container and so no try, until the budget ran out.
+                if tries[sh["name"]] < max_host_tries and wrong_results[sh["name"]] < WRONG_HOST_RESULTS_PER_TRY * max_host_tries:
                     pending.append(sh)
                     print(f"  {sh['name']}: host {r['wrong_host']} (task {r.get('task', '')}), not {want}; "
                           f"queued again (try {tries[sh['name']]})", flush=True)
                     continue
-                r["error"] = f"no {want} host in {max_host_tries} tries"
+                r["error"] = (f"no {want} host in {max_host_tries} tries" if tries[sh["name"]] >= max_host_tries
+                              else f"{wrong_results[sh['name']]} wrong-host results from {tries[sh['name']]} "
+                                   "containers (a container kept taking the shard)")
             if r.get("exit") == 0:
                 done += 1
             else:

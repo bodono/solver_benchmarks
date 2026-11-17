@@ -583,6 +583,31 @@ def test_bench_modal_wrong_host_shards_are_queued_again_per_distinct_container(b
     assert all(controls["require_cpu"] == "25/1" for _, _, controls in spawned)
 
 
+def test_bench_modal_a_container_that_keeps_taking_the_shard_cannot_loop(bench_modal, tmp_path, monkeypatch):
+    # The same container rejecting the requeued shard over and over adds no try;
+    # the shard still ends after WRONG_HOST_RESULTS_PER_TRY * max_host_tries results.
+    wrong = {"name": "a", "exit": 75, "rows": 0, "wrong_host": "25/17", "task": "stuck"}
+    shards = bench_modal._prepare_shards([{"name": "a", "gpu": False}], require_cpu="25/1")
+
+    summary, runners, _ = _orchestrate(bench_modal, tmp_path, monkeypatch, shards, {"a": [wrong] * 1000},
+                                       max_host_tries=2)
+
+    assert summary["failed"] == 1 and summary["done"] == 0
+    assert len(runners["cpu"].spawned) == bench_modal.WRONG_HOST_RESULTS_PER_TRY * 2
+
+
+@pytest.mark.parametrize("shard, require_cpu, require_gpu", [
+    ({"name": "s", "gpu": False}, "zen3", ""),
+    ({"name": "s", "gpu": False, "require_cpu": "25-1"}, "", ""),
+    ({"name": "s", "gpu": True}, "", "NVIDIA A100-SXM4-80GB|milan"),
+    ({"name": "s", "gpu": True}, "", "|25/1"),
+    ({"name": "s", "gpu": True, "require_cpu": "25/1"}, "", "NVIDIA A100-SXM4-80GB"),
+])
+def test_bench_modal_refuses_malformed_host_requirements(bench_modal, shard, require_cpu, require_gpu):
+    with pytest.raises(SystemExit):
+        bench_modal._prepare_shards([shard], require_cpu=require_cpu, require_gpu=require_gpu)
+
+
 def test_bench_modal_gpu_kinds_together_stay_within_the_gpu_limit(bench_modal, tmp_path, monkeypatch):
     shards = bench_modal._prepare_shards(
         [{"name": f"g{i}", "gpu": True} for i in range(8)]
@@ -604,10 +629,10 @@ def _write_pins(tmp_path, data) -> str:
 def test_bench_modal_pins_apply_by_package_name(monkeypatch, tmp_path):
     pins = {"pins": {"cpu": {"osqp": "1.1.3", "HighsPy": "1.15.1", "numpy": "2.5.3"},
                      "qtqp_gpu": {"nvmath_python": "<0.9", "qtqp": "0.0.7"}},
-            "scs_python_ref": "13a25e84"}
+            "scs_python_ref": "13a25e84830de2549792df16161532624f576920"}
     bench_modal = _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, pins))
 
-    assert bench_modal.SCS_PYTHON_REF == "13a25e84"
+    assert bench_modal.SCS_PYTHON_REF == "13a25e84830de2549792df16161532624f576920"
     assert bench_modal._pinned("cpu", ["osqp", bench_modal.HIGHSPY, "numpy", "scipy"]) == [
         "osqp==1.1.3", "highspy==1.15.1", "numpy==2.5.3", "scipy"]
     assert bench_modal._pinned("qtqp_gpu", ["nvmath-python[cu12]", "qtqp>=0.0.7"]) == [
@@ -621,11 +646,27 @@ def test_bench_modal_pins_apply_by_package_name(monkeypatch, tmp_path):
     {"pins": {"tpu": {"osqp": "1.1.3"}}},
     {"pins": {"cpu": {"osqp": ""}}},
     {"pin": {}},
-    {"scs_python_ref": "91df3fcd"},  # differs from SCS_PYTHON_REF below
+    {"scs_python_ref": "91df3fcd59757ba65e416cdf820880b4026415d7"},  # differs from SCS_PYTHON_REF below
 ])
 def test_bench_modal_refuses_pins_it_cannot_apply(monkeypatch, tmp_path, data):
     with pytest.raises(SystemExit):
-        _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, data), SCS_PYTHON_REF="13a25e84")
+        _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, data), SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920")
+
+
+@pytest.mark.parametrize("ref", ["13a25e84", "master", "13A25E84830DE2549792DF16161532624F576920"])
+def test_bench_modal_refuses_an_scs_python_ref_that_is_not_a_full_sha(monkeypatch, tmp_path, ref):
+    # git fetch origin <short sha> fails in the image build, and a branch name
+    # would let Modal's layer cache reuse an old build.
+    with pytest.raises(SystemExit, match="full 40-character"):
+        _load_bench_modal(monkeypatch, SCS_PYTHON_REF=ref)
+    with pytest.raises(SystemExit, match="full 40-character"):
+        _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, {"scs_python_ref": ref}))
+
+
+def test_bench_modal_refuses_an_scs_pin_when_scs_is_built_from_source(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit, match="scs pin"):
+        _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, {"pins": {"cpu": {"scs": "3.3.2"}}}),
+                          SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920")
 
 
 def test_bench_modal_refuses_a_local_checkout_that_is_not_there(monkeypatch, tmp_path):
