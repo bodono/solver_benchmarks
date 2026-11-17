@@ -238,7 +238,11 @@ def _load_bench_modal(monkeypatch, **environ):
     for name, value in environ.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setitem(sys.modules, "modal", mock.MagicMock(name="modal"))
-    return _load_tool("bench_modal")
+    module = _load_tool("bench_modal")
+    # The host record runs nvidia-smi, dpkg-query and git; here they would go
+    # through the tests' fake Popen.
+    module._command_output = lambda args: ""
+    return module
 
 
 @pytest.fixture
@@ -324,9 +328,10 @@ def test_bench_modal_runs_from_the_image_checkout_with_data_from_the_volume(benc
 
 @pytest.mark.parametrize("exported_omp", [None, ""], ids=["unset", "empty"])
 def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tmp_path, monkeypatch, exported_omp):
-    """bench_modal exports OMP_NUM_THREADS for the shard's `bench run`; the
-    runner then leaves all four BLAS / OpenMP variables alone, so a worker
-    sees exactly what bench_modal set (no OpenBLAS cap of 1 next to OpenMP's 4)."""
+    """bench_modal sets the OpenMP, MKL, OpenBLAS and Rayon thread counts for
+    the shard's `bench run` to the container's reserved cores; the runner then
+    leaves the BLAS / OpenMP variables alone, so a worker sees exactly what
+    bench_modal set (no OpenBLAS cap of 1 next to OpenMP's 4)."""
     from solver_benchmarks.core import runner
 
     thread_vars = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
@@ -355,7 +360,7 @@ def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tm
     monkeypatch.setattr(bench_modal.subprocess, "Popen", real_popen)
     (kwargs,) = calls
     shard_env = kwargs["env"]
-    assert shard_env["OMP_NUM_THREADS"] == "4"
+    assert {name: shard_env[name] for name in bench_modal.THREAD_VARS} == dict.fromkeys(bench_modal.THREAD_VARS, "4")
 
     # The shard's runner, with that environment, starts a worker.
     for name, value in shard_env.items():
@@ -377,7 +382,7 @@ def test_bench_modal_thread_settings_reach_the_workers_unchanged(bench_modal, tm
     assert result.returncode == 0
     seen = json.loads((tmp_path / "stdout.log").read_text())
     assert seen == {name: shard_env.get(name) for name in thread_vars}
-    assert seen["OMP_NUM_THREADS"] == "4" and seen["OPENBLAS_NUM_THREADS"] is None
+    assert seen["OMP_NUM_THREADS"] == "4" and seen["OPENBLAS_NUM_THREADS"] == "4"
 
 
 def test_bench_modal_installs_the_highspy_the_pdlp_extra_allows(bench_modal):
@@ -388,6 +393,206 @@ def test_bench_modal_installs_the_highspy_the_pdlp_extra_allows(bench_modal):
     assert bench_modal.HIGHSPY == pdlp_highspy
     source = (TOOLS / "bench_modal.py").read_text()
     assert source.count('"highspy') == 1, "every image should use HIGHSPY"
+
+
+def _fake_shard_process(bench_modal, tmp_path, monkeypatch) -> list[dict]:
+    """Run _run against tmp_path with a shard process that exits at once; returns its Popen kwargs."""
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, cmd, **kwargs):
+            calls.append(kwargs)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(bench_modal.subprocess, "Popen", FakeProcess)
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(bench_modal, "Path", lambda p: tmp_path / str(p).lstrip("/"))
+    monkeypatch.setattr(bench_modal.results_vol, "commit", lambda: None)
+    return calls
+
+
+@pytest.mark.parametrize(("kind", "threads", "expected"), [("cpu", 0, "4"), ("gpu", 0, "8"), ("gpu", 4, "4")])
+def test_bench_modal_threads_are_the_flag_or_the_reserved_cores(bench_modal, tmp_path, monkeypatch, kind,
+                                                                threads, expected):
+    calls = _fake_shard_process(bench_modal, tmp_path, monkeypatch)
+    controls = json.dumps({"threads": threads, "require_cpu": "", "require_gpu": ""})
+
+    result = bench_modal._run_kind(kind, "camp", "shard", "run: {}\n", controls)
+
+    assert result["exit"] == 0
+    (kwargs,) = calls
+    assert {name: kwargs["env"][name] for name in bench_modal.THREAD_VARS} == dict.fromkeys(
+        bench_modal.THREAD_VARS, expected)
+    # host.txt: one block per container, appended, in the lines the campaign checks read.
+    host = (tmp_path / "results" / "camp" / "shard" / "host.txt").read_text().splitlines()
+    assert host[0].startswith("=== container start ") and " rows_before=0 host=" in host[0]
+    assert f"threads {expected}" in host
+    assert any(line.startswith("scs-python ") and " scs_source " in line for line in host)
+    assert host[-1].startswith("=== container end ") and host[-1].endswith("exit=0 rows_after=0")
+
+
+def test_bench_modal_wrong_host_does_nothing_and_stops_taking_inputs(bench_modal, monkeypatch):
+    from unittest import mock
+
+    def no_process(*args, **kwargs):
+        raise AssertionError("a wrong-host container must not start the shard")
+
+    monkeypatch.setattr(bench_modal.subprocess, "Popen", no_process)
+    monkeypatch.setitem(sys.modules, "modal.experimental", mock.MagicMock())
+    monkeypatch.setattr(bench_modal, "_cpu_family_model", lambda: "25/17")
+    monkeypatch.setattr(bench_modal, "_gpu_name", lambda: "NVIDIA A100 80GB PCIe")
+    monkeypatch.setenv("MODAL_TASK_ID", "ta-1")
+
+    result = bench_modal._run("camp", "shard", "run: {}\n", require_cpu="25/1")
+
+    assert result == {"name": "shard", "exit": 75, "rows": 0, "seconds": 0.0, "wrong_host": "25/17", "task": "ta-1"}
+    sys.modules["modal"].experimental.stop_fetching_inputs.assert_called_once()
+    assert bench_modal._host_ok("", "") == (True, "25/17")
+    assert bench_modal._host_ok("25/17", "") == (True, "25/17")
+    assert bench_modal._host_ok("", "NVIDIA A100 80GB PCIe|25/17") == (True, "NVIDIA A100 80GB PCIe|25/17")
+    assert bench_modal._host_ok("", "NVIDIA A100 80GB PCIe")[0]
+    assert not bench_modal._host_ok("", "NVIDIA A100-SXM4-80GB|25/17")[0]
+    assert not bench_modal._host_ok("", "NVIDIA A100 80GB PCIe|25/1")[0]
+
+
+def test_bench_modal_caps_stay_within_the_approved_ceilings(bench_modal):
+    caps = bench_modal.HARD_CAPS
+    assert caps["cpu"] <= 32 and caps["cpu_big"] <= 16
+    assert bench_modal.GPU_LIMIT <= 10 and all(caps[k] <= bench_modal.GPU_LIMIT for k in bench_modal.GPU_KINDS)
+    assert set(caps) == set(bench_modal.MAX_IN_FLIGHT) == set(bench_modal.CPUS) == set(bench_modal.RATES_PER_HOUR)
+    assert bench_modal.CPU_KINDS | bench_modal.GPU_KINDS == set(caps)
+    assert all(bench_modal.MAX_IN_FLIGHT[k] <= caps[k] for k in caps)
+    # Each shard function's max_containers is its kind's ceiling.
+    limits = sorted(c.kwargs["max_containers"] for c in bench_modal.app.function.call_args_list
+                    if "max_containers" in c.kwargs)
+    assert limits == sorted(caps.values())
+
+    assert bench_modal._parse_max_in_flight("") == bench_modal.MAX_IN_FLIGHT
+    raised = bench_modal._parse_max_in_flight(" cpu=32, cpu_big=16,gpu=9 ")
+    assert raised == {**bench_modal.MAX_IN_FLIGHT, "cpu": 32, "cpu_big": 16, "gpu": 9}
+    for bad in ("cpu=33", "cpu_big=17", "gpu=11", "gpu=0", "tpu=1", "cpu", "cpu=x"):
+        with pytest.raises(SystemExit):
+            bench_modal._parse_max_in_flight(bad)
+
+
+def test_bench_modal_shards_get_their_kind_and_run_controls(bench_modal):
+    def shards():
+        return [
+            {"name": "lp_scs_cpu", "gpu": False},
+            {"name": "lp_scs_gpu", "gpu": True},
+            {"name": "lp_pdlp", "gpu": False, "runner": "pdlp"},
+            {"name": "lp_cuopt", "gpu": True, "runner": "cuopt", "require_gpu": ""},
+            {"name": "sdp_big", "gpu": False, "require_cpu": "25/17"},
+        ]
+
+    out = {s["name"]: s for s in bench_modal._prepare_shards(
+        shards(), big="sdp_big", threads=4, require_cpu="25/1", require_gpu="NVIDIA A100-SXM4-80GB|25/1")}
+
+    assert {n: s["kind"] for n, s in out.items()} == {
+        "lp_scs_cpu": "cpu", "lp_scs_gpu": "gpu", "lp_pdlp": "pdlp", "lp_cuopt": "cuopt", "sdp_big": "cpu_big"}
+    controls = {n: (s["controls"]["require_cpu"], s["controls"]["require_gpu"]) for n, s in out.items()}
+    assert controls == {
+        "lp_scs_cpu": ("25/1", ""),
+        "lp_scs_gpu": ("", "NVIDIA A100-SXM4-80GB|25/1"),
+        "lp_pdlp": ("25/1", ""),
+        "lp_cuopt": ("", ""),  # the shard's own (empty) requirement wins
+        "sdp_big": ("25/17", ""),
+    }
+    assert {s["controls"]["threads"] for s in out.values()} == {4}
+    with pytest.raises(SystemExit):
+        bench_modal._prepare_shards([{"name": "s", "gpu": False, "require_gpu": "NVIDIA A100-SXM4-80GB"}])
+    with pytest.raises(SystemExit):
+        bench_modal._prepare_shards(shards(), threads=-1)
+    with pytest.raises(SystemExit):
+        bench_modal._prepare_shards([{"name": "s", "gpu": False, "runner": "tpu"}])
+    pinned = [{"name": "s", "gpu": False, "scs_python_ref": "13a25e84"}]
+    with pytest.raises(SystemExit):
+        bench_modal._prepare_shards(pinned)
+    with pytest.raises(SystemExit):
+        bench_modal._prepare_shards(pinned, scs_python_ref="91df3fcd59757ba65e416cdf820880b4026415d7")
+    assert bench_modal._prepare_shards(pinned, scs_python_ref="13a25e84830de2549792df16161532624f576920")
+
+
+class _FakeCall:
+    def __init__(self, results, active, peak):
+        self.results, self.active, self.peak = results, active, peak
+        self.polls = 0
+
+    def get(self, timeout=None):
+        self.polls += 1
+        if self.polls == 1:
+            raise TimeoutError
+        self.active.discard(self)
+        return self.results.pop(0)
+
+    def cancel(self):
+        self.active.discard(self)
+
+
+class _FakeRunner:
+    """A runner kind whose calls finish on their second poll with the next scripted result for the shard."""
+
+    def __init__(self, scripts, active, peak):
+        self.scripts, self.active, self.peak = scripts, active, peak
+        self.spawned = []
+
+    def spawn(self, campaign, name, config_yaml, controls):
+        self.spawned.append((campaign, name, json.loads(controls)))
+        script = self.scripts.get(name) or [{"name": name, "exit": 0, "rows": 1}]
+        call = _FakeCall([script.pop(0) if len(script) > 1 else script[0]], self.active, self.peak)
+        self.active.add(call)
+        self.peak[0] = max(self.peak[0], len(self.active))
+        return call
+
+
+def _orchestrate(bench_modal, tmp_path, monkeypatch, shards, scripts, **kwargs):
+    monkeypatch.setattr(bench_modal.time, "sleep", lambda seconds: None)
+    for shard in shards:
+        shard.setdefault("config", str(tmp_path / f"{shard['name']}.yaml"))
+        Path(shard["config"]).write_text("run: {}\n")
+    active, peak = set(), [0]
+    runners = {kind: _FakeRunner(scripts, active, peak) for kind in bench_modal.CPUS}
+    kwargs = {"campaign": "camp", "budget_usd": 1e6, "caps": bench_modal.MAX_IN_FLIGHT, **kwargs}
+    summary = bench_modal._orchestrate(shards, runners, **kwargs)
+    return summary, runners, peak[0]
+
+
+def test_bench_modal_wrong_host_shards_are_queued_again_per_distinct_container(bench_modal, tmp_path, monkeypatch):
+    def wrong(name, task):
+        return {"name": name, "exit": 75, "rows": 0, "wrong_host": "25/17", "task": task}
+
+    scripts = {
+        # one container rejects the shard twice (one try), a second once, then a Milan host runs it
+        "a": [wrong("a", "t1"), wrong("a", "t1"), wrong("a", "t2"), {"name": "a", "exit": 0, "rows": 3}],
+        "b": [wrong("b", f"u{i}") for i in range(10)],
+    }
+    shards = bench_modal._prepare_shards([{"name": "a", "gpu": False}, {"name": "b", "gpu": False, "campaign": "other"}],
+                                         require_cpu="25/1")
+
+    summary, runners, _ = _orchestrate(bench_modal, tmp_path, monkeypatch, shards, scripts, max_host_tries=3)
+
+    assert summary == {"done": 1, "failed": 1, "pending": 0, "spent": pytest.approx(summary["spent"])}
+    spawned = runners["cpu"].spawned
+    assert [n for _, n, _ in spawned].count("a") == 4
+    assert [n for _, n, _ in spawned].count("b") == 3  # gives up after three distinct containers
+    assert {c for c, n, _ in spawned if n == "b"} == {"other"}  # a shard's own campaign
+    assert all(controls["require_cpu"] == "25/1" for _, _, controls in spawned)
+
+
+def test_bench_modal_gpu_kinds_together_stay_within_the_gpu_limit(bench_modal, tmp_path, monkeypatch):
+    shards = bench_modal._prepare_shards(
+        [{"name": f"g{i}", "gpu": True} for i in range(8)]
+        + [{"name": f"c{i}", "gpu": True, "runner": "cuopt"} for i in range(8)])
+    caps = bench_modal._parse_max_in_flight("gpu=10,cuopt=10")
+
+    summary, _, peak = _orchestrate(bench_modal, tmp_path, monkeypatch, shards, {}, caps=caps)
+
+    assert summary["done"] == 16 and summary["failed"] == 0
+    assert peak == bench_modal.GPU_LIMIT
 
 
 def _write_pins(tmp_path, data) -> str:
