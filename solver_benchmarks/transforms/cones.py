@@ -122,7 +122,7 @@ def qp_to_scs_box_cone(qp: dict):
     Rows with no finite bound on either side (``l = -inf``, ``u = +inf``)
     constrain nothing and are left out, as the OSQP, PIQP, ProxQP, HiGHS and
     PDLP adapters leave them out and the nonnegative-cone form (Clarabel,
-    ECOS, cpo3) never has them. In SCS's box cone they would still be rows of
+    ECOS, CVXOPT, QTQP, cpo3) never has them. In SCS's box cone they would still be rows of
     the factorized KKT matrix, the equilibration and the residual norms:
     Maros-Meszaros writes every variable's bounds as a row, so a QP with free
     variables can have more free rows than constraints (AUG2D: 20,200 of

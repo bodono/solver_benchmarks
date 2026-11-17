@@ -207,6 +207,23 @@ def test_scs_with_equalities_and_free_rows_only(tmp_path, monkeypatch):
     assert result.kkt["dual_res_rel"] < 1e-6
 
 
+def test_scs_primal_infeasibility_certificate_with_free_rows(tmp_path):
+    # x0 >= 1 and x0 <= 0, with free rows in between: the certificate SCS
+    # returns for the kept rows must still check on the original rows.
+    qp = {
+        "P": sp.eye(2, format="csc"),
+        "q": np.array([0.0, 0.0]),
+        "A": sp.csc_matrix([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]),
+        "l": np.array([1.0, -1e20, -np.inf, -np.inf]),
+        "u": np.array([np.inf, 1e20, 0.0, np.inf]),
+    }
+    result = _solve("scs", qp, tmp_path, {"eps_abs": 1e-8, "eps_rel": 1e-8})
+    assert result.status == status.PRIMAL_INFEASIBLE, result.info
+    assert result.kkt is not None
+    assert result.kkt["certificate"] == "primal_infeasible"
+    assert result.kkt["valid"] is True
+
+
 def test_scs_with_only_free_rows(tmp_path):
     qp = {
         "P": sp.eye(2, format="csc"),

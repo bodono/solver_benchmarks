@@ -731,8 +731,8 @@ with a few ULPs of error; the transform layer and the Maros-Meszaros and QPS
 readers use the same cutoff), and passes true infinities to its solver. Rows
 with no finite bound constrain nothing and are not passed to SCS, OSQP, PIQP,
 ProxQP, HiGHS, PDLP, Gurobi or CPLEX (unless every row is free, for SCS); their
-dual is reported as zero. The nonnegative-cone form used by Clarabel, ECOS and
-cpo3 has no row for them.
+dual is reported as zero. The nonnegative-cone form used by Clarabel, ECOS,
+CVXOPT, QTQP and cpo3 has no row for them.
 
 ### Multi-Dataset Runs
 
