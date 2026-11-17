@@ -233,7 +233,7 @@ def _load_bench_modal(monkeypatch, **environ):
     with only the image variables in ``environ`` set."""
     from unittest import mock
 
-    for name in ("SCS_PYTHON_REF", "BENCH_MODAL_PINS", "QTQP_REPO", "CPO3_REPO"):
+    for name in ("SCS_PYTHON_REF", "SCS_BUILD_THREADS", "BENCH_MODAL_PINS", "QTQP_REPO", "CPO3_REPO"):
         monkeypatch.delenv(name, raising=False)
     for name, value in environ.items():
         monkeypatch.setenv(name, value)
@@ -515,6 +515,13 @@ def test_bench_modal_shards_get_their_kind_and_run_controls(bench_modal):
     with pytest.raises(SystemExit):
         bench_modal._prepare_shards(pinned, scs_python_ref="91df3fcd59757ba65e416cdf820880b4026415d7")
     assert bench_modal._prepare_shards(pinned, scs_python_ref="13a25e84830de2549792df16161532624f576920")
+    for want, images, other in ((True, "1", "serial_psd"), ("serial_psd", "serial_psd", "1"), (False, "", "1"),
+                                ("0", "", "serial_psd")):
+        spec = [{"name": "s", "gpu": False, "scs_build_threads": want}]
+        assert bench_modal._prepare_shards(spec, scs_build_threads=images)
+        with pytest.raises(SystemExit, match="SCS_BUILD_THREADS"):
+            bench_modal._prepare_shards(spec, scs_build_threads=other)
+    assert bench_modal._prepare_shards([{"name": "s", "gpu": False}], scs_build_threads="1")
 
 
 class _FakeCall:
@@ -676,6 +683,99 @@ def test_bench_modal_refuses_an_scs_pin_when_scs_is_built_from_source(monkeypatc
 def test_bench_modal_refuses_a_local_checkout_that_is_not_there(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="CPO3_REPO"):
         _load_bench_modal(monkeypatch, CPO3_REPO=str(tmp_path / "nonexistent"))
+
+
+def _image_commands() -> list[str]:
+    """Every command the images run, in order (from the stand-in for modal)."""
+    out = []
+    for c in sys.modules["modal"].mock_calls:
+        if c[0].endswith("run_commands"):
+            out.extend(c[1])
+    return out
+
+
+def _scs_builds(commands: list[str]) -> list[str]:
+    return [c for c in commands if "pip install -v --no-build-isolation" in c and "/opt/scs-python" in c]
+
+
+def test_bench_modal_default_scs_builds_are_single_threaded(monkeypatch):
+    # The commands of the single-threaded builds are those of the SCS 3.3.2
+    # refresh, so the default images are the ones that campaign ran.
+    bench_modal = _load_bench_modal(monkeypatch, SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920")
+    commands = _image_commands()
+    cpu, gpu = _scs_builds(commands)
+    assert ("python -m pip install -v --no-build-isolation --no-deps --force-reinstall "
+            "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static .") in cpu
+    assert "python -m pip install -v --no-build-isolation -Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true ." in gpu
+    assert not [c for c in commands if "openmp" in c or bench_modal.SCS_BUILD_RECORD in c]
+    assert bench_modal.SCS_BUILD_THREADS == ""
+
+
+@pytest.mark.parametrize("mode", ["1", "serial_psd"])
+def test_bench_modal_threaded_scs_builds(monkeypatch, mode):
+    bench_modal = _load_bench_modal(monkeypatch, SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920", SCS_BUILD_THREADS=mode)
+    commands = _image_commands()
+    cpu, gpu = _scs_builds(commands)
+    for flag in ("-Dmkl_static_prefix=/opt/mkl-static", "-Dmkl_static_threading=gnu_thread", "-Duse_openmp=true"):
+        assert f"-Csetup-args={flag}" in cpu
+    for flag in ("-Dlink_cudss=true", "-Dint32=true", "-Duse_openmp=true"):
+        assert f"-Csetup-args={flag}" in gpu
+    assert "mkl_static" not in gpu
+    assert ("-Csetup-args=-Duse_parallel_psd=true" in cpu) == ("-Csetup-args=-Duse_parallel_psd=true" in gpu) == (
+        mode == "1")
+    # the GPU build links the OpenMP OpenBLAS, put in place before it
+    openblas = next(i for i, c in enumerate(commands) if "update-alternatives --set" in c)
+    assert openblas < commands.index(gpu)
+    # each threaded build is followed by its library check, which writes the record
+    checks = [i for i, c in enumerate(commands) if bench_modal.SCS_BUILD_RECORD in c and "assert not missing" in c]
+    assert len(checks) == 2
+    assert commands.index(cpu) < checks[0] < commands.index(gpu) < checks[1]
+    assert "'libgomp']" in commands[checks[0]] and "'openblas-openmp']" in commands[checks[1]]
+    assert f"'threads {mode} _scs_mkl '" in commands[checks[0]]
+    assert all(compile(c.split("\n", 1)[1].rsplit("\nPY", 1)[0], "check", "exec") for c in
+               (commands[checks[0]], commands[checks[1]]))
+
+
+@pytest.mark.parametrize("environ, pins, threads", [
+    ({"SCS_BUILD_THREADS": "0"}, None, ""),
+    ({"SCS_BUILD_THREADS": " serial_psd "}, None, "serial_psd"),
+    ({}, {"scs_build_threads": True}, "1"),
+    ({}, {"scs_build_threads": "serial_psd"}, "serial_psd"),
+    ({"SCS_BUILD_THREADS": "1"}, {"scs_build_threads": True}, "1"),
+    ({"SCS_BUILD_THREADS": "0"}, {"scs_build_threads": False}, ""),
+])
+def test_bench_modal_scs_build_threads_from_the_environment_or_the_pins_file(monkeypatch, tmp_path, environ, pins,
+                                                                              threads):
+    if pins is not None:
+        environ = dict(environ, BENCH_MODAL_PINS=_write_pins(tmp_path, pins))
+    bench_modal = _load_bench_modal(monkeypatch, SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920", **environ)
+    assert bench_modal.SCS_BUILD_THREADS == threads
+
+
+@pytest.mark.parametrize("environ, pins", [
+    ({"SCS_BUILD_THREADS": "2"}, None),
+    ({"SCS_BUILD_THREADS": "yes"}, None),
+    ({"SCS_BUILD_THREADS": "1", "SCS_PYTHON_REF": ""}, None),  # the PyPI wheel cannot be threaded
+    ({"SCS_BUILD_THREADS": "0"}, {"scs_build_threads": True}),
+    ({"SCS_BUILD_THREADS": "1"}, {"scs_build_threads": "serial_psd"}),
+    ({}, {"scs_build_threads": "true"}),
+    ({}, {"scs_build_threads": 1}),
+])
+def test_bench_modal_refuses_scs_build_threads_it_cannot_honour(monkeypatch, tmp_path, environ, pins):
+    environ = {"SCS_PYTHON_REF": "13a25e84830de2549792df16161532624f576920", **environ}
+    if pins is not None:
+        environ["BENCH_MODAL_PINS"] = _write_pins(tmp_path, pins)
+    with pytest.raises(SystemExit):
+        _load_bench_modal(monkeypatch, **environ)
+
+
+def test_bench_modal_host_record_says_how_scs_was_built(bench_modal, tmp_path, monkeypatch):
+    monkeypatch.setattr(bench_modal, "SCS_BUILD_RECORD", str(tmp_path / "scs_build.txt"))
+    report = bench_modal._host_report()
+    assert "scs_build threads 0" in report.splitlines()[-1]
+    (tmp_path / "scs_build.txt").write_text("threads 1 _scs_mkl -Duse_openmp=true\nlibs /usr/lib/libgomp.so.1\n")
+    lines = bench_modal._host_report().splitlines()
+    assert lines[-2:] == ["scs_build threads 1 _scs_mkl -Duse_openmp=true", "scs_build libs /usr/lib/libgomp.so.1"]
 
 
 @pytest.mark.parametrize("pins_file", sorted((TOOLS / "modal_pins").glob("*.json")), ids=lambda p: p.stem)

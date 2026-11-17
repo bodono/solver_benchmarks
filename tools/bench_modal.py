@@ -39,8 +39,9 @@ below and any host will do):
 
 A shard in the spec may also carry ``campaign`` (its results go under that
 campaign instead of --campaign), ``require_cpu`` / ``require_gpu`` (in place
-of the flags, for that shard) and ``scs_python_ref`` (the run refuses to start
-unless the images build that scs-python commit).
+of the flags, for that shard), ``scs_python_ref`` (the run refuses to start
+unless the images build that scs-python commit) and ``scs_build_threads``
+(a value of SCS_BUILD_THREADS: the run refuses to start unless it matches).
 
 The images are fixed before the entrypoint parses its flags, so what goes into
 them is set by environment variables on the launching machine:
@@ -53,7 +54,16 @@ them is set by environment variables on the launching machine:
     Image keys are those of IMAGE_KEYS; ``qtqp_cpu`` and ``cpo3_cpu`` build
     on ``cpu``. A value is a version (``==``) or a specifier (``<1.16``). A
     pin must name a package the image installs. The file may also give
-    ``scs_python_ref``.
+    ``scs_python_ref`` and ``scs_build_threads``.
+``SCS_BUILD_THREADS=1`` (or ``serial_psd``)
+    Build that SCS multithreaded (needs SCS_PYTHON_REF, at a scs-python commit
+    with the Meson option ``mkl_static_threading``): OpenMP and the parallel
+    PSD projection in both images, MKL on its threaded layer (libgomp) in the
+    CPU image, and the OpenMP build of Ubuntu's OpenBLAS in the GPU image.
+    ``serial_psd``: the same without the parallel PSD projection. The threads
+    are the run's ``--threads``. Unset or 0: the single-threaded builds, as
+    before. The pins file may give it as ``scs_build_threads`` (true, false,
+    "1", "0" or "serial_psd"). See "SCS built from source" below.
 ``QTQP_REPO`` / ``CPO3_REPO``
     Build QTQP / cpo3 from a local checkout instead of PyPI.
 """
@@ -117,22 +127,48 @@ def _req_name(req: str) -> str:
     return _norm(_req_base(req).split("[")[0])
 
 
-def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[str, str]]]:
-    """(scs-python commit to build, {image key: {package: version or specifier}})."""
+SCS_THREAD_MODES = {"": "", "0": "", "1": "1", "serial_psd": "serial_psd"}
+
+
+def _thread_mode(value: object, what: str) -> str:
+    """A value of SCS_BUILD_THREADS (or of scs_build_threads in a pins file or a
+    shard) as '' (single-threaded), '1' or 'serial_psd'; anything else stops the launch."""
+    if isinstance(value, bool):
+        return "1" if value else ""
+    text = value.strip() if isinstance(value, str) else None
+    if text not in SCS_THREAD_MODES:
+        raise SystemExit(f"{what} must be 0, 1 or serial_psd, got {value!r}")
+    return SCS_THREAD_MODES[text]
+
+
+def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[str, str]], str]:
+    """(scs-python commit to build, {image key: {package: version or specifier}},
+    how to thread that SCS: '', '1' or 'serial_psd', see SCS_BUILD_THREADS)."""
     ref = _full_sha("SCS_PYTHON_REF", environ.get("SCS_PYTHON_REF"))
+    env_threads = (environ.get("SCS_BUILD_THREADS") or "").strip()
+    threads = _thread_mode(env_threads, "SCS_BUILD_THREADS")
     path = (environ.get("BENCH_MODAL_PINS") or "").strip()
-    if not path:
-        return ref, {}
-    try:
-        data = json.loads(Path(path).read_text())
-    except (OSError, ValueError) as exc:
-        raise SystemExit(f"BENCH_MODAL_PINS={path}: {exc}") from exc
-    unknown = set(data) - {"scs_python_ref", "pins", "comment"}
+    data: dict = {}
+    if path:
+        try:
+            data = json.loads(Path(path).read_text())
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"BENCH_MODAL_PINS={path}: {exc}") from exc
+    unknown = set(data) - {"scs_python_ref", "scs_build_threads", "pins", "comment"}
     if unknown:
         raise SystemExit(f"BENCH_MODAL_PINS={path}: unknown keys {sorted(unknown)}")
     file_ref = _full_sha(f"{path}: scs_python_ref", data.get("scs_python_ref"))
     if ref and file_ref and ref != file_ref:
         raise SystemExit(f"SCS_PYTHON_REF={ref} but {path} gives scs_python_ref {file_ref}")
+    if "scs_build_threads" in data:
+        file_threads = _thread_mode(data["scs_build_threads"], f"BENCH_MODAL_PINS={path}: scs_build_threads")
+        if env_threads and file_threads != threads:
+            raise SystemExit(f"SCS_BUILD_THREADS={env_threads} but {path} gives "
+                             f"scs_build_threads {data['scs_build_threads']!r}")
+        threads = file_threads
+    if threads and not (ref or file_ref):
+        raise SystemExit(f"SCS_BUILD_THREADS={threads} needs SCS_PYTHON_REF (a scs-python commit with the Meson "
+                         "option mkl_static_threading): the PyPI wheel is single-threaded")
     pins: dict[str, dict[str, str]] = {}
     for image, entries in (data.get("pins") or {}).items():
         if image not in IMAGE_KEYS:
@@ -145,7 +181,7 @@ def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[
     if (ref or file_ref) and any("scs" in pins.get(image, {}) for image in ("cpu", "gpu")):
         raise SystemExit(f"BENCH_MODAL_PINS={path}: pins scs on an image that builds SCS from scs-python "
                          f"{ref or file_ref}; drop the scs pin")
-    return ref or file_ref, pins
+    return ref or file_ref, pins, threads
 
 
 def _full_sha(what: str, value) -> str:
@@ -158,7 +194,7 @@ def _full_sha(what: str, value) -> str:
     return ref
 
 
-SCS_PYTHON_REF, PINS = _load_image_config(os.environ)
+SCS_PYTHON_REF, PINS, SCS_BUILD_THREADS = _load_image_config(os.environ)
 _USED_PINS: set[tuple[str, str]] = set()
 
 
@@ -194,8 +230,78 @@ def _local_checkout(var: str) -> str | None:
 # sequential MKL (the mkl-static release the wheel build uses), so it is the
 # default (AUTO) backend, as in a pip install. The other backends use the
 # image's OpenBLAS, where the wheel vendors its own.
+#
+# SCS_BUILD_THREADS=1 builds the same commit multithreaded, on one OpenMP
+# runtime per process (GCC's libgomp), so that no library starts threads inside
+# the threads of another:
+# - both images: use_openmp (SCS's OpenMP loops) and use_parallel_psd (the PSD
+#   blocks projected in parallel; inside that region the BLAS runs on one
+#   thread because OpenMP does not nest);
+# - CPU image: mkl_static_threading=gnu_thread, the static MKL on its libgomp
+#   layer, so MKL Pardiso uses the parallel reordering, factorization and
+#   solve that SCS asks for in iparm, and MKL's LAPACK threads a large PSD
+#   block projected on its own;
+# - GPU image: the OpenMP build of Ubuntu's OpenBLAS (libopenblas0-openmp)
+#   behind libopenblas.so.0, for the LAPACK of the PSD projection, which stays
+#   on the CPU. The pthreads build that libopenblas-dev installs has a thread
+#   pool of its own, and SCS keeps the projection serial when it sees it.
+# SCS_BUILD_THREADS=serial_psd leaves out use_parallel_psd (the PSD blocks one
+# after another, each free to use the threads of the BLAS), to measure what the
+# parallel projection adds. Thread counts come from the run (--threads,
+# THREAD_VARS). The image build fails if the threaded module does not load
+# libgomp (or, on the GPU, the OpenMP OpenBLAS), and writes the configuration
+# to SCS_BUILD_RECORD, which host.txt copies. Whether MKL itself got the
+# threaded layer shows only in the build log (MKL_VERBOSE NThr lines).
 SCS_PYTHON_URL = "https://github.com/bodono/scs-python.git"
 MKL_STATIC_VERSION = "2026.1.0"  # as in scs-python's .github/scripts/install_mkl_static.sh
+SCS_BUILD_RECORD = "/opt/scs_build.txt"
+SCS_CPU_ARGS = ["-Dmkl_static_prefix=/opt/mkl-static"]
+SCS_GPU_ARGS = ["-Dlink_cudss=true", "-Dint32=true"]
+# The Meson options a threaded build adds, by SCS_BUILD_THREADS
+SCS_THREAD_ARGS = ["-Duse_openmp=true"] + (["-Duse_parallel_psd=true"] if SCS_BUILD_THREADS == "1" else [])
+SCS_CPU_THREAD_ARGS = ["-Dmkl_static_threading=gnu_thread", *SCS_THREAD_ARGS]
+
+
+def _setup_args(args: list[str]) -> str:
+    return " ".join(f"-Csetup-args={a}" for a in args)
+
+
+def _scs_thread_checks(module: str, args: list[str], *, need: tuple[str, ...]) -> list[str]:
+    """Image steps after a threaded build: fail unless importing ``module`` loads
+    every library named in ``need`` (paths as /proc/self/maps resolves them),
+    write SCS_BUILD_RECORD, and print to the build log whether the PSD blocks of
+    a small SDP are projected in parallel and, with MKL, how many threads its
+    LAPACK calls get (MKL_VERBOSE). The last two are information only: they
+    depend on the cores the build machine has."""
+    check = (
+        "python - <<'PY'\n"
+        f"import scs\nfrom scs import {module}\n"
+        "libs = sorted({l.split()[-1] for l in open('/proc/self/maps') if any(k in l for k in ('gomp', 'iomp', 'openblas'))})\n"
+        f"need = {list(need)!r}\n"
+        "missing = [n for n in need if not any(n in lib for lib in libs)]\n"
+        "print('loaded:', *libs)\n"
+        "assert not missing, f'threaded SCS build without {missing}'\n"
+        f"open({SCS_BUILD_RECORD!r}, 'w').write("
+        f"'threads {SCS_BUILD_THREADS} {module} ' + {' '.join(args)!r} + '\\nlibs ' + ' '.join(libs) + '\\n')\n"
+        "PY"
+    )
+    # min trace(X_1 + ... + X_k) s.t. X_i + B_i PSD: k blocks of n, solved in a few iterations
+    sdp = (
+        "python - <<'PY'\n"
+        "import os, numpy as np, scipy.sparse as sp, scs\n"
+        "k, n = int(os.environ['K']), int(os.environ['N']); m = n * (n + 1) // 2\n"
+        "c1 = np.zeros(m); i = 0\n"
+        "for j in range(n):\n    c1[i] = 1.0; i += n - j\n"
+        "b = np.random.default_rng(0).standard_normal(k * m)\n"
+        "data = {'A': -sp.identity(k * m, format='csc'), 'b': b, 'c': np.tile(c1, k)}\n"
+        "print(scs.solve(data, {'s': [n] * k}, verbose=True, max_iters=50)['info']['lin_sys_solver'])\n"
+        "PY"
+    )
+    steps = [check, f"cat {SCS_BUILD_RECORD}", f"(K=8 N=40 OMP_NUM_THREADS=4 {sdp}\n) | grep -E 'psd|lin-sys' || true"]
+    if module == "_scs_mkl":  # one block, projected by MKL's LAPACK on its own threads
+        steps.append(f"(K=1 N=200 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 MKL_DYNAMIC=FALSE MKL_VERBOSE=1 {sdp}\n) "
+                     "| grep -m 3 -iE 'syev.*NThr' || true")
+    return steps
 
 
 def _logged_build(cmd: str) -> str:
@@ -232,10 +338,12 @@ def _with_scs_source(image: modal.Image) -> modal.Image:
             "&& mkdir -p /opt/mkl-static && cp -r /tmp/mkl/unpacked/*.data/data/. /opt/mkl-static/ && rm -rf /tmp/mkl",
             "cd /opt/scs-python && " + _logged_build(
                 "python -m pip install -v --no-build-isolation --no-deps --force-reinstall "
-                "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static ."),
+                + _setup_args(SCS_CPU_ARGS + (SCS_CPU_THREAD_ARGS if SCS_BUILD_THREADS else [])) + " ."),
             "python -c 'import scs, numpy; from scs import _scs_mkl; "
             "print(\"scs\", scs.__version__, \"with MKL; numpy\", numpy.__version__)'",
             "git -C /opt/scs-python/scs_source log -1 --format='scs_source %H %s'",
+            *(_scs_thread_checks("_scs_mkl", SCS_CPU_ARGS + SCS_CPU_THREAD_ARGS, need=("libgomp",))
+              if SCS_BUILD_THREADS else []),
         )
     )
 
@@ -251,6 +359,19 @@ cpu_image = (
 )
 
 CUDA_IMAGE = "nvidia/cuda:12.6.3-devel-ubuntu22.04"
+
+
+def _openmp_openblas() -> list[str]:
+    """Steps that put the OpenMP build of Ubuntu's OpenBLAS (GCC's libgomp) behind
+    libopenblas.so and libopenblas.so.0 (Debian alternatives); libblas.so.3 and
+    liblapack.so.3 are left as they are. Fails if there is no such alternative."""
+    return [
+        "apt-get update && apt-get install -y libopenblas0-openmp libopenblas-openmp-dev",
+        "set -e; n=0; for alt in $(update-alternatives --get-selections | awk '{print $1}' | grep '^libopenblas'); do "
+        "p=$(update-alternatives --list $alt | grep openblas-openmp | head -1); "
+        "if [ -n \"$p\" ]; then update-alternatives --set $alt $p; n=$((n+1)); fi; done; "
+        "update-alternatives --get-selections | grep '^libopenblas'; [ $n -gt 0 ]",
+    ]
 # Python 3.12 from Modal rather than Ubuntu 22.04's 3.10: the harness needs 3.11
 # or newer.
 gpu_image = (
@@ -284,11 +405,15 @@ gpu_image = (
         "[ -e /install ] || ln -s \"$(python -c 'import sys; print(sys.base_prefix)')\" /install",
         "ls /install/include/python3.12/Python.h",
         *_scs_python_checkout(),
+        *(_openmp_openblas() if SCS_BUILD_THREADS else []),
         "cd /opt/scs-python && " + _logged_build(
-            "python -m pip install -v --no-build-isolation -Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true ."),
+            "python -m pip install -v --no-build-isolation "
+            + _setup_args(SCS_GPU_ARGS + (SCS_THREAD_ARGS if SCS_BUILD_THREADS else [])) + " ."),
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
         "git -C /opt/scs-python/scs_source log -1 --format='scs_source %H %s'",
         "dpkg-query -W 'cudss*' 'libcudss*' || true",
+        *(_scs_thread_checks("_scs_cudss", SCS_GPU_ARGS + SCS_THREAD_ARGS, need=("libgomp", "openblas-openmp"))
+          if SCS_BUILD_THREADS else []),
     )
     # NVIDIA cuOpt: GPU PDLP for LP, GPU barrier for QP; the like-for-like GPU comparator.
     .pip_install(*_pinned("gpu", ["cuopt-cu12"]), extra_index_url="https://pypi.nvidia.com")
@@ -459,8 +584,9 @@ HOST_PACKAGES = sorted({"scs", "numpy", "scipy", *(_req_name(r) for r in SOLVER_
 
 def _host_report() -> str:
     """The host and software of this container, in the lines host.txt records:
-    CPU, core count, GPU, cuDSS packages, ``pkg NAME VERSION`` lines and the
-    scs-python / scs_source commits of a source build."""
+    CPU, core count, GPU, cuDSS packages, ``pkg NAME VERSION`` lines, the
+    scs-python / scs_source commits of a source build and its threading
+    (``scs_build ...``: SCS_BUILD_RECORD of a threaded build, else ``threads 0``)."""
     import importlib.metadata as md
 
     lines = []
@@ -484,6 +610,11 @@ def _host_report() -> str:
     commits = [_command_output(["git", "-C", d, "rev-parse", "HEAD"]).strip() or "none"
                for d in ("/opt/scs-python", "/opt/scs-python/scs_source")]
     lines.append(f"scs-python {commits[0]} scs_source {commits[1]}")
+    try:
+        record = Path(SCS_BUILD_RECORD).read_text().splitlines()
+    except OSError:
+        record = ["threads 0" if Path("/opt/scs-python").is_dir() else "threads 0 (PyPI wheel)"]
+    lines.extend(f"scs_build {line}" for line in record if line.strip())
     return "".join(line + "\n" for line in lines if line)
 
 
@@ -759,7 +890,8 @@ def _check_host_requirement(name: str, req_cpu: str, req_gpu: str) -> None:
 
 
 def _prepare_shards(shards: list[dict], *, cpu_kind: str = "cpu", big: str = "", threads: int = 0,
-                    require_cpu: str = "", require_gpu: str = "", scs_python_ref: str = "") -> list[dict]:
+                    require_cpu: str = "", require_gpu: str = "", scs_python_ref: str = "",
+                    scs_build_threads: str = "") -> list[dict]:
     """Give each shard its runner kind and its run controls; refuse a spec this run cannot honour."""
     if threads < 0:
         raise SystemExit(f"--threads must be 0 (the reserved cores) or more, got {threads}")
@@ -783,6 +915,11 @@ def _prepare_shards(shards: list[dict], *, cpu_kind: str = "cpu", big: str = "",
         if want_ref and not (scs_python_ref and (scs_python_ref.startswith(want_ref) or want_ref.startswith(scs_python_ref))):
             raise SystemExit(f"{s['name']} needs scs-python {want_ref}; the images build "
                              f"{scs_python_ref or 'the PyPI scs'} (set SCS_PYTHON_REF)")
+        if "scs_build_threads" in s:
+            want = _thread_mode(s["scs_build_threads"], f"{s['name']}: scs_build_threads")
+            if want != scs_build_threads:
+                raise SystemExit(f"{s['name']} needs scs_build_threads {want or '0'}; the images build "
+                                 f"SCS_BUILD_THREADS={scs_build_threads or '0'}")
         s["controls"] = {"threads": threads, "require_cpu": req_cpu, "require_gpu": req_gpu}
     return shards
 
@@ -934,8 +1071,10 @@ def main(
         wanted = [n.strip() for n in names.split(",") if n.strip()]
         shards = [s for s in shards if s["name"] in wanted]
     shards = _prepare_shards(shards, cpu_kind=cpu_kind, big=big, threads=threads, require_cpu=require_cpu,
-                             require_gpu=require_gpu, scs_python_ref=SCS_PYTHON_REF)
+                             require_gpu=require_gpu, scs_python_ref=SCS_PYTHON_REF,
+                             scs_build_threads=SCS_BUILD_THREADS)
     print(f"scs-python {SCS_PYTHON_REF or '(PyPI scs; GPU image: default branch)'}; "
+          f"SCS_BUILD_THREADS={SCS_BUILD_THREADS or '0'}; "
           f"pins {json.dumps(PINS, sort_keys=True) if PINS else '(none)'}; "
           f"threads {threads or 'reserved cores'}; require_cpu {require_cpu or '(any)'}; "
           f"require_gpu {require_gpu or '(any)'}", flush=True)
