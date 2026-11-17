@@ -633,6 +633,12 @@ def test_bench_modal_refuses_a_local_checkout_that_is_not_there(monkeypatch, tmp
         _load_bench_modal(monkeypatch, CPO3_REPO=str(tmp_path / "nonexistent"))
 
 
+@pytest.mark.parametrize("pins_file", sorted((TOOLS / "modal_pins").glob("*.json")), ids=lambda p: p.stem)
+def test_bench_modal_pin_files_apply_to_the_images(monkeypatch, pins_file):
+    bench_modal = _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=str(pins_file))
+    assert bench_modal.PINS
+
+
 def test_make_figures_main_survives_a_family_with_no_sized_problem(make_figures, tmp_path, monkeypatch):
     run_dir = tmp_path / "qp_run"
     run_dir.mkdir()
