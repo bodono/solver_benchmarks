@@ -117,8 +117,23 @@ def qp_to_nonnegative_cone(qp: dict):
 
 
 def qp_to_scs_box_cone(qp: dict):
-    """Convert a QP to SCS data using SCS' box cone when inequalities exist."""
-    a, l, u, eq, _, _ = split_qp_bounds(qp)
+    """Convert a QP to SCS data using SCS' box cone when inequalities exist.
+
+    Rows with no finite bound on either side (``l = -inf``, ``u = +inf``)
+    constrain nothing and are left out, as the OSQP, PIQP, ProxQP, HiGHS and
+    PDLP adapters leave them out and the nonnegative-cone form (Clarabel,
+    ECOS, cpo3) never has them. In SCS's box cone they would still be rows of
+    the factorized KKT matrix, the equilibration and the residual norms:
+    Maros-Meszaros writes every variable's bounds as a row, so a QP with free
+    variables can have more free rows than constraints (AUG2D: 20,200 of
+    30,200 rows). If every row is free the rows are kept, so SCS still gets a
+    constraint matrix.
+
+    Returns ``(data, cone, inv_perm)``: ``inv_perm[i]`` is the position of
+    original row ``i`` among the rows handed to SCS (equalities first, then
+    inequalities, box ``t`` row excluded), or -1 for a row left out.
+    """
+    a, l, u, eq, finite_l, finite_u = split_qp_bounds(qp)
     m, n = a.shape
     p = sp.csc_matrix(qp["P"])
     # Sanitize sentinel bounds to true infinities for the box cone: the
@@ -127,32 +142,40 @@ def qp_to_scs_box_cone(qp: dict):
     # bounds and poison the solve (SCS accepts +-inf natively).
     l = np.where(l <= -_INF_CUT, -np.inf, l)
     u = np.where(u >= _INF_CUT, np.inf, u)
-    if np.all(eq):
-        a_scs = a.copy()
-        b_scs = u.copy()
+    free = ~(eq | finite_l | finite_u)
+    if free.all():
+        free = np.zeros(m, dtype=bool)
+    ineq = ~eq & ~free
+    order = np.hstack((np.flatnonzero(eq), np.flatnonzero(ineq)))
+    inv_perm = np.full(m, -1, dtype=int)
+    inv_perm[order] = np.arange(order.size)
+    if not ineq.any():
+        a_scs = a[eq, :].tocsc()
+        b_scs = u[eq].copy()
         cone = {"z": int(np.sum(eq))}
-        inv_perm = np.arange(m)
     else:
-        order = np.hstack((np.flatnonzero(eq), np.flatnonzero(~eq)))
-        inv_perm = np.argsort(order)
-        a_scs = sp.vstack((a[eq, :], sp.csc_matrix((1, n)), -a[~eq, :]), format="csc")
-        b_scs = np.hstack((u[eq], 1.0, np.zeros(int(np.sum(~eq)))))
+        a_scs = sp.vstack((a[eq, :], sp.csc_matrix((1, n)), -a[ineq, :]), format="csc")
+        b_scs = np.hstack((u[eq], 1.0, np.zeros(int(np.sum(ineq)))))
         cone = {
             "z": int(np.sum(eq)),
-            "bl": l[~eq].tolist(),
-            "bu": u[~eq].tolist(),
+            "bl": l[ineq].tolist(),
+            "bu": u[ineq].tolist(),
         }
     data = {"P": p, "A": a_scs, "b": b_scs, "c": np.asarray(qp["q"], dtype=float)}
     return data, cone, inv_perm
 
 
 def unbox_scs_dual(y, cone, inv_perm):
+    """Map SCS's dual back to the QP's rows; rows left out get zero."""
     if y is None:
         return None
-    y = np.asarray(y).copy()
+    y = np.asarray(y, dtype=float).copy()
     z = int(cone.get("z", 0))
-    if "bl" not in cone and "bu" not in cone:
-        return y
-    y[z:] *= -1.0
-    y = np.delete(y, z)
-    return y[inv_perm]
+    if "bl" in cone or "bu" in cone:
+        y[z:] *= -1.0
+        y = np.delete(y, z)
+    inv_perm = np.asarray(inv_perm, dtype=int)
+    kept = inv_perm >= 0
+    out = np.zeros(inv_perm.shape[0])
+    out[kept] = y[inv_perm[kept]]
+    return out

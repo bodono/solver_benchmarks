@@ -155,5 +155,36 @@ def test_unbox_scs_dual_round_trips_permutation_and_sign():
     assert np.allclose(y_qp, [0.1, 0.5, -0.2, -0.4])
 
 
+def test_qp_to_scs_box_cone_leaves_out_free_rows():
+    qp = _sample_mixed_qp()
+    qp["A"] = sp.vstack((qp["A"], sp.csc_matrix([[1.0, 0.0]])), format="csc")
+    qp["l"] = np.append(qp["l"], -INF_BOUND)
+    qp["u"] = np.append(qp["u"], INF_BOUND)
+    qp["m"] = 4
+    data, cone, inv_perm = qp_to_scs_box_cone(qp)
+    assert cone == {"z": 1, "bl": [-np.inf, -1.0], "bu": [5.0, 4.0]}
+    assert data["A"].shape == (4, 2)
+    assert inv_perm.tolist() == [0, 1, 2, -1]
+    # SCS layout [eq, t, -ineq, -ineq]; the free row's dual is zero.
+    y_qp = unbox_scs_dual(np.array([0.1, 99.0, -0.5, 0.4]), cone, inv_perm)
+    assert np.allclose(y_qp, [0.1, 0.5, -0.4, 0.0])
+
+
+def test_qp_to_scs_box_cone_keeps_rows_when_all_are_free():
+    qp = {
+        "P": sp.csc_matrix((2, 2)),
+        "q": np.array([1.0, 2.0]),
+        "A": sp.csc_matrix([[1.0, 0.0], [0.0, 1.0]]),
+        "l": np.array([-INF_BOUND, -np.inf]),
+        "u": np.array([INF_BOUND, np.inf]),
+        "n": 2,
+        "m": 2,
+    }
+    data, cone, inv_perm = qp_to_scs_box_cone(qp)
+    assert cone == {"z": 0, "bl": [-np.inf, -np.inf], "bu": [np.inf, np.inf]}
+    assert data["A"].shape == (3, 2)
+    assert inv_perm.tolist() == [0, 1]
+
+
 def test_unbox_scs_dual_none_passthrough():
     assert unbox_scs_dual(None, {"z": 0}, np.array([])) is None
