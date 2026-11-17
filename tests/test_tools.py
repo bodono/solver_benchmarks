@@ -667,6 +667,10 @@ def test_bench_modal_refuses_an_scs_pin_when_scs_is_built_from_source(monkeypatc
     with pytest.raises(SystemExit, match="scs pin"):
         _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, {"pins": {"cpu": {"scs": "3.3.2"}}}),
                           SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920")
+    # The cuOpt image installs PyPI's scs whatever the ref is, so a pin there applies.
+    bench_modal = _load_bench_modal(monkeypatch, SCS_PYTHON_REF="13a25e84830de2549792df16161532624f576920",
+                                    BENCH_MODAL_PINS=_write_pins(tmp_path, {"pins": {"cuopt": {"scs": "3.3.2"}}}))
+    assert bench_modal.PINS == {"cuopt": {"scs": "3.3.2"}}
 
 
 def test_bench_modal_refuses_a_local_checkout_that_is_not_there(monkeypatch, tmp_path):

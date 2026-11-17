@@ -140,8 +140,10 @@ def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[
         if not isinstance(entries, dict) or not all(isinstance(v, str) and v.strip() for v in entries.values()):
             raise SystemExit(f"BENCH_MODAL_PINS={path}: pins of {image!r} must map package names to versions")
         pins[image] = {_norm(name): spec.strip() for name, spec in entries.items()}
-    if (ref or file_ref) and any("scs" in entries for entries in pins.values()):
-        raise SystemExit(f"BENCH_MODAL_PINS={path}: pins scs, but SCS is built from scs-python "
+    # The cpu and gpu images (and the images built on cpu) build SCS from the ref;
+    # the pdlp, cuopt and qtqp_gpu images keep PyPI's scs whatever the ref is.
+    if (ref or file_ref) and any("scs" in pins.get(image, {}) for image in ("cpu", "gpu")):
+        raise SystemExit(f"BENCH_MODAL_PINS={path}: pins scs on an image that builds SCS from scs-python "
                          f"{ref or file_ref}; drop the scs pin")
     return ref or file_ref, pins
 
