@@ -1,0 +1,21 @@
+{
+  "comment": "Image versions of the SCS 3.3.2 refresh (November 2026): the September 2026 solver releases (each row records them in metadata.runtime) and the numpy/scipy the September manifests record, on the CPU images; highspy as the refresh ran it on the GPU, PDLP, cuOpt and QTQP GPU images; cuOpt 26.8.0. Use with SCS_PYTHON_REF set to the scs-python commit under test (91df3fcd59757ba65e416cdf820880b4026415d7 for the CPU runs, 13a25e84830de2549792df16161532624f576920 for the SCS GPU re-run and the Clarabel fill shards; full SHAs only).",
+  "pins": {
+    "cpu": {
+      "osqp": "1.1.3",
+      "clarabel": "0.11.1",
+      "piqp": "0.6.4",
+      "proxsuite": "0.7.3",
+      "highspy": "1.15.1",
+      "ortools": "9.15.6755",
+      "cvxopt": "1.3.3",
+      "sdpa-python": "0.2.3",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1"
+    },
+    "gpu": {"highspy": "1.15.1"},
+    "pdlp": {"ortools": "9.15.6755", "highspy": "1.11.0"},
+    "cuopt": {"cuopt-cu12": "26.8.0", "highspy": "<1.16"},
+    "qtqp_gpu": {"highspy": "<1.16"}
+  }
+}
