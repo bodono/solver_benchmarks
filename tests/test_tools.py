@@ -227,14 +227,23 @@ def test_bench_modal_compiles():
     compile(path.read_text(), str(path), "exec")
 
 
-@pytest.fixture
-def bench_modal(monkeypatch):
+def _load_bench_modal(monkeypatch, **environ):
     """bench_modal with a stand-in for the ``modal`` package (images,
-    volumes and decorators become mocks; plain functions stay real)."""
+    volumes and decorators become mocks; plain functions stay real), loaded
+    with only the image variables in ``environ`` set."""
     from unittest import mock
 
+    for name in ("SCS_PYTHON_REF", "BENCH_MODAL_PINS", "QTQP_REPO", "CPO3_REPO"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environ.items():
+        monkeypatch.setenv(name, value)
     monkeypatch.setitem(sys.modules, "modal", mock.MagicMock(name="modal"))
     return _load_tool("bench_modal")
+
+
+@pytest.fixture
+def bench_modal(monkeypatch):
+    return _load_bench_modal(monkeypatch)
 
 
 def _dockerignored(path: str, patterns: list[str]) -> bool:
@@ -379,6 +388,44 @@ def test_bench_modal_installs_the_highspy_the_pdlp_extra_allows(bench_modal):
     assert bench_modal.HIGHSPY == pdlp_highspy
     source = (TOOLS / "bench_modal.py").read_text()
     assert source.count('"highspy') == 1, "every image should use HIGHSPY"
+
+
+def _write_pins(tmp_path, data) -> str:
+    path = tmp_path / "pins.json"
+    path.write_text(json.dumps(data))
+    return str(path)
+
+
+def test_bench_modal_pins_apply_by_package_name(monkeypatch, tmp_path):
+    pins = {"pins": {"cpu": {"osqp": "1.1.3", "HighsPy": "1.15.1", "numpy": "2.5.3"},
+                     "qtqp_gpu": {"nvmath_python": "<0.9", "qtqp": "0.0.7"}},
+            "scs_python_ref": "13a25e84"}
+    bench_modal = _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, pins))
+
+    assert bench_modal.SCS_PYTHON_REF == "13a25e84"
+    assert bench_modal._pinned("cpu", ["osqp", bench_modal.HIGHSPY, "numpy", "scipy"]) == [
+        "osqp==1.1.3", "highspy==1.15.1", "numpy==2.5.3", "scipy"]
+    assert bench_modal._pinned("qtqp_gpu", ["nvmath-python[cu12]", "qtqp>=0.0.7"]) == [
+        "nvmath-python[cu12]<0.9", "qtqp==0.0.7"]
+    assert bench_modal._pinned("pdlp", ["osqp"]) == ["osqp"]
+
+
+@pytest.mark.parametrize("data", [
+    {"pins": {"cpu": {"no-such-solver": "1.0"}}},  # no image installs it
+    {"pins": {"cuopt": {"osqp": "1.1.3"}}},  # not in that image
+    {"pins": {"tpu": {"osqp": "1.1.3"}}},
+    {"pins": {"cpu": {"osqp": ""}}},
+    {"pin": {}},
+    {"scs_python_ref": "91df3fcd"},  # differs from SCS_PYTHON_REF below
+])
+def test_bench_modal_refuses_pins_it_cannot_apply(monkeypatch, tmp_path, data):
+    with pytest.raises(SystemExit):
+        _load_bench_modal(monkeypatch, BENCH_MODAL_PINS=_write_pins(tmp_path, data), SCS_PYTHON_REF="13a25e84")
+
+
+def test_bench_modal_refuses_a_local_checkout_that_is_not_there(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit, match="CPO3_REPO"):
+        _load_bench_modal(monkeypatch, CPO3_REPO=str(tmp_path / "nonexistent"))
 
 
 def test_make_figures_main_survives_a_family_with_no_sized_problem(make_figures, tmp_path, monkeypatch):

@@ -18,14 +18,31 @@ infeas family, ``kennington``, ``miplib_data``,
 ``mittelmann``, ``maros_meszaros_data``, ``qplib_data``, ``sdplib_data``,
 ``mittelmann_sdp_data``, ...). Python files left on the volume by an older
 upload are never imported.
+
+The images are fixed before the entrypoint parses its flags, so what goes into
+them is set by environment variables on the launching machine:
+
+``SCS_PYTHON_REF=<commit of bodono/scs-python>``
+    Build the SCS under test from that commit (CPU images too; see below).
+``BENCH_MODAL_PINS=path/to/pins.json``
+    Solver and library versions per image, e.g.
+    ``{"pins": {"cpu": {"osqp": "1.1.3", "numpy": "2.5.3"}, "cuopt": {"cuopt-cu12": "26.8.0"}}}``.
+    Image keys are those of IMAGE_KEYS; ``qtqp_cpu`` and ``cpo3_cpu`` build
+    on ``cpu``. A value is a version (``==``) or a specifier (``<1.16``). A
+    pin must name a package the image installs. The file may also give
+    ``scs_python_ref``.
+``QTQP_REPO`` / ``CPO3_REPO``
+    Build QTQP / cpo3 from a local checkout instead of PyPI.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import modal
@@ -49,24 +66,161 @@ SOLVER_PKGS = [
 ]
 HARNESS_PKGS = ["click", "h5py", "matplotlib>=3.9", "numpy", "pandas", "pyarrow", "PyYAML", "scipy", "psutil"]
 
+
+# --- Image configuration (read on the launching machine) ---------------------
+#
+# Inside a container these variables are unset; the images are then defined
+# without pins, which is harmless (a container never builds an image), so
+# nothing here may fail when they are missing.
+
+IMAGE_KEYS = ("cpu", "gpu", "cuopt", "pdlp", "qtqp_gpu")
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _req_base(req: str) -> str:
+    """The name of a requirement with its extras: 'nvmath-python[cu12]>=1' -> 'nvmath-python[cu12]'."""
+    m = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[^\]]*\])?", req.strip())
+    if not m:
+        raise ValueError(f"not a requirement: {req!r}")
+    return m.group(0)
+
+
+def _req_name(req: str) -> str:
+    return _norm(_req_base(req).split("[")[0])
+
+
+def _load_image_config(environ: Mapping[str, str]) -> tuple[str, dict[str, dict[str, str]]]:
+    """(scs-python commit to build, {image key: {package: version or specifier}})."""
+    ref = (environ.get("SCS_PYTHON_REF") or "").strip()
+    path = (environ.get("BENCH_MODAL_PINS") or "").strip()
+    if not path:
+        return ref, {}
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"BENCH_MODAL_PINS={path}: {exc}") from exc
+    unknown = set(data) - {"scs_python_ref", "pins", "comment"}
+    if unknown:
+        raise SystemExit(f"BENCH_MODAL_PINS={path}: unknown keys {sorted(unknown)}")
+    file_ref = str(data.get("scs_python_ref") or "").strip()
+    if ref and file_ref and ref != file_ref:
+        raise SystemExit(f"SCS_PYTHON_REF={ref} but {path} gives scs_python_ref {file_ref}")
+    pins: dict[str, dict[str, str]] = {}
+    for image, entries in (data.get("pins") or {}).items():
+        if image not in IMAGE_KEYS:
+            raise SystemExit(f"BENCH_MODAL_PINS={path}: image {image!r} is not one of {IMAGE_KEYS}")
+        if not isinstance(entries, dict) or not all(isinstance(v, str) and v.strip() for v in entries.values()):
+            raise SystemExit(f"BENCH_MODAL_PINS={path}: pins of {image!r} must map package names to versions")
+        pins[image] = {_norm(name): spec.strip() for name, spec in entries.items()}
+    return ref or file_ref, pins
+
+
+SCS_PYTHON_REF, PINS = _load_image_config(os.environ)
+_USED_PINS: set[tuple[str, str]] = set()
+
+
+def _pinned(image: str, reqs: list[str]) -> list[str]:
+    """``reqs`` with the pins of ``image`` (an IMAGE_KEYS entry) applied by package name."""
+    pins = PINS.get(image, {})
+    out = []
+    for req in reqs:
+        name = _req_name(req)
+        if name in pins:
+            _USED_PINS.add((image, name))
+            spec = pins[name]
+            req = _req_base(req) + (spec if spec[0] in "<>=!~" else f"=={spec}")
+        out.append(req)
+    return out
+
+
+def _local_checkout(var: str) -> str | None:
+    """A local checkout named by ``var``; None when the variable is unset or empty."""
+    local = os.environ.get(var)
+    if local and not Path(local).is_dir():
+        raise SystemExit(f"{var}={local} is not a directory; unset it to install from PyPI")
+    return local or None
+
+
+# --- SCS built from source ------------------------------------------------------
+#
+# By default the CPU images install the released scs from PyPI and the GPU image
+# builds the default branch of scs-python against cuDSS. With SCS_PYTHON_REF
+# set, both the CPU image and the GPU image build that commit, with the SCS
+# core its scs_source submodule pins. The CPU build is configured like the
+# x86-64 Linux wheel on PyPI: the MKL Pardiso backend links Intel's static,
+# sequential MKL (the mkl-static release the wheel build uses), so it is the
+# default (AUTO) backend, as in a pip install. The other backends use the
+# image's OpenBLAS, where the wheel vendors its own.
+SCS_PYTHON_URL = "https://github.com/bodono/scs-python.git"
+MKL_STATIC_VERSION = "2026.1.0"  # as in scs-python's .github/scripts/install_mkl_static.sh
+
+
+def _logged_build(cmd: str) -> str:
+    """Run a build quietly; on failure print the end of its log and fail the image
+    step (piping into tail would hide the error and let a failed build pass)."""
+    return f"({cmd}) > /tmp/scs_build.log 2>&1 && tail -3 /tmp/scs_build.log || (tail -200 /tmp/scs_build.log; exit 1)"
+
+
+def _scs_python_checkout() -> list[str]:
+    """Commands that leave the scs-python source to build in /opt/scs-python."""
+    if not SCS_PYTHON_REF:
+        return [f"git clone --recursive --depth 1 {SCS_PYTHON_URL} /opt/scs-python"]
+    return [
+        f"git clone {SCS_PYTHON_URL} /opt/scs-python",
+        f"cd /opt/scs-python && git fetch origin {SCS_PYTHON_REF} && git checkout --detach {SCS_PYTHON_REF} "
+        "&& git submodule update --init --recursive "
+        "&& git log --oneline -1 && git -C scs_source log --oneline -1",
+    ]
+
+
+def _with_scs_source(image: modal.Image) -> modal.Image:
+    """Replace the PyPI scs in ``image`` by a build of SCS_PYTHON_REF (see above)."""
+    if not SCS_PYTHON_REF:
+        return image
+    return (
+        image.apt_install("pkg-config", "ninja-build")
+        .pip_install("meson-python", "meson", "ninja", "cython")
+        .run_commands(
+            *_scs_python_checkout(),
+            # Intel's static MKL archives, laid out as scs-python's wheel build does
+            "python -m pip download --quiet --no-deps --only-binary=:all: --platform manylinux_2_28_x86_64 "
+            f"-d /tmp/mkl mkl-static=={MKL_STATIC_VERSION} mkl-include=={MKL_STATIC_VERSION}",
+            "for w in /tmp/mkl/*.whl; do python -m zipfile -e $w /tmp/mkl/unpacked; done "
+            "&& mkdir -p /opt/mkl-static && cp -r /tmp/mkl/unpacked/*.data/data/. /opt/mkl-static/ && rm -rf /tmp/mkl",
+            "cd /opt/scs-python && " + _logged_build(
+                "python -m pip install -v --no-build-isolation --no-deps --force-reinstall "
+                "-Csetup-args=-Dmkl_static_prefix=/opt/mkl-static ."),
+            "python -c 'import scs, numpy; from scs import _scs_mkl; "
+            "print(\"scs\", scs.__version__, \"with MKL; numpy\", numpy.__version__)'",
+            "git -C /opt/scs-python/scs_source log -1 --format='scs_source %H %s'",
+        )
+    )
+
+
 cpu_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("build-essential", "libopenblas-dev", "liblapack-dev", "git")
-    .pip_install(*HARNESS_PKGS, *SOLVER_PKGS, "scs")
+    _with_scs_source(
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install("build-essential", "libopenblas-dev", "liblapack-dev", "git")
+        .pip_install(*_pinned("cpu", [*HARNESS_PKGS, *SOLVER_PKGS, "scs"]))
+    )
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
 
 CUDA_IMAGE = "nvidia/cuda:12.6.3-devel-ubuntu22.04"
+# Python 3.12 from Modal rather than Ubuntu 22.04's 3.10: the harness needs 3.11
+# or newer.
 gpu_image = (
-    modal.Image.from_registry(CUDA_IMAGE)
-    .apt_install("git", "pkg-config", "build-essential", "libopenblas-dev", "liblapack-dev", "ninja-build",
-                 "python3", "python3-dev", "python3-pip", "python3-venv", "python-is-python3")
+    modal.Image.from_registry(CUDA_IMAGE, add_python="3.12")
+    .apt_install("git", "pkg-config", "build-essential", "libopenblas-dev", "liblapack-dev", "ninja-build")
     .run_commands(
         "python -m pip install --upgrade pip",
         # cuDSS from NVIDIA's apt repo; the metapackage installs CUDA 12 and 13 builds, we want 12
         "apt-get update && apt-get install -y cudss",
-        "python3 - <<'PY'\n"
+        "python - <<'PY'\n"
         "import glob, os, pathlib\n"
         "inc = sorted(glob.glob('/usr/include/libcudss/12/cudss.h')) or sorted(glob.glob('/usr/include/**/cudss.h', recursive=True))\n"
         "lib = sorted(glob.glob('/usr/lib/x86_64-linux-gnu/libcudss/12/libcudss.so')) or sorted(glob.glob('/usr/lib/**/libcudss.so', recursive=True))\n"
@@ -82,15 +236,25 @@ gpu_image = (
         "PKG_CONFIG_PATH": "/usr/local/cuda/lib64/pkgconfig:/usr/local/cuda/pkgconfig:/usr/local/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig",
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu/libcudss/12:/usr/lib/x86_64-linux-gnu",
     })
-    .pip_install(*HARNESS_PKGS, *SOLVER_PKGS, "meson-python", "meson", "ninja", "cython")
+    .pip_install(*_pinned("gpu", [*HARNESS_PKGS, *SOLVER_PKGS, "meson-python", "meson", "ninja", "cython"]))
     .run_commands(
-        "git clone --recursive --depth 1 https://github.com/bodono/scs-python.git /opt/scs-python",
-        "cd /opt/scs-python && python -m pip install --no-build-isolation "
-        "-Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true . 2>&1 | tail -5",
+        # Modal's standalone Python ships a python-3.12.pc that names its build
+        # prefix, /install; with /usr/local/lib/pkgconfig on PKG_CONFIG_PATH (for
+        # cudss.pc) Meson takes the headers from there. Point it at the real prefix.
+        "[ -e /install ] || ln -s \"$(python -c 'import sys; print(sys.base_prefix)')\" /install",
+        "ls /install/include/python3.12/Python.h",
+        *_scs_python_checkout(),
+        "cd /opt/scs-python && " + _logged_build(
+            "python -m pip install -v --no-build-isolation -Csetup-args=-Dlink_cudss=true -Csetup-args=-Dint32=true ."),
         "python -c 'from scs import _scs_cudss; import scs; print(\"scs\", scs.__version__, \"cuDSS build ok\")'",
+        "git -C /opt/scs-python/scs_source log -1 --format='scs_source %H %s'",
+        "dpkg-query -W 'cudss*' 'libcudss*' || true",
     )
     # NVIDIA cuOpt: GPU PDLP for LP, GPU barrier for QP; the like-for-like GPU comparator.
-    .pip_install("cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .pip_install(*_pinned("gpu", ["cuopt-cu12"]), extra_index_url="https://pypi.nvidia.com")
+    # cuopt-cu12 may move numpy: check the SCS build again after it
+    .run_commands("python -c 'from scs import _scs_cudss; import scs, numpy; "
+                  "print(\"scs\", scs.__version__, \"cuDSS still ok; numpy\", numpy.__version__)'")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -101,7 +265,8 @@ gpu_image = (
 cuopt_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "scs", HIGHSPY, "cuopt-cu12", extra_index_url="https://pypi.nvidia.com")
+    .pip_install(*_pinned("cuopt", [*HARNESS_PKGS, "scs", HIGHSPY, "cuopt-cu12"]),
+                 extra_index_url="https://pypi.nvidia.com")
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -113,7 +278,7 @@ cuopt_image = (
 pdlp_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-    .pip_install(*HARNESS_PKGS, "ortools==9.15.6755", HIGHSPY, "scs")
+    .pip_install(*_pinned("pdlp", [*HARNESS_PKGS, "ortools==9.15.6755", HIGHSPY, "scs"]))
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
 )
@@ -128,21 +293,23 @@ QTQP_PIN = "qtqp>=0.0.7"
 QTQP_IGNORE = ["build", "figures", ".git", "**/__pycache__", "*.tex"]
 
 
-def _with_qtqp(image: modal.Image) -> modal.Image:
-    local = os.environ.get("QTQP_REPO")
+def _with_qtqp(image: modal.Image, key: str) -> modal.Image:
+    local = _local_checkout("QTQP_REPO")
     if local:
         return image.add_local_dir(local, "/root/qtqp", ignore=QTQP_IGNORE, copy=True).run_commands(
             "pip install /root/qtqp"
         )
-    return image.pip_install(QTQP_PIN)
+    return image.pip_install(*_pinned(key, [QTQP_PIN]))
 
 
-qtqp_cpu_image = _with_qtqp(cpu_image).run_commands("python -c 'import qtqp; print(qtqp.LinearSolver.PARDISO)'")
+qtqp_cpu_image = _with_qtqp(cpu_image, "cpu").run_commands("python -c 'import qtqp; print(qtqp.LinearSolver.PARDISO)'")
 qtqp_gpu_image = (
     _with_qtqp(
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("build-essential", "libopenblas-dev", "liblapack-dev")
-        .pip_install(*HARNESS_PKGS, "scs", HIGHSPY, "nvidia-cudss-cu12", "nvmath-python[cu12]", "cupy-cuda12x")
+        .pip_install(*_pinned("qtqp_gpu", [*HARNESS_PKGS, "scs", HIGHSPY, "nvidia-cudss-cu12",
+                                           "nvmath-python[cu12]", "cupy-cuda12x"])),
+        "qtqp_gpu",
     )
     .add_local_dir(str(REPO), "/root/repo", ignore=REPO_IGNORE, copy=True)
     .run_commands("pip install --no-deps -e /root/repo")
@@ -157,7 +324,7 @@ CPO3_IGNORE = ["target", ".venv", ".git", "**/__pycache__", "benchmarks", "**/*.
 
 
 def _with_cpo3(image: modal.Image) -> modal.Image:
-    local = os.environ.get("CPO3_REPO")
+    local = _local_checkout("CPO3_REPO")
     if local:
         return (
             image.apt_install("curl")
@@ -165,10 +332,14 @@ def _with_cpo3(image: modal.Image) -> modal.Image:
             .add_local_dir(local, "/root/cpo3", ignore=CPO3_IGNORE, copy=True)
             .run_commands("PATH=/root/.cargo/bin:$PATH pip install /root/cpo3")
         )
-    return image.pip_install(CPO3_PIN)
+    return image.pip_install(*_pinned("cpu", [CPO3_PIN]))
 
 
 cpo3_image = _with_cpo3(cpu_image).run_commands("python -c 'import cpo3; print(cpo3.Settings())'")
+
+_unused_pins = sorted({(image, name) for image, pins in PINS.items() for name in pins} - _USED_PINS)
+if _unused_pins:
+    raise SystemExit(f"BENCH_MODAL_PINS: no image installs {', '.join(f'{n} ({i})' for i, n in _unused_pins)}")
 
 VOLUMES = {"/data": data_vol, "/results": results_vol}
 
