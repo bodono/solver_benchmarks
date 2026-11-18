@@ -146,6 +146,24 @@ def test_a_solve_is_late_only_past_the_limit_plus_the_grace(make_figures, factor
     assert df["status"].iloc[0] == status.OPTIMAL
 
 
+def test_scs_time_limit_warnings_flag_update_errors_and_mixed_modes(make_figures):
+    mode = "info.scs_time_limit_mode"
+    err = "info.scs_time_limit_update_error"
+    df = pd.DataFrame([
+        _row("a", "scs_1e-4", status.OPTIMAL, 1.0, **{mode: "solve_minus_setup", err: None}),
+        _row("b", "scs_1e-4", status.OPTIMAL, 1.0, **{mode: "solve_minus_setup", err: None}),
+        _row("a", "clarabel_1e-4", status.OPTIMAL, 1.0, **{mode: None, err: None}),
+    ])
+    assert make_figures.scs_time_limit_warnings(df) == []
+    assert make_figures.scs_time_limit_warnings(df.drop(columns=[mode, err])) == []
+    df.loc[1, mode] = "construction_after_update_error"
+    df.loc[1, err] = "RuntimeError: boom"
+    warnings = make_figures.scs_time_limit_warnings(df)
+    assert len(warnings) == 2
+    assert "update() failed on 1 row" in warnings[0] and "boom" in warnings[0]
+    assert "mix time-limit modes" in warnings[1]
+
+
 def test_largest_quartile_sizes_unsized_problems_through_the_lookup(make_figures):
     df = _sized_rows(6, ("huge1", "huge2"))
     looked_up = []

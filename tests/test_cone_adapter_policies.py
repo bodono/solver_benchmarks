@@ -140,6 +140,30 @@ def test_time_limit_is_time_limit_with_kkt_and_no_objective(solver_name, tmp_pat
     assert result.objective_value is None
 
 
+def test_scs_limit_stop_through_update_is_time_limit_with_kkt(tmp_path):
+    # SCS's own limit stop when the solve gets the limit minus setup through
+    # SCS.update (an SCS with settings in update, scs-python#267 or later).
+    import solver_benchmarks.solvers.scs_adapter as scs_mod
+
+    scs = pytest.importorskip("scs")
+    if not scs_mod._scs_update_takes_settings(scs):
+        pytest.skip("the installed SCS's update() takes no settings (before scs-python#267)")
+    settings = {"time_limit": 0.1, "eps_abs": 0.0, "eps_rel": 0.0, "max_iters": 10**9}
+    result = _solve("scs", CONE, _feasible_cone_lp(n=200, m=400), settings, tmp_path)
+    assert result.status == status.TIME_LIMIT, (result.status, result.info)
+    info = result.info
+    assert info["scs_time_limit_mode"] == "solve_minus_setup"
+    assert result.objective_value is None
+    if info.get("solve_skipped"):
+        return  # setup alone took the 0.1 s (a slow machine)
+    _assert_finite_solution_kkt(result)
+    assert "time_limit" in str(info["raw_status"]).replace(" ", "_")
+    given = info["scs_time_limit_secs_given"]
+    assert 0 < given < 0.1
+    # SCS checks the clock between iterations: it stops at or just after it.
+    assert result.solve_time_seconds >= given * 0.99
+
+
 @pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cvxopt", "sdpa"])
 def test_infeasible_cone_result_has_no_reported_objective(solver_name, tmp_path):
     result = _solve(solver_name, CONE, _infeasible_cone_lp(), {}, tmp_path)

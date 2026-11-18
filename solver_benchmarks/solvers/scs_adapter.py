@@ -12,7 +12,9 @@ first, timing it, and then gives the solve what is left of the limit through
 settings (scs-python before bodono/scs-python#267) gets the whole limit at
 construction instead, as before, so its solve can run past the limit by its
 setup time. ``info["scs_time_limit_mode"]`` records which was used (see
-``_TIME_LIMIT_MODES``).
+``_TIME_LIMIT_MODES``). With ``verbose``, SCS's settings header then shows no
+time limit (the solver was built without one); the limit appears in the
+"settings updated" line SCS prints when ``update`` is called.
 
 SCS reports an unknown name or
 a bad value by raising from the same call that solves, so the adapter checks
@@ -101,13 +103,22 @@ def _scs_supports_num_threads() -> bool:
 # Values of info["scs_time_limit_mode"], set whenever a time limit is:
 # - "solve_minus_setup": the solver was constructed without a limit and its
 #   solve was given the limit minus the measured construction time, through
-#   SCS.update. info["scs_setup_seconds"] is that construction time.
+#   SCS.update.
 # - "construction": time_limit_secs was passed at construction, so it covers
-#   only the solve (an SCS without settings in update, or update failed; the
-#   reason is in info["scs_time_limit_update_error"] then).
-# In both, info["scs_time_limit_secs_given"] is the value SCS was given, or
+#   only the solve and the run can exceed the limit by its setup time (an SCS
+#   whose update takes no settings).
+# - "construction_after_update_error": update raised although the build
+#   advertised it; the solver was rebuilt with the limit minus two setups at
+#   construction, and the error is in info["scs_time_limit_update_error"].
+#   Not expected; a campaign summary should flag any such row.
+# info["scs_time_limit_secs_given"] is the value SCS's solve was given, or
 # None when setup used the whole limit and the solve was skipped.
-_TIME_LIMIT_MODES = ("solve_minus_setup", "construction")
+# info["scs_setup_seconds"] is the adapter's wall-clock measurement of the
+# construction (including the wrapper's work and, on GPU builds, backend
+# initialisation); SCS's own info["setup_time"] excludes those, and
+# setup_time_seconds of a solved row comes from SCS's figure, of a skipped
+# row from the wall-clock one.
+_TIME_LIMIT_MODES = ("solve_minus_setup", "construction", "construction_after_update_error")
 
 
 def _scs_update_takes_settings(scs_module) -> bool:
@@ -254,18 +265,28 @@ class SCSSolverAdapter(SolverAdapter):
                     raw = solver.solve()
                 else:
                     # Not expected once _scs_update_takes_settings said yes;
-                    # set the limit at construction as an older SCS does
-                    # rather than fail the run. The first construction's
-                    # time stays in run_time_seconds. (Dropped outside the
-                    # except block, whose traceback would keep it alive.)
+                    # rebuild with the limit at construction rather than fail
+                    # the run. The first construction's time stays in
+                    # run_time_seconds, and the rebuild costs about another
+                    # setup, so the solve is given the limit minus two
+                    # setups. (The first solver is dropped outside the except
+                    # block, whose traceback would keep it alive.)
                     del solver
+                    fallback_secs = float(limit_secs) - 2.0 * setup_seconds
                     limit_info = {
-                        "scs_time_limit_mode": "construction",
+                        "scs_time_limit_mode": "construction_after_update_error",
                         "scs_setup_seconds": setup_seconds,
-                        "scs_time_limit_secs_given": float(limit_secs),
+                        "scs_time_limit_secs_given": None,
                         "scs_time_limit_update_error": update_error,
                     }
-                    raw = scs.solve(data, cone, **settings)
+                    if fallback_secs <= 0:
+                        return _setup_used_time_limit(
+                            start, 2.0 * setup_seconds, float(limit_secs), threads_used,
+                            threads, threads_ignored, translated, limit_info,
+                        )
+                    limit_info["scs_time_limit_secs_given"] = fallback_secs
+                    solve_limit_secs = fallback_secs
+                    raw = scs.solve(data, cone, **{**settings, "time_limit_secs": fallback_secs})
             else:
                 if limit_secs is not None:
                     limit_info = {

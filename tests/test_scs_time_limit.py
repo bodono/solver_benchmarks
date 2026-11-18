@@ -176,13 +176,26 @@ def test_a_failing_update_falls_back_to_the_construction_limit(monkeypatch, tmp_
     module, calls = _fake_scs(clock, setup=3.0, solve=1.0, update_error=ValueError("refused"))
     result = _run(monkeypatch, tmp_path, module, clock, {"time_limit": 10.0})
 
-    assert calls.module_solves == [{"verbose": False, "time_limit_secs": 10.0}]
+    # The rebuild's solve gets the limit minus two setups (10 - 2 * 3).
+    assert calls.module_solves == [{"verbose": False, "time_limit_secs": 4.0}]
     assert result.status == status.OPTIMAL
     # Both constructions and the solve.
     assert result.run_time_seconds == pytest.approx(7.0)
-    assert result.info["scs_time_limit_mode"] == "construction"
-    assert result.info["scs_time_limit_secs_given"] == 10.0
+    assert result.info["scs_time_limit_mode"] == "construction_after_update_error"
+    assert result.info["scs_time_limit_secs_given"] == 4.0
     assert result.info["scs_time_limit_update_error"] == "ValueError: refused"
+
+
+def test_a_failing_update_skips_the_solve_when_two_setups_use_the_limit(monkeypatch, tmp_path):
+    clock = _Clock()
+    module, calls = _fake_scs(clock, setup=6.0, solve=1.0, update_error=ValueError("refused"))
+    result = _run(monkeypatch, tmp_path, module, clock, {"time_limit": 10.0})
+
+    assert calls.module_solves == []
+    assert result.status == status.TIME_LIMIT
+    assert result.info["scs_time_limit_mode"] == "construction_after_update_error"
+    assert result.info["scs_time_limit_secs_given"] is None
+    assert result.info["solve_skipped"]
 
 
 def test_no_time_limit_constructs_once_and_records_no_mode(monkeypatch, tmp_path):
