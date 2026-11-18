@@ -121,10 +121,19 @@ def test_qp_iteration_limit_is_max_iter_with_kkt(solver_name, tmp_path):
 
 
 @pytest.mark.parametrize("solver_name", ["scs", "clarabel"])
-def test_time_limit_is_time_limit_with_kkt_and_no_objective(solver_name, tmp_path):
+def test_time_limit_is_time_limit_with_kkt_and_no_objective(solver_name, tmp_path, monkeypatch):
     settings = {"time_limit": 1e-6}
     if solver_name == "clarabel":
         settings["presolve_enable"] = False
+    if solver_name == "scs":
+        # A solve stopped by SCS's own limit: the limit goes in at
+        # construction. Through SCS.update the solve would get the limit
+        # minus setup, which is <= 0 here, and be skipped
+        # (tests/test_scs_time_limit.py).
+        monkeypatch.setattr(
+            "solver_benchmarks.solvers.scs_adapter._scs_update_takes_settings",
+            lambda _scs: False,
+        )
     result = _solve(solver_name, CONE, _feasible_cone_lp(n=200, m=400), settings, tmp_path)
     assert result.status == status.TIME_LIMIT, (result.status, result.info)
     _assert_finite_solution_kkt(result)
