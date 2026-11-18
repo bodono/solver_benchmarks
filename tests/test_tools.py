@@ -130,6 +130,22 @@ def _sized_rows(known: int, unknown: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@pytest.mark.parametrize("factor, late", [
+    (0.5, False),
+    (1.0, False),    # exactly the limit
+    (1.005, False),  # inside the 1 % grace
+    (1.02, True),    # past it
+])
+def test_a_solve_is_late_only_past_the_limit_plus_the_grace(make_figures, factor, late):
+    assert make_figures.LATE_GRACE == 0.01
+    limit = 300.0
+    df = pd.DataFrame([_row("p", "scs_1e-4", status.OPTIMAL, limit * factor)])
+    marked = make_figures.mark_late(df, limit)
+    assert marked["status"].iloc[0] == (status.TIME_LIMIT if late else status.OPTIMAL)
+    # The input frame is left alone.
+    assert df["status"].iloc[0] == status.OPTIMAL
+
+
 def test_largest_quartile_sizes_unsized_problems_through_the_lookup(make_figures):
     df = _sized_rows(6, ("huge1", "huge2"))
     looked_up = []

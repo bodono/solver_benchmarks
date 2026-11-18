@@ -59,13 +59,24 @@ FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
                         "sdp": {("sdplib", n) for n in SDPLIB_INFEASIBLE}}
 # Nominal time limit per family (make_campaign gives it to every solver that
 # takes one). It applies to run_time_seconds, the wall time of the whole solve
-# including setup, although some solvers' own limits (SCS's) cover only their
-# iterations. A solve that takes longer counts as a failure for every solver,
-# whatever status it reported: solvers that ignore their time limit (PIQP,
-# ProxQP, SDPA) or have none (QTQP, CVXOPT) run on until the harness kills
-# them at the limit plus make_campaign's 60 s margin, and must not be scored
-# on time the self-limiting solvers were not given.
+# including setup. The SCS adapter gives SCS's solve the limit minus its setup
+# time, since SCS's own limit covers only its iterations; runs made with an SCS
+# whose update() cannot change settings, and runs before that change, gave the
+# whole limit to the solve. A solve that takes longer than the limit plus
+# LATE_GRACE counts as a failure for every solver, whatever status it
+# reported: solvers that ignore their time limit (PIQP, ProxQP, SDPA) or have
+# none (QTQP, CVXOPT) run on until the harness kills them at the limit plus
+# make_campaign's 60 s margin, and must not be scored on time the
+# self-limiting solvers were not given.
 FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0, "infeas": 300.0}
+# A solve is late when run_time_seconds > limit * (1 + LATE_GRACE). The grace
+# absorbs the overshoot of a solver that stops itself at its limit but checks
+# the clock only between iterations, so a self-limiting solver is not failed
+# for returning a fraction of an iteration after the limit. The tradeoff: a
+# solver that ignores its limit is also credited with a solve that ends inside
+# the grace, i.e. with up to 1 % more time (3 s of 300 s) than the limit; the
+# grace is kept that small so this cannot buy a solver much.
+LATE_GRACE = 0.01
 # Failures are charged this multiple of the family's time limit in the shifted
 # geometric mean, so a failure always costs more than any admitted success.
 FAILURE_PENALTY_FACTOR = 3.0
@@ -294,6 +305,15 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     plt.close(fig)
 
 
+def mark_late(df: pd.DataFrame, limit: float) -> pd.DataFrame:
+    """A copy of ``df`` with every row slower than the limit plus LATE_GRACE
+    recorded as time_limit, whatever status it reported."""
+    late = df["run_time_seconds"] > limit * (1.0 + LATE_GRACE)
+    df = df.copy()
+    df.loc[late, "status"] = "time_limit"
+    return df
+
+
 def failure_penalty(family: str | None) -> float:
     return FAILURE_PENALTY_FACTOR * FAMILY_LIMIT.get(family or "", 300.0)
 
@@ -451,9 +471,7 @@ def main() -> None:
         sizes = problem_sizes(df, size_lookup=lookup)
         limit = FAMILY_LIMIT.get(family)
         if limit:
-            late = df["run_time_seconds"] > limit
-            df = df.copy()
-            df.loc[late, "status"] = "time_limit"
+            df = mark_late(df, limit)
         use_run = dict(kv.split("=", 1) for kv in args.use_run)
         tags = sorted({solver_tol(s) for s in df["solver_id"].unique() if solver_tol(s)})
         if args.tol_tag:
