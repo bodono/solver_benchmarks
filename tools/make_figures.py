@@ -319,9 +319,9 @@ def mark_late(df: pd.DataFrame, limit: float) -> pd.DataFrame:
 
 def scs_time_limit_warnings(df: pd.DataFrame) -> list[str]:
     """Warnings about how SCS rows were given their time limit (the SCS
-    adapter's info.scs_time_limit_mode): rows whose update() failed, and a
-    solver id whose rows mix modes, which would compare runs given different
-    amounts of time. Rows without the field (other solvers, older runs, no
+    adapter's info.scs_time_limit_mode): rows whose update() failed, and any
+    solver id with rows not given the limit minus setup, which would compare
+    runs given different amounts of time. Rows without the field (other solvers, older runs, no
     limit) are ignored."""
     mode_col = "info.scs_time_limit_mode"
     if mode_col not in df.columns:
@@ -333,11 +333,15 @@ def scs_time_limit_warnings(df: pd.DataFrame) -> list[str]:
         for solver_id, rows in errors.groupby("solver_id"):
             warnings.append(f"{solver_id}: SCS update() failed on {len(rows)} row(s), which were "
                             f"rebuilt with the limit at construction (first: {rows[error_col].iloc[0]})")
+    # Any SCS row not given limit minus setup: within one solver id that
+    # mixes runs given different amounts of time, and across ids (two SCS
+    # builds compared) one build may have had its setup on top of the limit.
     for solver_id, modes in df[df[mode_col].notna()].groupby("solver_id")[mode_col]:
         counts = modes.value_counts()
-        if len(counts) > 1:
+        other = {mode: n for mode, n in counts.items() if mode != "solve_minus_setup"}
+        if other:
             mix = ", ".join(f"{mode} {n}" for mode, n in counts.items())
-            warnings.append(f"{solver_id}: SCS rows mix time-limit modes ({mix})")
+            warnings.append(f"{solver_id}: SCS rows not all given the limit minus setup ({mix})")
     return warnings
 
 

@@ -281,8 +281,10 @@ class SCSSolverAdapter(SolverAdapter):
                     }
                     if fallback_secs <= 0:
                         return _setup_used_time_limit(
-                            start, 2.0 * setup_seconds, float(limit_secs), threads_used,
+                            start, setup_seconds, float(limit_secs), threads_used,
                             threads, threads_ignored, translated, limit_info,
+                            reason=(f"update() failed and two setups of {setup_seconds:.3g} s "
+                                    f"would use the {float(limit_secs):g} s time limit"),
                         )
                     limit_info["scs_time_limit_secs_given"] = fallback_secs
                     solve_limit_secs = fallback_secs
@@ -351,7 +353,8 @@ class SCSSolverAdapter(SolverAdapter):
 
 
 def _setup_used_time_limit(
-    start, setup_seconds, limit_secs, threads_used, threads, threads_ignored, translated, limit_info
+    start, setup_seconds, limit_secs, threads_used, threads, threads_ignored, translated, limit_info,
+    reason=None,
 ) -> SolverResult:
     """The result when constructing the solver took the whole time limit.
 
@@ -361,7 +364,7 @@ def _setup_used_time_limit(
     info = {
         "raw_status": None,
         "threads": threads_used,
-        "solve_skipped": (
+        "solve_skipped": reason or (
             f"setup took {setup_seconds:.3g} s of the {limit_secs:g} s time limit"
         ),
         **limit_info,

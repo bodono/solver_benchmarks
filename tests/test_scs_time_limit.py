@@ -195,7 +195,9 @@ def test_a_failing_update_skips_the_solve_when_two_setups_use_the_limit(monkeypa
     assert result.status == status.TIME_LIMIT
     assert result.info["scs_time_limit_mode"] == "construction_after_update_error"
     assert result.info["scs_time_limit_secs_given"] is None
-    assert result.info["solve_skipped"]
+    assert "two setups" in result.info["solve_skipped"]
+    # Only one setup ran.
+    assert result.setup_time_seconds == pytest.approx(6.0)
 
 
 def test_no_time_limit_constructs_once_and_records_no_mode(monkeypatch, tmp_path):

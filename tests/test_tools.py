@@ -161,7 +161,15 @@ def test_scs_time_limit_warnings_flag_update_errors_and_mixed_modes(make_figures
     warnings = make_figures.scs_time_limit_warnings(df)
     assert len(warnings) == 2
     assert "update() failed on 1 row" in warnings[0] and "boom" in warnings[0]
-    assert "mix time-limit modes" in warnings[1]
+    assert "not all given the limit minus setup" in warnings[1]
+    # A whole solver id in construction mode (an SCS without settings in
+    # update) is flagged too, so two builds compared differ visibly.
+    df.loc[1, mode] = "solve_minus_setup"
+    df.loc[1, err] = None
+    df.loc[2, mode] = "construction"
+    df.loc[2, "solver_id"] = "scs332_1e-4"
+    warnings = make_figures.scs_time_limit_warnings(df)
+    assert warnings == ["scs332_1e-4: SCS rows not all given the limit minus setup (construction 1)"]
 
 
 def test_largest_quartile_sizes_unsized_problems_through_the_lookup(make_figures):
