@@ -59,13 +59,27 @@ FAMILY_DROP_PROBLEMS = {"lp": {("miplib_relax", n) for n in
                         "sdp": {("sdplib", n) for n in SDPLIB_INFEASIBLE}}
 # Nominal time limit per family (make_campaign gives it to every solver that
 # takes one). It applies to run_time_seconds, the wall time of the whole solve
-# including setup, although some solvers' own limits (SCS's) cover only their
-# iterations. A solve that takes longer counts as a failure for every solver,
-# whatever status it reported: solvers that ignore their time limit (PIQP,
-# ProxQP, SDPA) or have none (QTQP, CVXOPT) run on until the harness kills
-# them at the limit plus make_campaign's 60 s margin, and must not be scored
-# on time the self-limiting solvers were not given.
+# including setup. The SCS adapter gives SCS's solve the limit minus its setup
+# time, since SCS's own limit covers only its iterations; runs made with an SCS
+# whose update() cannot change settings, and runs before that change, gave the
+# whole limit to the solve. A solve that takes longer than the limit plus
+# LATE_GRACE counts as a failure for every solver, whatever status it
+# reported: solvers that ignore their time limit (PIQP, ProxQP, SDPA) or have
+# none (QTQP, CVXOPT) run on until the harness kills them at the limit plus
+# make_campaign's 60 s margin, and must not be scored on time the
+# self-limiting solvers were not given.
 FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0, "infeas": 300.0}
+# A solve is late when run_time_seconds > limit * (1 + LATE_GRACE): 3 s for the
+# 300 s families, 9 s for 900 s, 18 s for 1800 s. A solver that stops itself
+# at its limit reports time_limit and fails anyway, so the grace does not
+# rescue limit stops as such. What it admits is a row that ends inside the
+# window with a solved status: a solve that converges on the iteration that
+# crosses the limit (solvers check the clock only between iterations), or a
+# limit stop whose point kkt-verify --promote later promotes, e.g. an SCS stop
+# at the limit plus one iteration. The tradeoff: a solver that ignores its
+# limit is credited the same way, with up to 1 % more time than the limit;
+# the grace is kept that small so this cannot buy a solver much.
+LATE_GRACE = 0.01
 # Failures are charged this multiple of the family's time limit in the shifted
 # geometric mean, so a failure always costs more than any admitted success.
 FAILURE_PENALTY_FACTOR = 3.0
@@ -294,6 +308,43 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     plt.close(fig)
 
 
+def mark_late(df: pd.DataFrame, limit: float) -> pd.DataFrame:
+    """A copy of ``df`` with every row slower than the limit plus LATE_GRACE
+    recorded as time_limit, whatever status it reported."""
+    late = df["run_time_seconds"] > limit * (1.0 + LATE_GRACE)
+    df = df.copy()
+    df.loc[late, "status"] = "time_limit"
+    return df
+
+
+def scs_time_limit_warnings(df: pd.DataFrame) -> list[str]:
+    """Warnings about how SCS rows were given their time limit (the SCS
+    adapter's info.scs_time_limit_mode): rows whose update() failed, and any
+    solver id with rows not given the limit minus setup, which would compare
+    runs given different amounts of time. Rows without the field (other solvers, older runs, no
+    limit) are ignored."""
+    mode_col = "info.scs_time_limit_mode"
+    if mode_col not in df.columns:
+        return []
+    warnings = []
+    error_col = "info.scs_time_limit_update_error"
+    if error_col in df.columns:
+        errors = df[df[error_col].notna()]
+        for solver_id, rows in errors.groupby("solver_id"):
+            warnings.append(f"{solver_id}: SCS update() failed on {len(rows)} row(s), which were "
+                            f"rebuilt with the limit at construction (first: {rows[error_col].iloc[0]})")
+    # Any SCS row not given limit minus setup: within one solver id that
+    # mixes runs given different amounts of time, and across ids (two SCS
+    # builds compared) one build may have had its setup on top of the limit.
+    for solver_id, modes in df[df[mode_col].notna()].groupby("solver_id")[mode_col]:
+        counts = modes.value_counts()
+        other = {mode: n for mode, n in counts.items() if mode != "solve_minus_setup"}
+        if other:
+            mix = ", ".join(f"{mode} {n}" for mode, n in counts.items())
+            warnings.append(f"{solver_id}: SCS rows not all given the limit minus setup ({mix})")
+    return warnings
+
+
 def failure_penalty(family: str | None) -> float:
     return FAILURE_PENALTY_FACTOR * FAMILY_LIMIT.get(family or "", 300.0)
 
@@ -451,9 +502,9 @@ def main() -> None:
         sizes = problem_sizes(df, size_lookup=lookup)
         limit = FAMILY_LIMIT.get(family)
         if limit:
-            late = df["run_time_seconds"] > limit
-            df = df.copy()
-            df.loc[late, "status"] = "time_limit"
+            df = mark_late(df, limit)
+        for warning in scs_time_limit_warnings(df):
+            print(f"warning: {family}: {warning}", file=sys.stderr)
         use_run = dict(kv.split("=", 1) for kv in args.use_run)
         tags = sorted({solver_tol(s) for s in df["solver_id"].unique() if solver_tol(s)})
         if args.tol_tag:

@@ -130,6 +130,48 @@ def _sized_rows(known: int, unknown: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@pytest.mark.parametrize("factor, late", [
+    (0.5, False),
+    (1.0, False),    # exactly the limit
+    (1.005, False),  # inside the 1 % grace
+    (1.02, True),    # past it
+])
+def test_a_solve_is_late_only_past_the_limit_plus_the_grace(make_figures, factor, late):
+    assert make_figures.LATE_GRACE == 0.01
+    limit = 300.0
+    df = pd.DataFrame([_row("p", "scs_1e-4", status.OPTIMAL, limit * factor)])
+    marked = make_figures.mark_late(df, limit)
+    assert marked["status"].iloc[0] == (status.TIME_LIMIT if late else status.OPTIMAL)
+    # The input frame is left alone.
+    assert df["status"].iloc[0] == status.OPTIMAL
+
+
+def test_scs_time_limit_warnings_flag_update_errors_and_mixed_modes(make_figures):
+    mode = "info.scs_time_limit_mode"
+    err = "info.scs_time_limit_update_error"
+    df = pd.DataFrame([
+        _row("a", "scs_1e-4", status.OPTIMAL, 1.0, **{mode: "solve_minus_setup", err: None}),
+        _row("b", "scs_1e-4", status.OPTIMAL, 1.0, **{mode: "solve_minus_setup", err: None}),
+        _row("a", "clarabel_1e-4", status.OPTIMAL, 1.0, **{mode: None, err: None}),
+    ])
+    assert make_figures.scs_time_limit_warnings(df) == []
+    assert make_figures.scs_time_limit_warnings(df.drop(columns=[mode, err])) == []
+    df.loc[1, mode] = "construction_after_update_error"
+    df.loc[1, err] = "RuntimeError: boom"
+    warnings = make_figures.scs_time_limit_warnings(df)
+    assert len(warnings) == 2
+    assert "update() failed on 1 row" in warnings[0] and "boom" in warnings[0]
+    assert "not all given the limit minus setup" in warnings[1]
+    # A whole solver id in construction mode (an SCS without settings in
+    # update) is flagged too, so two builds compared differ visibly.
+    df.loc[1, mode] = "solve_minus_setup"
+    df.loc[1, err] = None
+    df.loc[2, mode] = "construction"
+    df.loc[2, "solver_id"] = "scs332_1e-4"
+    warnings = make_figures.scs_time_limit_warnings(df)
+    assert warnings == ["scs332_1e-4: SCS rows not all given the limit minus setup (construction 1)"]
+
+
 def test_largest_quartile_sizes_unsized_problems_through_the_lookup(make_figures):
     df = _sized_rows(6, ("huge1", "huge2"))
     looked_up = []
