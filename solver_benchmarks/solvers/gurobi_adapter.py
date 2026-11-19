@@ -10,9 +10,10 @@ given (0: Gurobi's own choice). ``info["raw_status"]`` is the status name,
 
 An infeasibility claim on an LP carries Gurobi's certificate (``FarkasDual``
 or ``UnbdRay``, computed because the adapter sets ``InfUnbdInfo=1`` unless
-it is configured), checked like every other adapter's; see
-:func:`_certificate_kkt`. Gurobi computes none for QPs, so a QP claim has no
-certificate (``info["certificate_unavailable"]`` says why). Not run against
+it is configured; ``info["inf_unbd_info"]`` is the value the solve ran
+with), checked like every other adapter's; see :func:`_certificate_kkt`.
+Gurobi computes none for QPs, so a QP claim has no certificate
+(``info["certificate_unavailable"]`` says why). Not run against
 a real Gurobi here (no licence on the development machine); the conversion
 follows Gurobi's reference manual and is pinned by the fake in
 ``tests/test_commercial_adapters_fake.py``.
@@ -23,6 +24,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import scipy.sparse as sp
@@ -98,7 +100,7 @@ class GurobiSolverAdapter(SolverAdapter):
         try:
             model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
             try:
-                translated, threads = _configure_gurobi(model, self.settings, grb)
+                translated, threads, inf_unbd_info = _configure_gurobi(model, self.settings, grb)
 
                 variables = [
                     model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY)
@@ -180,6 +182,7 @@ class GurobiSolverAdapter(SolverAdapter):
                         "raw_status": _status_name(model.Status, grb),
                         "raw_status_code": int(model.Status),
                         "threads": threads,
+                        "inf_unbd_info": inf_unbd_info,
                         "solver": "gurobi",
                         "version": ".".join(str(part) for part in grb.gurobi.version()),
                         "solver_reported_runtime": _maybe_float(
@@ -293,9 +296,10 @@ def _certificate_kkt(model, grb, qp, mapped, variables, constraints, constraint_
     return record, None if record is not None else f"{attribute} is not finite"
 
 
-def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int]:
-    """Apply ``settings`` to ``model``; return the aliases it translated and
-    the thread count.
+def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int, Any]:
+    """Apply ``settings`` to ``model``; return the aliases it translated, the
+    thread count and the ``InfUnbdInfo`` the solve runs with (1 unless
+    configured), for ``info``.
 
     ``max_iter`` caps both the barrier and the simplex iteration counts
     (unless either is given by its Gurobi name). The ``eps`` aliases are
@@ -330,21 +334,27 @@ def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int]:
     else:
         threads = threads_or_default(threads)
         settings["Threads"] = threads
-    if not any(key.lower() == "infunbdinfo" for key in settings):
+    native_inf_unbd_info = [key for key in settings if key.lower() == "infunbdinfo"]
+    if native_inf_unbd_info:
+        inf_unbd_info = settings[native_inf_unbd_info[0]]
+    else:
         # Makes Gurobi compute FarkasDual / UnbdRay when it finds an LP
         # infeasible or unbounded, so the claim can be checked. Gurobi
         # documents the extra work as done once a model is determined to be
         # infeasible or unbounded (and for LPs only); it happens inside
-        # optimize(), so it counts in the run time. A configured
-        # InfUnbdInfo wins (0: no certificates).
-        settings["InfUnbdInfo"] = 1
+        # optimize(), so it counts in the run time and cannot be timed
+        # apart. That work can include solving the unpresolved LP again,
+        # which on a numerically marginal LP can end with another status
+        # than the solve without it would have. A configured InfUnbdInfo
+        # wins (0: no certificates, so the claims cannot be verified).
+        inf_unbd_info = settings["InfUnbdInfo"] = 1
     settings.pop("high_accuracy", None)
     for key, value in settings.items():
         try:
             model.setParam(key, value)
         except grb.GurobiError as exc:
             raise SolverConfigError(f"Invalid Gurobi parameter {key!r}={value!r}: {exc}") from exc
-    return translated, threads
+    return translated, threads, inf_unbd_info
 
 
 # Gurobi error codes for license failures: no valid license, and a model too

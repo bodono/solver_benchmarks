@@ -155,6 +155,10 @@ class MosekSolverAdapter(SolverAdapter):
             # certificate has none.
             has_point = kkt_dict is not None and mapped not in status.ANY_INFEASIBLE
             objective = task.getprimalobj(soltype) if has_point else None
+            certificate_info: dict[str, str] = {}
+            if mapped in (status.PRIMAL_INFEASIBLE, status.DUAL_INFEASIBLE) and kkt_dict is None:
+                # The only claim _certificate_kkt does not check.
+                certificate_info["certificate_unavailable"] = "MOSEK's certificate is not finite"
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
@@ -168,6 +172,7 @@ class MosekSolverAdapter(SolverAdapter):
                     "solver_reported_runtime": float(solver_reported_runtime),
                     "soltype": str(soltype),
                     "threads": threads,
+                    **certificate_info,
                     **({"settings_translated": translated} if translated else {}),
                 },
             )
@@ -341,7 +346,8 @@ def _certificate_kkt(task, soltype, mapped: str, qp):
     infeasibility certificate is the primal solution ``x`` (``c'x < 0``,
     ``Ax`` in the recession cone of the bounds), the harness's ray as it is.
     MOSEK computes both by default, for LPs and QPs alike, so no parameter
-    is needed. Rows with no bound (free) have zero multipliers.
+    is needed. Rows with no bound (free) have zero multipliers. A vector
+    that is not finite gives no record (the caller says so on ``info``).
     """
     lower, upper = normalize_qp_bounds(qp["l"], qp["u"])
     farkas = ray = None

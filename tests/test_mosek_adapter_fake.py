@@ -363,6 +363,18 @@ def test_mosek_records_its_certificate(make, solsta, vectors, claim, sign, corre
         assert (verdict.verdict, verdict.status) == ("demoted", f"{claim}_inaccurate")
 
 
+@pytest.mark.parametrize("make, solsta, vectors, claim", [
+    (_infeasible_lp, _Solsta.prim_infeas_cer, {"y": (-1.0, np.nan, 0.0, 1.0)}, status.PRIMAL_INFEASIBLE),
+    (_unbounded_qp, _Solsta.dual_infeas_cer, {"x": (0.0, np.inf)}, status.DUAL_INFEASIBLE),
+])
+def test_mosek_certificate_that_is_not_finite_says_why(make, solsta, vectors, claim, monkeypatch, tmp_path):
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, solsta=solsta, **vectors)
+    result = _solve_with(monkeypatch, fake, tmp_path, {}, make())
+    assert result.status == claim
+    assert result.kkt is None
+    assert result.info["certificate_unavailable"] == "MOSEK's certificate is not finite"
+
+
 def test_mosek_fake_is_available_and_a_broken_install_is_not(monkeypatch, tmp_path):
     import builtins
 

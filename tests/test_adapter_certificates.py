@@ -1,11 +1,10 @@
 """Infeasibility certificates of the adapters that run here, checked end to end.
 
 Each installed adapter solves known infeasible and unbounded problems. The
-certificate it records must pass the harness's verification at the row's
-tolerance (``VERIFY_SLACK`` times what the settings request), and the same
-solve with the certificate corrupted on its way out of the library (its sign
-flipped, the likeliest conversion error, or that of its largest entry) must
-fail it.
+certificate it records must pass the harness's verification at ``BUG_TOL``,
+and the same solve with the certificate corrupted on its way out of the
+library (its sign flipped, the likeliest conversion error, or that of its
+largest entry) must fail it.
 Gurobi, CPLEX, MOSEK and cuOpt are not installed here; their conversions are
 pinned against fakes in test_commercial_adapters_fake.py and
 test_mosek_adapter_fake.py.
@@ -21,7 +20,8 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 
-from solver_benchmarks.analysis.verify import VERIFY_SLACK, classify
+from solver_benchmarks.analysis.kkt import CERT_TOL
+from solver_benchmarks.analysis.verify import classify
 from solver_benchmarks.core import status
 from solver_benchmarks.core.problem import CONE, QP, ProblemData
 from solver_benchmarks.solvers import get_solver
@@ -87,12 +87,18 @@ def _adapter(name: str, settings: dict):
     return adapter_cls(settings)
 
 
-def _verdict(name: str, settings: dict, result, *, is_lp: bool | None = None):
-    """The verification of ``result`` by the default rule: ``VERIFY_SLACK``
-    times the tolerance ``settings`` request."""
-    requested = get_solver(name).requested_tolerance(settings, is_lp=is_lp).optimality
-    tol = VERIFY_SLACK * requested
-    return classify({"status": result.status, "kkt": result.kkt}, tolerance=lambda: tol)
+# The tolerance the verification is made at here: what a conversion error
+# fails by orders of magnitude (a wrong sign gives cert_res = inf, a wrong
+# row one of order one), not the solver's accuracy. At ten times what the
+# settings request, a solver release with looser certificates turns the test
+# red with no bug (PIQP 0.7.0's NETLIB bgprtr has cert_res 1.4e-6 against
+# 1e-7; 0.6.4's 2.4e-8).
+BUG_TOL = CERT_TOL
+
+
+def _verdict(result):
+    """The verification of ``result`` at ``BUG_TOL``."""
+    return classify({"status": result.status, "kkt": result.kkt}, tolerance=lambda: BUG_TOL)
 
 
 def _flip(values):
@@ -134,7 +140,7 @@ def test_highs_certificate_passes_the_verification(make, claim, tmp_path):
     result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(make()), tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
-    verdict = _verdict("highs", HIGHS_SETTINGS, result)
+    verdict = _verdict(result)
     assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
     assert result.info["certificate_seconds"] >= 0.0
     assert "certificate_unavailable" not in result.info
@@ -156,7 +162,7 @@ def test_highs_corrupted_certificate_fails_the_verification(make, claim, corrupt
     result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(make()), tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
-    verdict = _verdict("highs", HIGHS_SETTINGS, result)
+    verdict = _verdict(result)
     assert verdict.verdict == "demoted"
     assert verdict.status == f"{claim}_inaccurate"
 
@@ -199,8 +205,51 @@ def test_highs_claim_without_a_ray_is_not_verified(make, claim, reason, monkeypa
     assert result.status == claim
     assert result.kkt is None
     assert result.info["certificate_unavailable"] == reason
-    verdict = _verdict("highs", HIGHS_SETTINGS, result)
+    verdict = _verdict(result)
     assert (verdict.verdict, verdict.status) == ("missing_residuals", f"{claim}_inaccurate")
+
+
+def test_highs_attempt_without_a_ray_does_not_count_in_the_run_time(monkeypatch, tmp_path):
+    # The claim is unverified whatever the attempt cost; counting it turned a
+    # claim made in time into a time_limit row (NETLIB gosh with a 1 s limit:
+    # the claim in 0.01 s, the ray's re-solve cut at the limit).
+    import highspy
+
+    def slow_no_ray(self):
+        time.sleep(0.2)
+        return _no_ray(self)
+
+    monkeypatch.setattr(highspy.Highs, "getDualRay", slow_no_ray)
+    result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(_infeasible_lp()), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.kkt is None
+    assert result.info["certificate_seconds"] >= 0.2
+    assert result.run_time_seconds < result.info["certificate_seconds"]
+
+
+@pytest.mark.parametrize("ray, reason", [
+    # An error from the re-solve getDualRay makes (pybind11 raises
+    # RuntimeError for a C++ exception).
+    (RuntimeError("re-solve failed"), "getDualRay failed: RuntimeError: re-solve failed"),
+    ([np.nan, 1.0, 1.0], "HiGHS's dual ray is not finite"),
+    # One entry per row HiGHS was given: three, the free row being left out.
+    ([1.0, 1.0], "HiGHS's dual ray has 2 entries for 3"),
+], ids=["error", "not finite", "wrong size"])
+def test_highs_unusable_ray_leaves_the_claim_without_a_certificate(ray, reason, monkeypatch, tmp_path):
+    # The claim is already made when the ray is asked for: a ray that cannot
+    # be had or used costs the certificate, not the row, and says why.
+    import highspy
+
+    def broken(self):
+        if isinstance(ray, Exception):
+            raise ray
+        return None, True, np.asarray(ray, dtype=float)
+
+    monkeypatch.setattr(highspy.Highs, "getDualRay", broken)
+    result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(_infeasible_lp()), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.kkt is None
+    assert result.info["certificate_unavailable"] == reason
 
 
 def test_highs_feasible_solve_does_not_look_for_a_certificate(tmp_path):
@@ -220,11 +269,14 @@ PIQP_SETTINGS = {"verbose": False}
 
 
 @pytest.mark.parametrize("make, claim", [
-    # Most of PIQP's NETLIB certificates pass at ten times its default 1e-8
-    # with piqp 0.6.4 but not with 0.7.0 (bgprtr 1.4e-6, itest2 1.2e-5);
-    # these pass with both.
-    pytest.param(lambda: _netlib("chemcom"), status.PRIMAL_INFEASIBLE, id="netlib-chemcom"),
-    pytest.param(lambda: _netlib("mondou2"), status.PRIMAL_INFEASIBLE, id="netlib-mondou2"),
+    # Instances whose certificate is nearly unique (PIQP's and HiGHS's agree
+    # in direction, cosine 0.91 and 0.998), so that negating its largest
+    # entry leaves no certificate at all (cert_res = inf with either
+    # solver's): on chemcom or mondou2 the same corruption gives only 1e-4,
+    # which passes at BUG_TOL. As returned, cert_res is 2.4e-8 and 3e-15 with
+    # piqp 0.6.4, 1.4e-6 for bgprtr with 0.7.0.
+    pytest.param(lambda: _netlib("bgprtr"), status.PRIMAL_INFEASIBLE, id="netlib-bgprtr"),
+    pytest.param(lambda: _netlib("forest6"), status.PRIMAL_INFEASIBLE, id="netlib-forest6"),
     pytest.param(_unbounded_lp, status.DUAL_INFEASIBLE, id="lp-unbounded"),
     pytest.param(_unbounded_qp, status.DUAL_INFEASIBLE, id="qp-unbounded"),
 ])
@@ -266,7 +318,7 @@ def test_piqp_certificate_is_verified(make, claim, corrupt, monkeypatch, tmp_pat
     result = adapter.solve(_problem(make()), tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
-    verdict = _verdict("piqp", PIQP_SETTINGS, result)
+    verdict = _verdict(result)
     if corrupt is None:
         assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
     else:
@@ -300,7 +352,7 @@ def test_proxqp_certificate_is_verified(corrupt, monkeypatch, tmp_path):
     result = adapter.solve(_problem(_infeasible_equality_lp()), tmp_path)
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.kkt is not None and result.kkt["certificate"] == status.PRIMAL_INFEASIBLE
-    verdict = _verdict("proxqp", PROXQP_SETTINGS, result)
+    verdict = _verdict(result)
     if corrupt is None:
         assert (verdict.verdict, verdict.status) == ("kept", status.PRIMAL_INFEASIBLE), verdict.reason
     else:
@@ -340,7 +392,7 @@ def test_sdpa_certificate_is_verified(problem, claim, corrupt, monkeypatch, tmp_
     result = adapter.solve(problem, tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
-    verdict = _verdict("sdpa", SDPA_SETTINGS, result)
+    verdict = _verdict(result)
     if corrupt is None:
         assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
     else:

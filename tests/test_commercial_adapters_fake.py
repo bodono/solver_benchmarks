@@ -10,6 +10,7 @@ objective reporting, and the KKT check of the returned point.
 from __future__ import annotations
 
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -299,6 +300,7 @@ class _CplexModel:
     def solve(self):
         self.log.append(("solve", dict(self.params)))
         self._outcome = self.outcomes.pop(0)
+        time.sleep(self._outcome.get("sleep", 0.0))
         if "raise" in self._outcome:
             raise self._outcome["raise"]
 
@@ -854,9 +856,12 @@ def test_gurobi_records_its_certificate(monkeypatch, tmp_path, make, attribute, 
 @pytest.mark.parametrize("settings, expected", [({}, 1), ({"InfUnbdInfo": 0}, 0), ({"infunbdinfo": 0}, 0)])
 def test_gurobi_asks_for_certificates_unless_configured(monkeypatch, tmp_path, settings, expected):
     models, _ = _install_fake_gurobipy(monkeypatch, [{"Status": _GRB.OPTIMAL, "values": _OPTIMAL_POINT}])
-    _solve("gurobi", _small_qp(), tmp_path, settings)
+    result = _solve("gurobi", _small_qp(), tmp_path, settings)
     values = [value for key, value in models[0].params.items() if key.lower() == "infunbdinfo"]
     assert values == [expected]
+    # The adapter's default is not in the run's settings, so the row says
+    # what the solve ran with (it can change Gurobi's work after the claim).
+    assert result.info["inf_unbd_info"] == expected
 
 
 def test_gurobi_claim_without_its_certificate_is_not_verified(monkeypatch, tmp_path):
@@ -887,13 +892,21 @@ def test_cplex_records_its_certificate(monkeypatch, tmp_path, make, key, value, 
     else:
         value = [sign * v for v in value]
     raw = _CplexStatus.infeasible if claim == status.PRIMAL_INFEASIBLE else _CplexStatus.unbounded
-    _, log = _install_fake_cplex(monkeypatch, [{"status": raw, key: value}])
+    # A vector that is not a certificate makes the adapter solve again (see
+    # test_cplex_solves_again_when_the_vector_it_left_is_not_a_certificate);
+    # a misread convention gets the same vector then, and it is recorded.
+    _, log = _install_fake_cplex(monkeypatch, [{"status": raw, key: value}] * (1 if correct else 2))
     result = _solve("cplex", make(), tmp_path)
     assert result.status == claim
     _assert_verdict(result, claim, correct)
-    # The solve left the certificate: no second solve.
-    assert len([entry for entry in log if entry[0] == "solve"]) == 1
-    assert "certificate_resolved" not in result.info
+    solves = len([entry for entry in log if entry[0] == "solve"])
+    if correct:
+        # The solve left the certificate: no second solve.
+        assert solves == 1
+        assert "certificate_resolved" not in result.info
+    else:
+        assert solves == 2
+        assert result.info["certificate_resolved"] is True
 
 
 @pytest.mark.parametrize("make, raw, key, value, method, claim", [
@@ -927,6 +940,95 @@ def test_cplex_second_solve_that_ends_otherwise_gives_no_certificate(monkeypatch
     assert result.info["certificate_resolved"] is True
     assert "solved again" in result.info["certificate_unavailable"]
     assert _verified(result).verdict == "missing_residuals"
+
+
+_GOOD_FARKAS = ([-1.0, 1.0, 1.0], 1.0)  # _cert_lp's, in CPLEX's sign
+
+
+@pytest.mark.parametrize("second, recorded", [
+    ({"status": _CplexStatus.infeasible, "farkas": _GOOD_FARKAS}, True),
+    ({"status": _CplexStatus.abort_time_limit}, False),
+], ids=["certificate", "none"])
+def test_cplex_second_solve_counts_in_the_run_time_only_with_a_certificate(
+    monkeypatch, tmp_path, second, recorded
+):
+    # The claim is checked on the certificate, so the time it takes counts;
+    # an attempt that gives none does not (the claim is unverified whatever
+    # it cost, and counting it could make a claim made in time a time_limit
+    # row). Either way the time is info.certificate_seconds.
+    _install_fake_cplex(monkeypatch, [{"status": _CplexStatus.infeasible}, {**second, "sleep": 0.2}])
+    result = _solve("cplex", _cert_lp(), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert (result.kkt is not None) is recorded
+    assert result.info["certificate_seconds"] >= 0.2
+    if recorded:
+        assert result.run_time_seconds >= result.info["certificate_seconds"]
+    else:
+        assert result.run_time_seconds < result.info["certificate_seconds"]
+
+
+def test_cplex_no_time_left_means_no_second_solve(monkeypatch, tmp_path):
+    # The first solve used up the time limit: no second solve runs, and the
+    # row does not say it did.
+    _, log = _install_fake_cplex(monkeypatch, [{"status": _CplexStatus.infeasible, "sleep": 0.01}])
+    result = _solve("cplex", _cert_lp(), tmp_path, {"time_limit": 0.005})
+    assert len([entry for entry in log if entry[0] == "solve"]) == 1
+    assert result.kkt is None
+    assert "certificate_resolved" not in result.info
+    assert result.info["certificate_unavailable"] == "no time left to solve again for a dual Farkas proof"
+
+
+@pytest.mark.parametrize("settings", [{"time_limit": 100.0}, {"timelimit": 100.0}], ids=["alias", "native"])
+def test_cplex_every_further_solve_gets_the_time_left(monkeypatch, tmp_path, settings):
+    # CPLEX's timelimit bounds each solve(): the re-solve after "infeasible
+    # or unbounded" and the one for the certificate each get what is left,
+    # whether the limit was given by an alias or by CPLEX's own name, so the
+    # run stays within it instead of reaching three times it.
+    _, log = _install_fake_cplex(monkeypatch, [
+        {"status": _CplexStatus.infeasible_or_unbounded},
+        {"status": _CplexStatus.infeasible},
+        {"status": _CplexStatus.infeasible, "farkas": _GOOD_FARKAS},
+    ])
+    result = _solve("cplex", _cert_lp(), tmp_path, settings)
+    limits = [entry[1]["timelimit"] for entry in log if entry[0] == "solve"]
+    assert len(limits) == 3
+    assert limits[0] == 100.0 and 100.0 > limits[1] >= limits[2] > 0.0
+    assert result.info["inf_or_unbd_resolved"] is True and result.info["certificate_resolved"] is True
+    _assert_verdict(result, status.PRIMAL_INFEASIBLE, True)
+
+
+@pytest.mark.parametrize("first", [
+    # Not a certificate: its objective term is zero (as a vector CPLEX left
+    # from no dual simplex solve could be), or it has the wrong size.
+    {"farkas": ([0.0, 0.0, 0.0], 0.0)},
+    {"farkas": ([-1.0, 1.0], 1.0)},
+], ids=["zero", "wrong size"])
+def test_cplex_solves_again_when_the_vector_it_left_is_not_a_certificate(monkeypatch, tmp_path, first):
+    # Whether CPLEX raises or returns some vector when the solve left no
+    # certificate, the claim gets the certificate of a simplex solve.
+    _, log = _install_fake_cplex(monkeypatch, [
+        {"status": _CplexStatus.infeasible, **first},
+        {"status": _CplexStatus.infeasible, "farkas": _GOOD_FARKAS},
+    ])
+    result = _solve("cplex", _cert_lp(), tmp_path)
+    assert len([entry for entry in log if entry[0] == "solve"]) == 2
+    assert result.info["certificate_resolved"] is True
+    _assert_verdict(result, status.PRIMAL_INFEASIBLE, True)
+
+
+@pytest.mark.parametrize("second, reason", [
+    ({"farkas": ([-1.0, 1.0], 1.0)}, "CPLEX's dual Farkas proof has 2 entries for 3"),
+    ({"farkas": ([np.nan, 1.0, 1.0], 1.0)}, "CPLEX's dual Farkas proof is not finite"),
+    ({"raise": RuntimeError("out of memory")}, "no dual Farkas proof: out of memory"),
+], ids=["wrong size", "not finite", "error"])
+def test_cplex_unusable_certificate_says_why(monkeypatch, tmp_path, second, reason):
+    # The claim is already made: what goes wrong getting its certificate
+    # costs the certificate, not the row.
+    _install_fake_cplex(monkeypatch, [{"status": _CplexStatus.infeasible}, {"status": _CplexStatus.infeasible, **second}])
+    result = _solve("cplex", _cert_lp(), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.kkt is None
+    assert result.info["certificate_unavailable"] == reason
 
 
 def test_cplex_has_no_certificate_for_a_qp(monkeypatch, tmp_path):

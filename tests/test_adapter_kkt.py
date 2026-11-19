@@ -479,10 +479,13 @@ def test_commercial_adapter_kkt_original_rows(solver_name, quadratic, tmp_path):
 def test_lp_infeasibility_claim_carries_a_certificate_that_passes(solver_name, problem, claim, tmp_path):
     # These adapters recorded no certificate, so their claims could not be
     # verified (the commercial ones are skipped where they are not installed).
+    # valid holds cert_res to kkt.CERT_TOL (1e-3): a conversion error gives
+    # inf or a residual of order one, while an interior-point certificate
+    # (MOSEK's) is not exact.
     result = _solve(solver_name, problem(), tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
-    assert result.kkt["valid"] is True and result.kkt["cert_res"] <= 1e-9
+    assert result.kkt["valid"] is True
 
 
 @pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "gurobi", "highs", "mosek", "piqp", "cpo3"])
