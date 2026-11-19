@@ -892,7 +892,7 @@ def test_report_of_a_verified_merge_states_its_provenance(tmp_path, repo_root):
     # the other order: shards verified separately, then merged
     v3, v4 = tmp_path / "v3", tmp_path / "v4"
     kkt_verify(m3, v3, tol=1e-6, promote=True)
-    kkt_verify(m4, v4, tol=1e-4, missing_is_failure=False)
+    kkt_verify(m4, v4, tol=1e-4, missing_is_failure=False, promote=False)
     verified_first = tmp_path / "verified_first"
     merge_runs([v3, v4], verified_first)
     write_run_report(verified_first, output_dir=tmp_path / "vf_report", repo_root=repo_root)

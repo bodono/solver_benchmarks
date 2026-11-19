@@ -84,7 +84,7 @@ def test_kkt_verify_promote_accepts_accurate_inaccurate_rows(tmp_path):
     assert out_rows["p3"]["status"] == "time_limit"
     assert summary["promoted"] == {"a": 1}
     # without promote nothing changes
-    kkt_verify(src, tmp_path / "out2", tol=1e-6)
+    kkt_verify(src, tmp_path / "out2", tol=1e-6, promote=False)
     out2 = {json.loads(l)["problem"]: json.loads(l) for l in (tmp_path / "out2" / "results.jsonl").read_text().splitlines()}
     assert out2["p1"]["status"] == "optimal_inaccurate"
 
@@ -462,7 +462,8 @@ def test_verify_keeps_certificates_it_cannot_check_whatever_missing_is_failure(t
         out = _read_rows(tmp_path / name)
         assert {key: row["status"] for key, row in out.items()} == {
             ("p1", "highs"): "primal_infeasible", ("p2", "highs"): "dual_infeasible", ("p1", "scs"): "primal_infeasible"}
-        assert "kkt_verify" not in out[("p1", "scs")]["metadata"]
+        # Every checked row says what was decided; a certificate that passes is kept.
+        assert out[("p1", "scs")]["metadata"]["kkt_verify"]["verdict"] == "kept"
         assert summary["demoted"] == {}
         assert summary["kept"] == {"highs": 2, "scs": 1}
         assert summary["unverified_certificates"] == {"highs": 2}
@@ -745,7 +746,7 @@ def test_promote_accepts_inaccurate_certificates_that_pass_the_check(tmp_path):
     assert success["p_good"] and success["d_good"] and not success["p_bad"]
 
     # Without promote nothing changes.
-    plain = kkt_verify(src, tmp_path / "plain", tol=1e-6)
+    plain = kkt_verify(src, tmp_path / "plain", tol=1e-6, promote=False)
     assert {row["status"] for row in _read_rows(tmp_path / "plain").values()} == {
         "primal_infeasible_inaccurate", "dual_infeasible_inaccurate"}
     assert plain["promoted"] == {}
