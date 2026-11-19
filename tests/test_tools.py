@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import with_passing_kkt
 
 from solver_benchmarks.analysis.profiles import shifted_geomean
 from solver_benchmarks.core import status
@@ -236,7 +237,7 @@ def test_make_figures_main_writes_figures_and_summary(make_figures, tmp_path, mo
     rows = _sized_rows(4, ())
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in rows.to_dict("records"):
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
     out_dir = tmp_path / "figs"
     monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"lp={run_dir}"])
 
@@ -839,7 +840,7 @@ def test_make_figures_main_survives_a_family_with_no_sized_problem(make_figures,
     rows = _sized_rows(0, ("huge1", "huge2"))
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in rows.to_dict("records"):
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
     out_dir = tmp_path / "figs"
     monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"qp={run_dir}"])
 
@@ -859,7 +860,7 @@ def test_make_figures_no_size_lookup_leaves_unsized_problems_out(make_figures, t
     run_dir.mkdir()
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in _sized_rows(4, ("huge1",)).to_dict("records"):
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
     looked_up = []
 
     def fake_registry_size_lookup(run_dir, repo_root=None):
@@ -910,7 +911,7 @@ def _write_run(run_dir: Path, rows: list[dict]) -> Path:
     run_dir.mkdir(parents=True)
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in rows:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
     return run_dir
 
 

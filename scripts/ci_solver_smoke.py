@@ -72,6 +72,9 @@ def main() -> int:
             stream_output=True,
             stream_solver_output=True,
         )
+        # The verified status (load_results' default): the solve passes only
+        # if the harness's own KKT residuals support its claim, at 10 x the
+        # tolerance the settings above request.
         df = load_results(store.run_dir)
     if len(df) != 1:
         raise RuntimeError(f"Expected exactly one result, got {len(df)}")

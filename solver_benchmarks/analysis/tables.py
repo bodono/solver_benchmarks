@@ -714,7 +714,9 @@ def completion_summary(
     if results is None:
         from solver_benchmarks.analysis.load import load_results
 
-        results = load_results(run_dir)
+        # Which rows exist, not their statuses: an unresolvable requested
+        # tolerance must not stop a completion check.
+        results = load_results(run_dir, verify=False)
     manifest_path = run_dir / "manifest.json"
     columns = [
         "solver_id",
@@ -797,7 +799,9 @@ def missing_results(
     if results is None:
         from solver_benchmarks.analysis.load import load_results
 
-        results = load_results(run_dir)
+        # Which rows exist, not their statuses: an unresolvable requested
+        # tolerance must not stop a completion check.
+        results = load_results(run_dir, verify=False)
     manifest_path = run_dir / "manifest.json"
     columns = ["solver_id", "dataset", "problem"]
     if not manifest_path.exists():

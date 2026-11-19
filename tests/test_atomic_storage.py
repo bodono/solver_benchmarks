@@ -597,7 +597,8 @@ def test_load_results_and_write_parquet_share_the_chunked_reader(tmp_path: Path,
 
     monkeypatch.setattr(storage, "_batched", spy)
     monkeypatch.setattr(storage.read_results_jsonl, "__kwdefaults__", {"chunk_lines": 3})
-    frame = load.load_results(store.run_dir)
+    # status_reported is the one column load_results adds to the rows read.
+    frame = load.load_results(store.run_dir, verify=False).drop(columns="status_reported")
     assert chunks == [3, 3, 1]
     expected = _expected_frame(lines)
     _assert_identical_frames(frame, expected)
@@ -782,5 +783,5 @@ def test_load_results_reads_the_jsonl_when_a_resume_removes_the_parquet(
         return read_parquet(path, *args, **kwargs)
 
     monkeypatch.setattr(load.pd, "read_parquet", removed_meanwhile)
-    frame = load.load_results(store.run_dir)
+    frame = load.load_results(store.run_dir, verify=False)
     assert list(zip(frame["problem"], frame["status"])) == [("p", "optimal")]

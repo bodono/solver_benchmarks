@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from click.testing import CliRunner
+from conftest import with_passing_kkt
 
 from solver_benchmarks.analysis.load import load_results, solver_summary
 from solver_benchmarks.analysis.markdown_report import (
@@ -341,7 +342,7 @@ def test_report_truncated_derived_tables_link_full_csv(tmp_path: Path, repo_root
     record = _analysis_frame().to_dict("records")[0]
     record["solver_id"] = "solver_000"
     with (run_dir / "results.jsonl").open("w") as handle:
-        handle.write(json.dumps(record) + "\n")
+        handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     report_dir = tmp_path / "report"
     write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
@@ -832,13 +833,13 @@ def test_cli_summary_loads_the_results_once(tmp_path: Path, monkeypatch):
     (run_dir / "manifest.json").write_text(json.dumps({"run_id": "run", "config": {}}))
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in _analysis_frame().to_dict("records"):
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
     calls = []
     original = load_module.load_results
 
-    def counting(path):
+    def counting(path, **kwargs):
         calls.append(path)
-        return original(path)
+        return original(path, **kwargs)
 
     monkeypatch.setattr(load_module, "load_results", counting)
     monkeypatch.setattr(cli_module, "load_results", counting)
@@ -872,7 +873,7 @@ def test_load_summary_and_cli_analysis_commands(tmp_path: Path, repo_root: Path)
     records = _analysis_frame().to_dict("records")
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in records:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     loaded = load_results(run_dir)
     summary = solver_summary(run_dir)
@@ -1152,7 +1153,7 @@ def test_report_includes_new_analysis_sections(tmp_path: Path, repo_root: Path):
         records.append(entry)
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in records:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     report_dir = tmp_path / "report"
     write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
@@ -1209,7 +1210,7 @@ def test_kkt_plots_match_markdown_report_filenames(tmp_path: Path, repo_root: Pa
         records.append(entry)
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in records:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     report_dir = tmp_path / "report"
     write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
@@ -1305,7 +1306,7 @@ def test_completion_summary_reports_per_dataset_rows(monkeypatch, tmp_path: Path
     (run_dir / "manifest.json").write_text(json.dumps(manifest))
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in _multi_dataset_records("ds_a", "ds_b"):
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     completion = completion_summary(run_dir, load_results(run_dir), repo_root=repo_root)
     by_pair = completion.set_index(["solver_id", "dataset"])
@@ -1511,7 +1512,7 @@ def test_report_includes_per_dataset_breakdown(monkeypatch, tmp_path: Path, repo
     (run_dir / "manifest.json").write_text(json.dumps(manifest))
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in _multi_dataset_records("ds_a", "ds_b"):
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     report_dir = tmp_path / "report"
     write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
@@ -1616,7 +1617,7 @@ def test_report_per_dataset_breakdown_uses_entry_id_not_registry_name(
     ]
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in records:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     report_dir = tmp_path / "report"
     write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)
@@ -1928,7 +1929,7 @@ def test_report_omits_per_dataset_breakdown_for_single_dataset(tmp_path: Path, r
     records = _analysis_frame().to_dict("records")
     with (run_dir / "results.jsonl").open("w") as handle:
         for record in records:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(with_passing_kkt(record)) + "\n")
 
     report_dir = tmp_path / "report"
     write_run_report(run_dir, output_dir=report_dir, repo_root=repo_root)

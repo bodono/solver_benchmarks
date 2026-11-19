@@ -51,6 +51,7 @@ from solver_benchmarks.analysis.tables import (
     status_matrix,
     successful_metric_values,
 )
+from solver_benchmarks.analysis.verify import VerifyPolicy
 from solver_benchmarks.core import status as status_codes
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,12 @@ def write_analysis_plots(
     results: pd.DataFrame | None = None,
     expected: pd.DataFrame | None = None,
     geomean_options: dict | None = None,
+    verify: bool | VerifyPolicy = True,
 ) -> list[Path]:
     """Write the analysis plots of a run.
 
+    Statuses are KKT-verified as ``load_results`` verifies them, with
+    ``verify`` choosing the rule (False: the solvers' own statuses).
     ``results``, ``expected`` and ``geomean_options`` let a caller that has
     them already (``bench report``) skip loading them again. Without a
     usable time limit (and no ``max_value``) the penalized time geomean is
@@ -136,7 +140,7 @@ def write_analysis_plots(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if results is None:
-        results = load_results(run_dir)
+        results = load_results(run_dir, verify=verify)
     if results.empty:
         return []
 
