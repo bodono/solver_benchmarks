@@ -1277,15 +1277,69 @@ def _verdict_counts(df: pd.DataFrame) -> dict[str, int]:
 
 def verification_info(df: pd.DataFrame) -> dict[str, Any]:
     """``df.attrs["verification"]``, or what the frame's columns say when
-    the attribute was lost (pandas drops attrs through some operations)."""
+    the attribute was lost (pandas drops attrs through some operations; see
+    :func:`_info_from_columns`)."""
     info = getattr(df, "attrs", {}).get("verification")
     if isinstance(info, dict):
         return info
     if "verify.verdict" in df.columns:
-        rules = df["verify.rule"].dropna().unique() if "verify.rule" in df.columns else []
-        return _attrs("computed", rule=str(rules[0]) if len(rules) == 1 else "requested", slack=VERIFY_SLACK,
-                      promote=True)
+        return _info_from_columns(df)
     return _attrs("unverified")
+
+
+def _info_from_columns(df: pd.DataFrame) -> dict[str, Any]:
+    """The verification summary rebuilt from a frame's ``verify.*`` columns.
+
+    Nothing is assumed about the policy. The rule is ``verify.rule``, a fixed
+    tolerance ``verify.tol``, and the slack ``verify.tol`` over
+    ``verify.requested_tol``. Promotion is on if the promotable stops were
+    checked and off if they were not. Missing residuals counted as failures
+    if the claims without them were demoted, and were tolerated if those
+    claims stand. A setting that no row shows, or that rows disagree on, is
+    ``None``: the header then states nothing about it and says that the
+    summary was rebuilt (``reconstructed``).
+    """
+    import pandas as pd
+
+    verdict = df["verify.verdict"].astype(object)
+    checked = (verdict.notna() & (verdict != "not_checked")).to_numpy(dtype=bool)
+    rules = {str(value) for value in df["verify.rule"].dropna().unique()} if "verify.rule" in df.columns else set()
+    rule = rules.pop() if len(rules) == 1 else None
+
+    def single(values: pd.Series) -> float | None:
+        values = pd.to_numeric(values, errors="coerce").dropna()
+        if values.empty:
+            return None
+        first = float(values.iloc[0])
+        same = (values - first).abs() <= 1e-9 * abs(first)
+        return float(f"{first:.12g}") if bool(same.all()) else None
+
+    tol = slack = None
+    if rule == "fixed" and "verify.tol" in df.columns:
+        tol = single(df.loc[checked, "verify.tol"])
+    if rule == "requested" and {"verify.tol", "verify.requested_tol"} <= set(df.columns):
+        slack = single(pd.to_numeric(df["verify.tol"], errors="coerce")
+                       / pd.to_numeric(df["verify.requested_tol"], errors="coerce"))
+
+    def setting(rows: Any, on: Any) -> bool | None:
+        """True if every row in ``rows`` shows the setting, False if none does,
+        None if there are no such rows or they disagree."""
+        shown = on[rows]
+        if not len(shown):
+            return None
+        if bool(shown.all()):
+            return True
+        return False if not bool(shown.any()) else None
+
+    promote = missing_is_failure = None
+    if "status_reported" in df.columns:
+        reported = df["status_reported"].astype(object)
+        promotable = reported.isin(list(PROMOTABLE | set(CERTIFICATE_PROMOTION))).to_numpy(dtype=bool)
+        promote = setting(promotable, checked)
+        changed = df["status"].astype(object).to_numpy() != reported.to_numpy()
+        missing_is_failure = setting((verdict == "missing_residuals").to_numpy(dtype=bool), changed)
+    return _attrs("computed", rule=rule, tol=tol, slack=slack, promote=promote,
+                  missing_is_failure=missing_is_failure, reconstructed=True, counts=_verdict_counts(df))
 
 
 def _format_tol(value: Any) -> str:
@@ -1298,7 +1352,6 @@ def verification_header(info_or_df: Any) -> str:
     mode = info.get("mode")
     if mode == "unverified":
         return "Statuses as the solvers reported them (not KKT-verified)."
-    slack = info.get("slack") or VERIFY_SLACK
     promotion = (
         " Inaccurate and iteration- or time-limited stops whose point passes count as solved; results "
         "returned after the run's time limit never do."
@@ -1308,24 +1361,37 @@ def verification_header(info_or_df: Any) -> str:
         if info.get("rule") == "fixed":
             how = f"fixed tolerance {_format_tol(info.get('tol'))}"
         else:
-            how = f"{float(slack):g} x each solver's requested tolerance"
+            # A copy written before the slack was recorded used the default.
+            how = f"{float(info.get('slack') or VERIFY_SLACK):g} x each solver's requested tolerance"
         how += ", promote" if info.get("promote") else ", no promote"
         return (
             f"Statuses as verified by `bench kkt-verify` ({how}) when this run was written.{caveats} "
             f"--reverify re-checks at {VERIFY_SLACK:g} x each solver's requested tolerance."
         )
-    if info.get("rule") == "fixed":
-        how = f"a fixed tolerance {_format_tol(info.get('tol'))} for every solver (--verify-tol)"
-    else:
+    rule, slack = info.get("rule"), info.get("slack")
+    if rule == "fixed" and info.get("tol") is not None:
+        how = f"a fixed tolerance {_format_tol(info.get('tol'))} for every solver"
+        # A rebuilt summary cannot tell --verify-tol from a bench kkt-verify --tol copy.
+        how += "" if info.get("reconstructed") else " (--verify-tol)"
+    elif rule == "requested" and slack is not None:
         how = f"{float(slack):g} x the tolerance its solver was asked for"
-    if info.get("missing_is_failure", True):
+    else:
+        how = "the tolerance in its verify.tol column"
+    missing_is_failure = info.get("missing_is_failure")
+    if missing_is_failure is None:
+        missing = "; a claim that fails counts as unsolved."
+    elif missing_is_failure:
         missing = "; a claim that fails, or that recorded no residuals or certificate to check, counts as unsolved."
     else:
         missing = "; a claim that fails counts as unsolved (claims with no residuals or certificate are kept, --allow-missing)."
+    rebuilt = (
+        " (This summary was rebuilt from the verify.* columns, as the frame lost its record of the policy; a "
+        "setting no row shows is not stated.)"
+    ) if info.get("reconstructed") else ""
     return (
         "Statuses are KKT-verified: each claimed solution and infeasibility certificate is checked against the "
-        f"harness's own KKT residuals at {how}{missing}{promotion}{caveats} --unverified shows the solvers' "
-        "own statuses."
+        f"harness's own KKT residuals at {how}{missing}{promotion}{caveats}{rebuilt} --unverified shows the "
+        "solvers' own statuses."
     )
 
 

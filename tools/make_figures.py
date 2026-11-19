@@ -539,11 +539,15 @@ def verify_rule(df: pd.DataFrame) -> str:
     mode = info.get("mode")
     if mode == "unverified":
         return "unverified"
-    rule = str(info.get("rule") or "requested")
+    rule = info.get("rule")
     if rule == "fixed":
         rule = f"fixed {float(info.get('tol')):g}" if info.get("tol") is not None else "fixed"
+    elif rule == "requested" and info.get("slack") is not None:
+        rule = f"{float(info.get('slack')):g} x requested"
+    elif rule == "requested":
+        rule = "requested (slack unknown)"
     else:
-        rule = f"{float(info.get('slack') or 10.0):g} x requested"
+        rule = "per-row verify.tol"
     return f"recorded ({rule})" if mode == "recorded" else rule
 
 

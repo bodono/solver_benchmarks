@@ -21,6 +21,7 @@ from solver_benchmarks.analysis.verify import (
     classify,
     row_info_from_record,
     verification_header,
+    verification_info,
     verification_table,
 )
 from solver_benchmarks.cli import main
@@ -166,6 +167,48 @@ def test_missing_residuals_can_be_tolerated(tmp_path):
     default = _by_problem(load_results(run))
     assert default["status"].to_dict() == {"bare": "optimal_inaccurate", "cert_none": "primal_infeasible_inaccurate"}
     assert "counts as unsolved" in verification_header(default)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        VerifyPolicy(),
+        VerifyPolicy(slack=3.0, promote=False, missing_is_failure=False),
+        VerifyPolicy(rule="fixed", tol=1e-2),
+    ],
+    ids=["default", "slack3_no_promote_allow_missing", "fixed"],
+)
+def test_a_frame_that_lost_its_attrs_is_described_from_its_columns(tmp_path, policy):
+    """pandas drops attrs through some operations; the summary is then rebuilt
+    from the verify.* columns, not assumed to be the default policy."""
+    df = load_results(_write_run(tmp_path / "run", _rows()), verify=policy)
+    recorded = df.attrs["verification"]
+    df.attrs = {}
+    rebuilt = verification_info(df)
+    assert rebuilt["reconstructed"] is True
+    for key in ("mode", "rule", "promote", "missing_is_failure", "counts"):
+        assert rebuilt[key] == recorded[key], key
+    if policy.rule == "fixed":
+        assert rebuilt["tol"] == pytest.approx(policy.tol)
+    else:
+        assert rebuilt["slack"] == pytest.approx(policy.slack)
+    header = verification_header(df)
+    assert "rebuilt from the verify.* columns" in header
+    assert ("count as solved" in header) == policy.promote
+    assert ("--allow-missing" in header) == (not policy.missing_is_failure)
+
+
+def test_a_rebuilt_summary_states_nothing_no_row_shows(tmp_path):
+    """With no promotable stop and no claim without residuals, promotion and
+    missing residuals changed nothing, so the rebuilt header does not name them."""
+    df = load_results(_write_run(tmp_path / "run", [_row("ok", "optimal", _kkt(5e-4))]))
+    df.attrs = {}
+    info = verification_info(df)
+    assert info["promote"] is None and info["missing_is_failure"] is None
+    assert info["slack"] == pytest.approx(VERIFY_SLACK)
+    header = verification_header(df)
+    assert "count as solved" not in header and "no residuals" not in header
+    assert f"{VERIFY_SLACK:g} x the tolerance its solver was asked for" in header
 
 
 def test_without_promote_limit_stops_are_not_checked(tmp_path):

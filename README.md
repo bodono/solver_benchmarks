@@ -1552,11 +1552,17 @@ QTQP adds a term in the ray's norm; only SCS's and PDLP's tests divide by the
 objective term alone. Held to those knobs at their defaults, the certificates
 in one figure would be checked at tolerances up to a thousand times apart,
 and Clarabel's genuine NETLIB certificates (`cert_res` up to `6e-5`) would
-fail at its `1e-8`. Every variant `tools/make_campaign.py` writes requests
-exactly its tolerance tag (HiGHS below `1e-7` excepted: its residual
-tolerances stay at their `1e-7` default), so a campaign's solutions and
-certificates are verified at ten times the tag, the rule of the published
-3.3.2 figures.
+fail at its `1e-8`. So the infeasibility knobs (SCS's `eps_infeas`, OSQP's
+`eps_prim_inf` and `eps_dual_inf`, Clarabel's `tol_infeas_abs` and
+`tol_infeas_rel`, and the like) are deliberately not read, whatever a run
+sets them to: the `scs332_2026-11` infeasible-LP runs give their `1e-8` SCS,
+OSQP and Clarabel variants infeasibility tolerances of `1e-4`, and those
+variants' certificates are still checked at `1e-7`. Every variant
+`tools/make_campaign.py` writes requests exactly its tolerance tag in its
+solution knobs (HiGHS below `1e-7` excepted: its residual tolerances stay at
+their `1e-7` default) and leaves the infeasibility knobs alone, so a
+campaign's solutions and certificates are verified at ten times the tag, the
+rule of the published 3.3.2 figures.
 
 Verification uses the residuals the worker recorded at solve time; it does
 not recompute them. Runs recorded before #75 (`f942f1f`, 2026-08-29) carry a
