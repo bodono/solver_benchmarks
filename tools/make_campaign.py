@@ -75,6 +75,50 @@ def tolerance_tag(tol: float) -> str:
     return f"{mantissa}e{int(exponent)}"
 
 
+# The infeasibility (certificate) tolerances of each campaign solver, which
+# solver_variants sets to the variant's tag. Verification holds a row's
+# certificates to the same 10 x tag as its solutions (README, "The
+# tolerance"), so a campaign asks every solver for certificates at the tag,
+# in the solver's own units: what is asked and what is checked agree. An
+# empty tuple is a solver with no such knob the adapter can set:
+# - piqp 0.6.4: none; it declares infeasibility from eps_abs / eps_rel (set
+#   to the tag) and infeasibility_threshold, a threshold on its proximal-point
+#   residuals, not a certificate tolerance.
+# - proxqp: ProxQP's eps_primal_inf / eps_dual_inf (default 1e-4) exist, but
+#   the one-shot proxqp solve() the adapter calls does not take them.
+# - highs: none; its infeasibility verdicts use its feasibility tolerances.
+# - cvxopt: none of its own; feastol, set to the tag, is also its
+#   certificate test.
+# - sdpa: none.
+# PDLP's are TerminationCriteria fields, set through parameters_text. cuOpt's
+# apply to its PDLP (whose infeasibility detection is off by default).
+CERTIFICATE_KNOBS: dict[str, tuple[str, ...]] = {
+    "scs": ("eps_infeas",),
+    "clarabel": ("tol_infeas_abs", "tol_infeas_rel"),
+    "osqp": ("eps_prim_inf", "eps_dual_inf"),
+    "cpo3": ("tol_infeas_abs", "tol_infeas_rel"),
+    "qtqp": ("tol_infeas_abs", "tol_infeas_rel"),
+    "cuopt": ("primal_infeasible_tolerance", "dual_infeasible_tolerance"),
+    "pdlp": ("eps_primal_infeasible", "eps_dual_infeasible"),
+    "piqp": (),
+    "proxqp": (),
+    "highs": (),
+    "cvxopt": (),
+    "sdpa": (),
+}
+
+
+def certificate_settings(solver: str, tol: float) -> dict:
+    """The settings that ask ``solver`` for certificates at ``tol``
+    (``CERTIFICATE_KNOBS``; a solver missing there is a KeyError, so a new
+    campaign solver needs a decision)."""
+    knobs = CERTIFICATE_KNOBS[solver]
+    if solver == "pdlp":
+        fields = " ".join(f"{knob}: {float(tol)!r}" for knob in knobs)
+        return {"parameters_text": f"termination_criteria {{ {fields} }}"}
+    return dict.fromkeys(knobs, float(tol))
+
+
 def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     """Solver settings at a common nominal tolerance ``tol``.
 
@@ -83,7 +127,11 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     tools/make_figures.py) verifies each solve against the harness's
     independent KKT residuals at 10 x the tolerance its settings request,
     which for every variant here except HiGHS below 1e-7 (its residual
-    tolerances stay at their 1e-7 default) is ``tol``.
+    tolerances stay at their 1e-7 default) is ``tol``, for its solutions
+    and its infeasibility certificates alike. Every variant also asks its
+    solver for certificates at ``tol`` (``certificate_settings``), so the
+    infeasibility knobs it requests are the tag the certificates are
+    verified against.
     """
     t = float(tol)
     tag = tolerance_tag(t)
@@ -157,6 +205,8 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"sdpa_{tag}", "solver": "sdpa",
              "settings": {"eps_abs": t, "eps_rel": t, "time_limit": timeout}, "gpu": False},
         ]
+    for variant in variants:
+        variant["settings"].update(certificate_settings(variant["solver"], t))
     return variants
 
 

@@ -12,16 +12,31 @@ late rule (``mark_late``) is applied after verification, so a row returned
 after the limit counts as a failure whatever verification made of it.
 ``--unverified``, ``--verify-tol``, ``--reverify``, ``--allow-missing``,
 ``--requested-tol`` and ``--tol-from-solver-id`` choose the verification as
-for ``bench report``. A series ``--use-run`` takes from another tolerance's
-run keeps that run's verification (10 x what it requested), which stdout
-notes and ``geomean_summary.csv``'s ``verify_tol`` records.
+for ``bench report``.
+
+A figure compares solvers at one accuracy, so a series ``--use-run`` takes
+from another tolerance's run (an interior-point solver at its 1e-6 run in
+the 1e-4 figures) is verified at 10 x the figure's tolerance tag, as the
+published 3.3.2 figures were (``bench kkt-verify --tol 10*eps``), not at 10 x
+what its own run requested: its rows are verified again from their reported
+statuses with the tag standing in for their requested tolerance (the same
+slack, promotion and treatment of missing residuals as the family), and the
+late rule applies after. stdout says so, ``geomean_summary.csv``'s
+``verify_rule`` (``10 x the figure's tolerance``) and ``verify_tol`` record
+it, and ``verification_summary.csv`` counts that verification in a row of
+its own (``figure`` names the figure's tag). Under ``--verify-tol``, or a
+``bench kkt-verify --tol`` copy, every series is already held to one
+tolerance, and ``--unverified`` checks nothing; the series is then used as
+the family's rows were.
+
 Output: for each family and tolerance, a Dolan-Moré performance profile over
 all problems and over the largest quartile by nonzeros, plus a
 shifted-geometric-mean bar chart, with the SCS series drawn in front;
 ``verification_summary.csv`` lists, per family and solver, the tolerances
 its rows were checked at and what verification changed, after the late rule
 (``late`` counts the claims it kept or promoted that the late rule made
-failures; ``kept`` and ``promoted`` no longer include them).
+failures; ``kept`` and ``promoted`` no longer include them), plus a row per
+series shown in another tolerance's figure.
 
 Usage:
   python tools/make_figures.py OUT_DIR qp=results/qp_merged lp=... [--tol-tag 1e-4]
@@ -37,6 +52,7 @@ largest quartile and named on stderr.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import re
 import sys
@@ -55,12 +71,14 @@ from matplotlib.ticker import FuncFormatter
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
 from solver_benchmarks.analysis.verify import (
+    VERIFY_SLACK,
     VerifyInputError,
     VerifyPolicy,
     parse_requested_tol,
     verification_header,
     verification_info,
     verification_table,
+    verify_frame,
 )
 from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.core.problem import QP, cone_dimensions, qp_dimensions
@@ -551,6 +569,44 @@ def verify_rule(df: pd.DataFrame) -> str:
     return f"recorded ({rule})" if mode == "recorded" else rule
 
 
+def figure_verify_policy(info: dict) -> VerifyPolicy | None:
+    """How a series shown in another tolerance's figure is verified there.
+
+    ``info`` is the family's ``verification_info``. Under the requested
+    tolerance rule (the default, ``--reverify``, or a ``bench kkt-verify``
+    copy that used it), the family's own slack, promotion and treatment of
+    missing residuals, with the figure's tag standing in for the requested
+    tolerance (see :func:`verify_at_figure_tolerance`). None when the series
+    keeps the family's verification: statuses as reported, or a fixed
+    tolerance, which already holds every series to one value.
+    """
+    if info.get("mode") == "unverified" or info.get("rule") != "requested":
+        return None
+    # A bench kkt-verify copy written before the slack was recorded used the default.
+    slack = info.get("slack") or VERIFY_SLACK
+    promote = info.get("promote")
+    missing_is_failure = info.get("missing_is_failure")
+    return VerifyPolicy(rule="requested", slack=float(slack), promote=True if promote is None else bool(promote),
+                        missing_is_failure=True if missing_is_failure is None else bool(missing_is_failure))
+
+
+def figure_rule(policy: VerifyPolicy) -> str:
+    """``verify_rule`` of a series verified at its figure's tolerance."""
+    return f"{policy.slack:g} x the figure's tolerance"
+
+
+def verify_at_figure_tolerance(rows: pd.DataFrame, solver_id: str, tag: str, policy: VerifyPolicy) -> pd.DataFrame:
+    """``rows`` of ``solver_id`` (from another tolerance's run, already
+    verified) verified again from their reported statuses at ``policy``'s
+    slack times the figure's tag ``tag``, as though the tag were what they
+    requested; ``verify.requested_tol_source`` is ``figure``."""
+    figure = dataclasses.replace(policy, requested_tol={solver_id: float(tag)})
+    out = verify_frame(rows, {}, figure)
+    checked = out["verify.requested_tol_source"].notna()
+    out.loc[checked, "verify.requested_tol_source"] = "figure"
+    return out
+
+
 def verify_tols(df: pd.DataFrame) -> dict[str, str]:
     """The solution tolerance(s) each solver id's rows were checked at."""
     if "verify.tol" not in df.columns:
@@ -575,7 +631,8 @@ def main() -> None:
     ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
                     help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend and "
                          "bar labels say so (\"Clarabel (1e-6)\") when TAG differs from the plot's tolerance, "
-                         "and geomean_summary.csv records the run used in its source_run column")
+                         "and geomean_summary.csv records the run used in its source_run column. Its rows are "
+                         "verified at 10 x the plot's tolerance, like the plot's other series")
     ap.add_argument("--repo-root", type=Path, default=None,
                     help="repository whose data directories hold the problems, for sizing problems no "
                          "result row recorded dimensions for (default: this checkout)")
@@ -639,6 +696,8 @@ def main() -> None:
                   file=sys.stderr)
         info = verification_info(df)
         rule = verify_rule(df)
+        # How a series --use-run takes from another tolerance's run is verified in a figure.
+        series_policy = figure_verify_policy(info)
         print(f"{family}: {verification_header(info)}")
         for warning in info.get("warnings") or []:
             print(f"warning: {family}: {warning}", file=sys.stderr)
@@ -652,7 +711,7 @@ def main() -> None:
         table = verification_after_late(df, late)
         if not table.empty:
             print(table.to_string(index=False))
-            verification.append(table.assign(family=family, verify_rule=rule))
+            verification.append(table.assign(family=family, verify_rule=rule, figure=""))
         if limit:
             df = mark_late(df, limit)
         for warning in scs_time_limit_warnings(df):
@@ -665,6 +724,8 @@ def main() -> None:
             sub = df[df["solver_id"].str.endswith(f"_{tag}")]
             LABEL_OVERRIDE.clear()
             source_run: dict[str, str] = {}
+            # verify_rule of the series verified at the figure's tolerance, by solver id as shown here.
+            series_rule: dict[str, str] = {}
             for key, run_tag in use_run.items():
                 # "solver=tag" applies everywhere, "family:solver=tag" to one family only
                 if ":" in key:
@@ -686,16 +747,32 @@ def main() -> None:
                             break
                 if run_tag == tag or alt.empty:
                     continue
+                source_id = f"{solver}_{run_tag}"
+                how = ""
+                if series_policy is not None:
+                    # A figure compares solvers at one accuracy: the series is
+                    # verified at the figure's tolerance, then the late rule.
+                    alt = verify_at_figure_tolerance(alt, source_id, tag, series_policy)
+                    alt_late = late_rows(alt, limit) if limit else pd.Series(False, index=alt.index)
+                    alt_table = verification_after_late(alt, alt_late)
+                    if not alt_table.empty:
+                        print(f"{family} {tag}: {source_id} at the figure's tolerance")
+                        print(alt_table.to_string(index=False))
+                        verification.append(alt_table.assign(family=family, verify_rule=figure_rule(series_policy),
+                                                             figure=tag))
+                    if limit:
+                        alt = mark_late(alt, limit)
+                    series_rule[f"{solver}_{tag}"] = figure_rule(series_policy)
+                    how = f", {series_policy.slack:g} x the figure's tolerance"
                 sub = pd.concat([sub[sub["solver_id"] != f"{solver}_{tag}"], alt.assign(solver_id=f"{solver}_{tag}")],
                                 ignore_index=True)
                 LABEL_OVERRIDE[solver] = f"{SOLVER_LABELS.get(solver, solver)} ({run_tag})"
                 source_run[solver] = run_tag
-                # Its rows keep their own run's verification; say at what.
-                checked = verify_tols(alt).get(f"{solver}_{run_tag}")
+                checked = verify_tols(alt).get(source_id)
                 if checked:
                     others = sorted({v for s, v in verify_tols(sub).items()
                                      if base_solver(s) != solver and s.endswith(f"_{tag}") and v})
-                    print(f"{family} {tag}: {solver} is shown from its {run_tag} run, verified at {checked} "
+                    print(f"{family} {tag}: {solver} is shown from its {run_tag} run, verified at {checked}{how} "
                           f"(other series: {'; '.join(others) or 'none verified'})")
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{sets_title(family, sub)}, tolerance {tag}, {n_all} problems"
@@ -721,7 +798,7 @@ def main() -> None:
                     t["source_run"] = [source_run.get(base_solver(s), tag) for s in t["solver_id"]]
                     # Last, so readers that pick columns by name are unaffected.
                     tols = verify_tols(sub)
-                    t["verify_rule"] = rule
+                    t["verify_rule"] = [series_rule.get(str(s), rule) for s in t["solver_id"]]
                     t["verify_tol"] = [tols.get(str(s), "") for s in t["solver_id"]]
                     summary.append(t)
             print(f"{family} {tag}: {n_all} problems, largest quartile {n_big}")

@@ -140,3 +140,31 @@ def test_every_solver_has_a_verification_tolerance_row(solver_name):
         assert f"`{knob}`" in row, f"{solver_name} row does not name {knob}"
     expected = f"| `{_tolerance_text(requested.optimality)}` |"
     assert expected in row, f"{solver_name} row does not give its default request {expected}"
+
+
+def _make_campaign():
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "tools" / "make_campaign.py"
+    spec = importlib.util.spec_from_file_location("make_campaign_for_readme", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("solver_name", list_solvers())
+def test_every_solver_row_says_which_infeasibility_knobs_campaigns_set(solver_name):
+    """The last column of the verification table names the infeasibility
+    knobs make_campaign sets to the tag (CERTIFICATE_KNOBS), says "none" for
+    a campaign solver that has none, and "not in campaigns" otherwise."""
+    section = _section("### Independent KKT verification")
+    (row,) = [line for line in section.splitlines() if line.startswith(f"| `{solver_name}` |")]
+    cell = row.rstrip().removesuffix("|").rsplit("|", 1)[-1].strip()
+    knobs = _make_campaign().CERTIFICATE_KNOBS
+    if solver_name not in knobs:
+        assert cell == "not in campaigns", solver_name
+    elif not knobs[solver_name]:
+        assert cell.startswith("none"), solver_name
+    else:
+        named = re.findall(r"`([a-z_]+)`", cell.split("(", 1)[0])
+        assert named == list(knobs[solver_name]), solver_name
