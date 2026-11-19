@@ -11,7 +11,7 @@ import matplotlib.axes as mpl_axes
 import numpy as np
 import pandas as pd
 import pytest
-from conftest import with_passing_kkt
+from conftest import PASSING_KKT, PASSING_REQUESTED_TOLERANCE, with_passing_kkt
 
 from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.penalties import geomean_time_limits
@@ -373,6 +373,68 @@ def test_summary_and_failures_commands_count_unattempted_solves(tmp_path, repo_r
     metrics_block = summary.output.split("Status counts:")[0]
     line_b = next(line for line in metrics_block.splitlines() if line.split() and line.split()[0] == "b")
     assert "0.5" in line_b.split()
+
+
+# --- complementary slackness is shown in the per-solver tables, not checked ---
+
+
+def test_solver_problem_tables_show_relative_complementary_slackness_next_to_the_absolute():
+    # the absolute product is in objective units, so the two differ by orders
+    # of magnitude on a problem with a large objective
+    frame = pd.DataFrame([
+        _row("p1", "a", **{"kkt.primal_res_rel": 1e-10, "kkt.dual_res_rel": 1e-10, "kkt.duality_gap_rel": 1e-10,
+                           "kkt.comp_slack": 4.0e-3, "kkt.comp_slack_rel": 2.0e-9}),
+        _row("p2", "a", "solver_error"),
+    ])
+    table = solver_problem_tables(frame)["a"]
+    columns = list(table.columns)
+    assert columns.index("kkt.comp_slack_rel") == columns.index("kkt.comp_slack") + 1
+    by_problem = table.set_index("problem")
+    assert by_problem.loc["p1", "kkt.comp_slack_rel"] == 2.0e-9
+    assert by_problem.loc["p1", "kkt.comp_slack"] == 4.0e-3
+    assert pd.isna(by_problem.loc["p2", "kkt.comp_slack_rel"])
+
+
+def test_report_problem_tables_show_complementary_slackness_without_checking_it(tmp_path, repo_root):
+    # Solver a records complementary slackness, solver b the same points
+    # without it. Rows are verified at 10 x the requested 1e-6.
+    requested = {"metadata": {"requested_tolerance": dict(PASSING_REQUESTED_TOLERANCE)}}
+
+    def solve(problem, status="optimal", comp=None, **kkt):
+        rows = []
+        for solver in "ab":
+            record = {**PASSING_KKT, **kkt}
+            if solver == "a" and comp is not None:
+                record.update(comp_slack=comp[0], comp_slack_rel=comp[1])
+            rows.append(_row(problem, solver, status, kkt=record, **requested))
+        return rows
+
+    rows = [
+        *solve("p1", comp=(4.0e-3, 2.0e-9)),
+        # complementarity far above the 1e-5 the rows are checked at: kept and promoted all the same
+        *solve("p2", comp=(0.5, 0.25)),
+        *solve("p3", "max_iter_reached", comp=(0.5, 0.25)),
+        # a gap above it fails however small the complementarity
+        *solve("p4", comp=(1e-12, 1e-12), duality_gap_rel=1e-3),
+        _row("p5", "a", "solver_error"),
+        _row("p5", "b", "solver_error"),
+    ]
+    run = _write_run(tmp_path, rows)
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
+    tables = tmp_path / "report" / "solver_problem_tables"
+    a = pd.read_csv(tables / "a.csv").set_index("problem")
+    columns = list(a.columns)
+    assert columns.index("kkt.comp_slack_rel") == columns.index("kkt.comp_slack") + 1
+    assert a.loc["p1", "kkt.comp_slack_rel"] == pytest.approx(2.0e-9)
+    assert a.loc["p1", "kkt.comp_slack"] == pytest.approx(4.0e-3)
+    assert a.loc["p2", "kkt.comp_slack_rel"] == pytest.approx(0.25)
+    assert pd.isna(a.loc["p5", "kkt.comp_slack_rel"])
+    raw = pd.read_csv(tables / "a.csv", dtype=str, keep_default_na=False).set_index("problem")
+    assert raw.loc["p5", "kkt.comp_slack_rel"] == ""  # blank, not "nan"
+    expected = {"p1": "optimal", "p2": "optimal", "p3": "optimal", "p4": "optimal_inaccurate", "p5": "solver_error"}
+    assert a["status"].to_dict() == expected
+    b = pd.read_csv(tables / "b.csv").set_index("problem")
+    assert b["status"].to_dict() == expected
 
 
 # --- difficulty scaling and dimensions keep solves that recorded no size ---

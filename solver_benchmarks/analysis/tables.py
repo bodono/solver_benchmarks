@@ -1249,7 +1249,12 @@ def solver_problem_tables(
     """One table per solver of its rows, with each problem's dimensions.
 
     ``dimensions`` (as from :func:`problem_dimensions`) defaults to the
-    dimensions of ``results``.
+    dimensions of ``results``. Complementary slackness is shown absolute
+    (``kkt.comp_slack``, in objective units) and relative
+    (``kkt.comp_slack_rel``, scaled like the duality gap) for inspection
+    only: verification does not check it, so neither column changes a
+    status. A residual a row did not record (a failed solve, an
+    infeasibility certificate) is blank.
     """
     if results.empty:
         return {}
@@ -1267,6 +1272,8 @@ def solver_problem_tables(
         "kkt.primal_res_rel",
         "kkt.dual_res_rel",
         "kkt.comp_slack",
+        # display only, like kkt.comp_slack (see the docstring)
+        "kkt.comp_slack_rel",
         "kkt.duality_gap_rel",
         "artifact_dir",
         "error",
