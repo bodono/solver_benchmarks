@@ -76,11 +76,20 @@ def tolerance_tag(tol: float) -> str:
 
 
 # The infeasibility (certificate) tolerances of each campaign solver, which
-# solver_variants sets to the variant's tag. Verification holds a row's
-# certificates to the same 10 x tag as its solutions (README, "The
-# tolerance"), so a campaign asks every solver for certificates at the tag,
-# in the solver's own units: what is asked and what is checked agree. An
-# empty tuple is a solver with no such knob the adapter can set:
+# solver_variants sets to the variant's tag (approved 2026-11-19).
+# Verification holds a row's certificates to the same 10 x tag as its
+# solutions (README, "The tolerance"), so a campaign asks every solver for
+# certificates at the tag: the request and the check are at the same
+# nominal tolerance, though each solver still measures certificates in its
+# own units. For Clarabel, cpo3 and QTQP, tol_infeas_rel is the residual
+# test and tol_infeas_abs the margin a certificate's objective term must
+# clear (b'y < -tol_infeas_abs), stricter at the tag than its 1e-8 default.
+# The knobs are set in every family. On a feasible problem a certificate is
+# always a failure, so there a knob looser than the solver's default can
+# only end solves early: at 1e-4, SCS (eps_infeas default 1e-7, no
+# kappa/tau gate) solved 4 fewer of the 93 feasible NETLIB LPs and 7 fewer
+# of the 138 Maros-Meszaros QPs (README, "The tolerance").
+# An empty tuple is a solver with no such knob the adapter can set:
 # - piqp 0.6.4: none; it declares infeasibility from eps_abs / eps_rel (set
 #   to the tag) and infeasibility_threshold, a threshold on its proximal-point
 #   residuals, not a certificate tolerance.
@@ -143,9 +152,10 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     which for every variant here except HiGHS below 1e-7 (its residual
     tolerances stay at their 1e-7 default) is ``tol``, for its solutions
     and its infeasibility certificates alike. Every variant also asks its
-    solver for certificates at ``tol`` (``certificate_settings``), so the
-    infeasibility knobs it requests are the tag the certificates are
-    verified against.
+    solver for certificates at ``tol`` (``certificate_settings``, in every
+    family; see ``CERTIFICATE_KNOBS`` for what that costs on feasible
+    problems), so the certificates it asks for and the ones verification
+    accepts are at the same nominal tolerance.
     """
     t = float(tol)
     tag = tolerance_tag(t)

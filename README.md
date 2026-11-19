@@ -1555,20 +1555,44 @@ and Clarabel's genuine NETLIB certificates (`cert_res` up to `6e-5`) would
 fail at its `1e-8`. So the infeasibility knobs (SCS's `eps_infeas`, OSQP's
 `eps_prim_inf` and `eps_dual_inf`, Clarabel's `tol_infeas_abs` and
 `tol_infeas_rel`, and the like) are deliberately not read when a row is
-verified, whatever a run sets them to. Campaigns instead ask for what is
-checked: every variant `tools/make_campaign.py` writes requests exactly its
-tolerance tag in its solution knobs (HiGHS below `1e-7` excepted: its
-residual tolerances stay at their `1e-7` default), and sets every
-infeasibility knob its solver has to the tag as well (`CERTIFICATE_KNOBS`
-there; the last column of the table below), so each solver is asked for its
-certificates at the tag, in its own units, and a campaign's solutions and
-certificates are verified at ten times the tag, the rule of the published
-3.3.2 figures. PIQP, ProxQP, HiGHS, CVXOPT and SDPA have no such knob the
-adapter can set, and the table says why. Archived campaigns keep the
-settings they recorded and are verified by the same uniform rule: the
-`scs332_2026-11` infeasible-LP runs gave their `1e-8` SCS, OSQP and Clarabel
-variants infeasibility tolerances of `1e-4`, and those variants'
-certificates are still checked at `1e-7` (they are not re-run).
+verified, whatever a run sets them to. Campaigns instead ask each solver for
+its certificates at the same tag as its solutions: every variant
+`tools/make_campaign.py` writes requests exactly its tolerance tag in its
+solution knobs (HiGHS below `1e-7` excepted: its residual tolerances stay at
+their `1e-7` default), and sets every infeasibility knob its solver has to the
+tag as well (`CERTIFICATE_KNOBS` there; the last column of the table below),
+and a campaign's solutions and certificates are both verified at ten times
+the tag, the rule of the published 3.3.2 figures. That puts the request and
+the check at the same nominal tolerance, not the same test: each solver still
+measures its certificates in its own units (above), and Clarabel's, cpo3's
+and QTQP's `tol_infeas_abs` is not a residual tolerance but the margin a
+certificate's objective term must clear (`b'y < −tol_infeas_abs`), so at the
+tag it is stricter than its `1e-8` default, while `tol_infeas_rel`, their
+residual test, is looser. PIQP, ProxQP, HiGHS, CVXOPT and SDPA have no such
+knob the adapter can set, and the table says why.
+
+The knobs are set in every family, the feasible ones included, where a
+certificate is always a failure (see [Known outcomes](#known-outcomes)).
+There a knob looser than the solver's default can only end solves early, on
+feasible problems close enough to infeasible to admit an approximate
+certificate. A solver whose certificate test is not gated on `κ/τ`, as
+Clarabel's, cpo3's and QTQP's are, is exposed. SCS's `eps_infeas` default
+is `1e-7`: on the 93 feasible NETLIB LPs at `1e-4` (SCS 3.3.1, a 60 s limit,
+verified statuses) SCS solved 79 with `eps_infeas` at the tag against 83 at
+its default, because `agg3`, `fffff800`, `fit2d` and `israel` ended in
+certificates instead of solutions, and at `1e-6` it solved 76 against 77
+(`agg3`). On the 138 Maros-Meszaros QPs at `1e-4` it solved 124 against
+131: `AUG2DCQP`, `AUG2DQP`, `HUES-MOD`, `HUESTIS`, `LISWET5`, `QGFRDXPN` and
+`STADAT1` ended in certificates. On the feasible NETLIB LPs at `1e-4`
+Clarabel solved 90 either way, and OSQP's knobs at `1e-4` are its defaults.
+On the 29 infeasible NETLIB LPs at `1e-4` the tag gained SCS one certificate
+(`bgindy`, 24 against 23). PDLP (default `1e-8`), cuOpt, the SDP family and
+the large LPs are not measured.
+
+Archived campaigns keep the settings they recorded and are verified by the
+same uniform rule: the `scs332_2026-11` infeasible-LP runs gave their `1e-8`
+SCS, OSQP and Clarabel variants infeasibility tolerances of `1e-4`, and those
+variants' certificates are still checked at `1e-7` (they are not re-run).
 
 Verification uses the residuals the worker recorded at solve time; it does
 not recompute them. Runs recorded before #75 (`f942f1f`, 2026-08-29) carry a
