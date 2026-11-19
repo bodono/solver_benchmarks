@@ -54,7 +54,9 @@ class _Error(Exception):
         self.msg = msg
 
 
-def _fake_mosek(*, optimize, solsta=_Solsta.optimal, x=(-1.0, -1.0), record=None, reject=()):
+def _fake_mosek(
+    *, optimize, solsta=_Solsta.optimal, x=(-1.0, -1.0), y=(0.0, 0.0), record=None, reject=()
+):
     """A ``mosek`` stand-in whose ``Task.optimize`` runs ``optimize()``.
 
     Parameters and row bounds the adapter sets go to ``record``; a parameter
@@ -106,7 +108,7 @@ def _fake_mosek(*, optimize, solsta=_Solsta.optimal, x=(-1.0, -1.0), record=None
             return list(x)
 
         def gety(self, soltype):
-            return [0.0, 0.0]
+            return list(y)
 
         def getdouinf(self, item):
             return 0.01
@@ -307,6 +309,58 @@ def test_mosek_nan_point_has_no_kkt(monkeypatch, tmp_path):
     result = _solve_with(monkeypatch, fake, tmp_path, {})
     assert result.status == status.TIME_LIMIT
     assert result.kkt is None
+
+
+# MOSEK reports a primal infeasibility certificate as the dual solution, with
+# y = s_l^c - s_u^c, A'y = 0 and (l^c)'s_l^c - (u^c)'s_u^c > 0, and a dual
+# infeasibility certificate as the primal solution (c'x < 0, Ax in the
+# recession cone); see its "Infeasibility for linear optimization".
+
+
+def _infeasible_lp():
+    # Rows: x1 + x2 <= 1, x1 >= 1, a free row, x2 >= 1. MOSEK's certificate
+    # puts s_u^c = 1 on the first row and s_l^c = 1 on the others: y = (-1,
+    # 1, 0, 1).
+    return {
+        "P": sp.csc_matrix((2, 2)),
+        "q": np.array([1.0, 1.0]),
+        "A": sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [5.0, 7.0], [0.0, 1.0]]),
+        "l": np.array([-np.inf, 1.0, -np.inf, 1.0]),
+        "u": np.array([1.0, np.inf, np.inf, np.inf]),
+    }
+
+
+def _unbounded_qp():
+    # min x1^2 / 2 - x2 with x2 >= 0, -1 <= x1 <= 1: the ray (0, 1), with Px = 0.
+    return {
+        "P": sp.csc_matrix(np.diag([1.0, 0.0])),
+        "q": np.array([0.0, -1.0]),
+        "A": sp.csc_matrix([[0.0, 1.0], [1.0, 0.0]]),
+        "l": np.array([0.0, -1.0]),
+        "u": np.array([np.inf, 1.0]),
+    }
+
+
+@pytest.mark.parametrize("make, solsta, vectors, claim", [
+    (_infeasible_lp, _Solsta.prim_infeas_cer, {"y": (-1.0, 1.0, 0.0, 1.0), "x": (0.0, 0.0)},
+     status.PRIMAL_INFEASIBLE),
+    (_unbounded_qp, _Solsta.dual_infeas_cer, {"x": (0.0, 1.0), "y": (0.0, 0.0)}, status.DUAL_INFEASIBLE),
+])
+@pytest.mark.parametrize("sign, correct", [(1.0, True), (-1.0, False)], ids=["documented sign", "flipped"])
+def test_mosek_records_its_certificate(make, solsta, vectors, claim, sign, correct, monkeypatch, tmp_path):
+    from solver_benchmarks.analysis.verify import classify
+
+    vectors = {key: tuple(sign * v for v in value) for key, value in vectors.items()}
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, solsta=solsta, **vectors)
+    result = _solve_with(monkeypatch, fake, tmp_path, {}, make())
+    assert result.status == claim
+    assert result.objective_value is None
+    assert result.kkt is not None and result.kkt["certificate"] == claim
+    verdict = classify({"status": result.status, "kkt": result.kkt}, tolerance=lambda: 1e-6)
+    if correct:
+        assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
+    else:
+        assert (verdict.verdict, verdict.status) == ("demoted", f"{claim}_inaccurate")
 
 
 def test_mosek_fake_is_available_and_a_broken_install_is_not(monkeypatch, tmp_path):

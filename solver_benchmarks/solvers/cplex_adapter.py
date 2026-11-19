@@ -7,6 +7,14 @@ install cplex`` ships with refuses larger problems inside ``solve()``, error
 ``solver_error``; other exceptions are left to raise. ``threads`` is one
 unless configured (0: CPLEX's own choice). ``info["raw_status"]`` is CPLEX's
 status string, ``info["raw_status_code"]`` its integer code.
+
+An infeasibility claim on an LP carries CPLEX's certificate (its dual Farkas
+proof or its unbounded ray), checked like every other adapter's; when the
+solve that made the claim leaves none, the LP is solved again for it (see
+:func:`_cplex_certificate`). CPLEX has none for QPs. Not run against a real
+CPLEX here (not installed on the development machine); the conversion
+follows the CPLEX reference manual (CPXdualfarkas, CPXgetray) and is pinned
+by the fake in ``tests/test_commercial_adapters_fake.py``.
 """
 
 from __future__ import annotations
@@ -41,7 +49,7 @@ from .base import (
     solver_import_failed,
     threads_or_default,
 )
-from .qp_split import normalize_qp_bounds
+from .qp_split import normalize_qp_bounds, qp_certificate_kkt
 
 # CPLEX's documented defaults (dotted parameter paths): simplex feasibility
 # and optimality, and the barrier's convergence tolerance. Not checked here
@@ -91,7 +99,7 @@ class CPLEXSolverAdapter(SolverAdapter):
         # are released deterministically, even when an exception fires.
         try:
             model.objective.set_sense(model.objective.sense.minimize)
-            translated, threads = _configure_cplex(model, settings)
+            translated, threads, time_limit = _configure_cplex(model, settings)
             infinity = cplex.infinity
             model.variables.add(
                 obj=q.tolist(),
@@ -124,13 +132,36 @@ class CPLEXSolverAdapter(SolverAdapter):
                         "threads": threads,
                     },
                 )
-            elapsed = time.perf_counter() - start
             raw_status = model.solution.get_status()
             mapped = _map_cplex_status(raw_status, model)
             iteration_counts = _cplex_iterations(model)
+            problem_type = model.problem_type[model.get_problem_type()]
+            # Read everything else about the solve first: getting the
+            # certificate may solve the model again.
+            certificate, certificate_info = _cplex_certificate(
+                model, cplex, mapped, is_lp=problem_type == "LP", time_limit=time_limit,
+                elapsed=time.perf_counter() - start,
+            )
+            # The certificate is what the claim is checked on, so the time
+            # it takes counts.
+            elapsed = time.perf_counter() - start
             objective_value = None
             kkt_dict = None
-            if mapped in status.ANY_FEASIBLE:
+            if mapped in _CERTIFICATE_SOURCES:
+                farkas = ray = None
+                if mapped == status.PRIMAL_INFEASIBLE:
+                    if certificate is not None and certificate.shape == (len(constraint_rows),):
+                        farkas = np.zeros(a.shape[0])
+                        # CPLEX's Farkas multipliers are <= 0 on <= rows and
+                        # >= 0 on >= rows (CPXdualfarkas), the opposite of the
+                        # harness's sign, as for its duals. A row split into
+                        # two gets their sum, which certifies at least as
+                        # strongly (its support term is no larger).
+                        np.add.at(farkas, constraint_rows, -certificate)
+                elif certificate is not None and certificate.shape == (n,):
+                    ray = certificate
+                kkt_dict = qp_certificate_kkt(mapped, p, q, a, l, u, farkas=farkas, ray=ray)
+            elif mapped in status.ANY_FEASIBLE:
                 # A returned iterate may exist even with an error or limit status.
                 try:
                     x = np.asarray(model.solution.get_values(), dtype=float)
@@ -155,10 +186,11 @@ class CPLEXSolverAdapter(SolverAdapter):
                     "raw_status_code": raw_status,
                     "threads": threads,
                     "status_string": _status_string(model, raw_status),
-                    "problem_type": model.problem_type[model.get_problem_type()],
+                    "problem_type": problem_type,
                     "use_ranged_rows": use_ranged_rows,
                     "simplex_iterations": iteration_counts["simplex_iterations"],
                     "barrier_iterations": iteration_counts["barrier_iterations"],
+                    **certificate_info,
                     **({"settings_translated": translated} if translated else {}),
                     **({"inf_or_unbd_resolved": True} if resolved else {}),
                 },
@@ -229,10 +261,11 @@ def _add_cplex_constraints(
     return constraint_rows
 
 
-def _configure_cplex(model, settings: dict) -> tuple[dict, int]:
+def _configure_cplex(model, settings: dict) -> tuple[dict, int, float | None]:
     """Apply ``settings`` (dotted CPLEX parameter paths) to ``model``.
 
-    Returns the aliases it translated and the thread count: ``max_iter``
+    Returns the aliases it translated, the thread count and the time limit
+    (None if none is set): ``max_iter``
     caps both the barrier and the simplex iteration counts unless either path
     is given, and ``threads`` (CPLEX's own name too) is one unless
     configured. The ``eps`` aliases are refused (CPLEX's tolerances are not an
@@ -267,7 +300,7 @@ def _configure_cplex(model, settings: dict) -> tuple[dict, int]:
     model.parameters.threads.set(threads)
     for key, value in settings.items():
         _set_cplex_parameter(model, key, value)
-    return translated, threads
+    return translated, threads, time_limit
 
 
 def _set_cplex_parameter(model, key: str, value) -> None:
@@ -347,6 +380,78 @@ def _resolve_infeasible_or_unbounded(model, settings: dict) -> bool:
     _set_cplex_parameter(model, "preprocessing.reduce", 0)
     model.solve()
     return True
+
+
+# CPLEX's certificate for each infeasibility claim and the simplex method
+# (``lpmethod``) whose solve leaves one: the dual simplex a Farkas proof of
+# infeasibility (CPXdualfarkas), the primal simplex an unbounded ray
+# (CPXgetray).
+_CERTIFICATE_SOURCES = {
+    status.PRIMAL_INFEASIBLE: ("dual Farkas proof", 2),
+    status.DUAL_INFEASIBLE: ("unbounded ray", 1),
+}
+
+
+def _read_cplex_certificate(model, mapped: str) -> np.ndarray:
+    advanced = model.solution.advanced
+    if mapped == status.PRIMAL_INFEASIBLE:
+        # (y, proof): y over the rows the adapter added, proof = y'b - y'Az > 0.
+        farkas, _proof = advanced.dual_farkas()
+        return np.asarray(farkas, dtype=float).reshape(-1)
+    return np.asarray(advanced.get_ray(), dtype=float).reshape(-1)
+
+
+def _cplex_certificate(
+    model, cplex, mapped: str, *, is_lp: bool, time_limit: float | None, elapsed: float
+) -> tuple[np.ndarray | None, dict]:
+    """CPLEX's certificate for an infeasibility claim, and what to put on ``info``.
+
+    Returns ``(certificate, info)``: the Farkas multipliers over the CPLEX
+    rows for ``primal_infeasible`` (in CPLEX's sign; the caller converts
+    them), the ray over the variables for ``dual_infeasible``, None when
+    there is none. CPLEX gives both for LPs only, and only from a simplex
+    solve that proved the claim: not when presolve proved it or another
+    method (barrier, the concurrent optimizer) found it. Then the model is
+    solved again with presolve off (``preprocessing.presolve`` 0) by the
+    simplex method that leaves the certificate (dual simplex for a Farkas
+    proof, primal simplex for a ray). That second solve costs up to a full
+    solve of the LP without presolve, on infeasibility claims only; it runs
+    within what is left of the time limit, and its time counts in the row's
+    run time. ``info`` says what happened: ``certificate_resolved`` when the
+    model was solved again, ``certificate_unavailable`` (the reason) when
+    there is no certificate.
+    """
+    if mapped not in _CERTIFICATE_SOURCES:
+        return None, {}
+    kind, method = _CERTIFICATE_SOURCES[mapped]
+    if not is_lp:
+        return None, {"certificate_unavailable": f"CPLEX gives a {kind} for LPs only"}
+    error_type = _cplex_error_type(cplex)
+    try:
+        return _read_cplex_certificate(model, mapped), {}
+    except error_type:
+        pass  # not from a simplex solve that proved the claim: solve again
+    info: dict = {"certificate_resolved": True}
+    try:
+        if time_limit is not None:
+            remaining = float(time_limit) - elapsed
+            if remaining <= 0.0:
+                info["certificate_unavailable"] = f"no time left to solve again for a {kind}"
+                return None, info
+            model.parameters.timelimit.set(remaining)
+        _set_cplex_parameter(model, "lpmethod", method)
+        _set_cplex_parameter(model, "preprocessing.presolve", 0)
+        model.solve()
+        again = model.solution.get_status()
+        if _map_cplex_status(again, model) != mapped:
+            info["certificate_unavailable"] = (
+                f"solved again for a {kind}, CPLEX ended with {_status_string(model, again)}"
+            )
+            return None, info
+        return _read_cplex_certificate(model, mapped), info
+    except error_type as exc:
+        info["certificate_unavailable"] = f"no {kind}: {exc}"
+        return None, info
 
 
 def _cplex_iterations(model) -> dict:

@@ -391,12 +391,13 @@ def classify(
     that the certificate's objective term is −1 (``kkt.cert_res``, rebuilt
     for older records) must be at or below it, or the row becomes the
     matching ``*_inaccurate`` status. A claim whose adapter recorded no
-    certificate (HiGHS, cuOpt and the commercial adapters never do; PIQP,
-    ProxQP and SDPA not when the solver returns none) cannot be verified and
-    is demoted like a solution without residuals (``missing_residuals``),
-    unless ``missing_is_failure`` is False. A certificate in which nothing
-    fails but the distance to a cone the harness cannot project is unknown is
-    kept whatever ``missing_is_failure`` says (``unverified_certificate``),
+    certificate (cuOpt never does, its API exposing none; the others not
+    when the solver produces none, e.g. HiGHS, Gurobi and CPLEX on an
+    unbounded QP) cannot be verified and is demoted like a solution without
+    residuals (``missing_residuals``), unless ``missing_is_failure`` is
+    False. A certificate in which nothing fails but the distance to a cone
+    the harness cannot project is unknown is kept whatever
+    ``missing_is_failure`` says (``unverified_certificate``),
     as a solution in that case is.
 
     With ``promote``, the converse also applies: a solve reported as
@@ -494,7 +495,7 @@ def _classify_certificate(
         "fields": ("cert_res",), "worst": cert, "worst_field": None if cert is None else "cert_res",
     }
     if cert is None:
-        # The adapter recorded no certificate (several never do): the claim
+        # The adapter recorded no certificate (cuOpt never does): the claim
         # cannot be verified, so it is not a verified success.
         new_status = CERTIFICATE_DEMOTION[reported] if missing_is_failure else reported
         return Verdict("missing_residuals", new_status, reason="no certificate recorded", **base)

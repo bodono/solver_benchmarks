@@ -7,6 +7,15 @@ Any other ``GurobiError`` from the solve is ``solver_error``; other exceptions
 are left to raise. ``Threads`` is one unless ``threads`` or ``Threads`` is
 given (0: Gurobi's own choice). ``info["raw_status"]`` is the status name,
 ``info["raw_status_code"]`` Gurobi's integer code.
+
+An infeasibility claim on an LP carries Gurobi's certificate (``FarkasDual``
+or ``UnbdRay``, computed because the adapter sets ``InfUnbdInfo=1`` unless
+it is configured), checked like every other adapter's; see
+:func:`_certificate_kkt`. Gurobi computes none for QPs, so a QP claim has no
+certificate (``info["certificate_unavailable"]`` says why). Not run against
+a real Gurobi here (no licence on the development machine); the conversion
+follows Gurobi's reference manual and is pinned by the fake in
+``tests/test_commercial_adapters_fake.py``.
 """
 
 from __future__ import annotations
@@ -43,7 +52,7 @@ from .base import (
     solver_import_failed,
     threads_or_default,
 )
-from .qp_split import normalize_qp_bounds
+from .qp_split import normalize_qp_bounds, qp_certificate_kkt
 
 # Gurobi's documented defaults (parameter names are case-insensitive): primal
 # and dual feasibility, and the barrier's relative gap. Not checked here
@@ -144,15 +153,23 @@ class GurobiSolverAdapter(SolverAdapter):
 
                 mapped = _map_gurobi_status(model.Status, grb)
                 kkt_dict = None
+                certificate_info: dict = {}
                 if mapped in status.ANY_FEASIBLE:
                     kkt_dict = _solution_kkt(
                         model, grb, qp, variables, constraints, constraint_rows
                     )
+                elif mapped in _CERTIFICATE_ATTRIBUTES:
+                    kkt_dict, unavailable = _certificate_kkt(
+                        model, grb, qp, mapped, variables, constraints, constraint_rows
+                    )
+                    if unavailable is not None:
+                        certificate_info["certificate_unavailable"] = unavailable
                 return SolverResult(
                     status=mapped,
                     kkt=kkt_dict,
                     objective_value=reported_objective(
-                        mapped, kkt_dict["primal_obj"] if kkt_dict is not None else None
+                        # A certificate record has no objective.
+                        mapped, (kkt_dict or {}).get("primal_obj")
                     ),
                     iterations=_maybe_int(
                         getattr(model, "BarIterCount", None)
@@ -168,6 +185,7 @@ class GurobiSolverAdapter(SolverAdapter):
                         "solver_reported_runtime": _maybe_float(
                             getattr(model, "Runtime", None)
                         ),
+                        **certificate_info,
                         **({"settings_translated": translated} if translated else {}),
                         **({"inf_or_unbd_resolved": True} if resolved else {}),
                     },
@@ -231,6 +249,50 @@ def _solution_kkt(model, grb, qp, variables, constraints, constraint_rows):
     return None
 
 
+# The attribute holding Gurobi's certificate for each infeasibility claim
+# (computed only with InfUnbdInfo=1, which _configure_gurobi sets).
+_CERTIFICATE_ATTRIBUTES = {
+    status.PRIMAL_INFEASIBLE: "FarkasDual",
+    status.DUAL_INFEASIBLE: "UnbdRay",
+}
+
+
+def _certificate_kkt(model, grb, qp, mapped, variables, constraints, constraint_rows):
+    """The certificate check of an infeasibility claim, and why there is none.
+
+    Returns ``(kkt_record, unavailable)``. ``FarkasDual`` (one value per
+    constraint) gives ``λ`` with ``λ'Ax <= λ'b`` valid for the constraints,
+    ``λ_i >= 0`` on a <= row and ``<= 0`` on a >= row (Gurobi's reference
+    manual), which is already the harness's sign (positive where the upper
+    bound is used): unlike ``Pi``, it is not negated. A range row is an
+    equality with a bounded slack inside Gurobi, so its ``λ`` takes either
+    sign and pairs with the bound it uses, as in the harness's support
+    ``u'y⁺ − l'y⁻``. Rows the adapter left out (free) get zero. ``UnbdRay``
+    is a direction that keeps every feasible point feasible and improves the
+    objective, the harness's ray as it is. Gurobi computes either only for
+    LPs, with ``InfUnbdInfo=1`` and a simplex basis (not after barrier
+    without crossover); otherwise reading it raises and the claim has no
+    certificate.
+    """
+    attribute = _CERTIFICATE_ATTRIBUTES[mapped]
+    objects = constraints if mapped == status.PRIMAL_INFEASIBLE else variables
+    try:
+        values = np.asarray(model.getAttr(attribute, objects), dtype=float).reshape(-1)
+    except grb.GurobiError as exc:
+        return None, f"no {attribute}: {exc}"
+    if values.shape != (len(objects),):
+        return None, f"{attribute} has {values.size} entries for {len(objects)}"
+    farkas = ray = None
+    if mapped == status.PRIMAL_INFEASIBLE:
+        farkas = np.zeros(qp["A"].shape[0])
+        farkas[constraint_rows] = values
+    else:
+        ray = values
+    lower, upper = normalize_qp_bounds(qp["l"], qp["u"])
+    record = qp_certificate_kkt(mapped, qp["P"], qp["q"], qp["A"], lower, upper, farkas=farkas, ray=ray)
+    return record, None if record is not None else f"{attribute} is not finite"
+
+
 def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int]:
     """Apply ``settings`` to ``model``; return the aliases it translated and
     the thread count.
@@ -268,6 +330,14 @@ def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int]:
     else:
         threads = threads_or_default(threads)
         settings["Threads"] = threads
+    if not any(key.lower() == "infunbdinfo" for key in settings):
+        # Makes Gurobi compute FarkasDual / UnbdRay when it finds an LP
+        # infeasible or unbounded, so the claim can be checked. Gurobi
+        # documents the extra work as done once a model is determined to be
+        # infeasible or unbounded (and for LPs only); it happens inside
+        # optimize(), so it counts in the run time. A configured
+        # InfUnbdInfo wins (0: no certificates).
+        settings["InfUnbdInfo"] = 1
     settings.pop("high_accuracy", None)
     for key, value in settings.items():
         try:
