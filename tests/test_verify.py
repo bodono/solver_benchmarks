@@ -20,9 +20,11 @@ from solver_benchmarks.analysis.verify import (
     VerifyPolicy,
     classify,
     row_info_from_record,
+    unverified_frame,
     verification_header,
     verification_info,
     verification_table,
+    verify_frame,
 )
 from solver_benchmarks.cli import main
 
@@ -242,6 +244,32 @@ def test_unverified_load_of_a_kkt_verify_copy_undoes_it(tmp_path):
     source = _by_problem(load_results(run, verify=False))
     assert copy["status"].to_dict() == source["status"].to_dict()
     assert pd.isna(copy.loc["promote", "objective_value"])  # the promotion's objective is gone
+
+
+@pytest.mark.parametrize("policy", [VerifyPolicy(rule="fixed", tol=1e-2), VerifyPolicy(rule="fixed", tol=1e-8),
+                                    VerifyPolicy(promote=False)])
+def test_a_verified_frame_is_verified_again_from_its_reported_statuses(tmp_path, policy):
+    """make_figures verifies a series again at its figure's tolerance: that
+    must start from what the solver reported, not from the first verdict
+    (a demoted claim is not "promoted" back, a promotion's objective goes)."""
+    run = _write_run(tmp_path / "run", _rows())
+    manifest = json.loads((run / "manifest.json").read_text())
+    columns = ["status", "status_reported", "objective_value", *VERIFY_COLUMNS]
+    once = load_results(run)
+    # the late rule of make_figures overwrites status; the report survives in status_reported
+    once.loc[once["problem"] == "ok", "status"] = "time_limit"
+    again = _by_problem(verify_frame(once, manifest, policy))[columns]
+    direct = _by_problem(load_results(run, verify=policy))[columns]
+    pd.testing.assert_frame_equal(again, direct)
+    if policy.rule == "fixed" and policy.tol == 1e-2:
+        assert again.loc["loose", "verify.verdict"] == "kept"  # reported optimal, passes 1e-2
+    if policy.rule == "fixed" and policy.tol == 1e-8:
+        assert again.loc["promote", "status"] == "max_iter_reached"
+        assert pd.isna(again.loc["promote", "objective_value"])
+    raw = _by_problem(unverified_frame(once))
+    assert raw["status"].to_dict() == _by_problem(load_results(run, verify=False))["status"].to_dict()
+    assert pd.isna(raw.loc["promote", "objective_value"])
+    assert not any(column.startswith("verify.") for column in raw.columns)
 
 
 # --- where the requested tolerance comes from --------------------------------

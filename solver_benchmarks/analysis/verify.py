@@ -808,6 +808,9 @@ _INFO_COLUMNS = {"exceeded_time_limit": "info.exceeded_time_limit",
                  "status_before_timeout": "info.status_before_timeout"}
 _ORIGINAL_STATUS = "metadata.kkt_verify.original_status"
 _OBJECTIVE_FROM = "metadata.kkt_verify.objective_from"
+# What verify_frame keeps of a row's report in a frame it verified.
+_STATUS_REPORTED = "status_reported"
+_VERIFIED_OBJECTIVE_FROM = "verify.objective_from"
 # Cone distances, present in a record whenever it is cone-form or names
 # cones it cannot project (their NaN is then stored as null).
 _CONE_DISTANCES = frozenset({*CONE_FIELDS, *_CONE_FALLBACK.values()})
@@ -862,21 +865,26 @@ def reported_statuses(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     """Each row's reported status and objective: before any earlier verification.
 
     A ``bench kkt-verify`` copy keeps the status a row was recorded with as
-    ``metadata.kkt_verify.original_status``; a promotion that gave the row
-    an objective says so in ``metadata.kkt_verify.objective_from``, and that
-    objective is dropped.
+    ``metadata.kkt_verify.original_status``, and a frame already verified
+    (by ``verify_frame``) as ``status_reported``; a promotion that gave the
+    row an objective says so in ``metadata.kkt_verify.objective_from`` or
+    ``verify.objective_from``, and that objective is dropped. So verifying a
+    verified frame again, under any policy, starts from what the solvers
+    reported.
     """
     import pandas as pd
 
     statuses = df["status"] if "status" in df.columns else pd.Series([None] * len(df), index=df.index, dtype=object)
-    if _ORIGINAL_STATUS in df.columns:
-        original = df[_ORIGINAL_STATUS]
-        statuses = original.where(original.notna(), statuses)
+    for column in (_STATUS_REPORTED, _ORIGINAL_STATUS):
+        if column in df.columns:
+            earlier = df[column]
+            statuses = earlier.where(earlier.notna(), statuses)
     objective = df["objective_value"] if "objective_value" in df.columns else pd.Series(
         [None] * len(df), index=df.index, dtype=float
     )
-    if _OBJECTIVE_FROM in df.columns:
-        objective = objective.where(df[_OBJECTIVE_FROM].isna(), float("nan"))
+    for column in (_OBJECTIVE_FROM, _VERIFIED_OBJECTIVE_FROM):
+        if column in df.columns:
+            objective = objective.where(df[column].isna(), float("nan"))
     return statuses.astype(object), objective
 
 
@@ -962,19 +970,22 @@ def _set_nested(target: dict[str, Any], dotted: str, value: Any) -> None:
 def unverified_frame(df: pd.DataFrame) -> pd.DataFrame:
     """``df`` with the statuses and objectives its solvers reported.
 
-    Undoes an earlier ``bench kkt-verify`` (see :func:`reported_statuses`)
-    and adds ``status_reported``; no ``verify.*`` columns.
+    Undoes an earlier verification, a ``bench kkt-verify`` copy's or that of
+    a frame ``verify_frame`` returned (see :func:`reported_statuses`), and
+    adds ``status_reported``; no ``verify.*`` columns.
     """
     out = df.copy()
     if out.empty:
         out.attrs["verification"] = _attrs("unverified")
         return out
     # A run never verified keeps its columns exactly as read.
-    if _ORIGINAL_STATUS in out.columns or _OBJECTIVE_FROM in out.columns:
+    earlier = (_ORIGINAL_STATUS, _OBJECTIVE_FROM, _STATUS_REPORTED, _VERIFIED_OBJECTIVE_FROM)
+    if any(column in out.columns for column in earlier):
         statuses, objective = reported_statuses(out)
         out["status"] = _like(statuses.to_numpy(dtype=object), out["status"])
         if "objective_value" in out.columns:
             out["objective_value"] = objective
+        out = out.drop(columns=[name for name in VERIFY_COLUMNS if name in out.columns])
     if "status" in out.columns:
         out["status_reported"] = out["status"].copy()
     out.attrs["verification"] = _attrs("unverified")
@@ -1003,7 +1014,10 @@ def verify_frame(
     ``verify.*`` columns (``VERIFY_COLUMNS``) say what was decided and why,
     and ``df.attrs["verification"]`` sums it up. With ``rule="auto"`` a run
     written by ``bench kkt-verify`` keeps the verification it recorded.
-    Raises :class:`RequestedToleranceUnknown` when a row needs a requested
+    A frame this function already verified is verified again from its
+    reported statuses (``tools/make_figures.py`` re-checks a series it shows
+    in another tolerance's figure that way). Raises
+    :class:`RequestedToleranceUnknown` when a row needs a requested
     tolerance that nothing gives.
     """
     policy = policy or VerifyPolicy()

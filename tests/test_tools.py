@@ -942,6 +942,74 @@ def test_make_campaign_limits_match_the_figures_limits(make_campaign, make_figur
         assert config.timeout_seconds - 60.0 == make_figures.FAMILY_LIMIT[shard["family"]], shard["name"]
 
 
+# The infeasibility knobs a campaign sets to the tag (approved 2026-11-19),
+# and the solvers that have none the adapter can set.
+CAMPAIGN_CERTIFICATE_KNOBS = {
+    "scs": {"eps_infeas"},
+    "osqp": {"eps_prim_inf", "eps_dual_inf"},
+    "clarabel": {"tol_infeas_abs", "tol_infeas_rel"},
+    "cpo3": {"tol_infeas_abs", "tol_infeas_rel"},
+    "qtqp": {"tol_infeas_abs", "tol_infeas_rel"},
+    "cuopt": {"primal_infeasible_tolerance", "dual_infeasible_tolerance"},
+    "pdlp": {"eps_primal_infeasible", "eps_dual_infeasible"},
+    "piqp": set(), "proxqp": set(), "highs": set(), "cvxopt": set(), "sdpa": set(),
+}
+
+
+def _pdlp_certificate_tolerances(settings: dict) -> tuple[float, float, float]:
+    """(eps_primal_infeasible, eps_dual_infeasible, eps_optimal_absolute) PDLP
+    is given by ``settings``."""
+    pytest.importorskip("ortools.pdlp.solvers_pb2")
+    from solver_benchmarks.solvers.pdlp_adapter import _pdlp_parameters_from_settings
+
+    criteria = _pdlp_parameters_from_settings(dict(settings)).termination_criteria
+    return (criteria.eps_primal_infeasible, criteria.eps_dual_infeasible,
+            criteria.simple_optimality_criteria.eps_optimal_absolute)
+
+
+def test_a_generated_campaign_asks_every_solver_for_certificates_at_its_tag(make_campaign, tmp_path, monkeypatch):
+    """Certificates are verified at 10 x the tag like solutions, so every
+    shard's solver is asked for them at the tag: its infeasibility knobs (or,
+    for PDLP, the TerminationCriteria fields its parameters_text sets) carry
+    the shard's tolerance, whatever the solver's default."""
+    out_dir = tmp_path / "campaign"
+    families = ",".join(make_campaign.FAMILIES)
+    monkeypatch.setattr(sys, "argv", ["make_campaign.py", str(out_dir), "--families", families,
+                                      "--tols", "1e-4,5e-5,1e-8"])
+    make_campaign.main()
+
+    seen = set()
+    for shard in json.loads((out_dir / "campaign.json").read_text()):
+        (solver,) = load_run_config(shard["config"]).solvers
+        seen.add(solver.solver)
+        knobs = CAMPAIGN_CERTIFICATE_KNOBS[solver.solver]
+        assert set(make_campaign.CERTIFICATE_KNOBS[solver.solver]) == knobs, solver.solver
+        if solver.solver == "pdlp":
+            assert _pdlp_certificate_tolerances(solver.settings) == (shard["tol"],) * 3, shard["name"]
+            continue
+        for knob in knobs:
+            assert solver.settings[knob] == shard["tol"], (shard["name"], knob)
+    assert seen == set(CAMPAIGN_CERTIFICATE_KNOBS)
+
+
+def test_a_campaign_solver_without_a_certificate_decision_is_refused(make_campaign, monkeypatch):
+    monkeypatch.delitem(make_campaign.CERTIFICATE_KNOBS, "osqp")
+    with pytest.raises(KeyError, match="osqp"):
+        make_campaign.solver_variants("qp", 1e-4, 300.0)
+
+
+@pytest.mark.parametrize("solver, own", [("pdlp", {"parameters_text": "verbosity_level: 1"}),
+                                         ("scs", {"eps_infeas": 1e-7})])
+def test_certificate_settings_never_overwrite_a_variants_own(make_campaign, solver, own):
+    """A variant that sets a certificate key itself (a PDLP variant's own
+    parameters_text, which the certificate criteria would replace) is
+    refused, not silently overwritten."""
+    variant = {"id": f"{solver}_1e-4", "solver": solver, "settings": {"eps_abs": 1e-4, **own}}
+    with pytest.raises(ValueError, match=next(iter(own))):
+        make_campaign.with_certificate_settings(variant, 1e-4)
+    assert variant["settings"] == {"eps_abs": 1e-4, **own}
+
+
 @pytest.mark.parametrize("tol", [1e-4, 1e-6, 5e-5, 1.5e-5])
 def test_make_figures_reads_the_tolerance_tag_of_every_campaign_solver_id(make_campaign, make_figures, tol):
     for family in make_campaign.FAMILIES:
@@ -1130,31 +1198,160 @@ def test_make_figures_verifies_a_raw_run_before_the_late_rule(make_figures, tmp_
     assert set(raw_rows["verify_rule"]) == {"unverified"}
 
 
-def test_make_figures_use_run_keeps_the_swapped_runs_tolerance(make_figures, tmp_path, monkeypatch):
-    # clarabel_1e-6 shown in the 1e-4 figure is checked at its own 1e-5;
-    # --verify-tol 1e-3 holds it to the plot's rule instead.
-    rows = []
+def _swapped_series_run(run_dir: Path) -> Path:
+    """clarabel_1e-6 and piqp_1e-4 with residuals of 1e-4: they pass 10 x the
+    1e-4 tag (1e-3) and fail 10 x the 1e-6 tag (1e-5)."""
+    limit = 300.0
+    rows = [_sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
+                    "run_time_seconds": 10.0, **_residuals(1e-9)}) for problem in ("a", "b")]
     for problem in ("a", "b"):
-        rows += [
-            _sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
-                    "run_time_seconds": 10.0, **_residuals(1e-9)}),
-            _sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-6", "status": status.OPTIMAL,
-                    "run_time_seconds": 1.0, **_residuals(1e-4)}),
-        ]
-    run_dir = _verified_run(tmp_path / "run", rows)
+        for solver_id in ("clarabel_1e-6", "piqp_1e-4"):
+            rows.append(_sized({"dataset": "lp", "problem": problem, "solver_id": solver_id,
+                                "status": status.OPTIMAL, "run_time_seconds": 1.0, **_residuals(1e-4)}))
+    # a limit stop whose point passes at 1e-3, returned 30 s past the limit
+    rows.append(_sized({"dataset": "lp", "problem": "c", "solver_id": "clarabel_1e-6", "status": status.TIME_LIMIT,
+                        "run_time_seconds": limit + 30.0, **_residuals(1e-4)}))
+    return _verified_run(run_dir, rows)
 
-    def solved(*options):
-        out = tmp_path / f"figs{len(options)}"
-        monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out), f"lp={run_dir}", "--tol-tag", "1e-4",
-                                          "--use-run", "clarabel=1e-6", "--no-size-lookup", *options])
-        make_figures.main()
-        summary = pd.read_csv(out / "geomean_summary.csv", dtype={"verify_tol": str})
-        return summary[summary["subset"] == "all"].set_index("solver_id").loc["clarabel_1e-4"]
 
-    own = solved()
-    assert own["success_count"] == 0 and own["verify_tol"] == "1e-05"
-    docs_rule = solved("--verify-tol", "1e-3")
-    assert docs_rule["success_count"] == 2 and docs_rule["verify_rule"] == "fixed 0.001"
+def _figure_summaries(make_figures, monkeypatch, out: Path, run_dir: Path, *options):
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out), f"lp={run_dir}", "--use-run", "clarabel=1e-6",
+                                      "--use-run", "piqp=1e-4", "--no-size-lookup", *options])
+    make_figures.main()
+    summary = pd.read_csv(out / "geomean_summary.csv", dtype={"verify_tol": str, "tol": str, "source_run": str})
+    summary = summary[summary["subset"] == "all"].set_index(["tol", "solver_id"])
+    verification = pd.read_csv(out / "verification_summary.csv", dtype={"tol": str, "figure": str})
+    return summary, verification
+
+
+def test_make_figures_verifies_a_swapped_series_at_the_figures_tolerance(make_figures, tmp_path, monkeypatch):
+    """A figure compares solvers at one accuracy: a series --use-run takes
+    from another tolerance's run is held to 10 x the figure's tag, tighter or
+    looser than its own run's, and the late rule still applies after."""
+    run_dir = _swapped_series_run(tmp_path / "run")
+    summary, verification = _figure_summaries(make_figures, monkeypatch, tmp_path / "figs", run_dir)
+
+    # clarabel from its 1e-6 run in the 1e-4 figure: checked at 1e-3, not its own 1e-5
+    clarabel = summary.loc[("1e-4", "clarabel_1e-4")]
+    assert clarabel["source_run"] == "1e-6"
+    assert clarabel["success_count"] == 2  # a and b; c passes but came back late
+    assert clarabel["verify_tol"] == "0.001"
+    assert clarabel["verify_rule"] == "10 x the figure's tolerance"
+    # piqp from its 1e-4 run in the 1e-6 figure: checked at 1e-5, not its own 1e-3
+    piqp = summary.loc[("1e-6", "piqp_1e-6")]
+    assert piqp["source_run"] == "1e-4" and piqp["success_count"] == 0 and piqp["verify_tol"] == "1e-05"
+    # each series in its own figure keeps 10 x what it requested
+    assert summary.loc[("1e-4", "piqp_1e-4"), "success_count"] == 2
+    assert summary.loc[("1e-4", "piqp_1e-4"), "verify_rule"] == "10 x requested"
+    assert summary.loc[("1e-6", "clarabel_1e-6"), "success_count"] == 0
+    assert summary.loc[("1e-6", "clarabel_1e-6"), "verify_tol"] == "1e-05"
+
+    # verification_summary.csv counts the figure's verification of each swapped series
+    swapped = verification[verification["figure"].notna()].set_index("figure")
+    assert sorted(swapped.index) == ["1e-4", "1e-6"]
+    at_1e4 = swapped.loc["1e-4"]
+    assert at_1e4["solver_id"] == "clarabel_1e-6" and at_1e4["tol"] == "0.001" and at_1e4["source"] == "figure"
+    assert (at_1e4["kept"], at_1e4["promoted"], at_1e4["late"]) == (2, 0, 1)
+    assert at_1e4["verify_rule"] == "10 x the figure's tolerance"
+    at_1e6 = swapped.loc["1e-6"]
+    assert at_1e6["solver_id"] == "piqp_1e-4" and at_1e6["tol"] == "1e-05" and at_1e6["demoted"] == 2
+    own = verification[verification["figure"].isna()].set_index("solver_id")
+    assert own.loc["clarabel_1e-6", "tol"] == "1e-05" and own.loc["piqp_1e-4", "tol"] == "0.001"
+
+
+def test_make_figures_verify_tol_holds_a_swapped_series_to_it(make_figures, tmp_path, monkeypatch):
+    run_dir = _swapped_series_run(tmp_path / "run")
+    summary, verification = _figure_summaries(make_figures, monkeypatch, tmp_path / "figs", run_dir,
+                                              "--verify-tol", "1e-3")
+    assert summary.loc[("1e-6", "piqp_1e-6"), "success_count"] == 2
+    assert set(summary["verify_rule"]) == {"fixed 0.001"} and set(summary["verify_tol"]) == {"0.001"}
+    assert verification["figure"].isna().all()
+
+
+def test_make_figures_verifies_a_swapped_series_of_a_kkt_verify_copy_at_the_figures_tolerance(
+        make_figures, tmp_path, monkeypatch):
+    from solver_benchmarks.analysis.derive import kkt_verify
+
+    run_dir = _swapped_series_run(tmp_path / "run")
+    kkt_verify(run_dir, tmp_path / "copy")
+    summary, _ = _figure_summaries(make_figures, monkeypatch, tmp_path / "figs", tmp_path / "copy")
+    assert summary.loc[("1e-4", "clarabel_1e-4"), "success_count"] == 2
+    assert summary.loc[("1e-6", "piqp_1e-6"), "success_count"] == 0
+    assert summary.loc[("1e-6", "piqp_1e-6"), "verify_rule"] == "10 x the figure's tolerance"
+    assert summary.loc[("1e-4", "piqp_1e-4"), "verify_rule"] == "recorded (10 x requested)"
+    # a copy at one fixed tolerance already holds every series to it
+    kkt_verify(run_dir, tmp_path / "fixed", tol=1e-3)
+    fixed, verification = _figure_summaries(make_figures, monkeypatch, tmp_path / "figs_fixed", tmp_path / "fixed")
+    assert fixed.loc[("1e-6", "piqp_1e-6"), "success_count"] == 2
+    assert verification["figure"].isna().all()
+
+
+def _family_settings_run(run_dir: Path) -> Path:
+    """clarabel_1e-6, shown in the 1e-4 figure, with one row per setting a
+    family's verification can change: a claimed optimum without residuals
+    (--allow-missing), a certificate with cert_res 1e-4 (held to the
+    figure's tolerance like solutions), an iteration-limited stop whose point
+    passes at 1e-3 (promotion), and a claimed optimum with residual 5e-3
+    (fails 10 x 1e-4, passes 100 x 1e-4: the slack)."""
+    infeasible = {"metadata.expected_status": "infeasible"}
+
+    def certificate(cert_res):
+        return {"kkt": {"form": "cone", "certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": cert_res,
+                        "dual_cone_res": 0.0, "cert_res": cert_res, "cert_tol": 1e-3, "valid": True}}
+
+    rows = []
+    for problem in ("bare", "limit", "loose"):
+        rows.append(_sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-4",
+                            "status": status.OPTIMAL, "run_time_seconds": 10.0, **_residuals(1e-9)}))
+    rows.append(_sized({"dataset": "lp", "problem": "cert", "solver_id": "clarabel_1e-4",
+                        "status": status.PRIMAL_INFEASIBLE, "run_time_seconds": 10.0, **certificate(1e-9),
+                        **infeasible}))
+    for problem, row_status, extra in (
+        ("bare", status.OPTIMAL, {}),
+        ("cert", status.PRIMAL_INFEASIBLE, {**certificate(1e-4), **infeasible}),
+        ("limit", status.MAX_ITER_REACHED, _residuals(1e-4)),
+        ("loose", status.OPTIMAL, _residuals(5e-3)),
+    ):
+        rows.append(_sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-6", "status": row_status,
+                            "run_time_seconds": 1.0, **extra}))
+    return _verified_run(run_dir, rows)
+
+
+def test_make_figures_verifies_a_swapped_series_with_the_familys_settings(make_figures, tmp_path, monkeypatch):
+    """A series --use-run takes from another tolerance's run is verified at
+    the figure's tag with the family's own settings: --allow-missing, and a
+    bench kkt-verify copy's recorded slack and promotion; its certificates
+    are held to the figure's tolerance like its solutions."""
+    from solver_benchmarks.analysis.derive import kkt_verify
+
+    run_dir = _family_settings_run(tmp_path / "run")
+
+    def swapped(out, run, *options):
+        summary, verification = _figure_summaries(make_figures, monkeypatch, out, run, *options)
+        row = verification[verification["figure"] == "1e-4"].set_index("solver_id").loc["clarabel_1e-6"]
+        counts = {column: int(row[column]) for column in ("kept", "demoted", "promoted", "no_residuals")}
+        return summary.loc[("1e-4", "clarabel_1e-4")], counts, summary
+
+    # default: the certificate passes 1e-3, the limit stop is promoted, the
+    # bare claim and the 5e-3 point fail
+    shown, counts, summary = swapped(tmp_path / "figs", run_dir)
+    assert shown["success_count"] == 2 and shown["verify_tol"] == "0.001"
+    assert counts == {"kept": 1, "demoted": 2, "promoted": 1, "no_residuals": 1}
+    # in its own 1e-6 figure (1e-5) the certificate and the limit stop fail too
+    assert summary.loc[("1e-6", "clarabel_1e-6"), "success_count"] == 0
+
+    # --allow-missing keeps the claim without residuals
+    shown, counts, _ = swapped(tmp_path / "figs_missing", run_dir, "--allow-missing")
+    assert shown["success_count"] == 3
+    assert counts == {"kept": 2, "demoted": 1, "promoted": 1, "no_residuals": 1}
+
+    # a copy verified at slack 100, without promotion, missing residuals
+    # tolerated: the series is held to 100 x 1e-4 the same way
+    kkt_verify(run_dir, tmp_path / "copy", slack=100.0, promote=False, missing_is_failure=False)
+    shown, counts, _ = swapped(tmp_path / "figs_copy", tmp_path / "copy")
+    assert shown["success_count"] == 3  # bare, cert, loose; the limit stop is not promoted
+    assert shown["verify_tol"] == "0.01" and shown["verify_rule"] == "100 x the figure's tolerance"
+    assert counts == {"kept": 3, "demoted": 0, "promoted": 0, "no_residuals": 1}
 
 
 def test_make_figures_verifies_only_the_rows_it_plots(make_figures, tmp_path, monkeypatch, capsys):
@@ -1190,8 +1387,8 @@ def test_make_figures_says_at_what_a_swapped_series_was_verified(make_figures, t
     monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "figs"), f"lp={run_dir}", "--tol-tag", "1e-4",
                                       "--use-run", "clarabel=1e-6", "--no-size-lookup"])
     make_figures.main()
-    assert "lp 1e-4: clarabel is shown from its 1e-6 run, verified at 1e-05 (other series: 0.001)" in (
-        capsys.readouterr().out)
+    assert ("lp 1e-4: clarabel is shown from its 1e-6 run, verified at 0.001, 10 x the figure's tolerance "
+            "(other series: 0.001)") in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("options", [["--verify-tol", "1e-3", "--requested-tol", "a=1e-4"],
@@ -1250,3 +1447,24 @@ def test_campaign_solver_settings_are_accepted_by_the_installed_adapters(make_ca
         ran.append(variant["id"])
     if not ran:
         pytest.skip(f"no CPU solver of the {family} campaign is installed")
+
+
+@pytest.mark.parametrize("family", ["qp", "lp", "lpbig"])
+def test_campaign_cuopt_settings_are_accepted_by_the_cuopt_adapter(make_campaign, repo_root, fake_cuopt, tmp_path,
+                                                                     family):
+    # cuOpt needs a GPU, so the test above skips it. The fake, which like
+    # cuOpt refuses a parameter name it does not know, takes every setting
+    # the campaign gives cuOpt, its certificate tolerances included.
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers import get_solver
+
+    (variant,) = [v for v in make_campaign.solver_variants(family, 1e-4, 300.0) if v["solver"] == "cuopt"]
+    name = "one_variable_eq" if family == "qp" else "one_variable_lp"
+    problem = get_dataset("synthetic_qp")(repo_root=repo_root).load_problem(name)
+    fake_cuopt.returns("Optimal", x=[1.0], y=[0.0], objective=1.0)
+
+    get_solver("cuopt")(dict(variant["settings"])).solve(problem, tmp_path)
+
+    assert fake_cuopt.optimality_tolerance == 1e-4
+    for knob in make_campaign.CERTIFICATE_KNOBS["cuopt"]:
+        assert fake_cuopt.parameters[knob] == 1e-4, knob

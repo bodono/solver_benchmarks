@@ -328,6 +328,11 @@ class FakeCuOpt:
         "relative_primal_tolerance",
         "relative_dual_tolerance",
         "relative_gap_tolerance",
+        # PDLP's certificate tolerances, which tools/make_campaign.py sets
+        # (CUOPT_PRIMAL_INFEASIBLE_TOLERANCE / CUOPT_DUAL_INFEASIBLE_TOLERANCE in
+        # cuOpt's cpp/include/cuopt/mathematical_optimization/constants.h).
+        "primal_infeasible_tolerance",
+        "dual_infeasible_tolerance",
     })
 
     def __init__(self) -> None:

@@ -75,6 +75,73 @@ def tolerance_tag(tol: float) -> str:
     return f"{mantissa}e{int(exponent)}"
 
 
+# The infeasibility (certificate) tolerances of each campaign solver, which
+# solver_variants sets to the variant's tag (approved 2026-11-19).
+# Verification holds a row's certificates to the same 10 x tag as its
+# solutions (README, "The tolerance"), so a campaign asks every solver for
+# certificates at the tag: the request and the check are at the same
+# nominal tolerance, though each solver still measures certificates in its
+# own units. For Clarabel, cpo3 and QTQP, tol_infeas_rel is the residual
+# test and tol_infeas_abs the margin a certificate's objective term must
+# clear (b'y < -tol_infeas_abs), stricter at the tag than its 1e-8 default.
+# The knobs are set in every family. On a feasible problem a certificate is
+# always a failure, so there a knob looser than the solver's default can
+# only end solves early: at 1e-4, SCS (eps_infeas default 1e-7, no
+# kappa/tau gate) solved 4 fewer of the 93 feasible NETLIB LPs and 7 fewer
+# of the 138 Maros-Meszaros QPs (README, "The tolerance").
+# An empty tuple is a solver with no such knob the adapter can set:
+# - piqp 0.6.4: none; it declares infeasibility from eps_abs / eps_rel (set
+#   to the tag) and infeasibility_threshold, a threshold on its proximal-point
+#   residuals, not a certificate tolerance.
+# - proxqp: ProxQP's eps_primal_inf / eps_dual_inf (default 1e-4) exist, but
+#   the one-shot proxqp solve() the adapter calls does not take them.
+# - highs: none; its infeasibility verdicts use its feasibility tolerances.
+# - cvxopt: none of its own; feastol, set to the tag, is also its
+#   certificate test.
+# - sdpa: none.
+# PDLP's are TerminationCriteria fields, set through parameters_text. cuOpt's
+# apply to its PDLP (whose infeasibility detection is off by default).
+CERTIFICATE_KNOBS: dict[str, tuple[str, ...]] = {
+    "scs": ("eps_infeas",),
+    "clarabel": ("tol_infeas_abs", "tol_infeas_rel"),
+    "osqp": ("eps_prim_inf", "eps_dual_inf"),
+    "cpo3": ("tol_infeas_abs", "tol_infeas_rel"),
+    "qtqp": ("tol_infeas_abs", "tol_infeas_rel"),
+    "cuopt": ("primal_infeasible_tolerance", "dual_infeasible_tolerance"),
+    "pdlp": ("eps_primal_infeasible", "eps_dual_infeasible"),
+    "piqp": (),
+    "proxqp": (),
+    "highs": (),
+    "cvxopt": (),
+    "sdpa": (),
+}
+
+
+def certificate_settings(solver: str, tol: float) -> dict:
+    """The settings that ask ``solver`` for certificates at ``tol``
+    (``CERTIFICATE_KNOBS``; a solver missing there is a KeyError, so a new
+    campaign solver needs a decision)."""
+    knobs = CERTIFICATE_KNOBS[solver]
+    if solver == "pdlp":
+        fields = " ".join(f"{knob}: {float(tol)!r}" for knob in knobs)
+        return {"parameters_text": f"termination_criteria {{ {fields} }}"}
+    return dict.fromkeys(knobs, float(tol))
+
+
+def with_certificate_settings(variant: dict, tol: float) -> dict:
+    """``variant`` with its solver's ``certificate_settings`` at ``tol``
+    added to its settings. A variant that sets one of those keys itself (a
+    PDLP variant's own ``parameters_text``) is refused rather than silently
+    overwritten: merge the two by hand."""
+    extra = certificate_settings(variant["solver"], tol)
+    clash = sorted(set(extra) & set(variant["settings"]))
+    if clash:
+        raise ValueError(f"campaign variant {variant['id']} sets {', '.join(clash)} itself, which its "
+                         "certificate settings would overwrite; merge them by hand")
+    variant["settings"].update(extra)
+    return variant
+
+
 def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     """Solver settings at a common nominal tolerance ``tol``.
 
@@ -83,7 +150,12 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     tools/make_figures.py) verifies each solve against the harness's
     independent KKT residuals at 10 x the tolerance its settings request,
     which for every variant here except HiGHS below 1e-7 (its residual
-    tolerances stay at their 1e-7 default) is ``tol``.
+    tolerances stay at their 1e-7 default) is ``tol``, for its solutions
+    and its infeasibility certificates alike. Every variant also asks its
+    solver for certificates at ``tol`` (``certificate_settings``, in every
+    family; see ``CERTIFICATE_KNOBS`` for what that costs on feasible
+    problems), so the certificates it asks for and the ones verification
+    accepts are at the same nominal tolerance.
     """
     t = float(tol)
     tag = tolerance_tag(t)
@@ -157,7 +229,7 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"sdpa_{tag}", "solver": "sdpa",
              "settings": {"eps_abs": t, "eps_rel": t, "time_limit": timeout}, "gpu": False},
         ]
-    return variants
+    return [with_certificate_settings(variant, t) for variant in variants]
 
 
 # Instances a solver cannot attempt at all, counted as failures for it. Clarabel

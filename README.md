@@ -1554,15 +1554,45 @@ in one figure would be checked at tolerances up to a thousand times apart,
 and Clarabel's genuine NETLIB certificates (`cert_res` up to `6e-5`) would
 fail at its `1e-8`. So the infeasibility knobs (SCS's `eps_infeas`, OSQP's
 `eps_prim_inf` and `eps_dual_inf`, Clarabel's `tol_infeas_abs` and
-`tol_infeas_rel`, and the like) are deliberately not read, whatever a run
-sets them to: the `scs332_2026-11` infeasible-LP runs give their `1e-8` SCS,
-OSQP and Clarabel variants infeasibility tolerances of `1e-4`, and those
-variants' certificates are still checked at `1e-7`. Every variant
+`tol_infeas_rel`, and the like) are deliberately not read when a row is
+verified, whatever a run sets them to. Campaigns instead ask each solver for
+its certificates at the same tag as its solutions: every variant
 `tools/make_campaign.py` writes requests exactly its tolerance tag in its
 solution knobs (HiGHS below `1e-7` excepted: its residual tolerances stay at
-their `1e-7` default) and leaves the infeasibility knobs alone, so a
-campaign's solutions and certificates are verified at ten times the tag, the
-rule of the published 3.3.2 figures.
+their `1e-7` default), and sets every infeasibility knob its solver has to the
+tag as well (`CERTIFICATE_KNOBS` there; the last column of the table below),
+and a campaign's solutions and certificates are both verified at ten times
+the tag, the rule of the published 3.3.2 figures. That puts the request and
+the check at the same nominal tolerance, not the same test: each solver still
+measures its certificates in its own units (above), and Clarabel's, cpo3's
+and QTQP's `tol_infeas_abs` is not a residual tolerance but the margin a
+certificate's objective term must clear (`b'y < −tol_infeas_abs`), so at the
+tag it is stricter than its `1e-8` default, while `tol_infeas_rel`, their
+residual test, is looser. PIQP, ProxQP, HiGHS, CVXOPT and SDPA have no such
+knob the adapter can set, and the table says why.
+
+The knobs are set in every family, the feasible ones included, where a
+certificate is always a failure (see [Known outcomes](#known-outcomes)).
+There a knob looser than the solver's default can only end solves early, on
+feasible problems close enough to infeasible to admit an approximate
+certificate. A solver whose certificate test is not gated on `κ/τ`, as
+Clarabel's, cpo3's and QTQP's are, is exposed. SCS's `eps_infeas` default
+is `1e-7`: on the 93 feasible NETLIB LPs at `1e-4` (SCS 3.3.1, a 60 s limit,
+verified statuses) SCS solved 79 with `eps_infeas` at the tag against 83 at
+its default, because `agg3`, `fffff800`, `fit2d` and `israel` ended in
+certificates instead of solutions, and at `1e-6` it solved 76 against 77
+(`agg3`). On the 138 Maros-Meszaros QPs at `1e-4` it solved 124 against
+131: `AUG2DCQP`, `AUG2DQP`, `HUES-MOD`, `HUESTIS`, `LISWET5`, `QGFRDXPN` and
+`STADAT1` ended in certificates. On the feasible NETLIB LPs at `1e-4`
+Clarabel solved 90 either way, and OSQP's knobs at `1e-4` are its defaults.
+On the 29 infeasible NETLIB LPs at `1e-4` the tag gained SCS one certificate
+(`bgindy`, 24 against 23). PDLP (default `1e-8`), cuOpt, the SDP family and
+the large LPs are not measured.
+
+Archived campaigns keep the settings they recorded and are verified by the
+same uniform rule: the `scs332_2026-11` infeasible-LP runs gave their `1e-8`
+SCS, OSQP and Clarabel variants infeasibility tolerances of `1e-4`, and those
+variants' certificates are still checked at `1e-7` (they are not re-run).
 
 Verification uses the residuals the worker recorded at solve time; it does
 not recompute them. Runs recorded before #75 (`f942f1f`, 2026-08-29) carry a
@@ -1573,24 +1603,24 @@ version that leaves a knob unset is checked at today's default, except SCS
 before 3.0 and qtqp before 0.0.7, whose rows must set their tolerances (the
 tolerance is otherwise unknown).
 
-| Solver | Knobs (the loosest is requested) | Default request | Defaults |
-|---|---|---|---|
-| `clarabel` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (`eps_abs` / `eps` set the first two, `eps_rel` / `eps` the last) | `1e-8` | checked on clarabel 0.11.1 |
-| `cplex` | `simplex.tolerances.feasibility`, `simplex.tolerances.optimality`, `barrier.convergetol` (no `eps` aliases) | `1e-6` | documented, not checked |
-| `cpo3` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel) | `1e-8` | cpo3 0.0.1 source (`src/settings.rs`), not checked against an installed cpo3 |
-| `cuopt` | `absolute_primal_tolerance`, `absolute_dual_tolerance`, `absolute_gap_tolerance`, `relative_primal_tolerance`, `relative_dual_tolerance`, `relative_gap_tolerance` (`eps` and `optimality_tolerance` set all six, `eps_abs` / `eps_rel` three each) | `1e-4` | documented, not checked |
-| `cvxopt` | `abstol`, `reltol`, `feastol` (`eps_abs` / `eps` set `abstol` and `feastol`, `eps_rel` / `eps` `reltol`) | `1e-6` | checked on cvxopt 1.3.3 |
-| `ecos` | `feastol`, `abstol`, `reltol` (as CVXOPT) | `1e-8` | documented, not checked |
-| `gurobi` | `FeasibilityTol`, `OptimalityTol`, `BarConvTol` (any case; no `eps` aliases) | `1e-6` | documented, not checked |
-| `highs` | `primal_feasibility_tolerance`, `dual_feasibility_tolerance`, `primal_residual_tolerance`, `dual_residual_tolerance`, `optimality_tolerance`, and `ipm_optimality_tolerance` (`solver` `choose`, `ipm`, `ipx`, `hipo`) or `pdlp_optimality_tolerance` (`pdlp`, `hipdlp`); `kkt_tolerance` changed from its `1e-7` default replaces them all (no `eps` aliases) | `1e-7` | checked on highspy 1.15.1 |
-| `mosek` | `MSK_DPAR_INTPNT_TOL_PFEAS`, `MSK_DPAR_INTPNT_TOL_DFEAS`, `MSK_DPAR_INTPNT_TOL_REL_GAP` for LPs, `MSK_DPAR_INTPNT_QO_TOL_PFEAS`, `MSK_DPAR_INTPNT_QO_TOL_DFEAS`, `MSK_DPAR_INTPNT_QO_TOL_REL_GAP` for QPs (both when the row does not say which; no `eps` aliases) | `1e-8` | documented, not checked |
-| `osqp` | `eps_abs`, `eps_rel` | `1e-3` | checked on osqp 1.1.3 |
-| `pdlp` | `eps_optimal_absolute`, `eps_optimal_relative` (set by `eps_abs` / `eps_rel`; a `parameters_text` that sets the detailed criteria is read with OR-Tools) | `1e-6` | checked on OR-Tools 9.15 |
-| `piqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-8` | checked on piqp 0.6.4 |
-| `proxqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on (the adapter's default) `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-5` | checked on proxsuite 0.7.3 |
-| `qtqp` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel; `atol` / `rtol` supply them; before qtqp 0.0.7 `atol` and `rtol` themselves, which must then both be set) | `1e-8` | checked on qtqp 0.0.7 |
-| `scs` | `eps_abs`, `eps_rel` (`eps` sets both) | `1e-4` | SCS 3.x documentation |
-| `sdpa` | `epsilonStar`, `epsilonDash` (`eps_abs` / `eps_rel`; the adapter's `optimality_tolerance` is a status rule the verification supersedes) | `1e-7` | checked on sdpa-python 0.2.3 |
+| Solver | Knobs (the loosest is requested) | Default request | Defaults | Infeasibility knobs `make_campaign` sets to the tag |
+|---|---|---|---|---|
+| `clarabel` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (`eps_abs` / `eps` set the first two, `eps_rel` / `eps` the last) | `1e-8` | checked on clarabel 0.11.1 | `tol_infeas_abs`, `tol_infeas_rel` (default `1e-8`; its `reduced_tol_infeas_*`, like its other reduced tolerances, stay at their defaults) |
+| `cplex` | `simplex.tolerances.feasibility`, `simplex.tolerances.optimality`, `barrier.convergetol` (no `eps` aliases) | `1e-6` | documented, not checked | not in campaigns |
+| `cpo3` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel) | `1e-8` | cpo3 0.0.1 source (`src/settings.rs`), not checked against an installed cpo3 | `tol_infeas_abs`, `tol_infeas_rel` (as Clarabel) |
+| `cuopt` | `absolute_primal_tolerance`, `absolute_dual_tolerance`, `absolute_gap_tolerance`, `relative_primal_tolerance`, `relative_dual_tolerance`, `relative_gap_tolerance` (`eps` and `optimality_tolerance` set all six, `eps_abs` / `eps_rel` three each) | `1e-4` | documented, not checked | `primal_infeasible_tolerance`, `dual_infeasible_tolerance` (its PDLP's; default `1e-10` in the cuOpt 26.08 and 26.10 source, not checked; PDLP's `infeasibility_detection` is off by default; by cuOpt's documentation its dual simplex detects infeasibility either way) |
+| `cvxopt` | `abstol`, `reltol`, `feastol` (`eps_abs` / `eps` set `abstol` and `feastol`, `eps_rel` / `eps` `reltol`) | `1e-6` | checked on cvxopt 1.3.3 | none of its own: its certificate test is `feastol`, already the tag |
+| `ecos` | `feastol`, `abstol`, `reltol` (as CVXOPT) | `1e-8` | documented, not checked | not in campaigns |
+| `gurobi` | `FeasibilityTol`, `OptimalityTol`, `BarConvTol` (any case; no `eps` aliases) | `1e-6` | documented, not checked | not in campaigns |
+| `highs` | `primal_feasibility_tolerance`, `dual_feasibility_tolerance`, `primal_residual_tolerance`, `dual_residual_tolerance`, `optimality_tolerance`, and `ipm_optimality_tolerance` (`solver` `choose`, `ipm`, `ipx`, `hipo`) or `pdlp_optimality_tolerance` (`pdlp`, `hipdlp`); `kkt_tolerance` changed from its `1e-7` default replaces them all (no `eps` aliases) | `1e-7` | checked on highspy 1.15.1 | none: its infeasibility verdicts use its feasibility tolerances |
+| `mosek` | `MSK_DPAR_INTPNT_TOL_PFEAS`, `MSK_DPAR_INTPNT_TOL_DFEAS`, `MSK_DPAR_INTPNT_TOL_REL_GAP` for LPs, `MSK_DPAR_INTPNT_QO_TOL_PFEAS`, `MSK_DPAR_INTPNT_QO_TOL_DFEAS`, `MSK_DPAR_INTPNT_QO_TOL_REL_GAP` for QPs (both when the row does not say which; no `eps` aliases) | `1e-8` | documented, not checked | not in campaigns |
+| `osqp` | `eps_abs`, `eps_rel` | `1e-3` | checked on osqp 1.1.3 | `eps_prim_inf`, `eps_dual_inf` (default `1e-4`) |
+| `pdlp` | `eps_optimal_absolute`, `eps_optimal_relative` (set by `eps_abs` / `eps_rel`; a `parameters_text` that sets the detailed criteria is read with OR-Tools) | `1e-6` | checked on OR-Tools 9.15 | `eps_primal_infeasible`, `eps_dual_infeasible` (termination criteria, default `1e-8`), through `parameters_text` |
+| `piqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-8` | checked on piqp 0.6.4 | none in piqp 0.6.4, which declares infeasibility from `eps_abs`, `eps_rel` (the tag) and `infeasibility_threshold`, a threshold on its proximal-point residuals, not a certificate tolerance |
+| `proxqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on (the adapter's default) `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-5` | checked on proxsuite 0.7.3 | none the adapter can set: ProxQP's `eps_primal_inf` and `eps_dual_inf` (default `1e-4`) are not arguments of the one-shot `solve` it calls |
+| `qtqp` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel; `atol` / `rtol` supply them; before qtqp 0.0.7 `atol` and `rtol` themselves, which must then both be set) | `1e-8` | checked on qtqp 0.0.7 | `tol_infeas_abs`, `tol_infeas_rel` (default `1e-8`) |
+| `scs` | `eps_abs`, `eps_rel` (`eps` sets both) | `1e-4` | SCS 3.x documentation | `eps_infeas` (default `1e-7`) |
+| `sdpa` | `epsilonStar`, `epsilonDash` (`eps_abs` / `eps_rel`; the adapter's `optimality_tolerance` is a status rule the verification supersedes) | `1e-7` | checked on sdpa-python 0.2.3 | none |
 
 The requested tolerance of a row comes from, first match wins:
 `--requested-tol SOLVER_ID=TOL` (Python: `VerifyPolicy(requested_tol=...)`);
@@ -1630,12 +1660,22 @@ without solver ids that carry no tolerance tag), so a solver it leaves out
 never needs a requested tolerance. Its 1 % late rule applies after
 verification, and `verification_summary.csv` is counted after it: `late`
 counts the claims verification kept or promoted that the late rule then made
-failures, and `kept`, `promoted` and `unverified` leave them out. A series
-`--use-run` takes from another tolerance's run keeps that run's verification,
-ten times what that run requested (Clarabel from its `1e-6` run in the `1e-4`
-figures is checked at `1e-5`, the other series at `1e-3`); stdout says so,
-`geomean_summary.csv`'s `verify_tol` records it, and `--verify-tol` holds
-every series to one tolerance instead.
+failures, and `kept`, `promoted` and `unverified` leave them out. A figure
+compares solvers at one accuracy, so a series `--use-run` takes from another
+tolerance's run (an interior-point solver at its `1e-6` run in the `1e-4`
+figures) is verified at ten times the figure's tolerance tag, as the
+published 3.3.2 figures were, not at ten times what its own run requested:
+Clarabel from its `1e-6` run is checked at `1e-3` in the `1e-4` figures, like
+the other series there, and at `1e-5` in its own `1e-6` figures. Its rows are
+verified again from their reported statuses, with the tag standing in for
+their requested tolerance and the family's slack, promotion and
+`--allow-missing` setting (a `bench kkt-verify` copy's as recorded), and the
+1 % late rule applies after. stdout says so, `geomean_summary.csv`'s
+`verify_rule` (`10 x the figure's tolerance`) and `verify_tol` record it, and
+`verification_summary.csv` counts that verification in a row of its own,
+whose `figure` column names the figure's tag (it is empty on the per-solver
+rows). Under `--verify-tol`, or a `bench kkt-verify --tol` copy, every
+series is held to that one tolerance already.
 
 **Derived runs.** A run written by `bench kkt-verify` is read as it recorded
 its verification (its statuses, and its rule: `--tol`, or the per-row rule).
@@ -2094,7 +2134,7 @@ Adapter expectations:
 - Pass a NaN-free point to the KKT helpers: `finite_point` returns False for a missing or non-finite vector, and the record is then `None`.
 - Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
 - Reject unknown setting names with a `SolverConfigError` naming them, and translate the shared aliases (`eps` / `eps_abs` / `eps_rel` with `translate_tolerance_aliases`, `max_iter` with `pop_max_iter`, `time_limit*` with `pop_time_limit`, `threads` with `pop_threads`) where the solver has an equivalent, recording what was inserted in `info["settings_translated"]`, or mark them ignored. A solver with a thread setting runs on `threads_or_default(threads)` (one thread unless configured) and records it on `info["threads"]`; set `info["threads"] = None` where the adapter cannot set it.
-- Define the classmethod `requested_tolerance(settings, *, problem_kind, is_lp, versions)`: run the adapter's own alias translation on a copy of the settings and return `loosest_tolerance(settings, {knob: library default, ...})` (see `solver_benchmarks/solvers/base.py`), listing the solver's feasibility and gap tolerances (not its infeasibility tolerances, which no adapter uses). The [independent KKT verification](#independent-kkt-verification) holds every row of the solver, solutions and certificates alike, to ten times it; the base class raises, so an adapter without it leaves its rows unverifiable (and a test fails). Add its row to the adapter table there.
+- Define the classmethod `requested_tolerance(settings, *, problem_kind, is_lp, versions)`: run the adapter's own alias translation on a copy of the settings and return `loosest_tolerance(settings, {knob: library default, ...})` (see `solver_benchmarks/solvers/base.py`), listing the solver's feasibility and gap tolerances (not its infeasibility tolerances, which no adapter uses). The [independent KKT verification](#independent-kkt-verification) holds every row of the solver, solutions and certificates alike, to ten times it; the base class raises, so an adapter without it leaves its rows unverifiable (and a test fails). Add its row to the adapter table there. If the solver joins `tools/make_campaign.py`, add its infeasibility knobs to `CERTIFICATE_KNOBS` (an empty tuple, with the reason, when it has none the adapter can set) and to the last column of that row; `solver_variants` refuses a solver without an entry.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.
@@ -2254,8 +2294,9 @@ Current tests cover:
   forwarding) against a fake cuOpt, since CI has no GPU.
 - The campaign tools `tools/make_figures.py` and `tools/make_campaign.py`
   against the analysis API they use and against each other (families, time
-  limits, tolerance tags), every CPU solver variant of the campaign against the
-  installed solvers, and `tools/bench_modal.py` against a stand-in for Modal.
+  limits, tolerance tags), the infeasibility knobs every campaign solver is
+  given, every CPU solver variant of the campaign against the installed
+  solvers, and `tools/bench_modal.py` against a stand-in for Modal.
 - Every solver variant of the maintained configs in `configs/` against the
   installed solvers, `configs/README.md`'s list of maintained configs against
   the configs without the `# EXPERIMENTAL:` header, and the README's CLI,
