@@ -16,6 +16,14 @@ names are matched against a static table across spellings (``_STATUS_MAP``);
 a name it does not know becomes ``solver_error`` and the name itself is kept
 on ``info["termination"]`` and ``info["raw_status"]``. The Python API has changed across releases, so
 rerun the probe after upgrading cuOpt.
+
+Infeasibility claims carry no certificate: cuOpt's API exposes none. Its
+``Solution`` has no ray or Farkas getter, and on a PDLP infeasibility stop
+it returns the last (or averaged) iterate, not the iterate difference its
+infeasibility test is made on, which stays inside the solver; the dual
+simplex's Farkas computation is switched off in its source (checked on
+NVIDIA/cuopt main, 2026-11). A cuOpt infeasibility claim therefore cannot
+be verified and counts as unsolved unless ``--allow-missing``.
 """
 
 from __future__ import annotations

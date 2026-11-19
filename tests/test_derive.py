@@ -447,13 +447,13 @@ def test_verify_holds_certificates_to_the_tolerance(tmp_path):
 
 
 def test_verify_demotes_claims_without_a_certificate_unless_missing_is_tolerated(tmp_path):
-    # HiGHS, cuOpt and the commercial adapters record no certificate vector
-    # (PIQP, ProxQP and SDPA none when the solver returns none): such a claim
-    # cannot be verified, like a claimed optimum without residuals.
+    # cuOpt records no certificate vector (its API exposes none; the other
+    # adapters none when the solver returns none): such a claim cannot be
+    # verified, like a claimed optimum without residuals.
     exp = {"metadata": {"expected_status": "infeasible"}}
     rows = [
-        {**_row("p1", "highs", status="primal_infeasible", kkt=None), **exp},
-        {**_row("p2", "highs", status="dual_infeasible", kkt={}), **exp},
+        {**_row("p1", "cuopt", status="primal_infeasible", kkt=None), **exp},
+        {**_row("p2", "cuopt", status="dual_infeasible", kkt={}), **exp},
         {**_row("p1", "scs", status="primal_infeasible",
                 kkt={"certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": 1e-9, "dual_cone_res": 0.0,
                      "cert_res": 1e-9, "cert_tol": 1e-3, "valid": True}), **exp},
@@ -462,19 +462,19 @@ def test_verify_demotes_claims_without_a_certificate_unless_missing_is_tolerated
     strict = kkt_verify(src, tmp_path / "strict", tol=1e-6)
     out = _read_rows(tmp_path / "strict")
     assert {key: row["status"] for key, row in out.items()} == {
-        ("p1", "highs"): "primal_infeasible_inaccurate", ("p2", "highs"): "dual_infeasible_inaccurate",
+        ("p1", "cuopt"): "primal_infeasible_inaccurate", ("p2", "cuopt"): "dual_infeasible_inaccurate",
         ("p1", "scs"): "primal_infeasible"}
     # Every checked row says what was decided; a certificate that passes is kept.
     assert out[("p1", "scs")]["metadata"]["kkt_verify"]["verdict"] == "kept"
-    assert out[("p1", "highs")]["metadata"]["kkt_verify"]["verdict"] == "missing_residuals"
-    assert strict["demoted"] == {"highs": 2} and strict["kept"] == {"scs": 1}
-    assert strict["missing_residuals"] == {"highs": 2} and strict["unverified_certificates"] == {}
+    assert out[("p1", "cuopt")]["metadata"]["kkt_verify"]["verdict"] == "missing_residuals"
+    assert strict["demoted"] == {"cuopt": 2} and strict["kept"] == {"scs": 1}
+    assert strict["missing_residuals"] == {"cuopt": 2} and strict["unverified_certificates"] == {}
     lenient = kkt_verify(src, tmp_path / "lenient", tol=1e-6, missing_is_failure=False)
     out = _read_rows(tmp_path / "lenient")
     assert {key: row["status"] for key, row in out.items()} == {
-        ("p1", "highs"): "primal_infeasible", ("p2", "highs"): "dual_infeasible", ("p1", "scs"): "primal_infeasible"}
-    assert lenient["demoted"] == {} and lenient["kept"] == {"highs": 2, "scs": 1}
-    assert lenient["missing_residuals"] == {"highs": 2}
+        ("p1", "cuopt"): "primal_infeasible", ("p2", "cuopt"): "dual_infeasible", ("p1", "scs"): "primal_infeasible"}
+    assert lenient["demoted"] == {} and lenient["kept"] == {"cuopt": 2, "scs": 1}
+    assert lenient["missing_residuals"] == {"cuopt": 2}
 
 
 def test_verify_checks_what_it_can_of_a_certificate_with_an_unsupported_cone(tmp_path):

@@ -329,11 +329,13 @@ def test_highs_refused_hessian_is_a_solver_error(tmp_path):
      status.PRIMAL_INFEASIBLE),
 ])
 def test_highs_infeasibility_claims_carry_no_solution_residuals(qp, expected, tmp_path):
-    # HiGHS has no checkable certificate; residuals of its last point were
-    # recorded under certificate statuses.
+    # Residuals of HiGHS's last point were recorded under certificate
+    # statuses. A claim carries the check of its certificate, when HiGHS
+    # gives one (it has no ray for the unbounded QP), never a point's.
     result = _solve("highs", {}, tmp_path, qp)
     assert result.status == expected
-    assert result.kkt is None
+    assert result.kkt is None or result.kkt["certificate"] == expected
+    assert "primal_res_rel" not in (result.kkt or {})
 
 
 def test_highs_iterations_are_those_of_the_finishing_algorithm(tmp_path):

@@ -4,6 +4,11 @@
 solver's when it ran, else interior point's, else PDLP's, else simplex's (a QP
 runs simplex for phase 1 first, and an interior-point LP solve may end with
 simplex crossover iterations); every algorithm's count stays on ``info``.
+
+An infeasibility claim carries HiGHS's ray (``getDualRay`` /
+``getPrimalRay``), checked like every other adapter's certificate; the time
+HiGHS takes to produce it counts in the run time when one is recorded (see
+:func:`_highs_certificate`).
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from .base import (
     solver_import_failed,
     threads_or_default,
 )
-from .qp_split import free_row_mask, normalize_qp_bounds
+from .qp_split import free_row_mask, normalize_qp_bounds, qp_certificate_kkt
 
 # HiGHS's feasibility and optimality tolerances (checked on highspy 1.15.1).
 HIGHS_DEFAULT_TOLERANCES = {
@@ -173,18 +178,35 @@ class HighsSolverAdapter(SolverAdapter):
 
         model_status = solver.getModelStatus()
         mapped = _map_highs_status(model_status, highspy)
+        # Read before the certificate: getDualRay may re-solve the LP.
         info = solver.getInfo()
         solution = solver.getSolution()
+        certificate_start = time.perf_counter()
+        farkas, ray, unavailable = _highs_certificate(solver, mapped, n, keep)
+        certificate_seconds = time.perf_counter() - certificate_start
         y = None
         if solution.dual_valid:
             y = np.zeros(m)
             y[keep] = -np.asarray(solution.row_dual, dtype=float)
         x = np.asarray(solution.col_value, dtype=float) if solution.value_valid else None
         kkt_dict = None
-        # HiGHS reports no certificate the harness can check, so only a
-        # status that may carry a solution gets residuals.
-        if mapped in status.ANY_FEASIBLE and finite_point(x, y):
-            kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
+        if mapped in status.ANY_FEASIBLE:
+            if finite_point(x, y):
+                kkt_dict = kkt.qp_residuals(p, q, a, l, u, x, y)
+        else:
+            kkt_dict = qp_certificate_kkt(mapped, p, q, a, l, u, farkas=farkas, ray=ray)
+        certificate_info: dict = {}
+        if mapped in _RAY_GETTERS:
+            certificate_info["certificate_seconds"] = certificate_seconds
+            if kkt_dict is not None:
+                # The claim is checked on this certificate, so the time HiGHS
+                # took to produce it counts. An attempt that gave none is
+                # left out: the claim is then unverified whatever it cost,
+                # and counting it could turn a claim made in time into a
+                # time_limit row.
+                elapsed += certificate_seconds
+            else:
+                certificate_info["certificate_unavailable"] = unavailable
         return SolverResult(
             status=mapped,
             objective_value=reported_objective(mapped, info.objective_function_value),
@@ -202,10 +224,71 @@ class HighsSolverAdapter(SolverAdapter):
                 "objective_function_value": getattr(info, "objective_function_value", None),
                 "version": solver.version(),
                 "threads": threads,
+                **certificate_info,
                 **({"settings_translated": translated} if translated else {}),
             },
             kkt=kkt_dict,
         )
+
+
+# The ray each infeasibility claim is certified by: a dual ray (a Farkas
+# certificate over the rows) for an infeasible LP, a primal ray (an unbounded
+# direction) for an unbounded one.
+_RAY_GETTERS = {
+    status.PRIMAL_INFEASIBLE: ("getDualRay", "dual ray"),
+    status.DUAL_INFEASIBLE: ("getPrimalRay", "primal ray"),
+}
+
+
+def _highs_certificate(solver, mapped: str, n: int, keep):
+    """HiGHS's certificate for an infeasibility claim, as ``(farkas, ray, unavailable)``.
+
+    ``farkas`` is the dual ray over the original rows (zero on the free rows
+    the adapter leaves out) in the harness's dual sign: HiGHS's dual ray has
+    the sign of its row duals, which the adapter negates for solutions too
+    (checked on highspy 1.15.1: ``x1 + x2 <= 1, x1 >= 1, x2 >= 1`` gives
+    ``[-1, 1, 1]``). ``ray`` is the primal ray, which needs no conversion.
+    ``unavailable`` says why there is none, else None.
+
+    No setting is needed. HiGHS keeps the ray of the simplex solve that
+    proved the claim; when that solve was of the presolved LP (the ray is not
+    carried through postsolve), ``getDualRay`` / ``getPrimalRay`` solve the
+    original LP again without presolve to find one, which can take as long
+    as a solve (NETLIB gosh: about 0.01 s to the claim, 3 to 7 s to the
+    ray). The caller records that time as ``info.certificate_seconds`` and
+    counts it in the run time when a certificate is recorded; HiGHS's
+    ``time_limit`` covers it, since it bounds all runs of one ``Highs``
+    object. An unbounded QP gets no ray, and nor do NETLIB cplex2, klein1 and
+    qual (the re-solve ends with status Unknown); with highspy 1.15.1 neither
+    does a claim made by interior point or PDLP (``solver: ipm`` / ``pdlp``),
+    whose re-solve uses the same algorithm, while 1.16.0 gives one. Those
+    claims have no certificate to check. The claim is already made when the
+    ray is asked for, so any failure to get one (an error HiGHS raises, a ray
+    of the wrong size or not finite) leaves the claim without a certificate
+    rather than losing the row.
+    """
+    if mapped not in _RAY_GETTERS:
+        return None, None, None
+    getter, kind = _RAY_GETTERS[mapped]
+    try:
+        _, has_ray, values = getattr(solver, getter)()
+        if not has_ray:
+            return None, None, f"HiGHS returned no {kind}"
+        values = np.asarray(values, dtype=float).reshape(-1)
+        size = n if mapped == status.DUAL_INFEASIBLE else int(np.count_nonzero(keep))
+        if values.shape != (size,):
+            return None, None, f"HiGHS's {kind} has {values.size} entries for {size}"
+        if not np.all(np.isfinite(values)):
+            return None, None, f"HiGHS's {kind} is not finite"
+        if mapped == status.DUAL_INFEASIBLE:
+            return None, values, None
+        farkas = np.zeros(len(keep))
+        farkas[keep] = -values
+        return farkas, None, None
+    except Exception as exc:
+        # A highspy without the getter, or an error from the re-solve (a
+        # pybind11 RuntimeError, say).
+        return None, None, f"{getter} failed: {type(exc).__name__}: {exc}"
 
 
 # HiGHS caps each algorithm separately; ``max_iter`` sets all of them.

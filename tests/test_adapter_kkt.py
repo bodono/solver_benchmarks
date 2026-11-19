@@ -330,7 +330,7 @@ def test_solvers_agree_on_small_sdp_with_psd_cone(solver_name: str, tmp_path: Pa
     assert result.kkt["dual_res_rel"] < 1e-4
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "osqp", "ecos", "cpo3"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "osqp", "ecos", "cpo3", "highs", "gurobi", "cplex", "mosek"])
 def test_adapter_reports_primal_infeasibility_certificate(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _infeasible_lp(), tmp_path)
     assert result.status in {
@@ -393,7 +393,7 @@ def test_qtqp_status_mapping(raw_status: str, expected: str):
     assert _map_qtqp_status(raw_status) == expected
 
 
-@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cpo3"])
+@pytest.mark.parametrize("solver_name", ["scs", "clarabel", "ecos", "cpo3", "highs", "gurobi", "cplex", "mosek"])
 def test_adapter_reports_dual_infeasibility_certificate(solver_name: str, tmp_path: Path):
     result = _solve(solver_name, _unbounded_lp(), tmp_path)
     assert result.status in {
@@ -471,11 +471,21 @@ def test_commercial_adapter_kkt_original_rows(solver_name, quadratic, tmp_path):
         assert result.kkt[field] < 1e-6
 
 
-@pytest.mark.parametrize("solver_name", ["cplex", "mosek", "gurobi"])
-def test_commercial_adapter_infeasible_has_no_kkt(solver_name, tmp_path):
-    result = _solve(solver_name, _infeasible_lp(), tmp_path)
-    assert result.status == status.PRIMAL_INFEASIBLE
-    assert result.kkt is None
+@pytest.mark.parametrize("solver_name", ["cplex", "mosek", "gurobi", "highs"])
+@pytest.mark.parametrize("problem, claim", [
+    (_infeasible_lp, status.PRIMAL_INFEASIBLE),
+    (_unbounded_lp, status.DUAL_INFEASIBLE),
+])
+def test_lp_infeasibility_claim_carries_a_certificate_that_passes(solver_name, problem, claim, tmp_path):
+    # These adapters recorded no certificate, so their claims could not be
+    # verified (the commercial ones are skipped where they are not installed).
+    # valid holds cert_res to kkt.CERT_TOL (1e-3): a conversion error gives
+    # inf or a residual of order one, while an interior-point certificate
+    # (MOSEK's) is not exact.
+    result = _solve(solver_name, problem(), tmp_path)
+    assert result.status == claim
+    assert result.kkt is not None and result.kkt["certificate"] == claim
+    assert result.kkt["valid"] is True
 
 
 @pytest.mark.parametrize("solver_name", ["clarabel", "cplex", "gurobi", "highs", "mosek", "piqp", "cpo3"])

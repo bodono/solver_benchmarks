@@ -136,21 +136,42 @@ def dense_backend_requested(settings: dict, solver: str) -> bool:
     return bool(dense_flag) or (backend is not None and str(backend).lower() == "dense")
 
 
+PRIMAL_CERTIFICATE_STATUSES = frozenset({status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE})
+DUAL_CERTIFICATE_STATUSES = frozenset({status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE})
+
+
+def qp_certificate_kkt(mapped: str, P, q, A, l, u, *, farkas=None, ray=None):
+    """Certificate check for an infeasibility claim on ``l <= A x <= u``.
+
+    ``farkas`` is a primal-infeasibility certificate over the rows of ``A``
+    in the harness's dual sign (positive on a row whose upper bound it uses,
+    negative on one whose lower bound it uses, as the solution duals are),
+    so that ``A'y = 0`` and ``u'y⁺ − l'y⁻ < 0``; ``ray`` is an unbounded
+    direction over the variables (``Px = 0``, ``q'x < 0``, ``Ax`` in the
+    recession cone of the bounds). Returns the matching
+    ``kkt.qp_*_infeasibility_cert`` record, or None when ``mapped`` is not
+    an infeasibility claim or the matching vector is missing or not finite
+    (the claim then has no certificate to check).
+    """
+    if mapped in PRIMAL_CERTIFICATE_STATUSES:
+        if not finite_point(farkas):
+            return None
+        return kkt.qp_primal_infeasibility_cert(A, l, u, farkas)
+    if mapped in DUAL_CERTIFICATE_STATUSES:
+        if not finite_point(ray):
+            return None
+        return kkt.qp_dual_infeasibility_cert(P, q, A, l, u, ray)
+    return None
+
+
 def split_qp_kkt(mapped: str, qp: dict, x, y):
     """KKT record for a split-QP adapter (PIQP, ProxQP) from ``x`` and the
     combined dual ``y``: solution residuals for a status that may carry a
     point, the certificate checks for infeasibility claims (``y`` a Farkas
-    certificate, ``x`` an unbounded ray), None if the vector is not finite."""
+    certificate, ``x`` an unbounded ray: both solvers return their
+    certificate in these vectors), None if the vector is not finite."""
     if mapped in status.ANY_FEASIBLE:
         if not finite_point(x, y):
             return None
         return kkt.qp_residuals(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x, y)
-    if mapped in {status.PRIMAL_INFEASIBLE, status.PRIMAL_INFEASIBLE_INACCURATE}:
-        if not finite_point(y):
-            return None
-        return kkt.qp_primal_infeasibility_cert(qp["A"], qp["l"], qp["u"], y)
-    if mapped in {status.DUAL_INFEASIBLE, status.DUAL_INFEASIBLE_INACCURATE}:
-        if not finite_point(x):
-            return None
-        return kkt.qp_dual_infeasibility_cert(qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], x)
-    return None
+    return qp_certificate_kkt(mapped, qp["P"], qp["q"], qp["A"], qp["l"], qp["u"], farkas=y, ray=x)

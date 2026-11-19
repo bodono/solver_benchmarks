@@ -10,6 +10,13 @@ and ``threads`` ``MSK_IPAR_NUM_THREADS``, one unless ``threads`` or the native
 name is given (0: MOSEK's own choice). The ``eps`` aliases are refused: MOSEK's
 tolerances are not an absolute/relative pair. Bounds go through the shared
 infinity cutoff (``|bound| >= 1e19`` on the open side is infinite).
+
+An infeasibility claim carries MOSEK's certificate (the dual solution for a
+primal infeasibility certificate, the primal solution for a dual one),
+checked like every other adapter's; see :func:`_certificate_kkt`. Not run
+against a real MOSEK here (no licence on the development machine); the
+conversion follows MOSEK's documentation and is pinned by the fake in
+``tests/test_mosek_adapter_fake.py``.
 """
 
 from __future__ import annotations
@@ -45,7 +52,7 @@ from .base import (
     solver_import_failed,
     threads_or_default,
 )
-from .qp_split import normalize_qp_bounds
+from .qp_split import normalize_qp_bounds, qp_certificate_kkt
 
 # MOSEK's interior-point termination tolerances (documented defaults; not
 # checked here, MOSEK needs a license): the linear ones apply to LPs, the
@@ -144,8 +151,14 @@ class MosekSolverAdapter(SolverAdapter):
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
             iterations = task.getintinf(mosek.iinfitem.intpnt_iter)
             # Only a claimed solution has an objective; a limit-hit point
-            # keeps its residuals (and primal_obj) in the KKT record.
-            objective = task.getprimalobj(soltype) if kkt_dict is not None else None
+            # keeps its residuals (and primal_obj) in the KKT record, and a
+            # certificate has none.
+            has_point = kkt_dict is not None and mapped not in status.ANY_INFEASIBLE
+            objective = task.getprimalobj(soltype) if has_point else None
+            certificate_info: dict[str, str] = {}
+            if mapped in (status.PRIMAL_INFEASIBLE, status.DUAL_INFEASIBLE) and kkt_dict is None:
+                # The only claim _certificate_kkt does not check.
+                certificate_info["certificate_unavailable"] = "MOSEK's certificate is not finite"
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
@@ -159,6 +172,7 @@ class MosekSolverAdapter(SolverAdapter):
                     "solver_reported_runtime": float(solver_reported_runtime),
                     "soltype": str(soltype),
                     "threads": threads,
+                    **certificate_info,
                     **({"settings_translated": translated} if translated else {}),
                 },
             )
@@ -291,7 +305,11 @@ def _map_mosek_status(raw_status, termination_code, mosek) -> str:
 
 
 def _select_mosek_solution(task, mosek, qp):
-    """Select the point with the smallest worst relative KKT residual."""
+    """Select the point with the smallest worst relative KKT residual.
+
+    A solution that is an infeasibility certificate is taken as it is, with
+    its certificate check (see :func:`_certificate_kkt`).
+    """
     candidates = []
     # min() keeps the first candidate on ties, so prefer the interior point.
     for soltype in (mosek.soltype.itr, mosek.soltype.bas):
@@ -299,7 +317,7 @@ def _select_mosek_solution(task, mosek, qp):
             continue
         mapped = _map_mosek_status(task.getsolsta(soltype), None, mosek)
         if mapped in status.ANY_INFEASIBLE:
-            return soltype, None
+            return soltype, _certificate_kkt(task, soltype, mapped, qp)
         x = np.asarray(task.getxx(soltype), dtype=float)
         y = -np.asarray(task.gety(soltype), dtype=float)
         if not finite_point(x, y):
@@ -314,6 +332,30 @@ def _select_mosek_solution(task, mosek, qp):
         return mosek.soltype.itr, None
     _, soltype, residuals = min(candidates, key=lambda candidate: candidate[0])
     return soltype, residuals
+
+
+def _certificate_kkt(task, soltype, mapped: str, qp):
+    """The certificate check of the solution ``soltype`` holding a certificate.
+
+    MOSEK reports a primal infeasibility certificate as the dual solution:
+    ``y`` with ``A'y = 0`` (the variables are free), ``y = s_l^c - s_u^c``,
+    ``s >= 0`` and ``(l^c)'s_l^c - (u^c)'s_u^c > 0`` (MOSEK's "Infeasibility
+    for linear optimization"). Its sign is that of MOSEK's duals, which the
+    adapter negates for solutions too: ``-y`` puts ``s_u^c`` on the upper
+    bounds and ``s_l^c`` on the lower ones, the harness's support. A dual
+    infeasibility certificate is the primal solution ``x`` (``c'x < 0``,
+    ``Ax`` in the recession cone of the bounds), the harness's ray as it is.
+    MOSEK computes both by default, for LPs and QPs alike, so no parameter
+    is needed. Rows with no bound (free) have zero multipliers. A vector
+    that is not finite gives no record (the caller says so on ``info``).
+    """
+    lower, upper = normalize_qp_bounds(qp["l"], qp["u"])
+    farkas = ray = None
+    if mapped == status.PRIMAL_INFEASIBLE:
+        farkas = -np.asarray(task.gety(soltype), dtype=float)
+    elif mapped == status.DUAL_INFEASIBLE:
+        ray = np.asarray(task.getxx(soltype), dtype=float)
+    return qp_certificate_kkt(mapped, qp["P"], qp["q"], qp["A"], lower, upper, farkas=farkas, ray=ray)
 
 
 def _handle_mosek_str_param(task, param: str, value) -> None:
