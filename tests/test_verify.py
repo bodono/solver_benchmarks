@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
 from solver_benchmarks.analysis.derive import kkt_verify, merge_runs
 from solver_benchmarks.analysis.load import load_results
@@ -21,6 +22,7 @@ from solver_benchmarks.analysis.verify import (
     row_info_from_record,
     verification_table,
 )
+from solver_benchmarks.cli import main
 
 # SCS at eps 1e-4: solutions are checked at 1e-3, certificates (eps_infeas
 # left at SCS's 1e-7) at 1e-6.
@@ -427,3 +429,116 @@ def test_verification_table_counts():
     row = verification_table(frame).iloc[0]
     assert (row["kept"], row["demoted"], row["promoted"], row["no_residuals"]) == (1, 2, 1, 1)
     assert row["tol"] == "0.001"
+
+
+# --- the CLI ---------------------------------------------------------------------
+
+
+def test_summary_prints_the_rule_and_the_verification_table(tmp_path, repo_root):
+    run = _write_run(tmp_path / "run", _rows())
+    result = CliRunner().invoke(main, ["summary", str(run), "--repo-root", str(repo_root)])
+    assert result.exit_code == 0, result.output
+    assert "Statuses are KKT-verified" in result.output
+    verification = result.output.split("Verification:")[1]
+    assert "scs_1e-4" in verification and "requested_tol" in verification
+    unverified = CliRunner().invoke(main, ["summary", str(run), "--repo-root", str(repo_root), "--unverified"])
+    assert "not KKT-verified" in unverified.output and "Verification:" not in unverified.output
+
+
+def test_failures_take_the_verification_options(tmp_path, repo_root):
+    run = _write_run(tmp_path / "run", _rows())
+
+    def success(*options):
+        result = CliRunner().invoke(main, ["failures", str(run), "--repo-root", str(repo_root), *options])
+        assert result.exit_code == 0, result.output
+        line = next(line for line in result.output.splitlines() if line.split()[:1] == ["scs_1e-4"])
+        return int(line.split()[2])
+
+    assert success() == 6
+    assert success("--unverified") == 7
+    assert success("--verify-tol", "1e-2") == 8  # loose and cert_bad pass; bare still has no residuals
+    assert success("--requested-tol", "scs_1e-4=1e-6/1e-6") == 5  # ok and cert_bad fail at 1e-5
+
+
+def test_an_unknown_tolerance_is_a_click_error_with_the_remedies(tmp_path):
+    run = _write_run(tmp_path / "run", _rows(), manifest=False)
+    result = CliRunner().invoke(main, ["failures", str(run)])
+    assert result.exit_code == 1
+    assert "--requested-tol" in result.output and "--tol-from-solver-id" in result.output
+    assert "Traceback" not in result.output
+    tagged = CliRunner().invoke(main, ["failures", str(run), "--tol-from-solver-id"])
+    assert tagged.exit_code == 0, tagged.output
+
+
+@pytest.mark.parametrize("options", [["--unverified", "--verify-tol", "1e-3"], ["--unverified", "--reverify"],
+                                     ["--verify-tol", "1e-3", "--reverify"],
+                                     ["--requested-tol", "nonsense"]])
+def test_conflicting_verification_options_are_usage_errors(tmp_path, options):
+    run = _write_run(tmp_path / "run", _rows())
+    result = CliRunner().invoke(main, ["summary", str(run), *options])
+    assert result.exit_code == 2, result.output
+
+
+def test_kkt_verify_defaults_to_the_requested_rule_and_says_so(tmp_path):
+    run = _write_run(tmp_path / "run", _rows())
+    result = CliRunner().invoke(main, ["kkt-verify", str(run)])
+    assert result.exit_code == 0, result.output
+    out_dir = tmp_path / "run_verified"
+    assert result.output.strip().splitlines()[-1] == str(out_dir)
+    line = next(line for line in result.output.splitlines() if line.startswith("scs_1e-4"))
+    assert "promoted=2" in line and "requested=1e-04/1e-07" in line and "check=1e-03/1e-06" in line
+    manifest = json.loads((out_dir / "manifest.json").read_text())["derived"]
+    assert manifest["rule"] == "requested" and manifest["promote"] is True and manifest["annotates_all_rows"]
+    fixed = CliRunner().invoke(main, ["kkt-verify", str(run), "--tol", "1e-3", "--no-promote"])
+    assert fixed.exit_code == 0, fixed.output
+    assert (tmp_path / "run_kkt1e-03").exists()
+    # the scripts that ran it with --promote keep working
+    assert CliRunner().invoke(main, ["kkt-verify", str(run), "--tol", "1e-3", "--promote", "--output-dir",
+                                     str(tmp_path / "p")]).exit_code == 0
+
+
+def test_kkt_verify_with_an_unknown_tolerance_writes_nothing(tmp_path):
+    run = _write_run(tmp_path / "run", _rows(), manifest=False)
+    result = CliRunner().invoke(main, ["kkt-verify", str(run)])
+    assert result.exit_code == 1 and "--requested-tol" in result.output
+    assert not (tmp_path / "run_verified").exists()
+
+
+# --- the report ----------------------------------------------------------------
+
+
+def test_report_states_and_tabulates_the_verification(tmp_path, repo_root):
+    from solver_benchmarks.analysis.markdown_report import write_run_report
+
+    run = _write_run(tmp_path / "run", _rows())
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root, max_value=100.0)
+    report = tmp_path / "report"
+    markdown = (report / "index.md").read_text()
+    summary = markdown.split("## Verification")[0]
+    assert "Statuses are KKT-verified" in summary
+    section = markdown.split("## Verification")[1].split("\n## ")[0]
+    assert "requested_tol" in section and "scs_1e-4" in section
+    table = pd.read_csv(report / "verification.csv").set_index("solver_id")
+    assert table.loc["scs_1e-4", "promoted"] == 2 and table.loc["scs_1e-4", "unverified"] == 2
+    assert table.loc["scs_1e-4", "demoted"] == 3  # loose, bare (no residuals) and cert_bad
+    changes = pd.read_csv(report / "verification_changes.csv")
+    assert ((changes["status_reported"] == "optimal") & (changes["status"] == "optimal_inaccurate")).any()
+    counts = pd.read_csv(report / "status_counts.csv").set_index("status")["count"]
+    assert counts["optimal"] == 3 and counts["optimal_inaccurate"] == 3
+    # claims are what the solvers reported: the demoted ones are counted
+    thresholds = pd.read_csv(report / "claimed_optimal_kkt_thresholds.csv").set_index("solver_id")
+    assert thresholds.loc["scs_1e-4", "claimed_optimal"] == 4
+    certificates = pd.read_csv(report / "kkt_certificate_summary.csv").set_index("solver_id")
+    assert certificates.loc["scs_1e-4", "infeasible_count"] == 4
+    assert certificates.loc["scs_1e-4", "cert_valid"] == 2  # kept and promoted
+    assert certificates.loc["scs_1e-4", "cert_invalid"] == 1
+
+
+def test_unverified_report_says_so(tmp_path, repo_root):
+    from solver_benchmarks.analysis.markdown_report import write_run_report
+
+    run = _write_run(tmp_path / "run", _rows())
+    write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root, max_value=100.0, verify=False)
+    markdown = (tmp_path / "report" / "index.md").read_text()
+    assert "Statuses as the solvers reported them (not KKT-verified)." in markdown
+    assert not (tmp_path / "report" / "verification.csv").exists()

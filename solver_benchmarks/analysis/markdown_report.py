@@ -43,6 +43,13 @@ from solver_benchmarks.analysis.tables import (
     solver_problem_tables,
     status_matrix,
 )
+from solver_benchmarks.analysis.verify import (
+    VerifyPolicy,
+    verification_changes,
+    verification_header,
+    verification_info,
+    verification_table,
+)
 from solver_benchmarks.core.config import manifest_dataset_entries
 
 PLOT_IMAGE_WIDTH = 680
@@ -57,12 +64,21 @@ def write_run_report(
     repo_root: str | Path | None = None,
     max_value: float | None = None,
     data_root: str | Path | None = None,
+    results: pd.DataFrame | None = None,
+    verify: bool | VerifyPolicy = True,
 ) -> list[Path]:
+    """Write the report of a run into ``output_dir`` (``RUN_DIR/report``).
+
+    Statuses are KKT-verified as ``load_results`` verifies them, with
+    ``verify`` choosing the rule (False: the solvers' own statuses); a
+    caller that has loaded the run already passes it as ``results``.
+    """
     run_dir = Path(run_dir)
     output_dir = Path(output_dir) if output_dir is not None else run_dir / "report"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    results = load_results(run_dir)
+    if results is None:
+        results = load_results(run_dir, verify=verify)
     if results.empty:
         return []
 
@@ -85,6 +101,9 @@ def write_run_report(
     dimensions = problem_dimensions(results)
     tables = {
         **_solver_summary_tables(solves, metric=metric, expected=expected, geomean_options=geomean_options),
+        # Rows as recorded, as status_counts: what verification decided.
+        "verification.csv": verification_table(results),
+        "verification_changes.csv": verification_changes(results),
         "status_counts.csv": status_counts(results),
         "completion.csv": completion_summary(run_dir, results, repo_root=repo_root, data_root=data_root),
         "missing_results.csv": missing_results(run_dir, results, repo_root=repo_root, data_root=data_root),
@@ -317,6 +336,7 @@ def _render_markdown_report(
 
     lines: list[str] = []
     lines.extend(_render_summary_block(dataset_entries, results, tables, metric, manifest=manifest))
+    lines.extend(_render_verification_block(results, tables))
     lines.extend(
         _render_scope_block(
             run_dir=run_dir,
@@ -369,6 +389,35 @@ def _render_summary_block(
         ),
         "",
     ]
+
+
+def _render_verification_block(results: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> list[str]:
+    """How the statuses of every table and plot were decided, per solver."""
+    info = verification_info(results)
+    intro = verification_header(info)
+    for warning in info.get("warnings") or []:
+        intro += f" Warning: {warning}."
+    table = tables.get("verification.csv", pd.DataFrame())
+    if info.get("mode") != "unverified" and not table.empty:
+        intro += (
+            " Per solver: the tolerance its settings requested (`requested_tol`, and for certificates "
+            "`requested_cert_tol`; `source` says where it came from) and the tolerances its rows were "
+            "checked at (`tol`, `cert_tol`); then claims kept, demoted (`no_residuals`: no complete "
+            "residuals), promoted, returned after the time limit (`over_limit`) and kept without a full "
+            "check (`unverified`). `verification_changes.csv` counts each reported status against the "
+            "verified one, and `status_reported` in the per-solve tables keeps the reported status."
+        )
+    lines = _section_table(
+        "Verification",
+        table if info.get("mode") != "unverified" else pd.DataFrame(),
+        intro=intro,
+        max_rows=100,
+        max_cols=len(table.columns) if not table.empty else 12,
+        source_link="verification.csv",
+    )
+    if info.get("mode") == "unverified" and lines[-2:] == ["No rows for this section.", ""]:
+        lines = lines[:-2]
+    return lines
 
 
 def _render_scope_block(
@@ -1037,6 +1086,12 @@ _FIXED_SORTS: dict[str, list[tuple[str, bool]]] = {
         ("solver_id", True),
         ("status", True),
     ],
+    "verification.csv": [("solver_id", True)],
+    "verification_changes.csv": [
+        ("solver_id", True),
+        ("status_reported", True),
+        ("status", True),
+    ],
     "failure_rates.csv": [
         ("failure_rate", True),
         ("failure_count", True),
@@ -1288,6 +1343,7 @@ def _executive_summary_text(
         f"{'' if dataset_count == 1 else 's'}, producing {len(results)} result row"
         f"{'' if len(results) == 1 else 's'}. The primary metric is `{metric}`."
     )
+    summary += f" {verification_header(results)}"
     derived_sentence = _derived_run_sentence((manifest or {}).get("derived"))
     if derived_sentence:
         summary += f" {derived_sentence}"
@@ -1751,7 +1807,15 @@ def _derived_step_text(step: dict) -> str:
     its inputs were derived themselves, and how)."""
     kind = step.get("kind")
     if kind == "kkt_verify":
-        text = f"`bench kkt-verify` at tolerance `{_format_cell(step.get('tol'))}`"
+        if step.get("rule") == "requested":
+            slack = step.get("slack")
+            text = (
+                f"`bench kkt-verify` at `{_format_cell(slack)}` x each solver's requested tolerance"
+                if slack is not None
+                else "`bench kkt-verify` at each solver's requested tolerance"
+            )
+        else:
+            text = f"`bench kkt-verify` at tolerance `{_format_cell(step.get('tol'))}`"
         text += " with `--promote`" if step.get("promote") else " without `--promote`"
         totals = [
             f"{sum(step[key].values())} {key}"

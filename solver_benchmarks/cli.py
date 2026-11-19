@@ -27,6 +27,15 @@ from solver_benchmarks.analysis.tables import (
     missing_results,
     solver_metrics,
 )
+from solver_benchmarks.analysis.verify import (
+    VERIFY_SLACK,
+    VerifyInputError,
+    VerifyPolicy,
+    parse_requested_tol,
+    verification_header,
+    verification_info,
+    verification_table,
+)
 from solver_benchmarks.core.config import (
     DatasetConfig,
     close_names,
@@ -382,12 +391,102 @@ def _analysis_data_root_option(command):
     )(command)
 
 
+def _requested_tol_option(command):
+    return click.option(
+        "--requested-tol",
+        "requested_tol",
+        multiple=True,
+        metavar="SOLVER_ID=TOL[/CERT_TOL]",
+        help=(
+            "The tolerance SOLVER_ID was asked for (and its infeasibility tolerance), for runs that do "
+            "not record it; repeatable."
+        ),
+    )(command)
+
+
+def _tol_from_solver_id_option(command):
+    return click.option(
+        "--tol-from-solver-id",
+        is_flag=True,
+        help="Take a solver's requested tolerance from a tag ending its id (clarabel_1e-4) when the run gives none.",
+    )(command)
+
+
+def _verification_options(command):
+    """The options that choose how an analysis command verifies the statuses
+    it reads (see analysis/verify.py); they arrive as ``verification``."""
+    command = _tol_from_solver_id_option(command)
+    command = _requested_tol_option(command)
+    command = click.option(
+        "--reverify",
+        is_flag=True,
+        help="Verify a run written by bench kkt-verify again by the default rule instead of as it recorded.",
+    )(command)
+    command = click.option(
+        "--verify-tol",
+        type=float,
+        default=None,
+        help="Hold every row (solutions and certificates) to this one tolerance instead of each solver's own.",
+    )(command)
+    command = click.option(
+        "--unverified",
+        is_flag=True,
+        help="Use the statuses the solvers reported, not the KKT-verified ones.",
+    )(command)
+    return command
+
+
+def _verification_policy(
+    unverified: bool,
+    verify_tol: float | None,
+    reverify: bool,
+    requested_tol: tuple[str, ...],
+    tol_from_solver_id: bool,
+) -> bool | VerifyPolicy:
+    """``load_results``'s ``verify`` for the verification options."""
+    if unverified and (verify_tol is not None or reverify or requested_tol or tol_from_solver_id):
+        raise click.UsageError(
+            "--unverified cannot be combined with --verify-tol, --reverify, --requested-tol or --tol-from-solver-id"
+        )
+    if verify_tol is not None and reverify:
+        raise click.UsageError("--verify-tol and --reverify cannot be combined (--verify-tol always re-checks)")
+    if unverified:
+        return False
+    try:
+        if verify_tol is not None:
+            return VerifyPolicy(rule="fixed", tol=verify_tol)
+        return VerifyPolicy(
+            rule="requested" if reverify else "auto",
+            requested_tol=parse_requested_tol(requested_tol),
+            tol_from_solver_id=tol_from_solver_id,
+        )
+    except VerifyInputError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
+def _load_verified(run_dir: Path, verify: bool | VerifyPolicy, *, header: str = "stdout"):
+    """``load_results`` with the verification options; prints how statuses
+    were decided (to stdout, or stderr for commands whose output is file
+    paths) and any warning."""
+    try:
+        df = load_results(run_dir, verify=verify)
+    except VerifyInputError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not df.empty:
+        info = verification_info(df)
+        click.echo(verification_header(info), err=header == "stderr")
+        for warning in info.get("warnings") or []:
+            click.echo(f"warning: {warning}", err=True)
+    return df
+
+
 @main.command("summary")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @_analysis_data_root_option
-def summary_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -> None:
-    df = load_results(run_dir)
+@_verification_options
+def summary_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None, **verification) -> None:
+    df = _load_verified(run_dir, _verification_policy(**verification))
     summary = status_counts(df)
     if summary.empty:
         click.echo("No results found.")
@@ -399,6 +498,11 @@ def summary_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -
         click.echo()
     click.echo("Status counts:")
     click.echo(summary.to_string(index=False))
+    # What verification decided, per solver: the statuses above are its.
+    table = verification_table(df)
+    if not table.empty:
+        click.echo("\nVerification:")
+        click.echo(table.to_string(index=False))
     completion = completion_summary(run_dir, df, repo_root=repo_root, data_root=data_root)
     if not completion.empty:
         click.echo("\nCompletion:")
@@ -411,8 +515,9 @@ def summary_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @_analysis_data_root_option
-def failures_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -> None:
-    df = load_results(run_dir)
+@_verification_options
+def failures_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None, **verification) -> None:
+    df = _load_verified(run_dir, _verification_policy(**verification))
     failures = failure_rates(df, expected=expected_results(run_dir, repo_root=repo_root, data_root=data_root))
     if failures.empty:
         click.echo("No results found.")
@@ -425,7 +530,8 @@ def failures_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) 
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @_analysis_data_root_option
 def missing_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -> None:
-    df = load_results(run_dir)
+    # Which rows exist, not their statuses: no verification needed.
+    df = load_results(run_dir, verify=False)
     missing = missing_results(run_dir, df, repo_root=repo_root, data_root=data_root)
     unknown = expected_problems_unknown(run_dir, repo_root=repo_root, data_root=data_root)
     if not missing.empty:
@@ -441,8 +547,9 @@ def missing_cmd(run_dir: Path, repo_root: Path | None, data_root: Path | None) -
 @click.option("--metric", default="run_time_seconds")
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @_analysis_data_root_option
-def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None, data_root: Path | None) -> None:
-    df = load_results(run_dir)
+@_verification_options
+def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None, data_root: Path | None, **verification) -> None:
+    df = _load_verified(run_dir, _verification_policy(**verification), header="stderr")
     profile = performance_profile(
         df, metric=metric, expected=expected_results(run_dir, repo_root=repo_root, data_root=data_root)
     )
@@ -463,6 +570,7 @@ def profile_cmd(run_dir: Path, metric: str, repo_root: Path | None, data_root: P
 )
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @_analysis_data_root_option
+@_verification_options
 def geomean_cmd(
     run_dir: Path,
     metric: str,
@@ -471,8 +579,9 @@ def geomean_cmd(
     success_only: bool,
     repo_root: Path | None,
     data_root: Path | None,
+    **verification,
 ) -> None:
-    df = load_results(run_dir)
+    df = _load_verified(run_dir, _verification_policy(**verification), header="stderr")
     try:
         result = shifted_geomean(
             df,
@@ -500,6 +609,7 @@ def geomean_cmd(
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option("--max-value", type=float, default=None, help="Exact failure penalty for the selected metric.")
 @_analysis_data_root_option
+@_verification_options
 def plot_cmd(
     run_dir: Path,
     metric: str,
@@ -507,10 +617,12 @@ def plot_cmd(
     repo_root: Path | None,
     max_value: float | None,
     data_root: Path | None,
+    **verification,
 ) -> None:
     # Imported here: matplotlib costs every other command a second at start-up.
     from solver_benchmarks.analysis.plots import write_analysis_plots
 
+    results = _load_verified(run_dir, _verification_policy(**verification), header="stderr")
     try:
         paths = write_analysis_plots(
             run_dir,
@@ -519,6 +631,7 @@ def plot_cmd(
             repo_root=repo_root,
             data_root=data_root,
             max_value=max_value,
+            results=results,
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -547,6 +660,13 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
     )
     if summary.get("skipped_lines"):
         click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
+    if summary.get("mixed_verification"):
+        click.echo(
+            "warning: these runs were verified differently ("
+            + "; ".join(summary["mixed_verification"])
+            + "); the merged run is verified again from the reported statuses when it is analysed",
+            err=True,
+        )
     mixed = summary["mixed_forms"]
     if mixed:
         shown = ", ".join(mixed[:5]) + (", ..." if len(mixed) > 5 else "")
@@ -559,7 +679,22 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
 
 @main.command("kkt-verify")
 @click.argument("run_dir", type=click.Path(exists=True, path_type=Path))
-@click.option("--tol", required=True, type=float, help="Largest allowed relative KKT residual.")
+@click.option(
+    "--tol",
+    type=float,
+    default=None,
+    help=(
+        "Hold every row, solutions and certificates alike, to this relative KKT residual instead of "
+        "--slack times the tolerance each solver was asked for."
+    ),
+)
+@click.option(
+    "--slack",
+    type=float,
+    default=VERIFY_SLACK,
+    show_default=True,
+    help="Factor on each solver's requested tolerance (ignored with --tol).",
+)
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option(
     "--allow-missing",
@@ -570,8 +705,9 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
     ),
 )
 @click.option(
-    "--promote",
-    is_flag=True,
+    "--promote/--no-promote",
+    default=True,
+    show_default=True,
     help=(
         "Also mark inaccurate, iteration-limited or time-limited solves optimal when their returned "
         "point passes the check (with the point's objective), and inaccurate infeasibility "
@@ -580,33 +716,62 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
         "(with a solver limit equal to timeout_seconds, its time-limit stops never are: set it lower)."
     ),
 )
+@_requested_tol_option
+@_tol_from_solver_id_option
 @click.option(
     "--overwrite",
     is_flag=True,
     help="Replace the output directory if it is empty or an earlier merge / kkt-verify output.",
 )
 def kkt_verify_cmd(
-    run_dir: Path, tol: float, output_dir: Path | None, allow_missing: bool, promote: bool, overwrite: bool
+    run_dir: Path,
+    tol: float | None,
+    slack: float,
+    output_dir: Path | None,
+    allow_missing: bool,
+    promote: bool,
+    requested_tol: tuple[str, ...],
+    tol_from_solver_id: bool,
+    overwrite: bool,
 ) -> None:
-    """Write a copy of RUN_DIR in which claimed-optimal solves whose
-    independently computed relative KKT residuals exceed --tol are marked
-    optimal_inaccurate, and infeasibility claims whose scaled certificate
-    residual exceeds it the matching *_inaccurate status, so every solver
-    is held to the same accuracy. Infeasibility claims the harness cannot
-    check (no certificate recorded, or a cone it cannot project) are kept
-    and reported."""
+    """Write a copy of RUN_DIR with KKT-verified statuses, as every analysis
+    command reads a run by default: claimed optima whose independently
+    computed relative KKT residuals exceed the row's tolerance become
+    optimal_inaccurate, infeasibility claims whose scaled certificate residual
+    exceeds it the matching *_inaccurate status, and (with --promote, the
+    default) inaccurate and limit stops that pass become accurate. The
+    tolerance is --slack times the tolerance the solver's configuration asked
+    for (its infeasibility tolerance for certificates), or --tol for every
+    row. Infeasibility claims the harness cannot check (no certificate
+    recorded, or a cone it cannot project) are kept and reported."""
     from solver_benchmarks.analysis.derive import kkt_verify
 
-    out = output_dir or run_dir.parent / f"{run_dir.name}_kkt{tol:.0e}"
+    out = output_dir or run_dir.parent / (
+        f"{run_dir.name}_kkt{tol:.0e}" if tol is not None else f"{run_dir.name}_verified"
+    )
+    try:
+        overrides = parse_requested_tol(requested_tol)
+    except VerifyInputError as exc:
+        raise click.UsageError(str(exc)) from exc
     with _derive_errors():
         summary = kkt_verify(
-            run_dir, out, tol=tol, missing_is_failure=not allow_missing, promote=promote, overwrite=overwrite
+            run_dir,
+            out,
+            tol=tol,
+            slack=slack,
+            missing_is_failure=not allow_missing,
+            promote=promote,
+            overwrite=overwrite,
+            requested_tol=overrides,
+            tol_from_solver_id=tol_from_solver_id,
         )
     solvers = sorted(
         set(summary["kept"]) | set(summary["demoted"]) | set(summary["promoted"])
         | set(summary["missing_residuals"]) | set(summary["over_time_limit"])
     )
+    tolerances = summary.get("tolerances") or {}
     for solver_id in solvers:
+        seen = tolerances.get(solver_id) or {}
         click.echo(
             f"{solver_id}\tkept={summary['kept'].get(solver_id, 0)}"
             f"\tdemoted={summary['demoted'].get(solver_id, 0)}"
@@ -617,6 +782,12 @@ def kkt_verify_cmd(
                 if solver_id in summary["over_time_limit"]
                 else ""
             )
+            + (
+                f"\trequested={_tolerance_text(seen, 'requested_tol', 'requested_cert_tol')}"
+                if seen.get("requested_tol")
+                else ""
+            )
+            + (f"\tcheck={_tolerance_text(seen, 'tol', 'cert_tol')}" if seen.get("tol") else "")
         )
     for key, what in (
         ("unverified_cones", "rows whose cone distances could not be checked"),
@@ -634,6 +805,18 @@ def kkt_verify_cmd(
     click.echo(str(out))
 
 
+def _tolerance_text(seen: dict, key: str, cert_key: str) -> str:
+    """``1e-04/1e-07``: a solver's (optimality / certificate) tolerances,
+    several values joined by commas where its rows differ."""
+
+    def join(values) -> str:
+        return ",".join(f"{float(value):.0e}" for value in values)
+
+    text = join(seen.get(key) or [])
+    certificate = join(seen.get(cert_key) or [])
+    return f"{text}/{certificate}" if certificate and certificate != text else text
+
+
 @contextlib.contextmanager
 def _derive_errors() -> Iterator[None]:
     """Report the user errors of ``bench merge`` / ``bench kkt-verify`` as click errors."""
@@ -643,7 +826,7 @@ def _derive_errors() -> Iterator[None]:
         yield
     except OutputExistsError as exc:
         raise click.ClickException(f"{exc.path} exists; pass --overwrite to replace it") from exc
-    except DeriveInputError as exc:
+    except (DeriveInputError, VerifyInputError) as exc:
         raise click.ClickException(str(exc)) from exc
 
 
@@ -654,6 +837,7 @@ def _derive_errors() -> Iterator[None]:
 @click.option("--repo-root", type=click.Path(path_type=Path), default=None)
 @click.option("--max-value", type=float, default=None, help="Exact failure penalty for the selected metric.")
 @_analysis_data_root_option
+@_verification_options
 def report_cmd(
     run_dir: Path,
     metric: str,
@@ -661,11 +845,13 @@ def report_cmd(
     repo_root: Path | None,
     max_value: float | None,
     data_root: Path | None,
+    **verification,
 ) -> None:
     # Imported here: it loads matplotlib, which costs every other command a
     # second at start-up.
     from solver_benchmarks.analysis.markdown_report import write_run_report
 
+    results = _load_verified(run_dir, _verification_policy(**verification), header="stderr")
     try:
         paths = write_run_report(
             run_dir,
@@ -674,6 +860,7 @@ def report_cmd(
             repo_root=repo_root,
             data_root=data_root,
             max_value=max_value,
+            results=results,
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
