@@ -213,9 +213,11 @@ def claimed_optimal_kkt_thresholds(
     For each solver, computes the per-row maximum of the listed relative
     residual columns on rows whose status indicates a solution is present
     (one row per solve, a duplicated solve resolved by ``metric``), then counts how many of those fall at or below
-    each threshold. The default fields are the ones ``bench kkt-verify``
-    checks, so the buckets show what a verification at each threshold
-    would keep. The
+    each threshold. The default fields are the ones verification checks,
+    so the buckets show what a verification at each threshold would keep. A
+    claim is what the solver reported: in a KKT-verified frame the rows are
+    selected by ``status_reported``, so claims verification demoted are
+    counted too. The
     ``count_above_max`` column flags claims of optimality whose worst
     relative residual exceeds the loosest threshold — a quick way to spot
     solvers labelling dubious solutions as ``optimal``.
@@ -239,7 +241,7 @@ def claimed_optimal_kkt_thresholds(
     if not available_fields:
         return pd.DataFrame(columns=columns)
     results = one_row_per_solve(results, success_statuses=success_statuses, metric=metric)
-    claimed = results[results["status"].isin(success_statuses)].copy()
+    claimed = results[_claimed_statuses(results).isin(success_statuses)].copy()
     if claimed.empty:
         return pd.DataFrame(columns=columns)
     numeric = claimed[available_fields].apply(pd.to_numeric, errors="coerce")
@@ -458,6 +460,10 @@ def kkt_certificate_summary(
     ``cert_valid``, ``cert_invalid`` and ``cert_unknown`` (a certificate the
     harness could not check, such as one on a complex PSD cone). Claims from
     adapters that record no certificate are in ``infeasible_count`` only.
+    Claims are the statuses the solvers reported (``status_reported`` in a
+    KKT-verified frame), and there validity is the verification's verdict at
+    each row's own certificate tolerance; elsewhere it is the check recorded
+    at solve time (``kkt.valid``).
     """
     if infeasible_statuses is None:
         infeasible_statuses = {
@@ -479,13 +485,15 @@ def kkt_certificate_summary(
     if results.empty:
         return pd.DataFrame(columns=columns)
     results = one_row_per_solve(results, metric=metric)
-    infeasible = results[results["status"].isin(infeasible_statuses)]
+    infeasible = results[_claimed_statuses(results).isin(infeasible_statuses)]
     if infeasible.empty:
         return pd.DataFrame(columns=columns)
 
     rows = []
     for solver_id, group in infeasible.groupby("solver_id", observed=True):
         valid = group["kkt.valid"] if "kkt.valid" in group else pd.Series(None, index=group.index, dtype=object)
+        if "verify.verdict" in group:
+            valid = _verified_certificate_validity(group, valid)
         recorded = valid.notna()
         if "kkt.certificate" in group:
             recorded |= group["kkt.certificate"].notna()
@@ -506,6 +514,47 @@ def kkt_certificate_summary(
             }
         )
     return pd.DataFrame(rows, columns=columns).sort_values("solver_id")
+
+
+def _claimed_statuses(results: pd.DataFrame) -> pd.Series:
+    """The status each row's solver reported: ``status_reported`` in a
+    KKT-verified frame, else ``status``."""
+    if "status_reported" in results.columns:
+        return results["status_reported"].where(results["status_reported"].notna(), results["status"])
+    return results["status"]
+
+
+def _verified_certificate_validity(group: pd.DataFrame, recorded: pd.Series) -> pd.Series:
+    """Whether each certificate claim passed verification: True when kept or
+    promoted, False when demoted or when its residual exceeds the row's
+    tolerance, None when it could not be fully checked (or none was
+    recorded); rows the verification did not judge keep ``recorded``
+    (``kkt.valid``)."""
+    accurate = status.CERTIFICATE_SUCCESS[status.EXPECT_INFEASIBLE]
+    worst, cert_tol = (
+        pd.to_numeric(group[name], errors="coerce") if name in group else pd.Series(np.nan, index=group.index)
+        for name in ("verify.worst", "verify.tol")
+    )
+    out: list[bool | None] = []
+    for row_verdict, row_status, row_worst, row_tol, fallback in zip(
+        group["verify.verdict"], group["status"], worst, cert_tol, recorded, strict=True
+    ):
+        if row_verdict == "promoted":
+            out.append(True)
+        elif row_verdict == "demoted":
+            out.append(False)
+        elif row_verdict in ("unverified_certificate", "missing_residuals"):
+            out.append(None)
+        elif row_verdict == "kept":
+            # An accurate claim kept passed; an inaccurate one kept was not
+            # promoted: it failed, or could not be fully checked.
+            if row_status in accurate:
+                out.append(True)
+            else:
+                out.append(False if pd.notna(row_worst) and pd.notna(row_tol) and row_worst > row_tol else None)
+        else:
+            out.append(fallback)
+    return pd.Series(out, index=group.index, dtype=object)
 
 
 def failure_rates(
@@ -714,7 +763,9 @@ def completion_summary(
     if results is None:
         from solver_benchmarks.analysis.load import load_results
 
-        results = load_results(run_dir)
+        # Which rows exist, not their statuses: an unresolvable requested
+        # tolerance must not stop a completion check.
+        results = load_results(run_dir, verify=False)
     manifest_path = run_dir / "manifest.json"
     columns = [
         "solver_id",
@@ -797,7 +848,9 @@ def missing_results(
     if results is None:
         from solver_benchmarks.analysis.load import load_results
 
-        results = load_results(run_dir)
+        # Which rows exist, not their statuses: an unresolvable requested
+        # tolerance must not stop a completion check.
+        results = load_results(run_dir, verify=False)
     manifest_path = run_dir / "manifest.json"
     columns = ["solver_id", "dataset", "problem"]
     if not manifest_path.exists():

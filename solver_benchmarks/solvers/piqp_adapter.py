@@ -11,8 +11,10 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
+    loosest_tolerance,
     mark_threads_ignored,
     mark_time_limit_ignored,
     module_available,
@@ -33,6 +35,12 @@ from .qp_split import (
     split_qp_kkt,
 )
 
+# PIQP's defaults (checked on piqp 0.6.4). The duality-gap tolerances apply
+# while check_duality_gap is on (PIQP's default); the adapter fills them from
+# eps_abs / eps_rel (see _duality_gap_tolerances).
+PIQP_DEFAULT_TOLERANCES = {"eps_abs": 1e-8, "eps_rel": 1e-9}
+PIQP_DEFAULT_GAP_TOLERANCES = {"eps_duality_gap_abs": 1e-8, "eps_duality_gap_rel": 1e-9}
+
 
 class PIQPSolverAdapter(SolverAdapter):
     solver_name = "piqp"
@@ -41,6 +49,16 @@ class PIQPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("piqp")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_eps_alias(settings)
+        _duality_gap_tolerances(settings)
+        knobs = dict(PIQP_DEFAULT_TOLERANCES)
+        if settings.get("check_duality_gap", True) is not False:
+            knobs.update(PIQP_DEFAULT_GAP_TOLERANCES)
+        return loosest_tolerance(settings, knobs)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

@@ -95,10 +95,12 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     coerce_int_setting,
     finite_point,
+    loosest_tolerance,
     mark_threads_ignored,
     mark_time_limit_ignored,
     module_available,
@@ -118,6 +120,12 @@ from .cone_layout import psd_triangle_to_full, qp_dual_in_native_order
 CVXOPT_DENSE_LDL_MAX_DIM = 2000
 
 
+# CVXOPT's documented defaults: absolute and relative gap, and feasibility.
+# The gap tests are alternatives (either suffices), so all three bound what
+# a solution is asked to meet.
+CVXOPT_DEFAULT_TOLERANCES = {"abstol": 1e-7, "reltol": 1e-6, "feastol": 1e-7}
+
+
 class CVXOPTSolverAdapter(SolverAdapter):
     solver_name = "cvxopt"
     supported_problem_kinds = {QP, CONE}
@@ -125,6 +133,18 @@ class CVXOPTSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("cvxopt")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        # The same preparation as solve(): what it takes off before the
+        # options are resolved.
+        settings = dict(settings or {})
+        pop_time_limit(settings)
+        pop_threads(settings)
+        settings.pop("verbose", None)
+        settings.pop("kktsolver", None)
+        options, _ = _resolve_options(settings)
+        return loosest_tolerance(options, CVXOPT_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -864,8 +884,8 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
     the layout each helper expects.
 
     Solution residuals are computed for every status in ANY_FEASIBLE that
-    carries a point (max-iter iterates included, so kkt-verify --promote
-    treats CVXOPT like every other solver). A conelp primal-infeasibility
+    carries a point (max-iter iterates included, so the KKT verification's
+    promotion treats CVXOPT like every other solver). A conelp primal-infeasibility
     certificate comes with ``z``/``y`` but no ``x``.
     """
     if x is None and mapped_status not in {

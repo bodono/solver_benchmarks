@@ -20,10 +20,13 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
+    ToleranceUnknown,
     finite_point,
+    loosest_tolerance,
     mark_threads_ignored,
     mark_time_limit_ignored,
     module_available,
@@ -34,7 +37,15 @@ from .base import (
     settings_with_defaults,
     solver_import_failed,
     translate_tolerance_aliases,
+    version_tuple,
 )
+
+# QTQP 0.0.7+ takes Clarabel-style tolerances; these are the defaults of its
+# solve() signature (checked on qtqp 0.0.7).
+QTQP_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
+# The first release with those names; earlier ones took atol / rtol, whose
+# defaults are not recorded here.
+QTQP_TOLERANCE_NAMES_SINCE = (0, 0, 7)
 
 
 class QTQPSolverAdapter(SolverAdapter):
@@ -44,6 +55,26 @@ class QTQPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("qtqp")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        """As for the other adapters, with the names of the qtqp a row ran:
+        ``versions["qtqp"]`` below 0.0.7 means ``atol`` / ``rtol`` (both must
+        be set, their defaults are not recorded here); a newer or unknown
+        version the Clarabel-style names, which ``atol`` / ``rtol`` supply
+        as the adapter's translation does."""
+        settings = dict(settings or {})
+        version = version_tuple((versions or {}).get("qtqp"))
+        if version is not None and version < QTQP_TOLERANCE_NAMES_SINCE:
+            _translate_tolerances(settings, {"atol", "rtol"})
+            if settings.get("atol") is None or settings.get("rtol") is None:
+                raise ToleranceUnknown(
+                    f"qtqp {versions['qtqp']} takes atol / rtol, whose defaults are not recorded; "
+                    "the settings give " + ", ".join(f"{k}={settings.get(k)!r}" for k in ("atol", "rtol"))
+                )
+            return loosest_tolerance(settings, {"atol": 0.0, "rtol": 0.0})
+        _translate_tolerances(settings, set(QTQP_DEFAULT_TOLERANCES))
+        return loosest_tolerance(settings, QTQP_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -230,7 +261,7 @@ def _map_qtqp_status(raw_status, *, hit_iteration_limit: bool = False) -> str:
     is an inaccurate solution. qtqp also answers ``almost_solved`` when
     ``max_iter`` is exactly the number of iterations the solve needs, so that
     converged point is reported as ``max_iter_reached`` too (OSQP would say
-    optimal there); ``bench kkt-verify --promote`` recovers it.
+    optimal there); the KKT verification's promotion recovers it.
     """
     if str(raw_status) == "almost_solved" and hit_iteration_limit:
         return status.MAX_ITER_REACHED

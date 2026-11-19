@@ -153,6 +153,28 @@ def pytest_runtest_makereport(item, call):
             )
 
 
+# --- rows that pass the default KKT verification ------------------------------
+#
+# load_results verifies statuses by default (analysis/verify.py): a claimed
+# optimum without residuals becomes optimal_inaccurate. Tests of analysis
+# output that write hand-made rows give their claimed optima residuals that
+# pass, and a requested tolerance, so the rows mean what they say.
+
+PASSING_KKT = {"form": "qp", "primal_res_rel": 1.0e-10, "dual_res_rel": 1.0e-10, "duality_gap_rel": 1.0e-10}
+PASSING_REQUESTED_TOLERANCE = {"optimality": 1.0e-6}
+
+
+def with_passing_kkt(row: dict) -> dict:
+    """``row`` with residuals that pass verification, when it claims
+    ``optimal`` and records no KKT residuals of its own (nested or as
+    flattened ``kkt.*`` keys); any other row is returned as it is."""
+    if row.get("status") != "optimal" or any(key == "kkt" or str(key).startswith("kkt.") for key in row):
+        return row
+    metadata = dict(row["metadata"]) if isinstance(row.get("metadata"), dict) else {}
+    metadata.setdefault("requested_tolerance", dict(PASSING_REQUESTED_TOLERANCE))
+    return {**row, "kkt": dict(PASSING_KKT), "metadata": metadata}
+
+
 # --- a stand-in for the worker subprocess -------------------------------------
 
 

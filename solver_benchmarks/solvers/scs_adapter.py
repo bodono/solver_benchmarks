@@ -44,11 +44,14 @@ from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dua
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
+    ToleranceUnknown,
     coerce_int_setting,
     finite_point,
     is_setting_type_error,
+    loosest_tolerance,
     mark_threads_ignored,
     module_available,
     pop_max_iter,
@@ -58,6 +61,7 @@ from .base import (
     settings_with_defaults,
     solver_import_failed,
     translate_tolerance_aliases,
+    version_tuple,
 )
 
 _SCS_NUM_THREADS_SUPPORTED: bool | None = None
@@ -147,6 +151,11 @@ def _scs_update_takes_settings(scs_module) -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
+# SCS 3.x defaults (scs.h, documented settings): its optimality test is
+# r <= eps_abs + eps_rel * norms on the primal and dual residuals and the gap.
+SCS_DEFAULT_TOLERANCES = {"eps_abs": 1e-4, "eps_rel": 1e-4}
+
+
 class SCSSolverAdapter(SolverAdapter):
     solver_name = "scs"
     supported_problem_kinds = {QP, CONE}
@@ -154,6 +163,22 @@ class SCSSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("scs")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        """As for the other adapters; a row of SCS before 3.0 (``versions["scs"]``)
+        that leaves a tolerance at its default is unknown, since those
+        defaults are not recorded here."""
+        settings = dict(settings or {})
+        translate_settings(settings)
+        tolerance = loosest_tolerance(settings, SCS_DEFAULT_TOLERANCES)
+        version = version_tuple((versions or {}).get("scs"))
+        if version is not None and version < (3,) and tolerance.defaults_used:
+            raise ToleranceUnknown(
+                f"scs {versions['scs']} leaves {', '.join(tolerance.defaults_used)} at a default that is not "
+                "recorded (the adapter knows SCS 3.x's)"
+            )
+        return tolerance
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -410,7 +435,7 @@ def _compute_kkt(problem, mapped_status, raw, cone, inv_perm):
         qp = problem.qp
         # Every status that may carry a usable point (including the
         # max_iters / time-limit iterates) gets solution residuals, so
-        # ``kkt-verify --promote`` treats SCS like every other solver.
+        # the KKT verification's promotion treats SCS like every other solver.
         if mapped_status in status.ANY_FEASIBLE and finite_point(x, y):
             y_qp = unbox_scs_dual(y, cone, inv_perm)
             return kkt.qp_residuals(

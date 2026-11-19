@@ -22,10 +22,14 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     EPS_ALIASES,
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
+    ToleranceUnknown,
     coerce_int_setting,
+    coerce_tolerance,
     finite_point,
+    loosest_tolerance,
     module_available,
     pop_max_iter,
     pop_threads,
@@ -38,6 +42,30 @@ from .base import (
 )
 from .qp_split import free_row_mask, normalize_qp_bounds
 
+# HiGHS's feasibility and optimality tolerances (checked on highspy 1.15.1).
+HIGHS_DEFAULT_TOLERANCES = {
+    "primal_feasibility_tolerance": 1e-7,
+    "dual_feasibility_tolerance": 1e-7,
+    "primal_residual_tolerance": 1e-7,
+    "dual_residual_tolerance": 1e-7,
+    "optimality_tolerance": 1e-7,
+}
+# The algorithm-specific optimality tolerance each value of ``solver`` adds;
+# simplex and the active-set QP solver have none of their own.
+HIGHS_SOLVER_TOLERANCES = {
+    "choose": {"ipm_optimality_tolerance": 1e-8},
+    "ipm": {"ipm_optimality_tolerance": 1e-8},
+    "ipx": {"ipm_optimality_tolerance": 1e-8},
+    "hipo": {"ipm_optimality_tolerance": 1e-8},
+    "pdlp": {"pdlp_optimality_tolerance": 1e-7},
+    "hipdlp": {"pdlp_optimality_tolerance": 1e-7},
+    "simplex": {},
+    "qpasm": {},
+}
+# "If changed from its default value, this tolerance is used for all
+# feasibility and optimality (KKT) measures" (HiGHS's option description).
+HIGHS_DEFAULT_KKT_TOLERANCE = 1e-7
+
 
 class HighsSolverAdapter(SolverAdapter):
     solver_name = "highs"
@@ -46,6 +74,18 @@ class HighsSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("highspy")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        refuse_settings(settings, EPS_ALIASES, "HiGHS", "set its own tolerances instead")
+        kkt_tolerance = settings.get("kkt_tolerance")
+        if kkt_tolerance is not None and coerce_tolerance("kkt_tolerance", kkt_tolerance) != HIGHS_DEFAULT_KKT_TOLERANCE:
+            return loosest_tolerance(settings, {"kkt_tolerance": HIGHS_DEFAULT_KKT_TOLERANCE})
+        solver = str(settings.get("solver") or "choose").strip().lower()
+        if solver not in HIGHS_SOLVER_TOLERANCES:
+            raise ToleranceUnknown(f"HiGHS solver {solver!r} is not one whose tolerances this adapter knows")
+        return loosest_tolerance(settings, {**HIGHS_DEFAULT_TOLERANCES, **HIGHS_SOLVER_TOLERANCES[solver]})
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

@@ -7,6 +7,7 @@ import numbers
 import re
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import scipy.sparse as sp
@@ -17,8 +18,10 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
+    loosest_tolerance,
     mark_threads_ignored,
     mark_time_limit_ignored,
     module_available,
@@ -37,6 +40,10 @@ from .qp_split import (
     split_qp_kkt,
 )
 
+# A stand-in for the proxsuite module: _duality_gap_settings then uses the
+# documented defaults instead of importing ProxSuite.
+_NO_PROXSUITE = SimpleNamespace(proxqp=SimpleNamespace())
+
 
 class ProxQPSolverAdapter(SolverAdapter):
     solver_name = "proxqp"
@@ -45,6 +52,19 @@ class ProxQPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("proxsuite")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_eps_alias(settings)
+        gap = _duality_gap_settings(settings, _NO_PROXSUITE)
+        # eps_rel 0 (the default) makes the residual test absolute only.
+        knobs = {"eps_abs": _PROXQP_DEFAULT_EPS_ABS, "eps_rel": _PROXQP_DEFAULT_EPS_REL}
+        if gap["check_duality_gap"]:
+            # Filled from eps_abs / eps_rel by _duality_gap_settings when not given.
+            knobs.update({"eps_duality_gap_abs": gap["eps_duality_gap_abs"],
+                          "eps_duality_gap_rel": gap["eps_duality_gap_rel"]})
+        return loosest_tolerance(settings, knobs)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

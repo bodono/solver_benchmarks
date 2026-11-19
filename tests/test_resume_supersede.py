@@ -108,7 +108,7 @@ def test_resume_supersedes_rows_solved_under_other_settings(
     assert [row["status"] for row in rows] == ["max_iter_reached"] * 2
     assert _rows(store.run_dir / "results.superseded.jsonl") == old_rows
     # Analysis sees only results for the current settings.
-    results = load_results(store.run_dir)
+    results = load_results(store.run_dir, verify=False)
     assert len(results) == 2 and set(results["status"]) == {"max_iter_reached"}
     # The superseded attempts keep their logs; the new attempts write elsewhere.
     for path, text in old_artifacts.items():
@@ -470,7 +470,7 @@ def test_a_resume_keeps_the_run_id_so_readers_pair_its_rows(
     rows = _rows(store.results_jsonl_path)
     assert len(rows) == 4 and resumed.run_id == store.run_id
     assert {row["run_id"] for row in rows} == {store.run_id}
-    frame = load_results(store.run_dir)
+    frame = load_results(store.run_dir, verify=False)
     assert sorted(zip(frame["problem"], frame["status"])) == [("p1", "optimal"), ("p2", "optimal")]
 
 
@@ -506,7 +506,7 @@ def test_a_renamed_run_directory_keeps_its_run_id(
     rows = _rows(moved / "results.jsonl")
     assert len(rows) == 4 and {row["run_id"] for row in rows} == {original}
     assert json.loads((moved / "manifest.json").read_text())["run_id"] == original
-    frame = load_results(moved)
+    frame = load_results(moved, verify=False)
     assert sorted(zip(frame["problem"], frame["status"])) == [("p1", "optimal"), ("p2", "optimal")]
     result = CliRunner().invoke(main, ["summary", str(moved), "--repo-root", str(repo_root)])
     assert result.exit_code == 0, result.output
@@ -583,7 +583,7 @@ def test_append_after_a_torn_line_starts_a_new_line(fake_worker, tmp_path: Path)
         handle.write('{"problem": "b", "solver_id": "s", "dat')  # killed mid-write
     store.write_result(result("b"))
     store.write_result(result("c"))
-    assert [row["problem"] for row in load_results(store.run_dir).to_dict("records")] == [
+    assert [row["problem"] for row in load_results(store.run_dir, verify=False).to_dict("records")] == [
         "a", "b", "c"
     ]
 
@@ -858,8 +858,9 @@ def test_load_results_leaves_out_replaced_rows(tmp_path: Path, monkeypatch):
     from solver_benchmarks.core import storage
 
     with_pairs, rewritten = _pair_run_dirs(tmp_path)
-    frame = load_results(with_pairs)
-    pd.testing.assert_frame_equal(frame, load_results(rewritten))
+    # status_reported is the one column load_results adds to the rows read.
+    frame = load_results(with_pairs, verify=False).drop(columns="status_reported")
+    pd.testing.assert_frame_equal(frame, load_results(rewritten, verify=False).drop(columns="status_reported"))
     for chunk_lines in (1, 2, 3):
         pd.testing.assert_frame_equal(
             storage.read_results_jsonl(with_pairs / "results.jsonl", chunk_lines=chunk_lines),
@@ -890,7 +891,7 @@ def test_load_results_reads_one_state_of_a_file_a_resume_is_writing(tmp_path: Pa
 
     with_pairs, rewritten = _pair_run_dirs(tmp_path)
     path = with_pairs / "results.jsonl"
-    expected = load_results(rewritten)
+    expected = load_results(rewritten, verify=False).drop(columns="status_reported")
     first_read = storage._read_results_jsonl_chunked
     calls = []
 

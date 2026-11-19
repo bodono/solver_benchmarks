@@ -11,6 +11,7 @@ import matplotlib.axes as mpl_axes
 import numpy as np
 import pandas as pd
 import pytest
+from conftest import with_passing_kkt
 
 from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.penalties import geomean_time_limits
@@ -49,7 +50,7 @@ def _write_run(tmp_path: Path, rows, *, timeout=60, solvers=None, include=None) 
         "solvers": [s if isinstance(s, dict) else {"id": s, "solver": "scs", "settings": {}} for s in solver_ids],
     }}
     (run / "manifest.json").write_text(json.dumps(manifest))
-    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (run / "results.jsonl").write_text("".join(json.dumps(with_passing_kkt(r)) + "\n" for r in rows))
     return run
 
 
@@ -425,7 +426,7 @@ def test_problem_dimensions_use_any_row_that_recorded_them():
 # --- one resolution of a duplicated solve in every view ---
 
 
-def _two_successful_attempts():
+def _two_successful_attempts(sloppy=5e-3):
     """Solver a has two optimal rows for p1: a slow accurate one first in the
     file, then a fast sloppy one. Every view must describe the fast one."""
 
@@ -433,7 +434,7 @@ def _two_successful_attempts():
         return _row("p1", solver, time=seconds, objective_value=objective, **{
             "kkt.primal_res_rel": residual, "kkt.dual_res_rel": residual, "kkt.duality_gap_rel": residual})
 
-    return [row("a", 30.0, 1e-9, 1.000), row("a", 1.0, 5e-3, 1.004), row("b", 10.0, 1e-9, 1.000)]
+    return [row("a", 30.0, 1e-9, 1.000), row("a", 1.0, sloppy, 1.004), row("b", 10.0, 1e-9, 1.000)]
 
 
 def test_duplicated_solve_is_the_same_attempt_in_every_table():
@@ -468,15 +469,17 @@ def test_certificate_summary_counts_a_duplicated_solve_once():
 
 
 def test_report_tables_describe_the_same_attempt(tmp_path, repo_root):
-    run = _write_run(tmp_path, _two_successful_attempts())
+    # The report verifies the rows (SCS's default eps 1e-4, checked at 1e-3),
+    # so the fast attempt is sloppy but still within that.
+    run = _write_run(tmp_path, _two_successful_attempts(sloppy=5e-4))
     write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
     report = tmp_path / "report"
     headline = pd.read_csv(report / "headline_solver_metrics.csv").set_index("solver_id")
     assert headline.loc["a", "run_time_median_seconds"] == 1.0
     kkt = pd.read_csv(report / "kkt_summary.csv").set_index("solver_id")
-    assert kkt.loc["a", "primal_res_rel_max"] == 5e-3
+    assert kkt.loc["a", "primal_res_rel_max"] == 5e-4
     thresholds = pd.read_csv(report / "claimed_optimal_kkt_thresholds.csv").set_index("solver_id")
-    assert thresholds.loc["a", "worst_max"] == 5e-3
+    assert thresholds.loc["a", "worst_max"] == 5e-4
     spreads = pd.read_csv(report / "objective_spreads.csv")
     assert spreads.loc[0, "objective_max"] == 1.004
     # status counts and slowest solves keep the rows as recorded
@@ -521,7 +524,7 @@ def _manifest_run(tmp_path: Path, rows, datasets, solvers) -> Path:
         "solvers": [{"id": s, "solver": "scs", "settings": {}} for s in solvers],
     }}
     (run / "manifest.json").write_text(json.dumps(manifest))
-    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (run / "results.jsonl").write_text("".join(json.dumps(with_passing_kkt(r)) + "\n" for r in rows))
     return run
 
 
@@ -550,7 +553,7 @@ def test_rerun_report_removes_tables_and_plots_it_no_longer_writes(tmp_path):
 
     # rerun to completion with e excluded and no sizes recorded
     second = [row("d", "p1", "a"), row("d", "p2", "a"), row("d", "p1", "b"), row("d", "p2", "b")]
-    (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in second))
+    (run / "results.jsonl").write_text("".join(json.dumps(with_passing_kkt(r)) + "\n" for r in second))
     manifest = json.loads((run / "manifest.json").read_text())
     manifest["config"]["datasets"][1]["exclude"] = ["q1"]
     (run / "manifest.json").write_text(json.dumps(manifest))
@@ -567,7 +570,7 @@ def test_rerun_report_removes_the_problem_table_of_a_solver_without_rows(tmp_pat
     write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
     tables = tmp_path / "report" / "solver_problem_tables"
     assert (tables / "c.csv").exists()
-    (run / "results.jsonl").write_text(json.dumps(_row("p1", "a")) + "\n")
+    (run / "results.jsonl").write_text(json.dumps(with_passing_kkt(_row("p1", "a"))) + "\n")
     write_run_report(run, output_dir=tmp_path / "report", repo_root=repo_root)
     assert (tables / "a.csv").exists() and not (tables / "c.csv").exists()
 
@@ -855,7 +858,7 @@ def test_report_of_a_verified_merge_states_its_provenance(tmp_path, repo_root):
             "name": name, "timeout_seconds": 60,
             "datasets": [{"id": "d", "name": "synthetic_qp", "include": ["p1", "p2"]}],
             "solvers": [{"id": solver, "solver": "scs", "settings": {}}]}}))
-        (run / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (run / "results.jsonl").write_text("".join(json.dumps(with_passing_kkt(r)) + "\n" for r in rows))
         (run / "run_config.yaml").write_text(f"run:\n  name: {name}\n")
         return run
 
@@ -892,7 +895,7 @@ def test_report_of_a_verified_merge_states_its_provenance(tmp_path, repo_root):
     # the other order: shards verified separately, then merged
     v3, v4 = tmp_path / "v3", tmp_path / "v4"
     kkt_verify(m3, v3, tol=1e-6, promote=True)
-    kkt_verify(m4, v4, tol=1e-4, missing_is_failure=False)
+    kkt_verify(m4, v4, tol=1e-4, missing_is_failure=False, promote=False)
     verified_first = tmp_path / "verified_first"
     merge_runs([v3, v4], verified_first)
     write_run_report(verified_first, output_dir=tmp_path / "vf_report", repo_root=repo_root)
@@ -989,12 +992,16 @@ def test_report_plots_use_the_expected_problems_and_the_report_resolution(tmp_pa
     empty_root.mkdir()
     row = _report_row
     # interrupted: p3 and p4 never ran; a ran p1 twice, the attempt with fewer
-    # iterations is the less accurate one
-    rows = [row("d", "p1", "a", iterations=50, **{"kkt.primal_res_rel": 1e-9}),
-            row("d", "p1", "a", iterations=5, **{"kkt.primal_res_rel": 1e-3}),
-            row("d", "p2", "a", iterations=7, **{"kkt.primal_res_rel": 1e-9}),
-            row("d", "p1", "b", iterations=9, **{"kkt.primal_res_rel": 1e-9}),
-            row("d", "p2", "b", iterations=9, **{"kkt.primal_res_rel": 1e-9})]
+    # iterations is the less accurate one (within the 1e-3 SCS's default eps
+    # is verified at)
+    def residuals(primal):
+        return {"kkt.primal_res_rel": primal, "kkt.dual_res_rel": 1e-9, "kkt.duality_gap_rel": 1e-9}
+
+    rows = [row("d", "p1", "a", iterations=50, **residuals(1e-9)),
+            row("d", "p1", "a", iterations=5, **residuals(5e-4)),
+            row("d", "p2", "a", iterations=7, **residuals(1e-9)),
+            row("d", "p1", "b", iterations=9, **residuals(1e-9)),
+            row("d", "p2", "b", iterations=9, **residuals(1e-9))]
     run = _manifest_run(tmp_path, rows, {"d": ["p1", "p2", "p3", "p4"]}, "ab")
     steps, boxes = {}, []
     real_step, real_boxplot = mpl_axes.Axes.step, mpl_axes.Axes.boxplot
@@ -1013,6 +1020,6 @@ def test_report_plots_use_the_expected_problems_and_the_report_resolution(tmp_pa
     profile = pd.read_csv(run / "report" / "performance_profile_iterations.csv")
     assert steps["a"][-1] == profile["a"].iloc[-1] == 0.5
     kkt = pd.read_csv(run / "report" / "kkt_summary.csv").set_index("solver_id")
-    assert kkt.loc["a", "primal_res_rel_max"] == 1e-3
+    assert kkt.loc["a", "primal_res_rel_max"] == 5e-4
     # the boxplot draws the attempt the tables describe (fewest iterations)
-    assert sorted(boxes[0]["a"].tolist()) == sorted(np.log10([1e-3, 1e-9]).tolist())
+    assert sorted(boxes[0]["a"].tolist()) == sorted(np.log10([5e-4, 1e-9]).tolist())

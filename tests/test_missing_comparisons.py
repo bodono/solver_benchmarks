@@ -4,6 +4,7 @@ import math
 import pandas as pd
 import pytest
 from click.testing import CliRunner
+from conftest import with_passing_kkt
 
 from solver_benchmarks.analysis.markdown_report import write_run_report
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
@@ -61,7 +62,7 @@ def _incomplete_run(tmp_path):
     }
     (run / "manifest.json").write_text(json.dumps({"config": config}))
     observed = {"dataset": "first", "problem": "one_variable_eq", "solver_id": "a", "status": "optimal", "run_time_seconds": 1.0}
-    (run / "results.jsonl").write_text(json.dumps(observed) + "\n")
+    (run / "results.jsonl").write_text(json.dumps(with_passing_kkt(observed)) + "\n")
     return run
 
 
@@ -224,7 +225,7 @@ def _run_with_options_now_rejected(tmp_path):
     (run / "manifest.json").write_text(json.dumps({"config": config}))
     observed = {"dataset": "maros_meszaros", "problem": "AUG2D", "solver_id": "s",
                 "status": "optimal", "run_time_seconds": 1.0}
-    (run / "results.jsonl").write_text(json.dumps(observed) + "\n")
+    (run / "results.jsonl").write_text(json.dumps(with_passing_kkt(observed)) + "\n")
     return run
 
 

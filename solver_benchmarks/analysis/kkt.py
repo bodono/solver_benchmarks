@@ -38,11 +38,14 @@ _SOC_BATCH_MIN = 5
 # report duality_gap_rel ~ 1.0 on half of Maros-Meszaros).
 _INF_BOUND = 1.0e18
 # Largest residual an infeasibility certificate may have once it is scaled so
-# that its objective term is -1, for ``valid``. Solvers stop on certificates
-# by their own measures in their own scaled spaces (OSQP's defaults leave
-# 1e-5 to 1e-4 in these units on NETLIB, SCS, Clarabel and ECOS 1e-6 or
-# less), so the default only rejects what is clearly not a certificate;
-# ``bench kkt-verify --tol`` holds certificates to a stricter standard.
+# that its objective term is -1, for the solve-time ``valid``. Solvers stop on
+# certificates by their own measures in their own scaled spaces (OSQP's
+# defaults leave 1e-5 to 1e-4 in these units on NETLIB, SCS, Clarabel and ECOS
+# 1e-6 or less), so this only rejects what is clearly not a certificate. The
+# KKT verification every analysis applies (analysis/verify.py) holds each
+# certificate to its row's tolerance, 10 x the tolerance its solver was asked
+# for, and scoring then follows that verdict; ``valid`` is what scoring falls
+# back on only for statuses read unverified.
 CERT_TOL = 1.0e-3
 _SQRT2 = math.sqrt(2.0)
 

@@ -82,11 +82,13 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 from .base import (
     IMPORT_ERRORS,
     OBJECTIVE_STATUSES,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     coerce_int_setting,
     finite_point,
     is_setting_type_error,
+    loosest_tolerance,
     mark_threads_ignored,
     mark_time_limit_ignored,
     module_available,
@@ -107,6 +109,11 @@ from .cone_layout import qp_dual_in_native_order
 ECOS_DENSE_FACTOR_MAX_DIM = 2000
 
 
+# ECOS's defaults (ecos-python documentation): feasibility, absolute and
+# relative gap tolerances.
+ECOS_DEFAULT_TOLERANCES = {"feastol": 1e-8, "abstol": 1e-8, "reltol": 1e-8}
+
+
 class ECOSSolverAdapter(SolverAdapter):
     solver_name = "ecos"
     supported_problem_kinds = {QP, CONE}
@@ -114,6 +121,12 @@ class ECOSSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("ecos")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_settings(settings)
+        return loosest_tolerance(settings, ECOS_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -826,8 +839,8 @@ def _compute_kkt(problem, mapped_status, raw, cone_dict, *, socp_state=None):
         qp = problem.qp
         n_eq = int(cone_dict.get("z", 0))
         # Every status that may carry a usable point (including max-iter)
-        # gets solution residuals, so kkt-verify --promote treats ECOS like
-        # every other solver.
+        # gets solution residuals, so the KKT verification's promotion treats
+        # ECOS like every other solver.
         if mapped_status in status.ANY_FEASIBLE:
             # Stack equality and inequality duals back into the original
             # row order produced by qp_to_nonnegative_cone: [eq, finite_u, finite_l].

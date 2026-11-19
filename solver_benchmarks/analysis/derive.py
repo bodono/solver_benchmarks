@@ -20,51 +20,34 @@ import tempfile
 import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from solver_benchmarks.analysis.kkt import certificate_check
-from solver_benchmarks.core import status
+# The residual check lives in verify; its names are kept here, where callers
+# (the MOSEK adapter, tests) have imported them from.
+from solver_benchmarks.analysis.verify import (  # noqa: F401
+    CERTIFICATE_DEMOTION,
+    CLAIMS,
+    CONE_FIELDS,
+    KKT_FIELDS,
+    PROMOTABLE,
+    QP_FIELDS,
+    VERIFY_SLACK,
+    RequestedToleranceUnknown,
+    ResidualCheck,
+    RowTolerance,
+    ToleranceResolver,
+    VerifyPolicy,
+    check_residuals,
+    classify,
+    residual_summary,
+    row_info_from_record,
+    worst_relative_residual,
+)
 from solver_benchmarks.core.config import manifest_dataset_entries
 
 logger = logging.getLogger(__name__)
 
-KKT_FIELDS = ("primal_res_rel", "dual_res_rel", "duality_gap_rel")
-# QP-form records also carry the multipliers on absent bounds (one-sided and
-# free rows), which must be zero; the duality gap cannot see them. Records
-# written before this residual existed do not have it and are checked on the
-# other fields alone, so re-verifying an archived run does not demote them.
-QP_FIELDS = ("dual_bound_res_rel",)
-# Cone-form records also carry the distance of s and y to their cones; a point
-# that satisfies Ax + s = b with s outside K is not feasible, so these are part
-# of the check whenever the record has them (QP-form records have none). The
-# distance of s is scaled like the primal equality residual and the distance
-# of y by 1 + |y|, so the check depends neither on the units of the problem
-# nor on the size of A and q, and projection roundoff in a large cone stays
-# small.
-CONE_FIELDS = ("primal_cone_res_rel", "dual_cone_res_rel")
-# Records written before the relative distances existed only carry the
-# absolute ones; they are used in that case.
-_CONE_FALLBACK = {"primal_cone_res_rel": "primal_cone_res", "dual_cone_res_rel": "dual_cone_res"}
-# Statuses that carry a returned point which may still pass the check.
-PROMOTABLE = {status.OPTIMAL_INACCURATE, status.MAX_ITER_REACHED, status.TIME_LIMIT}
-# Certificate statuses that count as a success, and what they become when
-# their certificate fails the check (see kkt.certificate_check).
-_CERTIFICATE_DEMOTION = {
-    status.PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE_INACCURATE,
-    status.DUAL_INFEASIBLE: status.DUAL_INFEASIBLE_INACCURATE,
-}
-# With promote, the converse: inaccurate certificate statuses whose
-# certificate is fully checked and passes become the accurate status.
-_CERTIFICATE_PROMOTION = {inaccurate: accurate for accurate, inaccurate in _CERTIFICATE_DEMOTION.items()}
-# Limit statuses whose record may hold a certificate instead of a point;
-# such a row is promoted to the certificate's status under the same rule.
-_LIMIT_STATUSES = {status.MAX_ITER_REACHED, status.TIME_LIMIT}
-# Where the worker records the returned point's objective in the convention
-# of objective_value (constant term and sense applied); a row promoted to
-# optimal without an objective takes it from there.
-_POINT_OBJECTIVE = "primal_obj_reported"
 _COPIED_FILES = ("run_config.yaml", "run_config.json", "events.jsonl")
 
 
@@ -290,6 +273,7 @@ def merge_runs(
                     "solvers": [str(entry.get("id")) for entry in source_cfg.get("solvers") or []],
                 }
             )
+    mixed_verification = _mixed_verification(manifests)
     manifest["derived"] = {
         "kind": "merge",
         "sources": per_source,
@@ -298,6 +282,8 @@ def merge_runs(
         "duplicate_keys": duplicates,
         "mixed_forms": mixed_forms,
     }
+    if mixed_verification:
+        manifest["derived"]["mixed_verification"] = mixed_verification
     with _staged_out_dir(out, overwrite) as staging:
         _write_jsonl(staging / "results.jsonl", records)
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -309,8 +295,37 @@ def merge_runs(
         "sources": len(sources),
         "duplicate_keys": duplicates,
         "mixed_forms": mixed_forms,
+        "mixed_verification": mixed_verification,
         "skipped_lines": skipped,
     }
+
+
+def _verification_state(manifest: dict[str, Any]) -> str:
+    """How a run's statuses were verified when it was written, in words."""
+    derived = manifest.get("derived") or {}
+    if derived.get("kind") != "kkt_verify":
+        return "as reported (not verified by bench kkt-verify)"
+    if derived.get("rule") == "requested":
+        how = f"bench kkt-verify at {derived.get('slack') or VERIFY_SLACK:g} x each solver's requested tolerance"
+    else:
+        how = f"bench kkt-verify at a fixed tolerance {derived.get('tol')}"
+    return how + (", promote" if derived.get("promote") else ", no promote")
+
+
+def _mixed_verification(manifests: list[dict[str, Any]]) -> list[str]:
+    """The verification states of a merge's inputs, when they differ.
+
+    A merged run is verified again when it is loaded (the rows keep their
+    reported statuses in ``metadata.kkt_verify.original_status``), so this
+    only warns that the inputs had been judged differently.
+    """
+    counts: dict[str, int] = {}
+    for manifest in manifests:
+        state = _verification_state(manifest)
+        counts[state] = counts.get(state, 0) + 1
+    if len(counts) < 2:
+        return []
+    return [f"{count} input(s) {state}" for state, count in counts.items()]
 
 
 def _problems_posed_in_several_forms(records: Iterable[dict[str, Any]]) -> list[str]:
@@ -357,293 +372,154 @@ def _union_dataset_entries(configs: Iterable[dict[str, Any]]) -> list[dict[str, 
     return list(merged.values())
 
 
-@dataclass
-class ResidualCheck:
-    """What a record's KKT residuals say for a set of wanted fields."""
-
-    worst: float | None = None
-    worst_field: str | None = None
-    checked: list[str] = field(default_factory=list)
-    missing: list[str] = field(default_factory=list)
-
-    @property
-    def complete(self) -> bool:
-        return not self.missing
-
-
-def check_residuals(record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS) -> ResidualCheck:
-    """Check the listed KKT residuals of a record, plus the form's extras.
-
-    QP-form records also need the multipliers on absent bounds to vanish
-    (``QP_FIELDS``, when the record has them), and cone-form records the
-    cone distances (``CONE_FIELDS``, falling back to the absolute distances
-    of older records), whatever ``fields`` lists. ``checked`` names every
-    field that was looked at, ``missing`` those absent or not finite, and
-    ``worst``/``worst_field`` the largest finite one.
-    """
-    kkt = record.get("kkt") or {}
-    wanted = list(fields)
-    if kkt.get("form") == "qp":
-        wanted += [f for f in QP_FIELDS if f not in wanted and f in kkt]
-    if kkt.get("form") == "cone" or any(f in kkt or _CONE_FALLBACK[f] in kkt for f in CONE_FIELDS):
-        wanted += [f for f in CONE_FIELDS if f not in wanted]
-    result = ResidualCheck(checked=wanted)
-    for name in wanted:
-        value = kkt.get(name)
-        if value is None and name in _CONE_FALLBACK:
-            value = kkt.get(_CONE_FALLBACK[name])
-        try:
-            number = float(value) if value is not None else None
-        except (TypeError, ValueError):
-            number = None
-        if number is None or not math.isfinite(number):
-            result.missing.append(name)
-            continue
-        if result.worst is None or number > result.worst:
-            result.worst, result.worst_field = number, name
-    return result
-
-
-def residual_summary(
-    record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
-) -> tuple[float | None, bool]:
-    """Return ``(worst, complete)`` for the listed KKT residuals of a record.
-
-    ``worst`` is the largest finite residual among the wanted fields (None if
-    there is none) and ``complete`` says whether every wanted field was
-    present and finite (see :func:`check_residuals` for which fields are
-    wanted). The two are reported separately so that a residual known to
-    fail is never hidden by another one being missing.
-    """
-    check = check_residuals(record, fields)
-    return check.worst, check.complete
-
-
-def worst_relative_residual(
-    record: dict[str, Any], fields: tuple[str, ...] = KKT_FIELDS
-) -> float | None:
-    """Largest of the listed KKT residuals, or None if any is missing or not finite.
-
-    A missing or non-finite component means the point could not be fully
-    checked, and an unchecked point must never count as verified: the caller
-    treats None as a failed check.
-    """
-    worst, complete = residual_summary(record, fields)
-    return worst if complete else None
-
-
-def _returned_after_time_limit(row: dict[str, Any]) -> bool:
-    info = row.get("info")
-    if not isinstance(info, dict):
-        return False
-    return bool(info.get("exceeded_time_limit")) or info.get("status_before_timeout") is not None
-
-
 def kkt_verify(
     run_dir: str | Path,
     out_dir: str | Path,
     *,
-    tol: float,
+    tol: float | None = None,
+    slack: float = VERIFY_SLACK,
     fields: tuple[str, ...] = KKT_FIELDS,
     missing_is_failure: bool = True,
-    promote: bool = False,
+    promote: bool = True,
     overwrite: bool = False,
+    requested_tol: dict[str, Any] | None = None,
+    tol_from_solver_id: bool = False,
 ) -> dict[str, Any]:
-    """Re-classify claimed-optimal solves whose KKT residuals exceed ``tol``.
+    """Write a copy of a run whose statuses are KKT-verified.
 
-    A row whose status says a solution is present keeps that status only if
-    the worst of ``fields`` (relative residuals computed by the harness
-    from the returned point, independently of the solver's own report;
-    cone- and QP-form records always add their cone distances and bound
-    multipliers, see :func:`check_residuals`) is at or below ``tol``.
-    Otherwise it becomes ``optimal_inaccurate`` and ``metadata.kkt_verify``
-    records why, which fields were checked and which one failed. Claimed
-    optima with residuals missing are demoted too unless
-    ``missing_is_failure`` is False. A row whose only unknown residuals are the distances to cones the
-    harness cannot project (``kkt.unsupported_cones``) is kept when the rest
-    pass, with the reason recorded and counted under ``unverified_cones``.
+    Every row is judged from its reported status by
+    :func:`solver_benchmarks.analysis.verify.classify` (the rule ``bench
+    report`` and every analysis command apply when they load a run): claimed
+    solutions whose relative KKT residuals exceed the row's tolerance become
+    ``optimal_inaccurate``, claimed certificates whose scaled residual exceeds
+    it the matching ``*_inaccurate`` status, and with ``promote`` (the
+    default) inaccurate, iteration- and time-limited stops whose point or
+    certificate passes become accurate, except a row returned after the run's
+    time limit. Claimed optima with residuals missing, and claimed
+    certificates whose adapter recorded none, are demoted unless
+    ``missing_is_failure`` is False; claims whose only unknown residuals are
+    distances to cones the harness cannot project are kept and counted under
+    ``unverified_cones`` / ``unverified_certificates``.
 
-    Infeasibility certificates (``primal_infeasible``, ``dual_infeasible``)
-    are held to the same ``tol``: their largest residual once scaled so that
-    the certificate's objective term is −1 (``kkt.cert_res``, rebuilt for
-    older records) must be at or below it, or the row becomes the matching
-    ``*_inaccurate`` status. A certificate row in which nothing fails but
-    not everything is known (the adapter recorded no certificate, as
-    several return none, or the distance to a cone the harness cannot
-    project is unknown) is kept whatever ``missing_is_failure`` says: that
-    is a gap in the adapter or the checker, not in the solver's accuracy.
-    The reason is recorded and the row counted under
-    ``unverified_certificates``.
+    The row's tolerance is ``slack`` times the tolerance its configuration
+    asked the solver for (``SolverAdapter.requested_tolerance``), for
+    solutions and certificates alike, or, with ``tol``, that one value for
+    every row (``slack``, ``requested_tol`` and ``tol_from_solver_id`` are
+    then refused). ``requested_tol`` and ``tol_from_solver_id`` supply
+    requested tolerances the run does not record (see ``VerifyPolicy``); a
+    row that needs one and has none raises ``RequestedToleranceUnknown``
+    before anything is written.
 
-    With ``promote``, the converse also applies: a solve the solver itself
-    reported as inaccurate, iteration-limited or time-limited, but whose
-    returned point does pass the check, becomes ``optimal`` (its recorded
-    time is what it took to produce that point). If it has no
-    ``objective_value`` (adapters report one only for a solution), it takes
-    the point's objective that the worker recorded as
-    ``kkt.primal_obj_reported`` and ``metadata.kkt_verify.objective_from``
-    says so; rows of older runs without that field stay without one. Likewise
-    a ``primal_infeasible_inaccurate`` / ``dual_infeasible_inaccurate`` row
-    whose certificate is fully checked and passes ``tol`` becomes
-    ``primal_infeasible`` / ``dual_infeasible``, and so does an iteration- or
-    time-limited row whose record holds such a certificate instead of a
-    point (OSQP records its inaccurate certificates so); a missing or partly
-    checked certificate is never promoted. Success then means one thing for every
-    solver: the returned point or certificate satisfies the check to
-    ``tol``. A row returned after the run's time limit is never promoted
-    (the limit is every solver's budget): the runner marks it with
-    ``info.exceeded_time_limit``, or, in older runs, records a conclusion
-    reached after the limit as time_limit with ``info.status_before_timeout``.
-    It keeps its status, ``metadata.kkt_verify`` says why, and it is counted
-    under ``over_time_limit``. A solver stopped by its own time limit
-    returns slightly after it, so when that limit equals ``timeout_seconds``
-    its time-limit stops are never promoted; set the solver's limit below
-    ``timeout_seconds`` if those points should be eligible.
-
-    Every solver in a comparison is held to the same ``tol`` regardless of
-    what its own tolerance settings mean, which is what makes timings
-    across solvers comparable. Unparseable lines (a torn last line) are
-    skipped and counted under ``skipped_lines``. An existing ``out_dir`` is
-    replaced only with ``overwrite``, and only if it is empty or a derived
-    run.
+    Every checked row gets ``metadata.kkt_verify``: its ``verdict``, the
+    ``rule``, tolerance and policy (``slack``, ``promote``,
+    ``missing_is_failure``), the fields checked and the worst one, the reason,
+    and the ``original_status`` it was reported with (kept from an earlier
+    verification, so verifying a verified run starts again from the reported
+    status and, under the same policy, writes the same rows; a copy of a copy
+    written before this version records the status of the step before, which
+    it then starts from); a promotion that gave the row an objective
+    (``kkt.primal_obj_reported``) names it in ``objective_from``. Unparseable
+    lines (a torn last line) are skipped and counted under ``skipped_lines``.
+    An existing ``out_dir`` is replaced only with ``overwrite``, and only if
+    it is empty or a derived run.
     """
     src = Path(run_dir)
     out = Path(out_dir)
+    policy = VerifyPolicy(
+        rule="fixed" if tol is not None else "requested",
+        tol=tol,
+        slack=slack,
+        promote=promote,
+        missing_is_failure=missing_is_failure,
+        requested_tol=requested_tol or {},
+        tol_from_solver_id=tol_from_solver_id,
+    )
     _check_no_overlap(out, [src])
     _refuse_existing(out, overwrite)
     _check_is_run(src)
+    manifest = _read_manifest(src)
+    resolver = ToleranceResolver(manifest, policy)
     records, skipped = _read_jsonl(src / "results.jsonl")
-    demoted: dict[str, int] = {}
-    kept: dict[str, int] = {}
-    missing: dict[str, int] = {}
-    promoted: dict[str, int] = {}
-    over_time_limit: dict[str, int] = {}
-    unverified: dict[str, int] = {}
-    unverified_certificates: dict[str, int] = {}
+    tallies: dict[str, dict[str, int]] = {
+        key: {}
+        for key in ("kept", "demoted", "promoted", "over_time_limit", "missing_residuals",
+                    "unverified_cones", "unverified_certificates")
+    }
+    tolerances: dict[str, dict[str, set]] = {}
     checked_fields: set[str] = set()
+    unknown: dict[str, str] = {}
 
-    def count(tally: dict[str, int], solver_id: str) -> None:
-        tally[solver_id] = tally.get(solver_id, 0) + 1
-
-    def annotate(row: dict[str, Any], **details: Any) -> None:
-        metadata = row.setdefault("metadata", {}) or {}
-        metadata["kkt_verify"] = {"tol": tol, **details, "original_status": row["status"]}
-        row["metadata"] = metadata
+    class _Unresolved(Exception):
+        pass
 
     for row in records:
         solver_id = str(row.get("solver_id"))
-        row_status = row.get("status")
-        if promote and (row_status in PROMOTABLE or row_status in _CERTIFICATE_PROMOTION):
-            if _returned_after_time_limit(row):
-                annotate(row, reason="returned after the time limit; not promoted")
-                count(over_time_limit, solver_id)
-                continue
-            kkt = row.get("kkt") or {}
-            target = _CERTIFICATE_PROMOTION.get(row_status)
-            if row_status in _LIMIT_STATUSES and kkt.get("certificate") in _CERTIFICATE_DEMOTION:
-                # A limit stop that returned a certificate (OSQP records its
-                # inaccurate certificates so) is judged as one.
-                target = kkt["certificate"]
-            if target is not None:
-                cert, complete = certificate_check(kkt)
-                checked_fields.add("cert_res")
-                # A missing or partly checked certificate is never promoted,
-                # nor one of the other kind.
-                if complete and cert is not None and cert <= tol and kkt.get("certificate") == target:
-                    annotate(row, fields=["cert_res"], worst=cert, worst_field="cert_res",
-                             reason=f"certificate residual {cert:.3e} <= {tol:.1e}")
-                    row["status"] = target
-                    count(promoted, solver_id)
-                continue
-            check = check_residuals(row, fields)
-            checked_fields.update(check.checked)
-            if check.complete and check.worst is not None and check.worst <= tol:
-                details: dict[str, Any] = {}
-                point_objective = (row.get("kkt") or {}).get(_POINT_OBJECTIVE)
-                if row.get("objective_value") is None and point_objective is not None:
-                    # Only a solution has an objective_value, so a limit
-                    # stop has none; the point it returned is now one.
-                    row["objective_value"] = point_objective
-                    details["objective_from"] = f"kkt.{_POINT_OBJECTIVE}"
-                annotate(
-                    row,
-                    fields=check.checked,
-                    worst=check.worst,
-                    worst_field=check.worst_field,
-                    reason=f"worst relative residual {check.worst:.3e} ({check.worst_field}) <= {tol:.1e}",
-                    **details,
-                )
-                row["status"] = status.OPTIMAL
-                count(promoted, solver_id)
+        metadata = row.get("metadata")
+        earlier = metadata.get("kkt_verify") if isinstance(metadata, dict) else None
+        if not isinstance(earlier, dict):
+            earlier = {}
+        reported = earlier.get("original_status") or row.get("status")
+        objective = None if earlier.get("objective_from") else row.get("objective_value")
+        info = row.get("info")
+        view = {
+            "status": reported,
+            "kkt": row.get("kkt") or {},
+            "info": info if isinstance(info, dict) else {},
+            "objective_value": objective,
+        }
+        resolved = resolver.resolve(row_info_from_record(row))
+
+        def tolerance(resolved=resolved) -> float:
+            if isinstance(resolved, str):
+                raise _Unresolved
+            return resolved.tol
+
+        try:
+            verdict = classify(
+                view, tolerance=tolerance, promote=promote, missing_is_failure=missing_is_failure, fields=fields
+            )
+        except _Unresolved:
+            unknown.setdefault(solver_id, str(resolved))
             continue
-        if row_status in _CERTIFICATE_DEMOTION:
-            kkt = row.get("kkt") or {}
-            cert, complete = certificate_check(kkt)
-            checked_fields.add("cert_res")
-            if cert is not None and cert > tol:
-                reason = f"certificate residual {cert:.3e} > {tol:.1e}"
-                if not complete:
-                    reason += " (some residuals unknown)"
-                annotate(row, fields=["cert_res"], worst=cert, worst_field="cert_res", reason=reason)
-                row["status"] = _CERTIFICATE_DEMOTION[row_status]
-                count(demoted, solver_id)
-                continue
-            if not complete:
-                # Nothing fails, but not everything is known: the adapter
-                # recorded no certificate (several return none), or the
-                # distance to a cone the harness cannot project is unknown.
-                # Neither says anything about the solver's accuracy, so the
-                # row is kept, like an optimal row with such cones.
-                if cert is None:
-                    reason = "no certificate recorded"
-                else:
-                    cones = kkt.get("unsupported_cones")
-                    unknown = f"unsupported cones {sorted(cones)}" if cones else "some residuals unknown"
-                    reason = f"certificate not fully checked ({unknown}); known residuals <= {tol:.1e}"
-                annotate(row, fields=["cert_res"], worst=cert,
-                         worst_field=None if cert is None else "cert_res", reason=reason)
-                count(unverified_certificates, solver_id)
-            count(kept, solver_id)
+        row["status"] = verdict.status
+        if "objective_value" in row or verdict.objective is not None:
+            row["objective_value"] = verdict.objective if verdict.objective is not None else objective
+        if verdict.verdict == "not_checked":
+            if isinstance(metadata, dict):
+                metadata.pop("kkt_verify", None)
             continue
-        if row_status not in status.SOLUTION_PRESENT:
-            continue
-        check = check_residuals(row, fields)
-        checked_fields.update(check.checked)
-        worst = check.worst
-        if worst is not None and worst > tol:
-            # A residual that demonstrably fails demotes the row even when
-            # other residuals are missing and missing ones are tolerated.
-            reason = f"worst relative residual {worst:.3e} ({check.worst_field}) > {tol:.1e}"
-            if not check.complete:
-                reason += " (some residuals missing)"
-        elif not check.complete:
-            unsupported = (row.get("kkt") or {}).get("unsupported_cones")
-            if unsupported and worst is not None and set(check.missing) <= set(CONE_FIELDS):
-                # The point passes every residual the harness could compute;
-                # the cone distances are unknown, not failed.
-                annotate(
-                    row,
-                    fields=check.checked,
-                    worst=worst,
-                    worst_field=check.worst_field,
-                    reason=f"cone distances not checked for unsupported cones {sorted(unsupported)}; "
-                    f"other residuals <= {tol:.1e}",
-                )
-                count(unverified, solver_id)
-                count(kept, solver_id)
-                continue
-            count(missing, solver_id)
-            if not missing_is_failure:
-                count(kept, solver_id)
-                continue
-            reason = "no KKT residuals recorded" if worst is None else "incomplete KKT residuals"
-        else:
-            count(kept, solver_id)
-            continue
-        annotate(row, fields=check.checked, worst=worst, worst_field=check.worst_field, reason=reason)
-        row["status"] = status.OPTIMAL_INACCURATE
-        count(demoted, solver_id)
-    manifest = _read_manifest(src)
+        checked_fields.update(verdict.fields)
+        _tally(tallies, solver_id, verdict.verdict, str(reported), verdict.status, missing_is_failure)
+        annotation: dict[str, Any] = {"verdict": verdict.verdict, "rule": policy.rule}
+        if policy.rule == "requested":
+            annotation["slack"] = slack
+        annotation.update(promote=promote, missing_is_failure=missing_is_failure)
+        if isinstance(resolved, RowTolerance):
+            annotation.update(
+                tol=resolved.tol,
+                requested_tol=resolved.requested,
+                requested_tol_source=resolved.source,
+            )
+            seen = tolerances.setdefault(solver_id, {key: set() for key in (
+                "requested_tol", "requested_tol_source", "tol")})
+            for key in seen:
+                value = annotation.get(key)
+                if value is not None:
+                    seen[key].add(value)
+        annotation.update(
+            fields=list(verdict.fields),
+            worst=_finite_or_none(verdict.worst),
+            worst_field=verdict.worst_field,
+            reason=verdict.reason,
+            original_status=reported,
+        )
+        if verdict.objective_from:
+            annotation["objective_from"] = verdict.objective_from
+        if not isinstance(metadata, dict):
+            metadata = row["metadata"] = {}
+        metadata["kkt_verify"] = annotation
+    if unknown:
+        raise RequestedToleranceUnknown(unknown)
     # The input run's own provenance (merge sources and their manifests, the
     # per-source selections, earlier verifications) is kept in full: a
     # verified merge must still know each source's settings and time limits.
@@ -651,18 +527,23 @@ def kkt_verify(
     summary: dict[str, Any] = {
         "kind": "kkt_verify",
         "source": str(src),
+        "rule": policy.rule,
         "tol": tol,
+        "slack": slack if tol is None else None,
         "fields": list(fields),
         "checked_fields": sorted(checked_fields),
         "missing_is_failure": missing_is_failure,
         "promote": promote,
-        "kept": kept,
-        "demoted": demoted,
-        "promoted": promoted,
-        "over_time_limit": over_time_limit,
-        "missing_residuals": missing,
-        "unverified_cones": unverified,
-        "unverified_certificates": unverified_certificates,
+        "requested_tol": dict(policy.requested_tol),
+        "tol_from_solver_id": tol_from_solver_id,
+        # Every checked row carries its verdict (copies written before this
+        # field annotated only the rows they changed or kept with a note).
+        "annotates_all_rows": True,
+        **tallies,
+        "tolerances": {
+            solver_id: {key: sorted(values, key=str) for key, values in seen.items()}
+            for solver_id, seen in sorted(tolerances.items())
+        },
         "skipped_lines": skipped,
     }
     if prior:
@@ -678,3 +559,41 @@ def kkt_verify(
             if (src / name).exists():
                 shutil.copy(src / name, staging / name)
     return summary
+
+
+def _tally(
+    tallies: dict[str, dict[str, int]], solver_id: str, verdict: str, reported: str, new_status: str | None,
+    missing_is_failure: bool,
+) -> None:
+    """Count a verdict the way ``bench kkt-verify`` has always reported it:
+    ``kept`` claims that stand (unverified ones and tolerated missing
+    residuals included), ``demoted`` claims that failed (missing residuals
+    included when they are failures), ``missing_residuals`` claims without
+    complete residuals either way."""
+
+    def count(key: str) -> None:
+        tallies[key][solver_id] = tallies[key].get(solver_id, 0) + 1
+
+    if verdict == "kept" and reported in CLAIMS:
+        count("kept")
+    elif verdict == "demoted":
+        count("demoted")
+    elif verdict == "promoted":
+        count("promoted")
+    elif verdict == "over_time_limit":
+        count("over_time_limit")
+    elif verdict == "missing_residuals":
+        count("missing_residuals")
+        count("demoted" if missing_is_failure and new_status != reported else "kept")
+    elif verdict == "unverified_cones":
+        count("unverified_cones")
+        count("kept")
+    elif verdict == "unverified_certificate":
+        count("unverified_certificates")
+        count("kept")
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return value

@@ -17,9 +17,11 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     finite_point,
+    loosest_tolerance,
     mark_threads_ignored,
     module_available,
     normalize_max_iter,
@@ -32,6 +34,9 @@ from .base import (
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
+# OSQP's defaults (checked on osqp 1.1.3): r <= eps_abs + eps_rel * norms.
+OSQP_DEFAULT_TOLERANCES = {"eps_abs": 1e-3, "eps_rel": 1e-3}
+
 
 class OSQPSolverAdapter(SolverAdapter):
     solver_name = "osqp"
@@ -40,6 +45,12 @@ class OSQPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("osqp")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_eps_alias(settings)
+        return loosest_tolerance(settings, OSQP_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -252,9 +263,9 @@ def _certificate_kind(status_val, osqp) -> str | None:
     Those statuses are reported as the limit the solve stopped on, and their
     ``x`` / ``y`` are NaN, but OSQP still returns the (inaccurate) certificate;
     its residuals are kept on ``kkt``. As recorded they do not count as
-    success, since the row's status is a limit; ``bench kkt-verify --promote``
-    promotes the row to the certificate's status when the certificate is
-    fully checked and passes its tolerance.
+    success, since the row's status is a limit; the KKT verification
+    (analysis/verify.py) promotes the row to the certificate's status when
+    the certificate is fully checked and passes its tolerance.
     """
     for name, kind in (
         ("OSQP_PRIMAL_INFEASIBLE_INACCURATE", status.PRIMAL_INFEASIBLE_INACCURATE),

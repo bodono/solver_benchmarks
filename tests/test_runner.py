@@ -66,7 +66,7 @@ def test_runner_writes_results_logs_and_resumes(tmp_path: Path, repo_root: Path)
     run_benchmark(config, run_dir=store.run_dir, repo_root=repo_root)
     assert len(results_path.read_text().strip().splitlines()) == 1
 
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
     assert len(df) == 1
     assert df.loc[0, "solver_id"] == "scs_smoke"
 
@@ -333,7 +333,7 @@ def test_resume_retries_worker_errors_without_duplicate_rows_or_lost_artifacts(
     assert calls == {"one_variable_eq": 3, "one_variable_lp": 1}
     assert len(rows()) == 2
     assert {row["status"] for row in rows()} == {"optimal"}
-    results = load_results(store.run_dir)
+    results = load_results(store.run_dir, verify=False)
     assert len(results) == 2 and (results["status"] == "optimal").all()
     for path, content in {**original_artifacts, **failed_retry_files}.items():
         assert path.read_bytes() == content
@@ -650,7 +650,7 @@ def test_result_store_normalizes_nonfinite_values_for_parquet(tmp_path: Path):
     store.write_parquet()
 
     records = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines()]
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
 
     assert records[1]["objective_value"] is None
     assert store.results_parquet_path.exists()
@@ -699,7 +699,7 @@ def test_write_parquet_handles_legacy_string_nan(tmp_path: Path):
     )
 
     store.write_parquet()
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
 
     assert len(df) == 2
     assert df.loc[df["problem"] == "p2", "objective_value"].isna().all()
@@ -736,7 +736,7 @@ def test_unsupported_combinations_skip_by_default(monkeypatch, tmp_path: Path, r
     )
 
     store = run_benchmark(config, repo_root=repo_root)
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
 
     assert len(df) == 1
     assert df.loc[0, "status"] == "skipped_unsupported"
@@ -794,7 +794,7 @@ def test_skip_only_runs_write_parquet_so_load_results_sees_every_skip(
 
     # And — most importantly — load_results() (which prefers parquet)
     # must see both rows.
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
     assert len(df) == 2
     assert set(df["problem"]) == {"cone_a", "cone_b"}
     assert set(df["status"]) == {"skipped_unsupported"}
@@ -849,7 +849,7 @@ def test_run_benchmark_unlinks_stale_parquet_at_start_and_writes_at_end(
     # The byte payload was overwritten, not patched: the old contents
     # would have failed pd.read_parquet, and the mtime advanced.
     assert stale_parquet.stat().st_mtime_ns > stale_mtime_ns
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
     assert len(df) == 1
     assert df.loc[0, "problem"] == "one_variable_eq"
 
@@ -868,7 +868,7 @@ def test_pdlp_skips_cleanly_when_unavailable_or_non_lp(tmp_path: Path, repo_root
     )
 
     store = run_benchmark(config, repo_root=repo_root)
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
 
     assert len(df) == 1
     assert df.loc[0, "status"] == "skipped_unsupported"
@@ -1286,7 +1286,7 @@ def test_runner_iterates_over_multiple_datasets(monkeypatch, tmp_path: Path, rep
         }
     )
     store = run_benchmark(config, repo_root=repo_root)
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
 
     # Three problems total across the two datasets.
     assert len(df) == 3
@@ -1420,7 +1420,7 @@ def test_runner_distinguishes_repeats_of_one_adapter_via_explicit_ids(monkeypatc
     )
 
     store = run_benchmark(config, repo_root=repo_root)
-    df = load_results(store.run_dir)
+    df = load_results(store.run_dir, verify=False)
 
     # Both variants ran the adapter with their own options.
     assert {opts.get("variant") for opts in seen_options} == {"feasible", "infeasible"}
@@ -1593,7 +1593,7 @@ def test_environment_matrix_runs_current_python_and_preserves_manifest(tmp_path:
         repo_root=repo_root,
         stream_output=False,
     )
-    df = load_results(run_dir)
+    df = load_results(run_dir, verify=False)
     manifest = json.loads((run_dir / "manifest.json").read_text())
 
     assert set(df["solver_id"]) == {"scs_current_a", "scs_current_b"}

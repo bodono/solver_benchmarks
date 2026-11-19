@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import numbers
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +111,103 @@ class SolverConfigError(ValueError):
 CONFIG_ERROR_KIND = "config"
 
 
+class ToleranceUnknown(ValueError):
+    """The tolerance a solver's settings request cannot be determined.
+
+    Raised by :meth:`SolverAdapter.requested_tolerance` (for example an
+    adapter that does not define it, a setting it cannot interpret, or a
+    solver version whose defaults are not recorded); the message says why.
+    """
+
+
+@dataclass(frozen=True)
+class RequestedTolerance:
+    """The accuracy a configuration asks a solver for, in the harness's units.
+
+    ``optimality`` is the loosest of the feasibility and gap tolerances the
+    solver is asked to meet, absolute and relative, each knob the settings
+    leave unset at the library's default. A solver that stops on
+    ``r <= abs + rel * N`` has ``r / (1 + N) <= max(abs, rel)``, and the
+    harness's relative residuals are exactly ``r / (1 + norms)``, so a
+    claim measured the harness's way passes at that maximum (up to how the
+    norms differ, which the verification slack absorbs).
+
+    Infeasibility certificates are held to the same tolerance. The solvers'
+    own infeasibility tolerances are not in the units of the harness's
+    ``kkt.cert_res`` (the certificate's residuals once its objective term is
+    scaled to -1): OSQP (and, by its documentation, ProxQP) scales them by the
+    norm of the ray instead, Clarabel by the larger of that norm and one, cpo3
+    by the larger of that norm and the objective term, and QTQP adds a term in
+    the ray's norm; only SCS's and PDLP's tests divide by the objective term
+    alone. Held to those knobs at their defaults, the certificates in one
+    figure would be checked at tolerances up to a thousand times apart, and
+    Clarabel's genuine NETLIB certificates (``cert_res`` up to 6e-5) would fail
+    at its 1e-8, so none is used.
+    ``knobs`` maps every setting considered to the value used, and
+    ``defaults_used`` names those that took the library default.
+    """
+
+    optimality: float
+    knobs: Mapping[str, float] = field(default_factory=dict)
+    defaults_used: tuple[str, ...] = ()
+
+    def to_record(self) -> dict[str, Any]:
+        """The form the worker stores as ``metadata.requested_tolerance``.
+
+        Knob names are lists, not a nested mapping, so a results frame gets
+        one numeric column from it rather than one per solver setting.
+        """
+        return {
+            "optimality": float(self.optimality),
+            "knobs": sorted(self.knobs),
+            "defaults_used": list(self.defaults_used),
+        }
+
+
+def loosest_tolerance(settings: Mapping[str, Any], defaults: Mapping[str, float]) -> RequestedTolerance:
+    """:class:`RequestedTolerance` from already translated ``settings``.
+
+    ``defaults`` lists the feasibility and gap knobs with the library's
+    default for each. A knob the settings set to null counts as unset. A
+    value that is not a finite number >= 0, or knobs that are all zero,
+    raise :class:`ToleranceUnknown`.
+    """
+    used: list[str] = []
+    knobs: dict[str, float] = {}
+    for name, default in defaults.items():
+        value = settings.get(name)
+        if value is None:
+            value = default
+            used.append(name)
+        if isinstance(value, bool):
+            raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})") from exc
+        if not math.isfinite(number) or number < 0:
+            raise ToleranceUnknown(f"setting {name!r} is not a finite number >= 0 (got {value!r})")
+        knobs[name] = number
+    if not knobs or max(knobs.values()) <= 0:
+        raise ToleranceUnknown(f"no positive optimality tolerance among {sorted(defaults)}")
+    return RequestedTolerance(optimality=max(knobs.values()), knobs=knobs, defaults_used=tuple(used))
+
+
+def version_tuple(version: Any) -> tuple[int, ...] | None:
+    """``(0, 0, 7)`` for "0.0.7" (or "0.0.7.dev1+g123"), None when unknown."""
+    if not isinstance(version, str):
+        return None
+    parts = []
+    for piece in version.split("."):
+        digits = "".join(itertools.takewhile(str.isdigit, piece))
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(digits) < len(piece):
+            break
+    return tuple(parts) if parts else None
+
+
 class SolverAdapter(ABC):
     solver_name: str
     supported_problem_kinds: set[str]
@@ -119,6 +218,32 @@ class SolverAdapter(ABC):
     @classmethod
     def is_available(cls) -> bool:
         return True
+
+    @classmethod
+    def requested_tolerance(
+        cls,
+        settings: Mapping[str, Any] | None,
+        *,
+        problem_kind: str | None = None,
+        is_lp: bool | None = None,
+        versions: Mapping[str, Any] | None = None,
+    ) -> RequestedTolerance:
+        """The tolerance ``settings`` ask this solver for (see :class:`RequestedTolerance`).
+
+        Every adapter defines it by running its own alias translation on a
+        copy of the settings, so the result is what a solve with those
+        settings is asked to meet; it never imports the solver library.
+        ``problem_kind`` (``qp`` / ``cone``), ``is_lp`` (a QP whose ``P``
+        is zero; None when unknown) and ``versions`` (the solver package
+        versions a row recorded) matter only to adapters whose knobs or
+        defaults depend on them. The independent KKT verification (see
+        ``analysis/verify.py``) holds each row to this tolerance times its
+        slack, so an adapter that does not define it raises here rather
+        than leave its rows silently unverifiable.
+        """
+        raise ToleranceUnknown(
+            f"the {getattr(cls, 'solver_name', cls.__name__)} adapter does not define requested_tolerance"
+        )
 
     def supports(self, problem_kind: str) -> bool:
         return problem_kind in self.supported_problem_kinds
@@ -131,13 +256,13 @@ class SolverAdapter(ABC):
 # Cross-adapter reporting rules. A solver may stop with a point for any
 # status in ``status.ANY_FEASIBLE`` (optimal, inaccurate, iteration or time
 # limit, error); adapters compute KKT residuals for that point whenever it is
-# finite, so ``bench kkt-verify --promote`` judges every solver's limit-hit
-# iterate by the same check. Only a solution, though, has an objective value:
-# ``objective_value`` is reported for these statuses and is None for limits,
-# certificates and errors (the point's own objective is on kkt.primal_obj,
-# and the worker records it in the convention of objective_value as
-# kkt.primal_obj_reported, which kkt-verify --promote uses for a row it
-# promotes to optimal).
+# finite, so the KKT verification (analysis/verify.py, which promotes by
+# default) judges every solver's limit-hit iterate by the same check. Only a
+# solution, though, has an objective value: ``objective_value`` is reported
+# for these statuses and is None for limits, certificates and errors (the
+# point's own objective is on kkt.primal_obj, and the worker records it in the
+# convention of objective_value as kkt.primal_obj_reported, which verification
+# uses for a row it promotes to optimal).
 OBJECTIVE_STATUSES = frozenset({status.OPTIMAL, status.OPTIMAL_INACCURATE})
 
 

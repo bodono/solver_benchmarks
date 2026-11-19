@@ -26,11 +26,13 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     EPS_ALIASES,
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     coerce_int_setting,
     finite_point,
+    loosest_tolerance,
     module_available,
     pop_max_iter,
     pop_threads,
@@ -43,6 +45,11 @@ from .base import (
 )
 from .qp_split import normalize_qp_bounds
 
+# Gurobi's documented defaults (parameter names are case-insensitive): primal
+# and dual feasibility, and the barrier's relative gap. Not checked here
+# (Gurobi needs a license).
+GUROBI_DEFAULT_TOLERANCES = {"FeasibilityTol": 1e-6, "OptimalityTol": 1e-6, "BarConvTol": 1e-8}
+
 
 class GurobiSolverAdapter(SolverAdapter):
     solver_name = "gurobi"
@@ -51,6 +58,14 @@ class GurobiSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("gurobipy")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        refuse_settings(settings, EPS_ALIASES, "Gurobi", "set its own tolerances instead")
+        by_name = {str(key).lower(): value for key, value in settings.items()}
+        given = {name: by_name.get(name.lower()) for name in GUROBI_DEFAULT_TOLERANCES}
+        return loosest_tolerance(given, GUROBI_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

@@ -33,6 +33,8 @@ from solver_benchmarks.datasets.dimacs import DIMACS_INFEASIBLE
 from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
 
 EXPECTED_COLUMN = "metadata.expected_status"
+# Set on every row load_results verified (see analysis/verify.py).
+VERDICT_COLUMN = "verify.verdict"
 # Helper column holding each row's expected outcome (see with_expected_outcomes).
 # "" stands for an unknown outcome, so a missing value means "not derived yet".
 OUTCOME_COLUMN = "__expected_outcome"
@@ -146,7 +148,11 @@ def success_mask(results: pd.DataFrame, success_statuses: Iterable[str] | None =
     problems expected or assumed to have an optimal solution. Rows of
     problems known to be infeasible or unbounded succeed only with the
     matching certificate status, and only if the harness did not find that
-    certificate invalid (``kkt.valid`` False).
+    certificate invalid. A row the verification judged (it has a
+    ``verify.verdict``, as every row ``load_results`` verifies does) carries
+    that judgement in its status, made at the row's own tolerance; any
+    other row is held to the check recorded at solve time
+    (``kkt.valid`` False is a failure).
     """
     if results.empty:
         return pd.Series([], index=results.index, dtype=bool)
@@ -159,7 +165,10 @@ def success_mask(results: pd.DataFrame, success_statuses: Iterable[str] | None =
     for outcome, accepted in status.CERTIFICATE_SUCCESS.items():
         cert_ok |= (expected == outcome) & statuses.isin(accepted)
     if "kkt.valid" in results.columns:
-        cert_ok &= ~results["kkt.valid"].map(lambda v: v is False or v is np.False_)
+        invalid = results["kkt.valid"].map(lambda v: v is False or v is np.False_)
+        if VERDICT_COLUMN in results.columns:
+            invalid &= results[VERDICT_COLUMN].isna()
+        cert_ok &= ~invalid.astype(bool)
     return (optimal_ok | cert_ok).astype(bool)
 
 

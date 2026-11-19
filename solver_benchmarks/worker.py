@@ -101,13 +101,18 @@ def run_payload(payload: dict) -> ProblemResult:
         solver_result = solver.solve(problem, artifacts_dir)
         objective = _reported_objective(problem, solver_result.objective_value)
         _write_trace_if_needed(artifacts_dir, solver_result.trace)
+        dimensions = _problem_dimensions(problem)
+        runtime = runtime_metadata(solver_config["solver"])
         metadata = {
             **problem.metadata,
-            **_problem_dimensions(problem),
+            **dimensions,
             "environment_id": payload.get("environment_id"),
             "environment_metadata": payload.get("environment_metadata", {}),
-            "runtime": runtime_metadata(solver_config["solver"]),
+            "runtime": runtime,
             "solver_extra": to_jsonable(solver_result.extra),
+            "requested_tolerance": _requested_tolerance(
+                solver_cls, solver_config.get("settings", {}), problem.kind, dimensions, runtime
+            ),
         }
         if payload.get("resume_signature") is not None:
             metadata["resume_signature"] = payload["resume_signature"]
@@ -170,6 +175,23 @@ def run_payload(payload: dict) -> ProblemResult:
         )
 
 
+def _requested_tolerance(solver_cls, settings, problem_kind, dimensions, runtime) -> dict:
+    """``metadata.requested_tolerance``: the tolerance the settings asked the
+    solver for (``SolverAdapter.requested_tolerance``), which the KKT
+    verification of the row multiplies by its slack, or ``{"unknown": why}``.
+    Never fails the solve: the loader then looks in the run's manifest."""
+    nnz_p = dimensions.get("nnz_p")
+    try:
+        return solver_cls.requested_tolerance(
+            settings or {},
+            problem_kind=problem_kind,
+            is_lp=None if nnz_p is None else nnz_p == 0,
+            versions=(runtime or {}).get("solver_package_versions") or {},
+        ).to_record()
+    except Exception as exc:  # recorded, not raised: the solve itself succeeded
+        return {"unknown": f"{type(exc).__name__}: {exc}"}
+
+
 def _reported_objective(problem, objective):
     if objective is None:
         return None
@@ -184,8 +206,8 @@ def _point_objective(problem, kkt):
     """The returned point's objective (``kkt.primal_obj``) as ``objective_value`` reports it.
 
     ``objective_value`` is only reported for a solution, so this is what
-    ``bench kkt-verify --promote`` gives a limit stop it promotes to
-    optimal. None when the record has no finite primal objective.
+    the KKT verification (analysis/verify.py) gives a limit stop it promotes
+    to optimal. None when the record has no finite primal objective.
     """
     if not kkt:
         return None

@@ -118,3 +118,25 @@ def test_solve_times_table_says_which_adapters_record_each_time(field):
     for name, cell in rows.items():
         source = inspect.getsource(inspect.getmodule(get_solver(name)))
         assert (cell != "not reported") == (f"{field}=" in source), name
+
+
+def _tolerance_text(value) -> str:
+    mantissa, exponent = f"{float(value):e}".split("e")
+    return f"{mantissa.rstrip('0').rstrip('.')}e{int(exponent)}"
+
+
+@pytest.mark.parametrize("solver_name", list_solvers())
+def test_every_solver_has_a_verification_tolerance_row(solver_name):
+    """The adapter table of Independent KKT verification lists each solver's
+    knobs and the request its defaults make, as the adapter computes them."""
+    from solver_benchmarks.solvers import get_solver
+
+    section = _section("### Independent KKT verification")
+    rows = [line for line in section.splitlines() if line.startswith(f"| `{solver_name}` |")]
+    assert len(rows) == 1, f"no single verification row for {solver_name}"
+    row = rows[0]
+    requested = get_solver(solver_name).requested_tolerance({}, problem_kind="qp")
+    for knob in requested.knobs:
+        assert f"`{knob}`" in row, f"{solver_name} row does not name {knob}"
+    expected = f"| `{_tolerance_text(requested.optimality)}` |"
+    assert expected in row, f"{solver_name} row does not give its default request {expected}"
