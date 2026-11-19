@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -16,7 +17,12 @@ from solver_benchmarks.analysis.verify import (
 from solver_benchmarks.core.storage import read_results_jsonl
 
 
-def load_results(run_dir: str | Path, *, verify: bool | VerifyPolicy = True) -> pd.DataFrame:
+def load_results(
+    run_dir: str | Path,
+    *,
+    verify: bool | VerifyPolicy = True,
+    select: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+) -> pd.DataFrame:
     """The run's results, with KKT-verified statuses by default.
 
     Rows come from results.parquet when it is at least as new as
@@ -36,9 +42,15 @@ def load_results(run_dir: str | Path, *, verify: bool | VerifyPolicy = True) -> 
     objectives) the solvers reported, which also undoes a ``bench kkt-verify``
     copy's. Raises ``RequestedToleranceUnknown`` (a ``VerifyInputError``)
     when a row needs a requested tolerance the run does not record.
+
+    ``select``, given the rows as read, returns the ones to keep; only those
+    are verified, so rows left out (solvers a figure does not show) never
+    need a requested tolerance.
     """
     run_dir = Path(run_dir)
     df = _read_rows(run_dir)
+    if select is not None and not df.empty:
+        df = select(df)
     if verify is False:
         return unverified_frame(df)
     policy = VerifyPolicy() if verify is True else verify

@@ -1,20 +1,27 @@
 """Figures for the SCS performance page.
 
 Input: one run directory per family, typically the output of ``bench merge``.
-Its statuses are KKT-verified when it is loaded, as every analysis command
-verifies them: each claimed solution and certificate is checked against the
-harness's own KKT residuals at 10 x the tolerance its solver was asked for,
-and inaccurate or limit stops that pass are promoted (a run written by
-``bench kkt-verify`` is used as it recorded its verification). The 1 % late
-rule (``mark_late``) is applied after verification, so a row returned after
-the limit counts as a failure whatever verification made of it.
-``--unverified``, ``--verify-tol``, ``--reverify``, ``--requested-tol`` and
-``--tol-from-solver-id`` choose the verification as for ``bench report``.
+The family's rows (after its dataset, problem and solver filters, and
+without solver ids that carry no tolerance tag) are KKT-verified when they
+are loaded, as every analysis command verifies them: each claimed solution
+and certificate is checked against the harness's own KKT residuals at 10 x
+the tolerance its solver was asked for, claims with nothing to check count as
+unsolved, and inaccurate or limit stops that pass are promoted (a run written
+by ``bench kkt-verify`` is used as it recorded its verification). The 1 %
+late rule (``mark_late``) is applied after verification, so a row returned
+after the limit counts as a failure whatever verification made of it.
+``--unverified``, ``--verify-tol``, ``--reverify``, ``--allow-missing``,
+``--requested-tol`` and ``--tol-from-solver-id`` choose the verification as
+for ``bench report``. A series ``--use-run`` takes from another tolerance's
+run keeps that run's verification (10 x what it requested), which stdout
+notes and ``geomean_summary.csv``'s ``verify_tol`` records.
 Output: for each family and tolerance, a Dolan-Moré performance profile over
 all problems and over the largest quartile by nonzeros, plus a
 shifted-geometric-mean bar chart, with the SCS series drawn in front;
 ``verification_summary.csv`` lists, per family and solver, the tolerances
-its rows were checked at and what verification changed.
+its rows were checked at and what verification changed, after the late rule
+(``late`` counts the claims it kept or promoted that the late rule made
+failures; ``kept`` and ``promoted`` no longer include them).
 
 Usage:
   python tools/make_figures.py OUT_DIR qp=results/qp_merged lp=... [--tol-tag 1e-4]
@@ -33,7 +40,7 @@ import argparse
 import json
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -326,13 +333,54 @@ def plot_profile(df: pd.DataFrame, title: str, path: Path) -> None:
     plt.close(fig)
 
 
+def late_rows(df: pd.DataFrame, limit: float) -> pd.Series:
+    """Rows slower than the limit plus LATE_GRACE."""
+    return df["run_time_seconds"] > limit * (1.0 + LATE_GRACE)
+
+
 def mark_late(df: pd.DataFrame, limit: float) -> pd.DataFrame:
     """A copy of ``df`` with every row slower than the limit plus LATE_GRACE
     recorded as time_limit, whatever status it reported."""
-    late = df["run_time_seconds"] > limit * (1.0 + LATE_GRACE)
+    late = late_rows(df, limit)
     df = df.copy()
     df.loc[late, "status"] = "time_limit"
     return df
+
+
+def family_rows(df: pd.DataFrame, family: str, exclude_solvers: Iterable[str] = ()) -> pd.DataFrame:
+    """The rows a family's figures use: without its dropped datasets and
+    problems (FAMILY_DROP_DATASETS, FAMILY_DROP_PROBLEMS) and the excluded
+    solvers (base ids)."""
+    drop = FAMILY_DROP_DATASETS.get(family)
+    if drop:
+        df = df[~df["dataset"].isin(drop)]
+    exclude = set(exclude_solvers)
+    if exclude:
+        df = df[~df["solver_id"].astype(str).apply(base_solver).isin(exclude)]
+    drop_p = FAMILY_DROP_PROBLEMS.get(family)
+    if drop_p:
+        df = df[~pd.Series(list(zip(df["dataset"], df["problem"], strict=True)), index=df.index).isin(drop_p)]
+    return df
+
+
+def verification_after_late(df: pd.DataFrame, late: pd.Series) -> pd.DataFrame:
+    """``verification_table`` of a family's verified rows, with the claims
+    verification kept or promoted that the late rule then made failures
+    taken out of ``kept``, ``promoted`` and ``unverified`` and counted as
+    ``late``."""
+    table = verification_table(df)
+    if table.empty:
+        return table
+    table["late"] = 0
+    if late.any():
+        counts = verification_table(df[late]).set_index("solver_id")
+        index = table["solver_id"]
+        for column in ("kept", "promoted", "unverified"):
+            taken = index.map(counts[column]).fillna(0).astype(int)
+            table[column] = table[column] - taken
+            if column != "unverified":
+                table["late"] = table["late"] + taken
+    return table
 
 
 def scs_time_limit_warnings(df: pd.DataFrame) -> list[str]:
@@ -462,18 +510,23 @@ def plot_grid(frames: dict, path: Path) -> None:
 
 def verification_policy(args: argparse.Namespace) -> bool | VerifyPolicy:
     """``load_results``'s ``verify`` for the verification options (as the CLI's)."""
-    others = args.verify_tol is not None or args.reverify or args.requested_tol or args.tol_from_solver_id
+    others = (args.verify_tol is not None or args.reverify or args.allow_missing or args.requested_tol
+              or args.tol_from_solver_id)
     if args.unverified and others:
-        sys.exit("--unverified cannot be combined with --verify-tol, --reverify, --requested-tol or "
-                 "--tol-from-solver-id")
+        sys.exit("--unverified cannot be combined with --verify-tol, --reverify, --allow-missing, "
+                 "--requested-tol or --tol-from-solver-id")
     if args.verify_tol is not None and args.reverify:
         sys.exit("--verify-tol and --reverify cannot be combined (--verify-tol always re-checks)")
+    if args.verify_tol is not None and (args.requested_tol or args.tol_from_solver_id):
+        sys.exit("--verify-tol holds every row to one tolerance; --requested-tol and --tol-from-solver-id "
+                 "would not be used")
     if args.unverified:
         return False
     try:
         if args.verify_tol is not None:
-            return VerifyPolicy(rule="fixed", tol=args.verify_tol)
+            return VerifyPolicy(rule="fixed", tol=args.verify_tol, missing_is_failure=not args.allow_missing)
         return VerifyPolicy(rule="requested" if args.reverify else "auto",
+                            missing_is_failure=not args.allow_missing,
                             requested_tol=parse_requested_tol(args.requested_tol),
                             tol_from_solver_id=args.tol_from_solver_id)
     except VerifyInputError as exc:
@@ -532,8 +585,11 @@ def main() -> None:
                          "(1e-3 for the 1e-4 figures reproduces the 3.3.2 docs rule for every solver)")
     ap.add_argument("--reverify", action="store_true",
                     help="verify a bench kkt-verify copy again by the default rule instead of as it recorded")
-    ap.add_argument("--requested-tol", action="append", default=[], metavar="SOLVER_ID=TOL[/CERT_TOL]",
-                    help="the tolerance SOLVER_ID was asked for, for runs that do not record it; repeatable")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="keep claims that recorded no residuals or no certificate to check (default: they "
+                         "count as unsolved, since they cannot be verified)")
+    ap.add_argument("--requested-tol", action="append", default=[], metavar="SOLVER_ID=TOL",
+                    help="the tolerance SOLVER_ID was asked for, ahead of what the run records; repeatable")
     ap.add_argument("--tol-from-solver-id", action="store_true",
                     help="take a solver's requested tolerance from the tag ending its id when the run gives none")
     args = ap.parse_args()
@@ -547,29 +603,28 @@ def main() -> None:
     failures: list[str] = []
     for pair in args.runs:
         family, run_dir = pair.split("=", 1)
+        found: dict[str, list[str]] = {}
+
+        def select(rows: pd.DataFrame, family=family, found=found) -> pd.DataFrame:
+            # Only the rows the figures use are verified, so a solver left
+            # out never needs a requested tolerance.
+            rows = family_rows(rows, family, args.exclude_solver)
+            found["solver_ids"] = sorted(rows["solver_id"].astype(str).unique())
+            return rows[rows["solver_id"].astype(str).map(solver_tol).notna()]
+
         try:
-            df = load_results(run_dir, verify=policy)
+            df = load_results(run_dir, verify=policy, select=select)
         except VerifyInputError as exc:
             failures.append(f"{family}: {exc}")
             continue
-        if df.empty:
+        if "solver_ids" not in found:
             print(f"{family}: no results in {run_dir}")
             continue
-        info = verification_info(df)
-        rule = verify_rule(df)
-        drop = FAMILY_DROP_DATASETS.get(family)
-        if drop:
-            df = df[~df["dataset"].isin(drop)]
-        if args.exclude_solver:
-            df = df[~df["solver_id"].apply(base_solver).isin(set(args.exclude_solver))]
-        drop_p = FAMILY_DROP_PROBLEMS.get(family)
-        if drop_p:
-            df = df[~pd.Series(list(zip(df["dataset"], df["problem"], strict=True)), index=df.index).isin(drop_p)]
-        if df.empty:
+        solver_ids = found["solver_ids"]
+        if not solver_ids:
             print(f"{family}: no results left in {run_dir} after the family's dataset, problem and solver "
                   "filters; skipped")
             continue
-        solver_ids = sorted(df["solver_id"].astype(str).unique())
         untagged = [s for s in solver_ids if solver_tol(s) is None]
         if len(untagged) == len(solver_ids):
             failures.append(f"{family}: no solver id in {run_dir} ends in a tolerance tag such as _1e-4 "
@@ -578,19 +633,22 @@ def main() -> None:
         if untagged:
             print(f"warning: {family}: left out solver ids without a tolerance tag: {', '.join(untagged)}",
                   file=sys.stderr)
+        info = verification_info(df)
+        rule = verify_rule(df)
         print(f"{family}: {verification_header(info)}")
         for warning in info.get("warnings") or []:
             print(f"warning: {family}: {warning}", file=sys.stderr)
-        table = verification_table(df)
-        if not table.empty:
-            print(table.to_string(index=False))
-            verification.append(table.assign(family=family, verify_rule=rule))
         # Sized once per family, over every tolerance's rows, so the quartile
         # is the same set of problems in each tolerance's figures.
         lookup = None if args.no_size_lookup else registry_size_lookup(run_dir, repo_root=args.repo_root)
         sizes = problem_sizes(df, size_lookup=lookup)
         # After verification: a late row is a failure whatever it was verified as.
         limit = FAMILY_LIMIT.get(family)
+        late = late_rows(df, limit) if limit else pd.Series(False, index=df.index)
+        table = verification_after_late(df, late)
+        if not table.empty:
+            print(table.to_string(index=False))
+            verification.append(table.assign(family=family, verify_rule=rule))
         if limit:
             df = mark_late(df, limit)
         for warning in scs_time_limit_warnings(df):
@@ -628,6 +686,13 @@ def main() -> None:
                                 ignore_index=True)
                 LABEL_OVERRIDE[solver] = f"{SOLVER_LABELS.get(solver, solver)} ({run_tag})"
                 source_run[solver] = run_tag
+                # Its rows keep their own run's verification; say at what.
+                checked = verify_tols(alt).get(f"{solver}_{run_tag}")
+                if checked:
+                    others = sorted({v for s, v in verify_tols(sub).items()
+                                     if base_solver(s) != solver and s.endswith(f"_{tag}") and v})
+                    print(f"{family} {tag}: {solver} is shown from its {run_tag} run, verified at {checked} "
+                          f"(other series: {'; '.join(others) or 'none verified'})")
             n_all = sub.groupby(["dataset", "problem"]).ngroups
             title = f"{sets_title(family, sub)}, tolerance {tag}, {n_all} problems"
             plot_profile(sub, title, args.out_dir / f"{family}_{tag}_profile.png")

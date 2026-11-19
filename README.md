@@ -1618,6 +1618,19 @@ with nothing to check. Options that would not be used are refused:
 `--verify-tol` with `--reverify`, `--requested-tol` or `--tol-from-solver-id`,
 and `--unverified` with any other.
 
+**Figures.** `tools/make_figures.py` verifies only the rows its figures use
+(after the family's dataset, problem and `--exclude-solver` filters, and
+without solver ids that carry no tolerance tag), so a solver it leaves out
+never needs a requested tolerance. Its 1 % late rule applies after
+verification, and `verification_summary.csv` is counted after it: `late`
+counts the claims verification kept or promoted that the late rule then made
+failures, and `kept`, `promoted` and `unverified` leave them out. A series
+`--use-run` takes from another tolerance's run keeps that run's verification,
+ten times what that run requested (Clarabel from its `1e-6` run in the `1e-4`
+figures is checked at `1e-5`, the other series at `1e-3`); stdout says so,
+`geomean_summary.csv`'s `verify_tol` records it, and `--verify-tol` holds
+every series to one tolerance instead.
+
 **Derived runs.** A run written by `bench kkt-verify` is read as it recorded
 its verification (its statuses, and its rule: `--tol`, or the per-row rule).
 Every other run, a merge of verified copies included, is verified from its

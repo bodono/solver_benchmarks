@@ -1115,7 +1115,10 @@ def test_make_figures_verifies_a_raw_run_before_the_late_rule(make_figures, tmp_
     assert rows.loc["piqp_1e-4", "verify_tol"] == "0.001"
     verification = pd.read_csv(out_dir / "verification_summary.csv").set_index("solver_id")
     assert verification.loc["piqp_1e-4", "demoted"] == 1
-    assert verification.loc["clarabel_1e-4", "promoted"] == 2
+    # both clarabel stops pass; the late one is counted as late, not promoted
+    assert verification.loc["clarabel_1e-4", "promoted"] == 1
+    assert verification.loc["clarabel_1e-4", "late"] == 1
+    assert verification.loc["piqp_1e-4", "late"] == 0
     assert set(verification["family"]) == {"qp"}
 
     monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "raw"), f"qp={run_dir}",
@@ -1152,6 +1155,52 @@ def test_make_figures_use_run_keeps_the_swapped_runs_tolerance(make_figures, tmp
     assert own["success_count"] == 0 and own["verify_tol"] == "1e-05"
     docs_rule = solved("--verify-tol", "1e-3")
     assert docs_rule["success_count"] == 2 and docs_rule["verify_rule"] == "fixed 0.001"
+
+
+def test_make_figures_verifies_only_the_rows_it_plots(make_figures, tmp_path, monkeypatch, capsys):
+    # Solvers the figures leave out (excluded, or ids without a tolerance
+    # tag) are not verified, so their tolerance need not be known.
+    rows = [
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "piqp_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0, **_residuals(1e-6)}),
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "mine_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0, **_residuals(1e-6)}),
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "other", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0, **_residuals(1e-6)}),
+    ]
+    run_dir = _verified_run(tmp_path / "run", rows)
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"qp={run_dir}", "--no-size-lookup",
+                                      "--exclude-solver", "mine"])
+    make_figures.main()
+    captured = capsys.readouterr()
+    assert "left out solver ids without a tolerance tag: other" in captured.err
+    summary = pd.read_csv(out_dir / "geomean_summary.csv")
+    assert set(summary["solver_id"]) == {"piqp_1e-4"}
+    verification = pd.read_csv(out_dir / "verification_summary.csv")
+    assert set(verification["solver_id"]) == {"piqp_1e-4"}
+
+
+def test_make_figures_says_at_what_a_swapped_series_was_verified(make_figures, tmp_path, monkeypatch, capsys):
+    rows = []
+    for solver_id in ("clarabel_1e-4", "clarabel_1e-6", "piqp_1e-4"):
+        rows.append(_sized({"dataset": "lp", "problem": "a", "solver_id": solver_id, "status": status.OPTIMAL,
+                            "run_time_seconds": 1.0, **_residuals(1e-9)}))
+    run_dir = _verified_run(tmp_path / "run", rows)
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "figs"), f"lp={run_dir}", "--tol-tag", "1e-4",
+                                      "--use-run", "clarabel=1e-6", "--no-size-lookup"])
+    make_figures.main()
+    assert "lp 1e-4: clarabel is shown from its 1e-6 run, verified at 1e-05 (other series: 0.001)" in (
+        capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("options", [["--verify-tol", "1e-3", "--requested-tol", "a=1e-4"],
+                                     ["--verify-tol", "1e-3", "--tol-from-solver-id"],
+                                     ["--unverified", "--allow-missing"]])
+def test_make_figures_refuses_options_it_would_not_use(make_figures, tmp_path, monkeypatch, options):
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "figs"), f"qp={tmp_path}", *options])
+    with pytest.raises(SystemExit, match="cannot be combined|would not be used"):
+        make_figures.main()
 
 
 def test_make_figures_reports_an_unknown_tolerance(make_figures, tmp_path, monkeypatch):
