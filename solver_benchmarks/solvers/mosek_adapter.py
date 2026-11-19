@@ -49,7 +49,7 @@ from .qp_split import normalize_qp_bounds
 
 # MOSEK's interior-point termination tolerances (documented defaults; not
 # checked here, MOSEK needs a license): the linear ones apply to LPs, the
-# QO ones to QPs. No certificate tolerance of its own is used.
+# QO ones to QPs.
 MOSEK_LP_TOLERANCES = {
     "MSK_DPAR_INTPNT_TOL_PFEAS": 1e-8,
     "MSK_DPAR_INTPNT_TOL_DFEAS": 1e-8,

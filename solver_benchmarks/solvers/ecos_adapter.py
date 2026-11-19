@@ -110,8 +110,7 @@ ECOS_DENSE_FACTOR_MAX_DIM = 2000
 
 
 # ECOS's defaults (ecos-python documentation): feasibility, absolute and
-# relative gap tolerances. ECOS has no separate certificate tolerance (its
-# infeasibility test uses feastol, which the optimality maximum includes).
+# relative gap tolerances.
 ECOS_DEFAULT_TOLERANCES = {"feastol": 1e-8, "abstol": 1e-8, "reltol": 1e-8}
 
 
@@ -840,8 +839,8 @@ def _compute_kkt(problem, mapped_status, raw, cone_dict, *, socp_state=None):
         qp = problem.qp
         n_eq = int(cone_dict.get("z", 0))
         # Every status that may carry a usable point (including max-iter)
-        # gets solution residuals, so kkt-verify --promote treats ECOS like
-        # every other solver.
+        # gets solution residuals, so the KKT verification's promotion treats
+        # ECOS like every other solver.
         if mapped_status in status.ANY_FEASIBLE:
             # Stack equality and inequality duals back into the original
             # row order produced by qp_to_nonnegative_cone: [eq, finite_u, finite_l].

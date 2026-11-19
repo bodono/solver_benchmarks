@@ -186,8 +186,8 @@ class SDPASolverAdapter(SolverAdapter):
 
 def _compute_kkt(cone_problem: dict, mapped: str, x: np.ndarray, y: np.ndarray):
     """Solution residuals for every status that may carry a point
-    (max-iter iterates included, so kkt-verify --promote treats SDPA like
-    every other solver); certificate checks for infeasibility statuses."""
+    (max-iter iterates included, so the KKT verification's promotion treats
+    SDPA like every other solver); certificate checks for infeasibility statuses."""
     a = sp.csc_matrix(cone_problem["A"])
     b = np.asarray(cone_problem["b"], dtype=float)
     cone = cone_problem["cone"]

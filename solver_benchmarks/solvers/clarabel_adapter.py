@@ -67,9 +67,6 @@ from .base import (
 # Clarabel's defaults (DefaultSettings, checked on clarabel 0.11.1): feasibility
 # and absolute and relative gap tolerances.
 CLARABEL_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
-# Its certificate test ||A'z|| < -tol_infeas_rel * b'z is in kkt.cert_res units
-# (tol_infeas_abs only requires the objective term to be negative enough).
-CLARABEL_DEFAULT_CERTIFICATE_TOLERANCES = {"tol_infeas_rel": 1e-8}
 
 
 class ClarabelSolverAdapter(SolverAdapter):
@@ -84,9 +81,7 @@ class ClarabelSolverAdapter(SolverAdapter):
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
         settings = dict(settings or {})
         translate_settings(settings)
-        return loosest_tolerance(
-            settings, CLARABEL_DEFAULT_TOLERANCES, CLARABEL_DEFAULT_CERTIFICATE_TOLERANCES
-        )
+        return loosest_tolerance(settings, CLARABEL_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

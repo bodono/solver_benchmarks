@@ -527,12 +527,13 @@ def _claimed_statuses(results: pd.DataFrame) -> pd.Series:
 def _verified_certificate_validity(group: pd.DataFrame, recorded: pd.Series) -> pd.Series:
     """Whether each certificate claim passed verification: True when kept or
     promoted, False when demoted or when its residual exceeds the row's
-    certificate tolerance, None when it could not be fully checked; rows the
-    verification did not judge keep ``recorded`` (``kkt.valid``)."""
+    tolerance, None when it could not be fully checked (or none was
+    recorded); rows the verification did not judge keep ``recorded``
+    (``kkt.valid``)."""
     accurate = status.CERTIFICATE_SUCCESS[status.EXPECT_INFEASIBLE]
     worst, cert_tol = (
         pd.to_numeric(group[name], errors="coerce") if name in group else pd.Series(np.nan, index=group.index)
-        for name in ("verify.worst", "verify.cert_tol")
+        for name in ("verify.worst", "verify.tol")
     )
     out: list[bool | None] = []
     for row_verdict, row_status, row_worst, row_tol, fallback in zip(
@@ -542,7 +543,7 @@ def _verified_certificate_validity(group: pd.DataFrame, recorded: pd.Series) -> 
             out.append(True)
         elif row_verdict == "demoted":
             out.append(False)
-        elif row_verdict == "unverified_certificate":
+        elif row_verdict in ("unverified_certificate", "missing_residuals"):
             out.append(None)
         elif row_verdict == "kept":
             # An accurate claim kept passed; an inaccurate one kept was not

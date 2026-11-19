@@ -110,11 +110,10 @@ _INFO_FIELDS = (
 _SUPPORTED_CONES = ("f", "z", "l")
 
 
-# cpo3 takes Clarabel's names, and its defaults are taken to be Clarabel's
-# (not checked here: cpo3 is not installed on the machines this was written
-# on; confirm on the cpo3 image).
+# cpo3 takes Clarabel's names; its defaults (Settings::default in the cpo3
+# 0.0.1 source, src/settings.rs) are Clarabel's too. Not checked against an
+# installed cpo3 by the tests: it is not installed where they ran.
 CPO3_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
-CPO3_DEFAULT_CERTIFICATE_TOLERANCES = {"tol_infeas_rel": 1e-8}
 
 
 class Cpo3SolverAdapter(SolverAdapter):
@@ -129,7 +128,7 @@ class Cpo3SolverAdapter(SolverAdapter):
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
         settings = dict(settings or {})
         translate_settings(settings)
-        return loosest_tolerance(settings, CPO3_DEFAULT_TOLERANCES, CPO3_DEFAULT_CERTIFICATE_TOLERANCES)
+        return loosest_tolerance(settings, CPO3_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         # Problems cpo3 cannot take are skipped before cpo3 is imported, so the

@@ -37,8 +37,7 @@ from .qp_split import (
 
 # PIQP's defaults (checked on piqp 0.6.4). The duality-gap tolerances apply
 # while check_duality_gap is on (PIQP's default); the adapter fills them from
-# eps_abs / eps_rel (see _duality_gap_tolerances). PIQP has no certificate
-# tolerance, so certificates are held to the optimality tolerance.
+# eps_abs / eps_rel (see _duality_gap_tolerances).
 PIQP_DEFAULT_TOLERANCES = {"eps_abs": 1e-8, "eps_rel": 1e-9}
 PIQP_DEFAULT_GAP_TOLERANCES = {"eps_duality_gap_abs": 1e-8, "eps_duality_gap_rel": 1e-9}
 

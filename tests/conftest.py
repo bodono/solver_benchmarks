@@ -161,7 +161,7 @@ def pytest_runtest_makereport(item, call):
 # pass, and a requested tolerance, so the rows mean what they say.
 
 PASSING_KKT = {"form": "qp", "primal_res_rel": 1.0e-10, "dual_res_rel": 1.0e-10, "duality_gap_rel": 1.0e-10}
-PASSING_REQUESTED_TOLERANCE = {"optimality": 1.0e-6, "certificate": 1.0e-6}
+PASSING_REQUESTED_TOLERANCE = {"optimality": 1.0e-6}
 
 
 def with_passing_kkt(row: dict) -> dict:

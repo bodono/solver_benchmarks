@@ -1459,8 +1459,8 @@ def _apply_time_limit(result: ProblemResult, time_limit: float | None) -> None:
     """Mark a result returned after ``time_limit``; a conclusion becomes time_limit.
 
     Every such result gets ``info["exceeded_time_limit"]``, whatever its
-    status, so that ``bench kkt-verify --promote`` does not count its point
-    as solved. A conclusive status is recorded as time_limit, with the
+    status, so that the KKT verification (analysis/verify.py, which promotes
+    passing limit stops) does not count its point as solved. A conclusive status is recorded as time_limit, with the
     solver's own status in ``info["status_before_timeout"]``; it loses its
     objective (reported only for optimal and optimal_inaccurate rows), which
     is kept in ``info["objective_before_timeout"]``. Other statuses are kept.

@@ -47,7 +47,7 @@ from .qp_split import normalize_qp_bounds
 
 # Gurobi's documented defaults (parameter names are case-insensitive): primal
 # and dual feasibility, and the barrier's relative gap. Not checked here
-# (Gurobi needs a license). No certificate tolerance of its own.
+# (Gurobi needs a license).
 GUROBI_DEFAULT_TOLERANCES = {"FeasibilityTol": 1e-6, "OptimalityTol": 1e-6, "BarConvTol": 1e-8}
 
 

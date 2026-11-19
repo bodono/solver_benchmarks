@@ -206,8 +206,8 @@ def _point_objective(problem, kkt):
     """The returned point's objective (``kkt.primal_obj``) as ``objective_value`` reports it.
 
     ``objective_value`` is only reported for a solution, so this is what
-    ``bench kkt-verify --promote`` gives a limit stop it promotes to
-    optimal. None when the record has no finite primal objective.
+    the KKT verification (analysis/verify.py) gives a limit stop it promotes
+    to optimal. None when the record has no finite primal objective.
     """
     if not kkt:
         return None

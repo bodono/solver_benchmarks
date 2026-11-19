@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import itertools
 import json
 import numbers
 import time
@@ -38,12 +37,12 @@ from .base import (
     settings_with_defaults,
     solver_import_failed,
     translate_tolerance_aliases,
+    version_tuple,
 )
 
 # QTQP 0.0.7+ takes Clarabel-style tolerances; these are the defaults of its
 # solve() signature (checked on qtqp 0.0.7).
 QTQP_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
-QTQP_DEFAULT_CERTIFICATE_TOLERANCES = {"tol_infeas_rel": 1e-8}
 # The first release with those names; earlier ones took atol / rtol, whose
 # defaults are not recorded here.
 QTQP_TOLERANCE_NAMES_SINCE = (0, 0, 7)
@@ -65,7 +64,7 @@ class QTQPSolverAdapter(SolverAdapter):
         version the Clarabel-style names, which ``atol`` / ``rtol`` supply
         as the adapter's translation does."""
         settings = dict(settings or {})
-        version = _version_tuple((versions or {}).get("qtqp"))
+        version = version_tuple((versions or {}).get("qtqp"))
         if version is not None and version < QTQP_TOLERANCE_NAMES_SINCE:
             _translate_tolerances(settings, {"atol", "rtol"})
             if settings.get("atol") is None or settings.get("rtol") is None:
@@ -75,7 +74,7 @@ class QTQPSolverAdapter(SolverAdapter):
                 )
             return loosest_tolerance(settings, {"atol": 0.0, "rtol": 0.0})
         _translate_tolerances(settings, set(QTQP_DEFAULT_TOLERANCES))
-        return loosest_tolerance(settings, QTQP_DEFAULT_TOLERANCES, QTQP_DEFAULT_CERTIFICATE_TOLERANCES)
+        return loosest_tolerance(settings, QTQP_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -262,7 +261,7 @@ def _map_qtqp_status(raw_status, *, hit_iteration_limit: bool = False) -> str:
     is an inaccurate solution. qtqp also answers ``almost_solved`` when
     ``max_iter`` is exactly the number of iterations the solve needs, so that
     converged point is reported as ``max_iter_reached`` too (OSQP would say
-    optimal there); ``bench kkt-verify --promote`` recovers it.
+    optimal there); the KKT verification's promotion recovers it.
     """
     if str(raw_status) == "almost_solved" and hit_iteration_limit:
         return status.MAX_ITER_REACHED
@@ -355,21 +354,6 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
     for key in _NEW_TOL_KEYS:
         settings.pop(key, None)
     return translate_tolerance_aliases(settings, ("atol",), ("rtol",))
-
-
-def _version_tuple(version) -> tuple[int, ...] | None:
-    """``(0, 0, 7)`` for "0.0.7" (or "0.0.7.dev1+g123"), None when unknown."""
-    if not isinstance(version, str):
-        return None
-    parts = []
-    for piece in version.split("."):
-        digits = "".join(itertools.takewhile(str.isdigit, piece))
-        if not digits:
-            break
-        parts.append(int(digits))
-        if len(digits) < len(piece):
-            break
-    return tuple(parts) if parts else None
 
 
 def _enum_member(enum_type, value, key: str):

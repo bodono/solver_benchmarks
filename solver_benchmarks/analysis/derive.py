@@ -395,34 +395,36 @@ def kkt_verify(
     it the matching ``*_inaccurate`` status, and with ``promote`` (the
     default) inaccurate, iteration- and time-limited stops whose point or
     certificate passes become accurate, except a row returned after the run's
-    time limit. Claimed optima with residuals missing are demoted unless
-    ``missing_is_failure`` is False; claims the harness cannot fully check
-    (cones it cannot project, no recorded certificate) are kept and counted
-    under ``unverified_cones`` / ``unverified_certificates``.
+    time limit. Claimed optima with residuals missing, and claimed
+    certificates whose adapter recorded none, are demoted unless
+    ``missing_is_failure`` is False; claims whose only unknown residuals are
+    distances to cones the harness cannot project are kept and counted under
+    ``unverified_cones`` / ``unverified_certificates``.
 
     The row's tolerance is ``slack`` times the tolerance its configuration
-    asked the solver for (``SolverAdapter.requested_tolerance``; certificates
-    use the requested infeasibility tolerance where the solver has one), or,
-    with ``tol``, that one value for every row and both kinds of claim.
-    ``requested_tol`` and ``tol_from_solver_id`` supply requested tolerances
-    the run does not record (see ``VerifyPolicy``); a row that needs one and
-    has none raises ``RequestedToleranceUnknown`` before anything is written.
+    asked the solver for (``SolverAdapter.requested_tolerance``), for
+    solutions and certificates alike, or, with ``tol``, that one value for
+    every row (``slack``, ``requested_tol`` and ``tol_from_solver_id`` are
+    then refused). ``requested_tol`` and ``tol_from_solver_id`` supply
+    requested tolerances the run does not record (see ``VerifyPolicy``); a
+    row that needs one and has none raises ``RequestedToleranceUnknown``
+    before anything is written.
 
     Every checked row gets ``metadata.kkt_verify``: its ``verdict``, the
-    ``rule`` and tolerances, the fields checked and the worst one, the reason,
+    ``rule``, tolerance and policy (``slack``, ``promote``,
+    ``missing_is_failure``), the fields checked and the worst one, the reason,
     and the ``original_status`` it was reported with (kept from an earlier
     verification, so verifying a verified run starts again from the reported
-    status and, under the same policy, writes the same rows); a promotion that
-    gave the row an objective (``kkt.primal_obj_reported``) names it in
-    ``objective_from``. Unparseable lines (a torn last line) are skipped and
-    counted under ``skipped_lines``. An existing ``out_dir`` is replaced only
-    with ``overwrite``, and only if it is empty or a derived run.
+    status and, under the same policy, writes the same rows; a copy of a copy
+    written before this version records the status of the step before, which
+    it then starts from); a promotion that gave the row an objective
+    (``kkt.primal_obj_reported``) names it in ``objective_from``. Unparseable
+    lines (a torn last line) are skipped and counted under ``skipped_lines``.
+    An existing ``out_dir`` is replaced only with ``overwrite``, and only if
+    it is empty or a derived run.
     """
     src = Path(run_dir)
     out = Path(out_dir)
-    _check_no_overlap(out, [src])
-    _refuse_existing(out, overwrite)
-    _check_is_run(src)
     policy = VerifyPolicy(
         rule="fixed" if tol is not None else "requested",
         tol=tol,
@@ -432,6 +434,9 @@ def kkt_verify(
         requested_tol=requested_tol or {},
         tol_from_solver_id=tol_from_solver_id,
     )
+    _check_no_overlap(out, [src])
+    _refuse_existing(out, overwrite)
+    _check_is_run(src)
     manifest = _read_manifest(src)
     resolver = ToleranceResolver(manifest, policy)
     records, skipped = _read_jsonl(src / "results.jsonl")
@@ -464,10 +469,10 @@ def kkt_verify(
         }
         resolved = resolver.resolve(row_info_from_record(row))
 
-        def tolerance(kind: str, resolved=resolved) -> float:
+        def tolerance(resolved=resolved) -> float:
             if isinstance(resolved, str):
                 raise _Unresolved
-            return resolved.tol if kind == "solution" else resolved.cert_tol
+            return resolved.tol
 
         try:
             verdict = classify(
@@ -486,16 +491,17 @@ def kkt_verify(
         checked_fields.update(verdict.fields)
         _tally(tallies, solver_id, verdict.verdict, str(reported), verdict.status, missing_is_failure)
         annotation: dict[str, Any] = {"verdict": verdict.verdict, "rule": policy.rule}
+        if policy.rule == "requested":
+            annotation["slack"] = slack
+        annotation.update(promote=promote, missing_is_failure=missing_is_failure)
         if isinstance(resolved, RowTolerance):
             annotation.update(
                 tol=resolved.tol,
-                cert_tol=resolved.cert_tol,
                 requested_tol=resolved.requested,
-                requested_cert_tol=resolved.requested_cert,
                 requested_tol_source=resolved.source,
             )
             seen = tolerances.setdefault(solver_id, {key: set() for key in (
-                "requested_tol", "requested_cert_tol", "requested_tol_source", "tol", "cert_tol")})
+                "requested_tol", "requested_tol_source", "tol")})
             for key in seen:
                 value = annotation.get(key)
                 if value is not None:
@@ -528,7 +534,7 @@ def kkt_verify(
         "checked_fields": sorted(checked_fields),
         "missing_is_failure": missing_is_failure,
         "promote": promote,
-        "requested_tol": {key: list(value) for key, value in policy.requested_tol.items()},
+        "requested_tol": dict(policy.requested_tol),
         "tol_from_solver_id": tol_from_solver_id,
         # Every checked row carries its verdict (copies written before this
         # field annotated only the rows they changed or kept with a note).

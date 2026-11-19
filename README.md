@@ -1302,15 +1302,15 @@ Run and analysis commands:
 |---|---|---|
 | `bench run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH` (default: the current directory if it has `problem_classes`, else the checkout the package was installed from, as for the other commands), `--data-root PATH`, `--prepare-data` default false, `--stream-output` / `--no-stream-output`, `--environment-id ID`, `--environment-metadata JSON` | Execute a benchmark config. Without `--run-dir`, creates a new immutable run directory named from `run.name` or the config filename stem plus a readable UTC timestamp, and copies the source config into the run directory. With `--run-dir`, resumes/appends to that run subject to `resume: true`. `--data-root` sets the `data_root` dataset option of every dataset in the config: the directory used in place of `problem_classes/`, holding each dataset's `*_data` folder. Without `--prepare-data`, missing external data is reported with exact preparation commands instead of being downloaded implicitly. `--no-stream-output` keeps solver stdout/stderr in per-solve log files but does not tee it to the terminal; benchmark progress still prints. The environment flags are normally used by version-comparison workflows and are recorded in result metadata. |
 | `bench env run CONFIG_PATH` | `--run-dir PATH`, `--repo-root PATH`, `--stream-output` / `--no-stream-output` | Execute an environment matrix config. Each environment supplies a Python executable, optional install commands, metadata, and solver variants; all results are written into one run directory, with the source environment config copied into it. `--no-stream-output` is forwarded to each child benchmark run. |
-| `bench summary RUN_DIR` | `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id` | Print how the statuses were verified, solver metrics, status counts, a verification table (per solver: the tolerance its settings requested and where that came from, the tolerances its rows were checked at, and the claims kept, demoted, promoted, returned after the time limit and kept unverified), and run completion information. Statuses are KKT-verified by default (see [Independent KKT verification](#independent-kkt-verification)); the verification options choose another rule. Solver metrics count each `(dataset, problem, solver)` once (a duplicated solve counts as its successful attempt); `total` is the number of solves the success and failure counts and rates are over (planned solves never recorded included), `completed` the number with a recorded result; run time and iteration totals cover every solve, means, medians and maxima the successful ones. A dataset whose expected problems are unknown (no problems of it found here) has empty `expected`, `missing` and `unexpected` counts, `complete` False, and a line saying so. |
-| `bench failures RUN_DIR` | `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id` | Print success/failure rates by solver over KKT-verified statuses, one count per solve. Planned solves with no recorded row count as `not_attempted` failures, as in the report (`bench summary` counts them the same way). Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
+| `bench summary RUN_DIR` | `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Print how the statuses were verified, solver metrics, status counts, a verification table (per solver: the tolerance its settings requested and where that came from, the tolerances its rows were checked at, and the claims kept, demoted, promoted, returned after the time limit and kept unverified), and run completion information. Statuses are KKT-verified by default (see [Independent KKT verification](#independent-kkt-verification)); the verification options choose another rule. Solver metrics count each `(dataset, problem, solver)` once (a duplicated solve counts as its successful attempt); `total` is the number of solves the success and failure counts and rates are over (planned solves never recorded included), `completed` the number with a recorded result; run time and iteration totals cover every solve, means, medians and maxima the successful ones. A dataset whose expected problems are unknown (no problems of it found here) has empty `expected`, `missing` and `unexpected` counts, `complete` False, and a line saying so. |
+| `bench failures RUN_DIR` | `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Print success/failure rates by solver over KKT-verified statuses, one count per solve. Planned solves with no recorded row count as `not_attempted` failures, as in the report (`bench summary` counts them the same way). Only `optimal` counts as success by default; on problems known to be infeasible or unbounded only the matching certificate does (see [Known outcomes](#known-outcomes)). |
 | `bench missing RUN_DIR` | `--repo-root PATH`, `--data-root PATH` | Print missing `(solver, dataset, problem)` results relative to the run manifest and dataset filters (which rows exist, so no verification is needed). A dataset whose expected problems cannot be listed (its directory is not found here or holds none of its problems) is named with that directory, instead of being reported complete. |
-| `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id` | Write Dolan-More performance profile data, over KKT-verified statuses, to `performance_profile_<metric>.csv` (how they were verified is printed on stderr). Solves the manifest planned but the run did not record count as failures; `--repo-root` and `--data-root` locate the dataset directories used to list them (see below). |
-| `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id` | Write shifted geometric means, over KKT-verified statuses, into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
-| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id` | Write PNG plots, over KKT-verified statuses, for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile), a setup-vs-solve time breakdown (`setup_solve_breakdown.png`), and a difficulty-scaling plot of the metric by problem size (`difficulty_scaling_<metric>.png`). |
-| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report, all over KKT-verified statuses; the report opens with how they were verified (`verification.csv`, `verification_changes.csv`). |
+| `bench profile RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Write Dolan-More performance profile data, over KKT-verified statuses, to `performance_profile_<metric>.csv` (how they were verified is printed on stderr). Solves the manifest planned but the run did not record count as failures; `--repo-root` and `--data-root` locate the dataset directories used to list them (see below). |
+| `bench geomean RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--shift VALUE` default metric-dependent, `--max-value VALUE` optional, `--success-only` default false, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Write shifted geometric means, over KKT-verified statuses, into the run directory. Time-metric failures cost three times the manifest's time limit unless `--max-value` overrides it; use `--success-only` for solved-problem-only geomeans. |
+| `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Write PNG plots, over KKT-verified statuses, for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile), a setup-vs-solve time breakdown (`setup_solve_breakdown.png`), and a difficulty-scaling plot of the metric by problem size (`difficulty_scaling_<metric>.png`). |
+| `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report, all over KKT-verified statuses; the report opens with how they were verified (`verification.csv`, `verification_changes.csv`). |
 | `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are, except a `worker_error` or `solver_unavailable` skip row that a later row of the same run id, solve and resume signature replaced (an input whose resume is running or was killed). Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection and manifest (each row's settings are those of the input whose run id it carries), so `summary`, `missing` and `report` treat the merged directory like one run. A warning says when the inputs were verified differently (some by `bench kkt-verify`, or at different tolerances); the merged run is verified again from the rows' reported statuses when it is analysed. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. `--overwrite` replaces only an empty directory or a run written by `bench merge` / `bench kkt-verify` (its manifest has `derived`); a base run directory, a file or a directory of other files is refused. |
-| `bench kkt-verify RUN_DIR` | `--tol VALUE` optional, `--slack VALUE` default `10`, `--output-dir PATH` default `RUN_DIR_verified` (`RUN_DIR_kkt<tol>` with `--tol`) next to `RUN_DIR`, `--allow-missing` default false, `--promote` / `--no-promote` default `--promote`, `--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (repeatable), `--tol-from-solver-id`, `--overwrite` default false | Write a copy of the run with KKT-verified statuses, by the rule every analysis command applies when it reads a run (see [Independent KKT verification](#independent-kkt-verification)): every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed the row's tolerance becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it the matching `*_inaccurate` status. The tolerance is `--slack` times the tolerance the solver's settings requested (its requested infeasibility tolerance for certificates); `--tol` holds every row, solutions and certificates alike, to one value instead. `--requested-tol` and `--tol-from-solver-id` supply requested tolerances the run does not record; without one where it is needed nothing is written and the command says which solvers lack one. Claimed optima with residuals missing are demoted unless `--allow-missing`. Rows whose only unknown residuals are distances to cones the harness cannot project (complex PSD), and infeasibility claims whose certificate cannot be checked (the adapter records none, as HiGHS, cuOpt, PIQP, ProxQP and the commercial adapters, Gurobi, CPLEX and MOSEK, do not, or a cone cannot be projected), are kept whatever `--allow-missing` says, with a warning that counts them by solver. `--promote` (the default; `--no-promote` turns it off) turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, and `primal_infeasible_inaccurate` / `dual_infeasible_inaccurate` rows whose certificate is fully checked and passes into `primal_infeasible` / `dual_infeasible`, as it does an iteration- or time-limited row whose record holds such a certificate instead of a point (OSQP's inaccurate certificates) (never when the certificate is missing or only partly checked), except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. A row promoted to `optimal` without an `objective_value` (adapters report one only for a solution) takes the objective of its returned point, which the worker records as `kkt.primal_obj_reported` (constant term and maximisation applied, as for `objective_value`); `metadata.kkt_verify.objective_from` says so. Every checked row gets `metadata.kkt_verify` (its verdict, rule, tolerances, worst residual, reason and `original_status`), and every row is judged from the status it was reported with, so verifying a verified run under the same rule writes the same rows. Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, the over-time-limit count where there is one, and the requested and checked tolerances (`requested=1e-04/1e-07`, `check=1e-03/1e-06`: solutions / certificates). Both commands refuse an existing output directory unless `--overwrite`, which replaces only an empty directory or an earlier derived run, never a base run or other files; a source directory with neither `results.jsonl` nor `manifest.json`; and a `manifest.json` that is not valid JSON. |
+| `bench kkt-verify RUN_DIR` | `--tol VALUE` optional, `--slack VALUE` default `10`, `--output-dir PATH` default `RUN_DIR_verified` (`RUN_DIR_kkt<tol>` with `--tol`) next to `RUN_DIR`, `--allow-missing` default false, `--promote` / `--no-promote` default `--promote`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id`, `--overwrite` default false | Write a copy of the run with KKT-verified statuses, by the rule every analysis command applies when it reads a run (see [Independent KKT verification](#independent-kkt-verification)): every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed the row's tolerance becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it the matching `*_inaccurate` status. The tolerance is `--slack` times the tolerance the solver's settings requested, for solutions and certificates alike; `--tol` holds every row to one value instead (and refuses `--slack`, `--requested-tol` and `--tol-from-solver-id`, which it would not use). `--requested-tol` and `--tol-from-solver-id` supply requested tolerances the run does not record; without one where it is needed nothing is written and the command says which solvers lack one. Claimed optima with residuals missing, and infeasibility claims whose adapter recorded no certificate (HiGHS, cuOpt and the commercial adapters, Gurobi, CPLEX and MOSEK, never record one; PIQP, ProxQP and SDPA do not when the solver returns no finite certificate), cannot be verified and are demoted unless `--allow-missing`. With `--allow-missing`, infeasibility-heavy comparisons favour adapters that record no certificate: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. Claims whose only unknown residuals are distances to cones the harness cannot project (complex PSD) are kept whatever `--allow-missing` says, with a warning that counts them by solver. `--promote` (the default; `--no-promote` turns it off) turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, and `primal_infeasible_inaccurate` / `dual_infeasible_inaccurate` rows whose certificate is fully checked and passes into `primal_infeasible` / `dual_infeasible`, as it does an iteration- or time-limited row whose record holds such a certificate instead of a point (OSQP's inaccurate certificates) (never when the certificate is missing or only partly checked), except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. A row promoted to `optimal` without an `objective_value` (adapters report one only for a solution) takes the objective of its returned point, which the worker records as `kkt.primal_obj_reported` (constant term and maximisation applied, as for `objective_value`); `metadata.kkt_verify.objective_from` says so. Every checked row gets `metadata.kkt_verify` (its verdict, rule, tolerance, slack, promotion and `--allow-missing` setting, worst residual, reason and `original_status`), and every row is judged from the status it was reported with, so verifying a verified run under the same rule writes the same rows (a copy of a copy written before this version recorded the status of the step before as `original_status`, and starts from it). Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, the over-time-limit count where there is one, and the requested and checked tolerances (`requested=1e-04`, `check=1e-03`). Both commands refuse an existing output directory unless `--overwrite`, which replaces only an empty directory or an earlier derived run, never a base run or other files; a source directory with neither `results.jsonl` nor `manifest.json`; and a `manifest.json` that is not valid JSON. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1508,8 +1508,8 @@ count uses is the verified one:
 - A claimed certificate (`primal_infeasible`, `dual_infeasible`) stays only if
   its scaled certificate residual `kkt.cert_res` (the certificate scaled so
   that its objective term is −1, see [Known outcomes](#known-outcomes)) is at
-  or below the row's certificate tolerance; otherwise it becomes the matching
-  `*_inaccurate` status.
+  or below the row's tolerance, the same as for its solutions; otherwise it
+  becomes the matching `*_inaccurate` status.
 - An inaccurate, iteration-limited or time-limited stop whose point passes
   becomes `optimal` (taking the point's objective, `kkt.primal_obj_reported`,
   when it has none), and an inaccurate certificate, or a limit stop that
@@ -1517,11 +1517,20 @@ count uses is the verified one:
   A result returned after the run's time limit (`info.exceeded_time_limit`) is
   never promoted, and `tools/make_figures.py` applies its 1 % late rule after
   verification.
-- Claims the harness cannot fully check are kept and counted as unverified:
-  solutions whose only unknown residuals are distances to cones it cannot
-  project (complex PSD), and certificates the adapter does not record (HiGHS,
-  cuOpt, PIQP, ProxQP, Gurobi, CPLEX, MOSEK) or that lie on such cones.
-  `bench summary` and the report count them per solver.
+- A claim with nothing to check counts as unsolved, since it cannot be
+  verified: a claimed solution without complete residuals, and a claimed
+  certificate the adapter did not record (HiGHS, cuOpt and the commercial
+  adapters, Gurobi, CPLEX and MOSEK, never record one; PIQP, ProxQP and SDPA
+  do not when the solver returns no finite certificate). `--allow-missing`
+  (`VerifyPolicy(missing_is_failure=False)`) keeps them, counted as
+  unverified; in infeasibility-heavy comparisons that favours adapters that
+  record no certificate, since a recorded certificate can fail the check and
+  an unrecorded one cannot.
+- Claims whose only unknown residuals are distances to cones the harness
+  cannot project (complex PSD) are kept when everything else passes, and
+  counted as unverified. The verification header every command prints says
+  how many claims were kept without a full check; `bench summary` and the
+  report count them per solver.
 
 **The tolerance.** A row is held to `10` (`VERIFY_SLACK` in
 `analysis/verify.py`) times the tolerance its configuration asked the solver
@@ -1534,40 +1543,56 @@ norms and scalings solvers measure in (it is the factor of the published
 3.3.2 figures, which were verified at `--tol 10*eps`). Each adapter computes
 it with its own alias translation (`SolverAdapter.requested_tolerance`), so
 `eps`, `eps_abs` and `eps_rel` mean what they mean in a solve. Certificates
-are held to ten times the requested infeasibility tolerance where the solver
-has one whose test divides by the certificate's objective term (the unit of
-`kkt.cert_res`), and to ten times the optimality tolerance otherwise. Every
-variant `tools/make_campaign.py` writes requests exactly its tolerance tag
-(HiGHS below `1e-7` excepted: its residual tolerances stay at their `1e-7`
-default), so campaigns are verified at ten times the tag.
+are held to the same tolerance as the row's solutions. The solvers' own
+infeasibility tolerances are not used, because they measure certificates in
+units other than `kkt.cert_res`: OSQP (and, by its documentation, ProxQP)
+divides the residual by the norm of the ray, Clarabel by the larger of that
+norm and one, cpo3 by the larger of that norm and the objective term, and
+QTQP adds a term in the ray's norm; only SCS's and PDLP's tests divide by the
+objective term alone. Held to those knobs at their defaults, the certificates
+in one figure would be checked at tolerances up to a thousand times apart,
+and Clarabel's genuine NETLIB certificates (`cert_res` up to `6e-5`) would
+fail at its `1e-8`. Every variant `tools/make_campaign.py` writes requests
+exactly its tolerance tag (HiGHS below `1e-7` excepted: its residual
+tolerances stay at their `1e-7` default), so a campaign's solutions and
+certificates are verified at ten times the tag, the rule of the published
+3.3.2 figures.
 
-| Solver | Optimality knobs (the loosest is requested) | Certificate knobs | Default request (solutions / certificates) | Defaults |
-|---|---|---|---|---|
-| `clarabel` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (`eps_abs` / `eps` set the first two, `eps_rel` / `eps` the last) | `tol_infeas_rel` | `1e-8 / 1e-8` | checked on clarabel 0.11.1 |
-| `cplex` | `simplex.tolerances.feasibility`, `simplex.tolerances.optimality`, `barrier.convergetol` (no `eps` aliases) | none | `1e-6 / none` | documented, not checked |
-| `cpo3` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel) | `tol_infeas_rel` | `1e-8 / 1e-8` | assumed Clarabel's, not checked |
-| `cuopt` | `absolute_primal_tolerance`, `absolute_dual_tolerance`, `absolute_gap_tolerance`, `relative_primal_tolerance`, `relative_dual_tolerance`, `relative_gap_tolerance` (`eps` and `optimality_tolerance` set all six, `eps_abs` / `eps_rel` three each) | none | `1e-4 / none` | documented, not checked |
-| `cvxopt` | `abstol`, `reltol`, `feastol` (`eps_abs` / `eps` set `abstol` and `feastol`, `eps_rel` / `eps` `reltol`) | none | `1e-6 / none` | checked on cvxopt 1.3.3 |
-| `ecos` | `feastol`, `abstol`, `reltol` (as CVXOPT) | none | `1e-8 / none` | documented, not checked |
-| `gurobi` | `FeasibilityTol`, `OptimalityTol`, `BarConvTol` (any case; no `eps` aliases) | none | `1e-6 / none` | documented, not checked |
-| `highs` | `primal_feasibility_tolerance`, `dual_feasibility_tolerance`, `primal_residual_tolerance`, `dual_residual_tolerance`, `optimality_tolerance`, and `ipm_optimality_tolerance` (`solver` `choose`, `ipm`, `ipx`, `hipo`) or `pdlp_optimality_tolerance` (`pdlp`, `hipdlp`); `kkt_tolerance` changed from its `1e-7` default replaces them all (no `eps` aliases) | none | `1e-7 / none` | checked on highspy 1.15.1 |
-| `mosek` | `MSK_DPAR_INTPNT_TOL_PFEAS`, `MSK_DPAR_INTPNT_TOL_DFEAS`, `MSK_DPAR_INTPNT_TOL_REL_GAP` for LPs, `MSK_DPAR_INTPNT_QO_TOL_PFEAS`, `MSK_DPAR_INTPNT_QO_TOL_DFEAS`, `MSK_DPAR_INTPNT_QO_TOL_REL_GAP` for QPs (both when the row does not say which; no `eps` aliases) | none | `1e-8 / none` | documented, not checked |
-| `osqp` | `eps_abs`, `eps_rel` | `eps_prim_inf`, `eps_dual_inf` | `1e-3 / 1e-4` | checked on osqp 1.1.3 |
-| `pdlp` | `eps_optimal_absolute`, `eps_optimal_relative` (set by `eps_abs` / `eps_rel`; a `parameters_text` that sets the detailed criteria is read with OR-Tools) | `eps_primal_infeasible`, `eps_dual_infeasible` | `1e-6 / 1e-8` | checked on OR-Tools 9.15 |
-| `piqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | none | `1e-8 / none` | checked on piqp 0.6.4 |
-| `proxqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on (the adapter's default) `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `eps_primal_inf`, `eps_dual_inf` | `1e-5 / 1e-4` | checked on proxsuite 0.7.3 |
-| `qtqp` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel; `atol` / `rtol` supply them; before qtqp 0.0.7 `atol` and `rtol` themselves, which must then both be set) | `tol_infeas_rel` | `1e-8 / 1e-8` | checked on qtqp 0.0.7 |
-| `scs` | `eps_abs`, `eps_rel` (`eps` sets both) | `eps_infeas` | `1e-4 / 1e-7` | SCS 3.x documentation |
-| `sdpa` | `epsilonStar`, `epsilonDash` (`eps_abs` / `eps_rel`; the adapter's `optimality_tolerance` is a status rule the verification supersedes) | none | `1e-7 / none` | checked on sdpa-python 0.2.3 |
+Verification uses the residuals the worker recorded at solve time; it does
+not recompute them. Runs recorded before #75 (`f942f1f`, 2026-08-29) carry a
+known-wrong `duality_gap_rel` of about `1` on Maros-Meszaros, so most of their
+claimed optima there are demoted; read them with `--unverified`, or re-run
+them. The defaults below are those of the versions named; a row of an older
+version that leaves a knob unset is checked at today's default, except SCS
+before 3.0 and qtqp before 0.0.7, whose rows must set their tolerances (the
+tolerance is otherwise unknown).
+
+| Solver | Knobs (the loosest is requested) | Default request | Defaults |
+|---|---|---|---|
+| `clarabel` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (`eps_abs` / `eps` set the first two, `eps_rel` / `eps` the last) | `1e-8` | checked on clarabel 0.11.1 |
+| `cplex` | `simplex.tolerances.feasibility`, `simplex.tolerances.optimality`, `barrier.convergetol` (no `eps` aliases) | `1e-6` | documented, not checked |
+| `cpo3` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel) | `1e-8` | cpo3 0.0.1 source (`src/settings.rs`), not checked against an installed cpo3 |
+| `cuopt` | `absolute_primal_tolerance`, `absolute_dual_tolerance`, `absolute_gap_tolerance`, `relative_primal_tolerance`, `relative_dual_tolerance`, `relative_gap_tolerance` (`eps` and `optimality_tolerance` set all six, `eps_abs` / `eps_rel` three each) | `1e-4` | documented, not checked |
+| `cvxopt` | `abstol`, `reltol`, `feastol` (`eps_abs` / `eps` set `abstol` and `feastol`, `eps_rel` / `eps` `reltol`) | `1e-6` | checked on cvxopt 1.3.3 |
+| `ecos` | `feastol`, `abstol`, `reltol` (as CVXOPT) | `1e-8` | documented, not checked |
+| `gurobi` | `FeasibilityTol`, `OptimalityTol`, `BarConvTol` (any case; no `eps` aliases) | `1e-6` | documented, not checked |
+| `highs` | `primal_feasibility_tolerance`, `dual_feasibility_tolerance`, `primal_residual_tolerance`, `dual_residual_tolerance`, `optimality_tolerance`, and `ipm_optimality_tolerance` (`solver` `choose`, `ipm`, `ipx`, `hipo`) or `pdlp_optimality_tolerance` (`pdlp`, `hipdlp`); `kkt_tolerance` changed from its `1e-7` default replaces them all (no `eps` aliases) | `1e-7` | checked on highspy 1.15.1 |
+| `mosek` | `MSK_DPAR_INTPNT_TOL_PFEAS`, `MSK_DPAR_INTPNT_TOL_DFEAS`, `MSK_DPAR_INTPNT_TOL_REL_GAP` for LPs, `MSK_DPAR_INTPNT_QO_TOL_PFEAS`, `MSK_DPAR_INTPNT_QO_TOL_DFEAS`, `MSK_DPAR_INTPNT_QO_TOL_REL_GAP` for QPs (both when the row does not say which; no `eps` aliases) | `1e-8` | documented, not checked |
+| `osqp` | `eps_abs`, `eps_rel` | `1e-3` | checked on osqp 1.1.3 |
+| `pdlp` | `eps_optimal_absolute`, `eps_optimal_relative` (set by `eps_abs` / `eps_rel`; a `parameters_text` that sets the detailed criteria is read with OR-Tools) | `1e-6` | checked on OR-Tools 9.15 |
+| `piqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-8` | checked on piqp 0.6.4 |
+| `proxqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on (the adapter's default) `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-5` | checked on proxsuite 0.7.3 |
+| `qtqp` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel; `atol` / `rtol` supply them; before qtqp 0.0.7 `atol` and `rtol` themselves, which must then both be set) | `1e-8` | checked on qtqp 0.0.7 |
+| `scs` | `eps_abs`, `eps_rel` (`eps` sets both) | `1e-4` | SCS 3.x documentation |
+| `sdpa` | `epsilonStar`, `epsilonDash` (`eps_abs` / `eps_rel`; the adapter's `optimality_tolerance` is a status rule the verification supersedes) | `1e-7` | checked on sdpa-python 0.2.3 |
 
 The requested tolerance of a row comes from, first match wins:
-`--requested-tol SOLVER_ID=TOL[/CERT_TOL]` (Python: `VerifyPolicy(requested_tol=...)`);
+`--requested-tol SOLVER_ID=TOL` (Python: `VerifyPolicy(requested_tol=...)`);
 the row's `metadata.requested_tolerance`, which the worker records with every
 solve; the settings the run's manifest gives the solver id (in a merge, the
 manifest of the input whose `run_id` the row carries, else every input's,
 which must then agree); and, only with `--tol-from-solver-id`, a tolerance tag
-ending the solver id (`clarabel_1e-4`, used for both kinds of claim; nominal
-only). A row that needs one and has none stops the command with a message
+ending the solver id (`clarabel_1e-4`; nominal only). A row that needs one and has none stops the command with a message
 naming the solvers and these remedies. Rows that compare nothing (no
 residuals, errors, skips) never need one. Runs recorded before the worker
 recorded it resolve from their manifests; the `scs33_2026-09` archive's merged
@@ -1577,11 +1602,10 @@ manifests list one solver's settings, so it needs `--tol-from-solver-id`.
 solver reported. `verify.verdict` is one of `kept`, `demoted`, `promoted`,
 `over_time_limit`, `missing_residuals`, `unverified_cones`,
 `unverified_certificate` and `not_checked`; `verify.rule`, `verify.tol`,
-`verify.cert_tol`, `verify.requested_tol`, `verify.requested_cert_tol`,
-`verify.requested_tol_source`, `verify.worst`, `verify.worst_field`,
-`verify.reason` and `verify.objective_from` say why. Scoring a certificate
-follows its verdict (made at the row's own certificate tolerance), not the
-solve-time `kkt.valid`.
+`verify.requested_tol`, `verify.requested_tol_source`, `verify.worst`,
+`verify.worst_field`, `verify.reason` and `verify.objective_from` say why.
+Scoring a certificate follows its verdict (made at the row's tolerance), not
+the solve-time `kkt.valid`.
 
 **Other rules and the opt-out.** On the analysis commands (and
 `tools/make_figures.py`): `--unverified` uses the statuses the solvers reported
@@ -1589,17 +1613,23 @@ solve-time `kkt.valid`.
 kkt-verify` copy); `--verify-tol T` holds every row, solutions and
 certificates, to `T` (`VerifyPolicy(rule="fixed", tol=T)`); `--reverify`
 re-checks a `bench kkt-verify` copy by the default rule instead of using what
-it recorded (`VerifyPolicy(rule="requested")`).
+it recorded (`VerifyPolicy(rule="requested")`); `--allow-missing` keeps claims
+with nothing to check. Options that would not be used are refused:
+`--verify-tol` with `--reverify`, `--requested-tol` or `--tol-from-solver-id`,
+and `--unverified` with any other.
 
 **Derived runs.** A run written by `bench kkt-verify` is read as it recorded
 its verification (its statuses, and its rule: `--tol`, or the per-row rule).
 Every other run, a merge of verified copies included, is verified from its
 rows' reported statuses (`metadata.kkt_verify.original_status` keeps the status
 an earlier verification started from), with a warning when its rows carry an
-earlier verification under another rule and the `--verify-tol` that reproduces
-it. Verification depends only on the reported status, the KKT record, the
-time-limit markers and the rule, so verifying a verified run again under the
-same rule changes nothing.
+earlier verification under another rule (tolerance, slack, promotion or
+`--allow-missing`), naming the `--verify-tol` that reproduces a fixed one. A
+`bench kkt-verify` copy read as it recorded does not use `--requested-tol`,
+`--tol-from-solver-id` or `--allow-missing`, and warns when they are given;
+`--reverify` applies them. Verification depends only on the reported status,
+the KKT record, the time-limit markers and the rule, so verifying a verified
+run again under the same rule changes nothing.
 
 **`kkt.CERT_TOL`.** The `1e-3` in `kkt.CERT_TOL` is the solve-time check that
 sets `kkt.valid`; it only rejects what is clearly not a certificate, and
@@ -1634,7 +1664,7 @@ objective term (`b'y`, the support `u'y⁺ − l'y⁻` of the bounds, or `q'x`) 
 −1 and then requires its residuals (`kkt.cert_res`, the largest of `A'y` with
 the distance of `y` to the dual cone or the weight `y` puts on absent bounds,
 or `Px` with the distance of `−Ax` to the cone) to be at most the row's
-certificate tolerance; a certificate that fails becomes `*_inaccurate`.
+tolerance; a certificate that fails becomes `*_inaccurate`.
 Statuses read with `--unverified` fall back on the check recorded at solve
 time: there a certificate with `kkt.valid` false (a residual above
 `kkt.CERT_TOL`, `1e-3`, which only rejects what is clearly not a certificate)
@@ -1819,9 +1849,10 @@ Status handling:
 
 Results of the campaigns run with this harness are published in
 [bodono/solver_benchmarks_results](https://github.com/bodono/solver_benchmarks_results): one directory
-per campaign with the merged `results.jsonl` and `manifest.json` per family (readable directly by
-`bench kkt-verify` and `bench report`), the campaign configs, figures, tables, and a manifest of solver
-versions and hardware. The complete archive of each campaign is attached to its GitHub release there.
+per campaign with the merged `results.jsonl` and `manifest.json` per family (readable by `bench
+kkt-verify` and `bench report`; the `scs33_2026-09` merges record only one solver's settings in their
+manifests, so they need `--tol-from-solver-id` to be verified), the campaign configs, figures, tables,
+and a manifest of solver versions and hardware. The complete archive of each campaign is attached to its GitHub release there.
 
 | Campaign | Content |
 |---|---|
@@ -2044,7 +2075,7 @@ Adapter expectations:
 - Pass a NaN-free point to the KKT helpers: `finite_point` returns False for a missing or non-finite vector, and the record is then `None`.
 - Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
 - Reject unknown setting names with a `SolverConfigError` naming them, and translate the shared aliases (`eps` / `eps_abs` / `eps_rel` with `translate_tolerance_aliases`, `max_iter` with `pop_max_iter`, `time_limit*` with `pop_time_limit`, `threads` with `pop_threads`) where the solver has an equivalent, recording what was inserted in `info["settings_translated"]`, or mark them ignored. A solver with a thread setting runs on `threads_or_default(threads)` (one thread unless configured) and records it on `info["threads"]`; set `info["threads"] = None` where the adapter cannot set it.
-- Define the classmethod `requested_tolerance(settings, *, problem_kind, is_lp, versions)`: run the adapter's own alias translation on a copy of the settings and return `loosest_tolerance(settings, {knob: library default, ...}, {certificate knob: default, ...})` (see `solver_benchmarks/solvers/base.py`), listing the solver's feasibility and gap tolerances and, when its infeasibility test divides by the certificate's objective term, its infeasibility tolerance. The [independent KKT verification](#independent-kkt-verification) holds every row of the solver to ten times it; the base class raises, so an adapter without it leaves its rows unverifiable (and a test fails). Add its row to the adapter table there.
+- Define the classmethod `requested_tolerance(settings, *, problem_kind, is_lp, versions)`: run the adapter's own alias translation on a copy of the settings and return `loosest_tolerance(settings, {knob: library default, ...})` (see `solver_benchmarks/solvers/base.py`), listing the solver's feasibility and gap tolerances (not its infeasibility tolerances, which no adapter uses). The [independent KKT verification](#independent-kkt-verification) holds every row of the solver, solutions and certificates alike, to ten times it; the base class raises, so an adapter without it leaves its rows unverifiable (and a test fails). Add its row to the adapter table there.
 - Put solver-specific scalar metadata in `info`.
 - Put large or per-iteration data in `trace` or explicit artifact files.
 - Write extra files under `artifacts_dir`, never global paths.

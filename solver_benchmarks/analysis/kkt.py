@@ -43,9 +43,9 @@ _INF_BOUND = 1.0e18
 # defaults leave 1e-5 to 1e-4 in these units on NETLIB, SCS, Clarabel and ECOS
 # 1e-6 or less), so this only rejects what is clearly not a certificate. The
 # KKT verification every analysis applies (analysis/verify.py) holds each
-# certificate to its own tolerance, 10 x the infeasibility tolerance its
-# solver was asked for, and scoring then follows that verdict; ``valid`` is
-# what scoring falls back on only for statuses read unverified.
+# certificate to its row's tolerance, 10 x the tolerance its solver was asked
+# for, and scoring then follows that verdict; ``valid`` is what scoring falls
+# back on only for statuses read unverified.
 CERT_TOL = 1.0e-3
 _SQRT2 = math.sqrt(2.0)
 

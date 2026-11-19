@@ -437,17 +437,19 @@ def test_verify_holds_certificates_to_the_tolerance(tmp_path):
     assert out[("loose", "a")]["metadata"]["kkt_verify"]["worst_field"] == "cert_res"
     assert out[("old", "a")]["status"] == "dual_infeasible_inaccurate"
     assert out[("old", "a")]["metadata"]["kkt_verify"]["worst"] == 5e-4
-    # no certificate recorded: nothing to hold against the solver
-    assert out[("none", "a")]["status"] == "primal_infeasible"
+    # no certificate recorded: the claim cannot be verified
+    assert out[("none", "a")]["status"] == "primal_infeasible_inaccurate"
     assert out[("none", "a")]["metadata"]["kkt_verify"]["reason"] == "no certificate recorded"
-    assert summary["kept"] == {"a": 2} and summary["demoted"] == {"a": 2}
-    assert summary["unverified_certificates"] == {"a": 1}
-    assert summary["missing_residuals"] == {}
+    assert out[("none", "a")]["metadata"]["kkt_verify"]["verdict"] == "missing_residuals"
+    assert summary["kept"] == {"a": 1} and summary["demoted"] == {"a": 3}
+    assert summary["unverified_certificates"] == {}
+    assert summary["missing_residuals"] == {"a": 1}
 
 
-def test_verify_keeps_certificates_it_cannot_check_whatever_missing_is_failure(tmp_path):
-    # HiGHS, PIQP, ProxQP, SDPA and the commercial adapters record no
-    # certificate vector; that is no reason to fail their infeasibility claims.
+def test_verify_demotes_claims_without_a_certificate_unless_missing_is_tolerated(tmp_path):
+    # HiGHS, cuOpt and the commercial adapters record no certificate vector
+    # (PIQP, ProxQP and SDPA none when the solver returns none): such a claim
+    # cannot be verified, like a claimed optimum without residuals.
     exp = {"metadata": {"expected_status": "infeasible"}}
     rows = [
         {**_row("p1", "highs", status="primal_infeasible", kkt=None), **exp},
@@ -457,16 +459,22 @@ def test_verify_keeps_certificates_it_cannot_check_whatever_missing_is_failure(t
                      "cert_res": 1e-9, "cert_tol": 1e-3, "valid": True}), **exp},
     ]
     src = _write_run(tmp_path, "src", rows)
-    for missing_is_failure, name in ((True, "strict"), (False, "lenient")):
-        summary = kkt_verify(src, tmp_path / name, tol=1e-6, missing_is_failure=missing_is_failure)
-        out = _read_rows(tmp_path / name)
-        assert {key: row["status"] for key, row in out.items()} == {
-            ("p1", "highs"): "primal_infeasible", ("p2", "highs"): "dual_infeasible", ("p1", "scs"): "primal_infeasible"}
-        # Every checked row says what was decided; a certificate that passes is kept.
-        assert out[("p1", "scs")]["metadata"]["kkt_verify"]["verdict"] == "kept"
-        assert summary["demoted"] == {}
-        assert summary["kept"] == {"highs": 2, "scs": 1}
-        assert summary["unverified_certificates"] == {"highs": 2}
+    strict = kkt_verify(src, tmp_path / "strict", tol=1e-6)
+    out = _read_rows(tmp_path / "strict")
+    assert {key: row["status"] for key, row in out.items()} == {
+        ("p1", "highs"): "primal_infeasible_inaccurate", ("p2", "highs"): "dual_infeasible_inaccurate",
+        ("p1", "scs"): "primal_infeasible"}
+    # Every checked row says what was decided; a certificate that passes is kept.
+    assert out[("p1", "scs")]["metadata"]["kkt_verify"]["verdict"] == "kept"
+    assert out[("p1", "highs")]["metadata"]["kkt_verify"]["verdict"] == "missing_residuals"
+    assert strict["demoted"] == {"highs": 2} and strict["kept"] == {"scs": 1}
+    assert strict["missing_residuals"] == {"highs": 2} and strict["unverified_certificates"] == {}
+    lenient = kkt_verify(src, tmp_path / "lenient", tol=1e-6, missing_is_failure=False)
+    out = _read_rows(tmp_path / "lenient")
+    assert {key: row["status"] for key, row in out.items()} == {
+        ("p1", "highs"): "primal_infeasible", ("p2", "highs"): "dual_infeasible", ("p1", "scs"): "primal_infeasible"}
+    assert lenient["demoted"] == {} and lenient["kept"] == {"highs": 2, "scs": 1}
+    assert lenient["missing_residuals"] == {"highs": 2}
 
 
 def test_verify_checks_what_it_can_of_a_certificate_with_an_unsupported_cone(tmp_path):
@@ -524,7 +532,7 @@ def test_verify_fails_a_certificate_whose_objective_term_is_not_negative(tmp_pat
     assert summary["demoted"] == {"a": 1}
 
 
-def test_kkt_verify_cli_warns_about_certificates_it_could_not_check(tmp_path):
+def test_kkt_verify_cli_counts_and_warns_about_certificates_it_could_not_check(tmp_path):
     from click.testing import CliRunner
 
     from solver_benchmarks.cli import main
@@ -534,8 +542,12 @@ def test_kkt_verify_cli_warns_about_certificates_it_could_not_check(tmp_path):
     src = _write_run(tmp_path, "src", rows)
     result = CliRunner().invoke(main, ["kkt-verify", str(src), "--tol", "1e-6", "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 0, result.output
-    assert "highs\tkept=2\tdemoted=0" in result.stdout
-    assert "certificate could not be checked: highs=2" in result.stderr
+    assert "highs\tkept=0\tdemoted=2\tpromoted=0\tno_residuals=2" in result.stdout
+    kept = CliRunner().invoke(main, ["kkt-verify", str(src), "--tol", "1e-6", "--allow-missing",
+                                     "--output-dir", str(tmp_path / "kept")])
+    assert kept.exit_code == 0, kept.output
+    assert "highs\tkept=2\tdemoted=0" in kept.stdout
+    assert "without residuals or a certificate to check: highs=2" in kept.stderr
 
 
 def test_derived_run_directories_follow_the_umask(tmp_path):

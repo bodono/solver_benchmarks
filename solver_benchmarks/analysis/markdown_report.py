@@ -400,12 +400,12 @@ def _render_verification_block(results: pd.DataFrame, tables: dict[str, pd.DataF
     table = tables.get("verification.csv", pd.DataFrame())
     if info.get("mode") != "unverified" and not table.empty:
         intro += (
-            " Per solver: the tolerance its settings requested (`requested_tol`, and for certificates "
-            "`requested_cert_tol`; `source` says where it came from) and the tolerances its rows were "
-            "checked at (`tol`, `cert_tol`); then claims kept, demoted (`no_residuals`: no complete "
-            "residuals), promoted, returned after the time limit (`over_limit`) and kept without a full "
-            "check (`unverified`). `verification_changes.csv` counts each reported status against the "
-            "verified one, and `status_reported` in the per-solve tables keeps the reported status."
+            " Per solver: the tolerance its settings requested (`requested_tol`; `source` says where it "
+            "came from) and the tolerance its solutions and certificates were checked at (`tol`); then "
+            "claims kept, demoted (`no_residuals`: no complete residuals or no certificate), promoted, "
+            "returned after the time limit (`over_limit`) and kept without a full check (`unverified`). "
+            "`verification_changes.csv` counts each reported status against the verified one, and "
+            "`status_reported` in the per-solve tables keeps the reported status."
         )
     lines = _section_table(
         "Verification",

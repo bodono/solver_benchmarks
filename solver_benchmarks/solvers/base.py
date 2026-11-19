@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import numbers
 import warnings
@@ -131,82 +132,80 @@ class RequestedTolerance:
     claim measured the harness's way passes at that maximum (up to how the
     norms differ, which the verification slack absorbs).
 
-    ``certificate`` is the infeasibility tolerance, for solvers whose
-    certificate test divides by the certificate's objective term (the unit of
-    the harness's ``kkt.cert_res``); None means the solver has none and
-    certificates are held to ``optimality``. ``knobs`` and
-    ``certificate_knobs`` map every setting considered to the value used, and
+    Infeasibility certificates are held to the same tolerance. The solvers'
+    own infeasibility tolerances are not in the units of the harness's
+    ``kkt.cert_res`` (the certificate's residuals once its objective term is
+    scaled to -1): OSQP (and, by its documentation, ProxQP) scales them by the
+    norm of the ray instead, Clarabel by the larger of that norm and one, cpo3
+    by the larger of that norm and the objective term, and QTQP adds a term in
+    the ray's norm; only SCS's and PDLP's tests divide by the objective term
+    alone. Held to those knobs at their defaults, the certificates in one
+    figure would be checked at tolerances up to a thousand times apart, and
+    Clarabel's genuine NETLIB certificates (``cert_res`` up to 6e-5) would fail
+    at its 1e-8, so none is used.
+    ``knobs`` maps every setting considered to the value used, and
     ``defaults_used`` names those that took the library default.
     """
 
     optimality: float
-    certificate: float | None = None
     knobs: Mapping[str, float] = field(default_factory=dict)
-    certificate_knobs: Mapping[str, float] = field(default_factory=dict)
     defaults_used: tuple[str, ...] = ()
 
     def to_record(self) -> dict[str, Any]:
         """The form the worker stores as ``metadata.requested_tolerance``.
 
         Knob names are lists, not a nested mapping, so a results frame gets
-        two numeric columns from it rather than one per solver setting.
+        one numeric column from it rather than one per solver setting.
         """
         return {
             "optimality": float(self.optimality),
-            "certificate": None if self.certificate is None else float(self.certificate),
             "knobs": sorted(self.knobs),
-            "certificate_knobs": sorted(self.certificate_knobs),
             "defaults_used": list(self.defaults_used),
         }
 
 
-def loosest_tolerance(
-    settings: Mapping[str, Any],
-    defaults: Mapping[str, float],
-    certificate_defaults: Mapping[str, float] | None = None,
-) -> RequestedTolerance:
+def loosest_tolerance(settings: Mapping[str, Any], defaults: Mapping[str, float]) -> RequestedTolerance:
     """:class:`RequestedTolerance` from already translated ``settings``.
 
-    ``defaults`` lists the optimality knobs with the library's default for
-    each; ``certificate_defaults`` the infeasibility knobs (None or empty
-    when the solver has none in certificate units). A knob the settings set
-    to null counts as unset. A value that is not a finite number >= 0, or
-    knobs that are all zero, raise :class:`ToleranceUnknown`.
+    ``defaults`` lists the feasibility and gap knobs with the library's
+    default for each. A knob the settings set to null counts as unset. A
+    value that is not a finite number >= 0, or knobs that are all zero,
+    raise :class:`ToleranceUnknown`.
     """
     used: list[str] = []
-
-    def collect(names: Mapping[str, float]) -> dict[str, float]:
-        values: dict[str, float] = {}
-        for name, default in names.items():
-            value = settings.get(name)
-            if value is None:
-                value = default
-                used.append(name)
-            if isinstance(value, bool):
-                raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})")
-            try:
-                number = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})") from exc
-            if not math.isfinite(number) or number < 0:
-                raise ToleranceUnknown(f"setting {name!r} is not a finite number >= 0 (got {value!r})")
-            values[name] = number
-        return values
-
-    knobs = collect(defaults)
+    knobs: dict[str, float] = {}
+    for name, default in defaults.items():
+        value = settings.get(name)
+        if value is None:
+            value = default
+            used.append(name)
+        if isinstance(value, bool):
+            raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})") from exc
+        if not math.isfinite(number) or number < 0:
+            raise ToleranceUnknown(f"setting {name!r} is not a finite number >= 0 (got {value!r})")
+        knobs[name] = number
     if not knobs or max(knobs.values()) <= 0:
         raise ToleranceUnknown(f"no positive optimality tolerance among {sorted(defaults)}")
-    certificate_knobs = collect(certificate_defaults or {})
-    certificate = max(certificate_knobs.values()) if certificate_knobs else None
-    if certificate is not None and certificate <= 0:
-        raise ToleranceUnknown(f"no positive infeasibility tolerance among {sorted(certificate_knobs)}")
-    return RequestedTolerance(
-        optimality=max(knobs.values()),
-        certificate=certificate,
-        knobs=knobs,
-        certificate_knobs=certificate_knobs,
-        defaults_used=tuple(used),
-    )
+    return RequestedTolerance(optimality=max(knobs.values()), knobs=knobs, defaults_used=tuple(used))
+
+
+def version_tuple(version: Any) -> tuple[int, ...] | None:
+    """``(0, 0, 7)`` for "0.0.7" (or "0.0.7.dev1+g123"), None when unknown."""
+    if not isinstance(version, str):
+        return None
+    parts = []
+    for piece in version.split("."):
+        digits = "".join(itertools.takewhile(str.isdigit, piece))
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(digits) < len(piece):
+            break
+    return tuple(parts) if parts else None
 
 
 class SolverAdapter(ABC):
@@ -257,13 +256,13 @@ class SolverAdapter(ABC):
 # Cross-adapter reporting rules. A solver may stop with a point for any
 # status in ``status.ANY_FEASIBLE`` (optimal, inaccurate, iteration or time
 # limit, error); adapters compute KKT residuals for that point whenever it is
-# finite, so ``bench kkt-verify --promote`` judges every solver's limit-hit
-# iterate by the same check. Only a solution, though, has an objective value:
-# ``objective_value`` is reported for these statuses and is None for limits,
-# certificates and errors (the point's own objective is on kkt.primal_obj,
-# and the worker records it in the convention of objective_value as
-# kkt.primal_obj_reported, which kkt-verify --promote uses for a row it
-# promotes to optimal).
+# finite, so the KKT verification (analysis/verify.py, which promotes by
+# default) judges every solver's limit-hit iterate by the same check. Only a
+# solution, though, has an objective value: ``objective_value`` is reported
+# for these statuses and is None for limits, certificates and errors (the
+# point's own objective is on kkt.primal_obj, and the worker records it in the
+# convention of objective_value as kkt.primal_obj_reported, which verification
+# uses for a row it promotes to optimal).
 OBJECTIVE_STATUSES = frozenset({status.OPTIMAL, status.OPTIMAL_INACCURATE})
 
 

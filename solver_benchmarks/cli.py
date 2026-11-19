@@ -396,10 +396,10 @@ def _requested_tol_option(command):
         "--requested-tol",
         "requested_tol",
         multiple=True,
-        metavar="SOLVER_ID=TOL[/CERT_TOL]",
+        metavar="SOLVER_ID=TOL",
         help=(
-            "The tolerance SOLVER_ID was asked for (and its infeasibility tolerance), for runs that do "
-            "not record it; repeatable."
+            "The tolerance SOLVER_ID was asked for, ahead of what the run records (for runs that do "
+            "not record it); repeatable."
         ),
     )(command)
 
@@ -417,6 +417,14 @@ def _verification_options(command):
     it reads (see analysis/verify.py); they arrive as ``verification``."""
     command = _tol_from_solver_id_option(command)
     command = _requested_tol_option(command)
+    command = click.option(
+        "--allow-missing",
+        is_flag=True,
+        help=(
+            "Keep claims that recorded no residuals or no certificate to check (default: they count as "
+            "unsolved, since they cannot be verified)."
+        ),
+    )(command)
     command = click.option(
         "--reverify",
         is_flag=True,
@@ -440,23 +448,32 @@ def _verification_policy(
     unverified: bool,
     verify_tol: float | None,
     reverify: bool,
+    allow_missing: bool,
     requested_tol: tuple[str, ...],
     tol_from_solver_id: bool,
 ) -> bool | VerifyPolicy:
-    """``load_results``'s ``verify`` for the verification options."""
-    if unverified and (verify_tol is not None or reverify or requested_tol or tol_from_solver_id):
+    """``load_results``'s ``verify`` for the verification options; options
+    that would not be used together are refused."""
+    if unverified and (verify_tol is not None or reverify or allow_missing or requested_tol or tol_from_solver_id):
         raise click.UsageError(
-            "--unverified cannot be combined with --verify-tol, --reverify, --requested-tol or --tol-from-solver-id"
+            "--unverified cannot be combined with --verify-tol, --reverify, --allow-missing, --requested-tol "
+            "or --tol-from-solver-id"
         )
     if verify_tol is not None and reverify:
         raise click.UsageError("--verify-tol and --reverify cannot be combined (--verify-tol always re-checks)")
+    if verify_tol is not None and (requested_tol or tol_from_solver_id):
+        raise click.UsageError(
+            "--verify-tol holds every row to one tolerance; --requested-tol and --tol-from-solver-id "
+            "would not be used"
+        )
     if unverified:
         return False
     try:
         if verify_tol is not None:
-            return VerifyPolicy(rule="fixed", tol=verify_tol)
+            return VerifyPolicy(rule="fixed", tol=verify_tol, missing_is_failure=not allow_missing)
         return VerifyPolicy(
             rule="requested" if reverify else "auto",
+            missing_is_failure=not allow_missing,
             requested_tol=parse_requested_tol(requested_tol),
             tol_from_solver_id=tol_from_solver_id,
         )
@@ -693,15 +710,15 @@ def merge_cmd(out_dir: Path, run_dirs: tuple[Path, ...], overwrite: bool) -> Non
     type=float,
     default=VERIFY_SLACK,
     show_default=True,
-    help="Factor on each solver's requested tolerance (ignored with --tol).",
+    help="Factor on each solver's requested tolerance (not with --tol).",
 )
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 @click.option(
     "--allow-missing",
     is_flag=True,
     help=(
-        "Keep claimed-optimal rows that carry no KKT residuals (default: demote them). "
-        "Infeasibility claims without a checkable certificate are always kept, with a warning."
+        "Keep claimed-optimal rows that carry no KKT residuals and infeasibility claims whose adapter "
+        "recorded no certificate (default: demote them, since they cannot be verified)."
     ),
 )
 @click.option(
@@ -741,11 +758,21 @@ def kkt_verify_cmd(
     exceeds it the matching *_inaccurate status, and (with --promote, the
     default) inaccurate and limit stops that pass become accurate. The
     tolerance is --slack times the tolerance the solver's configuration asked
-    for (its infeasibility tolerance for certificates), or --tol for every
-    row. Infeasibility claims the harness cannot check (no certificate
-    recorded, or a cone it cannot project) are kept and reported."""
+    for, for solutions and certificates alike, or --tol for every row. Claims
+    without residuals or a recorded certificate are demoted unless
+    --allow-missing; claims on cones the harness cannot project are kept and
+    reported."""
     from solver_benchmarks.analysis.derive import kkt_verify
 
+    if tol is not None:
+        context = click.get_current_context()
+        given = [
+            name for name, param in (("--slack", "slack"), ("--requested-tol", "requested_tol"),
+                                     ("--tol-from-solver-id", "tol_from_solver_id"))
+            if context.get_parameter_source(param) is not click.core.ParameterSource.DEFAULT
+        ]
+        if given:
+            raise click.UsageError(f"--tol holds every row to one tolerance; {', '.join(given)} would not be used")
     out = output_dir or run_dir.parent / (
         f"{run_dir.name}_kkt{tol:.0e}" if tol is not None else f"{run_dir.name}_verified"
     )
@@ -782,16 +809,12 @@ def kkt_verify_cmd(
                 if solver_id in summary["over_time_limit"]
                 else ""
             )
-            + (
-                f"\trequested={_tolerance_text(seen, 'requested_tol', 'requested_cert_tol')}"
-                if seen.get("requested_tol")
-                else ""
-            )
-            + (f"\tcheck={_tolerance_text(seen, 'tol', 'cert_tol')}" if seen.get("tol") else "")
+            + (f"\trequested={_tolerance_text(seen.get('requested_tol'))}" if seen.get("requested_tol") else "")
+            + (f"\tcheck={_tolerance_text(seen.get('tol'))}" if seen.get("tol") else "")
         )
     for key, what in (
-        ("unverified_cones", "rows whose cone distances could not be checked"),
-        ("unverified_certificates", "infeasibility claims whose certificate could not be checked"),
+        ("unverified_cones", "claimed optima whose cone distances could not be checked"),
+        ("unverified_certificates", "infeasibility claims whose cone distances could not be checked"),
     ):
         unverified = summary.get(key) or {}
         if unverified:
@@ -800,21 +823,21 @@ def kkt_verify_cmd(
                 + ", ".join(f"{solver_id}={count}" for solver_id, count in sorted(unverified.items())),
                 err=True,
             )
+    if allow_missing and summary.get("missing_residuals"):
+        click.echo(
+            "warning: kept (--allow-missing) claims without residuals or a certificate to check: "
+            + ", ".join(f"{solver_id}={count}" for solver_id, count in sorted(summary["missing_residuals"].items())),
+            err=True,
+        )
     if summary.get("skipped_lines"):
         click.echo(f"warning: skipped {summary['skipped_lines']} unparseable result lines", err=True)
     click.echo(str(out))
 
 
-def _tolerance_text(seen: dict, key: str, cert_key: str) -> str:
-    """``1e-04/1e-07``: a solver's (optimality / certificate) tolerances,
-    several values joined by commas where its rows differ."""
-
-    def join(values) -> str:
-        return ",".join(f"{float(value):.0e}" for value in values)
-
-    text = join(seen.get(key) or [])
-    certificate = join(seen.get(cert_key) or [])
-    return f"{text}/{certificate}" if certificate and certificate != text else text
+def _tolerance_text(values) -> str:
+    """``1e-04``: a solver's tolerances, several values joined by commas
+    where its rows differ."""
+    return ",".join(f"{float(value):.0e}" for value in values or [])
 
 
 @contextlib.contextmanager

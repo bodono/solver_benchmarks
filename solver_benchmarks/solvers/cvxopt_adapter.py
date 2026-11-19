@@ -122,7 +122,7 @@ CVXOPT_DENSE_LDL_MAX_DIM = 2000
 
 # CVXOPT's documented defaults: absolute and relative gap, and feasibility.
 # The gap tests are alternatives (either suffices), so all three bound what
-# a solution is asked to meet. No certificate tolerance of its own.
+# a solution is asked to meet.
 CVXOPT_DEFAULT_TOLERANCES = {"abstol": 1e-7, "reltol": 1e-6, "feastol": 1e-7}
 
 
@@ -884,8 +884,8 @@ def _compute_kkt(problem, mapped_status, *, x, y_eq, z_ineq, s_slack, cone_dict)
     the layout each helper expects.
 
     Solution residuals are computed for every status in ANY_FEASIBLE that
-    carries a point (max-iter iterates included, so kkt-verify --promote
-    treats CVXOPT like every other solver). A conelp primal-infeasibility
+    carries a point (max-iter iterates included, so the KKT verification's
+    promotion treats CVXOPT like every other solver). A conelp primal-infeasibility
     certificate comes with ``z``/``y`` but no ``x``.
     """
     if x is None and mapped_status not in {

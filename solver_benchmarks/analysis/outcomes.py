@@ -150,8 +150,8 @@ def success_mask(results: pd.DataFrame, success_statuses: Iterable[str] | None =
     matching certificate status, and only if the harness did not find that
     certificate invalid. A row the verification judged (it has a
     ``verify.verdict``, as every row ``load_results`` verifies does) carries
-    that judgement in its status, made at the row's own certificate
-    tolerance; any other row is held to the check recorded at solve time
+    that judgement in its status, made at the row's own tolerance; any
+    other row is held to the check recorded at solve time
     (``kkt.valid`` False is a failure).
     """
     if results.empty:

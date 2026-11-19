@@ -45,7 +45,7 @@ from .qp_split import normalize_qp_bounds
 
 # CPLEX's documented defaults (dotted parameter paths): simplex feasibility
 # and optimality, and the barrier's convergence tolerance. Not checked here
-# (CPLEX needs a license). No certificate tolerance of its own.
+# (CPLEX needs a license).
 CPLEX_DEFAULT_TOLERANCES = {
     "simplex.tolerances.feasibility": 1e-6,
     "simplex.tolerances.optimality": 1e-6,

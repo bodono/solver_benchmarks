@@ -11,9 +11,10 @@ loader (``load_results``, verified by default) and ``bench kkt-verify`` both
 call it.
 
 The tolerance of a row is, by default, ``VERIFY_SLACK`` times the tolerance
-its configuration asked the solver for (``SolverAdapter.requested_tolerance``):
-certificates use the requested infeasibility tolerance where the solver has
-one in certificate units. A fixed tolerance for every row is the other rule.
+its configuration asked the solver for (``SolverAdapter.requested_tolerance``),
+for its solutions and its infeasibility certificates alike (the solvers' own
+infeasibility tolerances are in incomparable units; see
+``RequestedTolerance``). A fixed tolerance for every row is the other rule.
 The requested tolerance comes from the row (the worker records it since this
 module exists), else the run's manifest, else nowhere: a row that needs one
 and has none raises :class:`RequestedToleranceUnknown`, which names the
@@ -96,12 +97,14 @@ POINT_OBJECTIVE = "primal_obj_reported"
 # - demoted: a claim whose residuals (or certificate) fail the check.
 # - promoted: an inaccurate or limit stop whose point (or certificate) passes.
 # - over_time_limit: a stop returned after the run's time limit; never promoted.
-# - missing_residuals: a claimed solution without complete residuals (demoted
-#   unless missing residuals are tolerated).
+# - missing_residuals: a claimed solution without complete residuals, or a
+#   claimed certificate with none recorded (demoted unless missing residuals
+#   are tolerated).
 # - unverified_cones: a claimed solution that passes every residual the
 #   harness can compute; its cone distances are unknown (complex PSD).
-# - unverified_certificate: a claimed certificate the harness cannot check
-#   (none recorded, or a cone it cannot project); kept.
+# - unverified_certificate: a claimed certificate that passes every residual
+#   the harness can compute; its distance to a cone it cannot project is
+#   unknown (a claim with no certificate recorded is missing_residuals).
 # - not_checked: a status that claims nothing and cannot be promoted.
 VERDICTS = (
     "kept",
@@ -119,9 +122,7 @@ VERIFY_COLUMNS = (
     "verify.verdict",
     "verify.rule",
     "verify.tol",
-    "verify.cert_tol",
     "verify.requested_tol",
-    "verify.requested_cert_tol",
     "verify.requested_tol_source",
     "verify.worst",
     "verify.worst_field",
@@ -132,7 +133,7 @@ VERIFY_COLUMNS = (
 SOLVER_ID_TOL_TAG = re.compile(r"_(\d(?:\.\d+)?e-\d+)$")
 
 REMEDIES = (
-    "pass --requested-tol SOLVER_ID=TOL[/CERT_TOL] for each solver named (Python: "
+    "pass --requested-tol SOLVER_ID=TOL for each solver named (Python: "
     "VerifyPolicy(requested_tol={...})), or --tol-from-solver-id to read it from a tolerance tag "
     "such as _1e-4 at the end of the solver id, or --verify-tol T to hold every row to one "
     "tolerance, or --unverified for the solvers' own statuses (verify=False)"
@@ -171,11 +172,11 @@ class VerifyPolicy:
     requested-tolerance rule. ``promote`` turns inaccurate, iteration- and
     time-limited stops whose point or certificate passes into the accurate
     status. ``missing_is_failure`` demotes claimed solutions without complete
-    residuals. ``requested_tol`` maps solver ids to their requested tolerance,
-    a number or an ``(optimality, certificate)`` pair (certificate None: the
-    optimality one), ahead of everything the run records;
-    ``tol_from_solver_id`` reads it from a tolerance tag ending the solver id
-    when nothing else gives it.
+    residuals and claimed certificates without a recorded certificate.
+    ``requested_tol`` maps solver ids to their requested tolerance, ahead of
+    everything the run records; ``tol_from_solver_id`` reads it from a
+    tolerance tag ending the solver id when nothing else gives it. Both
+    belong to the requested-tolerance rule, and a fixed rule refuses them.
     """
 
     rule: str = "auto"
@@ -196,8 +197,15 @@ class VerifyPolicy:
             raise VerifyInputError("a verification tolerance needs rule='fixed'")
         if not _positive(self.slack):
             raise VerifyInputError(f"the verification slack must be a positive number (got {self.slack!r})")
-        overrides = {str(key): _override_pair(key, value) for key, value in dict(self.requested_tol).items()}
+        overrides = {str(key): _override(key, value) for key, value in dict(self.requested_tol).items()}
         object.__setattr__(self, "requested_tol", overrides)
+        if self.rule == "fixed" and (overrides or self.tol_from_solver_id):
+            raise VerifyInputError(
+                "a fixed verification tolerance holds every row to it; requested tolerances "
+                "(--requested-tol, --tol-from-solver-id) would not be used"
+            )
+        if self.rule == "fixed" and self.slack != VERIFY_SLACK:
+            raise VerifyInputError("a fixed verification tolerance holds every row to it; a slack would not be used")
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -206,7 +214,7 @@ class VerifyPolicy:
             "slack": self.slack,
             "promote": self.promote,
             "missing_is_failure": self.missing_is_failure,
-            "requested_tol": {key: list(value) for key, value in self.requested_tol.items()},
+            "requested_tol": dict(self.requested_tol),
             "tol_from_solver_id": self.tol_from_solver_id,
         }
 
@@ -221,28 +229,24 @@ def _positive(value: Any) -> bool:
     return math.isfinite(number) and number > 0
 
 
-def _override_pair(key: Any, value: Any) -> tuple[float, float | None]:
-    pair = value if isinstance(value, (tuple, list)) else (value, None)
-    if len(pair) != 2 or not _positive(pair[0]) or (pair[1] is not None and not _positive(pair[1])):
-        raise VerifyInputError(
-            f"requested tolerance of {key!r} must be a positive number or a pair of them (got {value!r})"
-        )
-    return float(pair[0]), None if pair[1] is None else float(pair[1])
+def _override(key: Any, value: Any) -> float:
+    if not _positive(value):
+        raise VerifyInputError(f"requested tolerance of {key!r} must be a positive number (got {value!r})")
+    return float(value)
 
 
-def parse_requested_tol(items: Iterable[str]) -> dict[str, tuple[float, float | None]]:
-    """``{"scs_1e-4": (1e-4, 1e-7)}`` from ``["scs_1e-4=1e-4/1e-7"]`` (``--requested-tol``)."""
-    parsed: dict[str, tuple[float, float | None]] = {}
+def parse_requested_tol(items: Iterable[str]) -> dict[str, float]:
+    """``{"scs_1e-4": 1e-4}`` from ``["scs_1e-4=1e-4"]`` (``--requested-tol``)."""
+    parsed: dict[str, float] = {}
     for item in items:
         solver_id, sep, value = str(item).rpartition("=")
         if not sep or not solver_id:
-            raise VerifyInputError(f"--requested-tol takes SOLVER_ID=TOL[/CERT_TOL] (got {item!r})")
-        optimality, _, certificate = value.partition("/")
+            raise VerifyInputError(f"--requested-tol takes SOLVER_ID=TOL (got {item!r})")
         try:
-            pair = (float(optimality), float(certificate) if certificate else None)
+            number = float(value)
         except ValueError as exc:
-            raise VerifyInputError(f"--requested-tol takes SOLVER_ID=TOL[/CERT_TOL] (got {item!r})") from exc
-        parsed[solver_id] = _override_pair(solver_id, pair)
+            raise VerifyInputError(f"--requested-tol takes SOLVER_ID=TOL (got {item!r})") from exc
+        parsed[solver_id] = _override(solver_id, number)
     return parsed
 
 
@@ -352,7 +356,8 @@ class Verdict:
     objective_from: str | None = None
 
 
-Tolerance = Callable[[str], float]
+# The row's tolerance, asked for only when a residual is compared with it.
+Tolerance = Callable[[], float]
 
 
 def classify(
@@ -366,10 +371,9 @@ def classify(
     """Decide a row's verified status from its reported one.
 
     ``view`` is the row as ``{"status": <reported status>, "kkt": {...},
-    "info": {...}, "objective_value": ...}``. ``tolerance("solution")`` and
-    ``tolerance("certificate")`` give the row's tolerances; they are asked
-    only when a residual is compared with them, so a row without residuals
-    never needs one.
+    "info": {...}, "objective_value": ...}``. ``tolerance()`` gives the row's
+    tolerance, for solutions and certificates alike; it is asked only when a
+    residual is compared with it, so a row without residuals never needs one.
 
     A claimed solution (``optimal``) keeps its status only if the worst of
     ``fields`` (relative residuals computed by the harness from the returned
@@ -383,15 +387,17 @@ def classify(
     (``unverified_cones``).
 
     Infeasibility certificates (``primal_infeasible``, ``dual_infeasible``)
-    are held to the certificate tolerance: their largest residual once scaled
-    so that the certificate's objective term is −1 (``kkt.cert_res``, rebuilt
+    are held to the same tolerance: their largest residual once scaled so
+    that the certificate's objective term is −1 (``kkt.cert_res``, rebuilt
     for older records) must be at or below it, or the row becomes the
-    matching ``*_inaccurate`` status. A certificate row in which nothing fails
-    but not everything is known (the adapter recorded no certificate, as
-    several return none, or the distance to a cone the harness cannot project
-    is unknown) is kept whatever ``missing_is_failure`` says
-    (``unverified_certificate``): that is a gap in the adapter or the checker,
-    not in the solver's accuracy.
+    matching ``*_inaccurate`` status. A claim whose adapter recorded no
+    certificate (HiGHS, cuOpt and the commercial adapters never do; PIQP,
+    ProxQP and SDPA not when the solver returns none) cannot be verified and
+    is demoted like a solution without residuals (``missing_residuals``),
+    unless ``missing_is_failure`` is False. A certificate in which nothing
+    fails but the distance to a cone the harness cannot project is unknown is
+    kept whatever ``missing_is_failure`` says (``unverified_certificate``),
+    as a solution in that case is.
 
     With ``promote``, the converse also applies: a solve reported as
     inaccurate, iteration-limited or time-limited whose returned point passes
@@ -412,7 +418,7 @@ def classify(
     if promote and (reported in PROMOTABLE or reported in CERTIFICATE_PROMOTION):
         return _classify_promotable(view, kkt, str(reported), tolerance, fields)
     if reported in CERTIFICATE_DEMOTION:
-        return _classify_certificate(kkt, str(reported), tolerance)
+        return _classify_certificate(kkt, str(reported), tolerance, missing_is_failure)
     if reported in status.SOLUTION_PRESENT:
         return _classify_solution(view, kkt, str(reported), tolerance, missing_is_failure, fields)
     return Verdict("not_checked", str(reported) if reported is not None else reported)
@@ -444,7 +450,7 @@ def _classify_promotable(
                 "kept", reported, reason=f"not promoted: the record holds a {kkt.get('certificate')} certificate",
                 **base,
             )
-        cert_tol = tolerance("certificate")
+        cert_tol = tolerance()
         if cert <= cert_tol:
             return Verdict("promoted", target, reason=f"certificate residual {cert:.3e} <= {cert_tol:.1e}", **base)
         return Verdict(
@@ -456,7 +462,7 @@ def _classify_promotable(
         return Verdict("kept", reported, reason="not promoted: no KKT residuals recorded", **base)
     if not check.complete:
         return Verdict("kept", reported, reason="not promoted: incomplete KKT residuals", **base)
-    tol = tolerance("solution")
+    tol = tolerance()
     if check.worst <= tol:
         objective = objective_from = None
         point_objective = kkt.get(POINT_OBJECTIVE)
@@ -480,15 +486,18 @@ def _classify_promotable(
     )
 
 
-def _classify_certificate(kkt: dict[str, Any], reported: str, tolerance: Tolerance) -> Verdict:
+def _classify_certificate(
+    kkt: dict[str, Any], reported: str, tolerance: Tolerance, missing_is_failure: bool
+) -> Verdict:
     cert, complete = certificate_check(kkt)
     base: dict[str, Any] = {
         "fields": ("cert_res",), "worst": cert, "worst_field": None if cert is None else "cert_res",
     }
     if cert is None:
-        # The adapter recorded no certificate (several return none): that says
-        # nothing about the solver's accuracy, so the row is kept.
-        return Verdict("unverified_certificate", reported, reason="no certificate recorded", **base)
+        # The adapter recorded no certificate (several never do): the claim
+        # cannot be verified, so it is not a verified success.
+        new_status = CERTIFICATE_DEMOTION[reported] if missing_is_failure else reported
+        return Verdict("missing_residuals", new_status, reason="no certificate recorded", **base)
     if math.isinf(cert):
         return Verdict(
             "demoted",
@@ -496,7 +505,7 @@ def _classify_certificate(kkt: dict[str, Any], reported: str, tolerance: Toleran
             reason="certificate residual inf (its objective term is not negative)",
             **base,
         )
-    cert_tol = tolerance("certificate")
+    cert_tol = tolerance()
     if cert > cert_tol:
         reason = f"certificate residual {cert:.3e} > {cert_tol:.1e}"
         if not complete:
@@ -528,7 +537,7 @@ def _classify_solution(
     worst = check.worst
     base: dict[str, Any] = {"fields": tuple(check.checked), "worst": worst, "worst_field": check.worst_field}
     if worst is not None:
-        tol = tolerance("solution")
+        tol = tolerance()
         if worst > tol:
             # A residual that demonstrably fails demotes the row even when
             # other residuals are missing and missing ones are tolerated.
@@ -562,13 +571,11 @@ def _classify_solution(
 
 @dataclass(frozen=True)
 class RowTolerance:
-    """The tolerances a row is held to, and where they came from."""
+    """The tolerance a row is held to, and where it came from."""
 
     tol: float
-    cert_tol: float
     rule: str
     requested: float | None = None
-    requested_cert: float | None = None
     source: str | None = None
 
 
@@ -583,7 +590,6 @@ class RowInfo:
     is_lp: bool | None = None
     versions: tuple[tuple[str, str], ...] = ()
     recorded_optimality: float | None = None
-    recorded_certificate: float | None = None
     recorded_unknown: str | None = None
 
 
@@ -601,7 +607,6 @@ def row_info_from_record(record: Mapping[str, Any]) -> RowInfo:
         is_lp=_is_lp(metadata.get("nnz_p")),
         versions=_versions_key(versions),
         recorded_optimality=_number(requested.get("optimality")),
-        recorded_certificate=_number(requested.get("certificate")),
         recorded_unknown=_text(requested.get("unknown")),
     )
 
@@ -727,7 +732,15 @@ class ToleranceResolver:
         self._cache: dict[RowInfo, RowTolerance | str] = {}
 
     def resolve(self, row: RowInfo) -> RowTolerance | str:
-        """The row's :class:`RowTolerance`, or why it has none (a string)."""
+        """The row's :class:`RowTolerance`, or why it has none (a string).
+
+        Under the fixed rule, the policy's tolerance. Otherwise ``slack``
+        times the first requested tolerance found: the policy's override for
+        the solver id, the row's record, the settings of the run's manifest
+        (in a merge, of the input whose ``run_id`` the row carries, else of
+        every input, which must then agree), and with ``tol_from_solver_id``
+        the solver id's tolerance tag.
+        """
         cached = self._cache.get(row)
         if cached is None:
             cached = self._cache[row] = self._resolve(row)
@@ -737,27 +750,20 @@ class ToleranceResolver:
         policy = self.policy
         if policy.rule == "fixed":
             assert policy.tol is not None
-            return RowTolerance(tol=float(policy.tol), cert_tol=float(policy.tol), rule="fixed", source="fixed")
+            return RowTolerance(tol=float(policy.tol), rule="fixed", source="fixed")
         reasons: list[str] = []
         found = self._requested(row, reasons)
         if found is None:
             return "; ".join(reasons)
-        optimality, certificate, source = found
-        return RowTolerance(
-            tol=policy.slack * optimality,
-            cert_tol=policy.slack * (certificate if certificate is not None else optimality),
-            rule="requested",
-            requested=optimality,
-            requested_cert=certificate,
-            source=source,
-        )
+        requested, source = found
+        return RowTolerance(tol=policy.slack * requested, rule="requested", requested=requested, source=source)
 
-    def _requested(self, row: RowInfo, reasons: list[str]) -> tuple[float, float | None, str] | None:
+    def _requested(self, row: RowInfo, reasons: list[str]) -> tuple[float, str] | None:
         override = self.policy.requested_tol.get(row.solver_id)
         if override is not None:
-            return override[0], override[1], "override"
+            return override, "override"
         if row.recorded_optimality is not None:
-            return row.recorded_optimality, row.recorded_certificate, "row"
+            return row.recorded_optimality, "row"
         if row.recorded_unknown:
             reasons.append(f"the worker could not tell it ({row.recorded_unknown})")
         entries = (self.settings_by_run.get(row.run_id or "") or {}).get(row.solver_id) or self.settings.get(
@@ -768,7 +774,7 @@ class ToleranceResolver:
                 "the run's manifest lists no settings for it" if self.has_manifest else "the run has no manifest.json"
             )
         else:
-            results: set[tuple[float, float | None]] = set()
+            results: set[float] = set()
             for solver, settings in entries:
                 try:
                     tolerance = requested_tolerance(
@@ -779,27 +785,20 @@ class ToleranceResolver:
                     reasons.append(f"its {solver} settings {settings!r}: {exc}")
                     results = set()
                     break
-                results.add((tolerance.optimality, tolerance.certificate))
+                results.add(tolerance.optimality)
             if len(results) == 1:
-                optimality, certificate = results.pop()
-                return optimality, certificate, "manifest"
+                return results.pop(), "manifest"
             if len(results) > 1:
                 reasons.append(
                     "the run's manifests give it different settings, requesting "
-                    + " and ".join(_format_pair(pair) for pair in sorted(results, key=str))
+                    + " and ".join(f"{value:g}" for value in sorted(results))
                 )
         if self.policy.tol_from_solver_id:
             match = SOLVER_ID_TOL_TAG.search(row.solver_id)
             if match:
-                tag = float(match.group(1))
-                return tag, tag, "solver_id"
+                return float(match.group(1)), "solver_id"
             reasons.append("its id ends in no tolerance tag")
         return None
-
-
-def _format_pair(pair: tuple[float, float | None]) -> str:
-    optimality, certificate = pair
-    return f"{optimality:g}" + (f"/{certificate:g}" if certificate is not None else "")
 
 
 # --- frames ---------------------------------------------------------------------
@@ -896,7 +895,7 @@ class _FrameRows:
         self.nnz_p = _column_values(df, "metadata.nnz_p")
         self.recorded = {
             key: _column_values(df, f"metadata.requested_tolerance.{key}")
-            for key in ("optimality", "certificate", "unknown")
+            for key in ("optimality", "unknown")
         }
         prefix = "metadata.runtime.solver_package_versions."
         self.versions = [(name[len(prefix):], df[name].to_numpy(dtype=object))
@@ -938,7 +937,6 @@ class _FrameRows:
             is_lp=_is_lp(self.nnz_p[i]),
             versions=_versions_key(versions),
             recorded_optimality=_number(self.recorded["optimality"][i]),
-            recorded_certificate=_number(self.recorded["certificate"][i]),
             recorded_unknown=_text(self.recorded["unknown"][i]),
         )
 
@@ -1053,10 +1051,10 @@ def _computed_frame(df: pd.DataFrame, manifest: Mapping[str, Any], policy: Verif
         info = rows.row_info(i)
         resolved = resolver.resolve(info)
 
-        def tolerance(kind: str, resolved=resolved) -> float:
+        def tolerance(resolved=resolved) -> float:
             if isinstance(resolved, str):
                 raise _Unresolved
-            return resolved.tol if kind == "solution" else resolved.cert_tol
+            return resolved.tol
 
         try:
             verdict = classify(rows.view(i), tolerance=tolerance, promote=policy.promote,
@@ -1095,8 +1093,7 @@ def pd_float(values) -> Any:
     return pd.to_numeric(pd.Series(values, dtype=object), errors="coerce").to_numpy(dtype=float)
 
 
-_FLOAT_COLUMNS = frozenset({"verify.tol", "verify.cert_tol", "verify.requested_tol",
-                            "verify.requested_cert_tol", "verify.worst"})
+_FLOAT_COLUMNS = frozenset({"verify.tol", "verify.requested_tol", "verify.worst"})
 
 
 def _typed(name: str, values):
@@ -1109,9 +1106,7 @@ def _store(columns: dict[str, Any], i: int, verdict: Verdict, tolerance: RowTole
         return
     if tolerance is not None:
         columns["verify.tol"][i] = tolerance.tol
-        columns["verify.cert_tol"][i] = tolerance.cert_tol
         columns["verify.requested_tol"][i] = tolerance.requested
-        columns["verify.requested_cert_tol"][i] = tolerance.requested_cert
         columns["verify.requested_tol_source"][i] = tolerance.source
     columns["verify.worst"][i] = verdict.worst
     columns["verify.worst_field"][i] = verdict.worst_field
@@ -1120,41 +1115,63 @@ def _store(columns: dict[str, Any], i: int, verdict: Verdict, tolerance: RowTole
 
 
 def _earlier_verification_warnings(df: pd.DataFrame, policy: VerifyPolicy) -> list[str]:
-    """A warning when rows carry a ``bench kkt-verify`` verification under
-    another rule than the one now applied (a merge of verified copies)."""
-    tol_column = "metadata.kkt_verify.tol"
-    rule_column = "metadata.kkt_verify.rule"
-    if tol_column not in df.columns and rule_column not in df.columns:
+    """A warning per earlier ``bench kkt-verify`` verification whose rows (a
+    merge of verified copies) were checked under another policy than the one
+    now applied: another rule or tolerance, slack, promotion or treatment of
+    missing residuals. Settings a row's annotation does not record (copies
+    written before they were) are not compared."""
+    names = ("rule", "tol", "slack", "promote", "missing_is_failure")
+    if not any(f"metadata.kkt_verify.{name}" in df.columns for name in names):
         return []
-    earlier: set[tuple[str, str]] = set()
-    pairs = {
-        (_clean(tol), _clean(rule))
-        for tol, rule in zip(_column_values(df, tol_column), _column_values(df, rule_column), strict=True)
-    }
-    for tol, rule in pairs:
-        if tol is None and rule is None:
-            continue
-        rule = rule or "fixed"
-        if rule == "fixed":
-            if policy.rule == "fixed" and tol is not None and float(tol) == float(policy.tol or 0.0):
-                continue
-            earlier.add(("fixed", f"{float(tol):g}" if tol is not None else "?"))
-        elif policy.rule == "fixed":
-            earlier.add(("requested", ""))
+    columns = [_column_values(df, f"metadata.kkt_verify.{name}") for name in names]
+    seen = {tuple(_clean(value) for value in values) for values in zip(*columns, strict=True)}
     messages = []
-    for rule, tol in sorted(earlier):
-        if rule == "fixed":
-            messages.append(
-                f"rows carry an earlier bench kkt-verify verification at a fixed tolerance {tol}; they are "
-                f"verified again from their reported statuses by the current rule (--verify-tol {tol} reproduces "
-                "the earlier one)"
+    for rule, tol, slack, promote, missing_is_failure in sorted(seen, key=str):
+        if rule is None and tol is None:
+            continue  # not annotated
+        rule = rule or "fixed"
+        differences = []
+        if rule == "fixed" and (policy.rule != "fixed" or tol is None or float(tol) != float(policy.tol or 0.0)):
+            shown = f"{float(tol):g}" if tol is not None else "?"
+            differences.append(
+                f"at a fixed tolerance {shown} (--verify-tol {shown} reproduces it)"
             )
-        else:
+        elif rule == "requested" and policy.rule == "fixed":
+            differences.append("at each solver's requested tolerance (drop --verify-tol to reproduce it)")
+        elif rule == "requested" and slack is not None and float(slack) != float(policy.slack):
+            differences.append(f"at {float(slack):g} x each solver's requested tolerance")
+        if promote is not None and bool(_decoded(promote)) != policy.promote:
+            differences.append("with promotion" if bool(_decoded(promote)) else "without promotion")
+        if missing_is_failure is not None and bool(_decoded(missing_is_failure)) != policy.missing_is_failure:
+            differences.append(
+                "demoting claims without residuals" if bool(_decoded(missing_is_failure))
+                else "keeping claims without residuals (--allow-missing)"
+            )
+        if differences:
             messages.append(
-                "rows carry an earlier bench kkt-verify verification at each solver's requested tolerance; they "
-                "are verified again at the fixed --verify-tol (drop it to reproduce the earlier one)"
+                "rows carry an earlier bench kkt-verify verification " + ", ".join(differences)
+                + "; they are verified again from their reported statuses by the current rule"
             )
     return messages
+
+
+def _unused_options_warnings(recorded: Mapping[str, Any], policy: VerifyPolicy) -> list[str]:
+    """Warnings for the options a ``bench kkt-verify`` copy read as it
+    recorded does not use (``--reverify`` would)."""
+    unused = []
+    if policy.requested_tol:
+        unused.append("--requested-tol")
+    if policy.tol_from_solver_id:
+        unused.append("--tol-from-solver-id")
+    if not policy.missing_is_failure and bool(recorded.get("missing_is_failure", True)):
+        unused.append("--allow-missing")
+    if not unused:
+        return []
+    return [
+        f"this run was written by bench kkt-verify and is read as it recorded its verification, so "
+        f"{', '.join(unused)} {'is' if len(unused) == 1 else 'are'} not applied; add --reverify to verify it "
+        "again with them"
+    ]
 
 
 def _recorded_frame(df: pd.DataFrame, derived: Mapping[str, Any], policy: VerifyPolicy) -> pd.DataFrame:
@@ -1171,14 +1188,15 @@ def _recorded_frame(df: pd.DataFrame, derived: Mapping[str, Any], policy: Verify
         "missing_is_failure": derived.get("missing_is_failure", True),
         "policy": policy.describe(),
     }
+    warnings = _unused_options_warnings(details, policy)
     if out.empty:
-        out.attrs["verification"] = _attrs("recorded", **details)
+        out.attrs["verification"] = {**_attrs("recorded", **details), "warnings": warnings}
         return out
     statuses = out["status"].astype(object)
     reported, _ = reported_statuses(out)
     n = len(out)
     annotated = {name: _column_values(out, f"metadata.kkt_verify.{name}") for name in (
-        "verdict", "rule", "tol", "cert_tol", "requested_tol", "requested_cert_tol", "requested_tol_source",
+        "verdict", "rule", "tol", "requested_tol", "requested_tol_source",
         "worst", "worst_field", "reason", "objective_from", "original_status")}
     columns: dict[str, np.ndarray] = {name: np.full(n, None, dtype=object) for name in VERIFY_COLUMNS}
     all_rows = bool(derived.get("annotates_all_rows"))
@@ -1196,16 +1214,14 @@ def _recorded_frame(df: pd.DataFrame, derived: Mapping[str, Any], policy: Verify
         if verdict == "not_checked":
             continue
         tol = _clean(annotated["tol"][i])
-        cert_tol = _clean(annotated["cert_tol"][i])
         columns["verify.tol"][i] = tol if tol is not None else old_tol
-        columns["verify.cert_tol"][i] = cert_tol if cert_tol is not None else (tol if tol is not None else old_tol)
-        for name in ("requested_tol", "requested_cert_tol", "requested_tol_source", "worst", "worst_field",
-                     "reason", "objective_from"):
+        for name in ("requested_tol", "requested_tol_source", "worst", "worst_field", "reason", "objective_from"):
             columns[f"verify.{name}"][i] = _clean(annotated[name][i])
     out["status_reported"] = _like(reported.to_numpy(dtype=object), out["status"])
     for name, values in columns.items():
         out[name] = _typed(name, values)
-    out.attrs["verification"] = {**_attrs("recorded", **details), "counts": _verdict_counts(out)}
+    out.attrs["verification"] = {**_attrs("recorded", **details), "warnings": warnings,
+                                 "counts": _verdict_counts(out)}
     return out
 
 
@@ -1223,28 +1239,37 @@ def _inferred_verdict(current: Any, annotated: dict[str, Any], i: int, has_annot
         return "not_checked"
     original = _clean(annotated["original_status"][i])
     reason = str(_clean(annotated["reason"][i]) or "")
+    missing = ("no KKT residuals", "incomplete KKT residuals", "no certificate recorded")
     if current != original:
         if current in CLAIMS:
             return "promoted"
-        if reason.startswith(("no KKT residuals", "incomplete KKT residuals")):
+        if reason.startswith(missing):
             return "missing_residuals"
         return "demoted"
     if reason.startswith("returned after the time limit"):
         return "over_time_limit"
     if reason.startswith("cone distances not checked"):
         return "unverified_cones"
-    if reason.startswith(("no certificate recorded", "certificate not fully checked")):
+    if reason.startswith("certificate not fully checked"):
         return "unverified_certificate"
-    if reason.startswith(("no KKT residuals", "incomplete KKT residuals")):
+    if reason.startswith(missing):
+        # Kept: older copies kept claims without a certificate.
         return "missing_residuals"
     return "kept"
 
 
 def _verdict_counts(df: pd.DataFrame) -> dict[str, int]:
+    """Rows per verdict, and as ``unchecked_kept`` the claims without
+    residuals or a certificate whose status stands (missing residuals
+    tolerated, or a copy written when such certificates were kept)."""
     if "verify.verdict" not in df.columns:
         return {}
-    counts = df["verify.verdict"].value_counts(dropna=True)
-    return {str(key): int(value) for key, value in counts.items()}
+    verdict = df["verify.verdict"]
+    counts = {str(key): int(value) for key, value in verdict.value_counts(dropna=True).items()}
+    if "status_reported" in df.columns:
+        unchanged = df["status"].astype(object).to_numpy() == df["status_reported"].astype(object).to_numpy()
+        counts["unchecked_kept"] = int(((verdict == "missing_residuals").to_numpy() & unchanged).sum())
+    return counts
 
 
 # --- summaries ------------------------------------------------------------------
@@ -1278,6 +1303,7 @@ def verification_header(info_or_df: Any) -> str:
         " Inaccurate and iteration- or time-limited stops whose point passes count as solved; results "
         "returned after the run's time limit never do."
     ) if info.get("promote") else ""
+    caveats = _unchecked_caveats(info.get("counts") or {})
     if mode == "recorded":
         if info.get("rule") == "fixed":
             how = f"fixed tolerance {_format_tol(info.get('tol'))}"
@@ -1285,29 +1311,47 @@ def verification_header(info_or_df: Any) -> str:
             how = f"{float(slack):g} x each solver's requested tolerance"
         how += ", promote" if info.get("promote") else ", no promote"
         return (
-            f"Statuses as verified by `bench kkt-verify` ({how}) when this run was written; --reverify "
-            f"re-checks at {VERIFY_SLACK:g} x each solver's requested tolerance."
+            f"Statuses as verified by `bench kkt-verify` ({how}) when this run was written.{caveats} "
+            f"--reverify re-checks at {VERIFY_SLACK:g} x each solver's requested tolerance."
         )
     if info.get("rule") == "fixed":
-        return (
-            f"KKT-verified at a fixed tolerance {_format_tol(info.get('tol'))} for every solver "
-            f"(--verify-tol).{promotion} --unverified shows the solvers' own statuses."
-        )
+        how = f"a fixed tolerance {_format_tol(info.get('tol'))} for every solver (--verify-tol)"
+    else:
+        how = f"{float(slack):g} x the tolerance its solver was asked for"
+    if info.get("missing_is_failure", True):
+        missing = "; a claim that fails, or that recorded no residuals or certificate to check, counts as unsolved."
+    else:
+        missing = "; a claim that fails counts as unsolved (claims with no residuals or certificate are kept, --allow-missing)."
     return (
-        "Statuses are KKT-verified: every claimed solution and infeasibility certificate was checked against "
-        f"the harness's own KKT residuals at {float(slack):g} x the tolerance each solver was asked for "
-        f"(certificates: its requested infeasibility tolerance).{promotion} --unverified shows the solvers' "
+        "Statuses are KKT-verified: each claimed solution and infeasibility certificate is checked against the "
+        f"harness's own KKT residuals at {how}{missing}{promotion}{caveats} --unverified shows the solvers' "
         "own statuses."
     )
+
+
+def _unchecked_caveats(counts: Mapping[str, int]) -> str:
+    """What the header must admit was not checked, from the verdict counts."""
+    text = ""
+    cones = int(counts.get("unverified_cones", 0)) + int(counts.get("unverified_certificate", 0))
+    if cones:
+        text += (
+            f" {cones} claim{'s' if cones != 1 else ''} passed every residual the harness can compute but "
+            "lie on cones it cannot project (complex PSD); their cone distances are unchecked."
+        )
+    unchecked = int(counts.get("unchecked_kept", 0))
+    if unchecked:
+        text += (
+            f" {unchecked} claim{'s' if unchecked != 1 else ''} without residuals or a certificate "
+            f"{'were' if unchecked != 1 else 'was'} kept unchecked."
+        )
+    return text
 
 
 VERIFICATION_TABLE_COLUMNS = [
     "solver_id",
     "requested_tol",
-    "requested_cert_tol",
     "source",
     "tol",
-    "cert_tol",
     "kept",
     "demoted",
     "promoted",
@@ -1320,16 +1364,17 @@ VERIFICATION_TABLE_COLUMNS = [
 def verification_table(df: pd.DataFrame) -> pd.DataFrame:
     """Per solver: the tolerances its rows were held to and what happened.
 
-    ``requested_tol`` / ``requested_cert_tol`` are what its settings asked for
-    (empty under a fixed tolerance), ``source`` where that came from (``row``,
-    ``manifest``, ``override``, ``solver_id`` or ``fixed``), ``tol`` /
-    ``cert_tol`` the tolerances its solutions and certificates were checked at
-    (several values are listed when its rows differ). Counts are rows:
-    ``kept`` claims that stand (``unverified`` ones included), ``demoted``
-    claims that failed or had no residuals (``no_residuals`` counts the
-    latter on their own), ``promoted`` stops that passed, ``over_limit``
-    stops returned after the time limit, and ``unverified`` claims kept
-    without a full check (unprojectable cones, no certificate).
+    ``requested_tol`` is what its settings asked for (empty under a fixed
+    tolerance), ``source`` where that came from (``row``, ``manifest``,
+    ``override``, ``solver_id`` or ``fixed``), ``tol`` the tolerance its
+    solutions and certificates were checked at (several values are listed
+    when its rows differ). Counts are rows: ``kept`` claims that stand
+    (``unverified`` ones included), ``demoted`` claims that failed or had no
+    residuals or certificate (``no_residuals`` counts the latter on their own,
+    demoted or not), ``promoted`` stops that passed, ``over_limit`` stops
+    returned after the time limit, and ``unverified`` claims kept without a
+    full check (cones the harness cannot project, or no residuals or
+    certificate with missing residuals tolerated).
     """
     import pandas as pd
 
@@ -1341,16 +1386,14 @@ def verification_table(df: pd.DataFrame) -> pd.DataFrame:
         reported = group["status_reported"] if "status_reported" in group else group["status"]
         changed = group["status"].astype(object) != reported.astype(object)
         missing = verdict == "missing_residuals"
-        unverified = verdict.isin(["unverified_cones", "unverified_certificate"])
+        unverified = verdict.isin(["unverified_cones", "unverified_certificate"]) | (missing & ~changed)
         rows.append(
             {
                 "solver_id": solver_id,
                 "requested_tol": _distinct(group, "verify.requested_tol"),
-                "requested_cert_tol": _distinct(group, "verify.requested_cert_tol"),
                 "source": _distinct(group, "verify.requested_tol_source"),
                 "tol": _distinct(group, "verify.tol"),
-                "cert_tol": _distinct(group, "verify.cert_tol"),
-                "kept": int((((verdict == "kept") & reported.isin(list(CLAIMS))) | unverified | (missing & ~changed)).sum()),
+                "kept": int((((verdict == "kept") & reported.isin(list(CLAIMS))) | unverified).sum()),
                 "demoted": int(((verdict == "demoted") | (missing & changed)).sum()),
                 "promoted": int((verdict == "promoted").sum()),
                 "over_limit": int((verdict == "over_time_limit").sum()),

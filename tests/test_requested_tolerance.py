@@ -17,24 +17,24 @@ from solver_benchmarks.solvers.base import RequestedTolerance, SolverAdapter, To
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# What each adapter requests with empty settings: (optimality, certificate).
+# What each adapter requests with empty settings.
 DEFAULTS = {
-    "clarabel": (1e-8, 1e-8),
-    "cplex": (1e-6, None),
-    "cpo3": (1e-8, 1e-8),
-    "cuopt": (1e-4, None),
-    "cvxopt": (1e-6, None),
-    "ecos": (1e-8, None),
-    "gurobi": (1e-6, None),
-    "highs": (1e-7, None),
-    "mosek": (1e-8, None),
-    "osqp": (1e-3, 1e-4),
-    "pdlp": (1e-6, 1e-8),
-    "piqp": (1e-8, None),
-    "proxqp": (1e-5, 1e-4),
-    "qtqp": (1e-8, 1e-8),
-    "scs": (1e-4, 1e-7),
-    "sdpa": (1e-7, None),
+    "clarabel": 1e-8,
+    "cplex": 1e-6,
+    "cpo3": 1e-8,
+    "cuopt": 1e-4,
+    "cvxopt": 1e-6,
+    "ecos": 1e-8,
+    "gurobi": 1e-6,
+    "highs": 1e-7,
+    "mosek": 1e-8,
+    "osqp": 1e-3,
+    "pdlp": 1e-6,
+    "piqp": 1e-8,
+    "proxqp": 1e-5,
+    "qtqp": 1e-8,
+    "scs": 1e-4,
+    "sdpa": 1e-7,
 }
 # Adapters that refuse the shared eps aliases (no faithful translation).
 REFUSE_EPS = {"cplex", "gurobi", "highs", "mosek"}
@@ -68,11 +68,7 @@ def test_the_base_adapter_refuses_rather_than_guess():
 @pytest.mark.parametrize("solver", list_solvers())
 def test_empty_settings_request_the_library_defaults(solver):
     tolerance = _requested(solver, problem_kind="qp", is_lp=True)
-    optimality, certificate = DEFAULTS[solver]
-    assert tolerance.optimality == pytest.approx(optimality)
-    assert (tolerance.certificate is None) == (certificate is None)
-    if certificate is not None:
-        assert tolerance.certificate == pytest.approx(certificate)
+    assert tolerance.optimality == pytest.approx(DEFAULTS[solver])
     assert tolerance.defaults_used  # every knob came from a default
 
 
@@ -110,7 +106,7 @@ def test_a_native_setting_wins_over_an_alias(solver, native):
 def test_harness_settings_that_are_not_tolerances_are_ignored():
     common = {"verbose": True, "time_limit": 10, "threads": 1, "max_iter": 100}
     for solver in list_solvers():
-        assert _requested(solver, common).optimality == pytest.approx(DEFAULTS[solver][0]), solver
+        assert _requested(solver, common).optimality == pytest.approx(DEFAULTS[solver]), solver
 
 
 def _make_campaign():
@@ -131,32 +127,60 @@ def test_every_campaign_variant_requests_its_tag(family, tol):
         assert requested.optimality == pytest.approx(tol), variant["id"]
 
 
+@pytest.mark.parametrize("family", ["qp", "lp", "sdp", "lpbig", "infeas"])
+def test_campaign_solutions_and_certificates_are_verified_at_ten_times_the_tag(family):
+    """The default verification of a make_campaign run: every variant's
+    rows, solutions and infeasibility certificates alike, are held to 10 x
+    its tag (HiGHS below 1e-7 excepted), so one figure's claims are judged by
+    one standard, the rule of the published figures."""
+    from solver_benchmarks.analysis.verify import (
+        VERIFY_SLACK,
+        RowInfo,
+        ToleranceResolver,
+        VerifyPolicy,
+        classify,
+    )
+
+    campaign = _make_campaign()
+    tol = 1e-4
+    variants = campaign.solver_variants(family, tol, 300.0)
+    manifest = {"run_id": "run", "config": {"solvers": [
+        {"id": v["id"], "solver": v["solver"], "settings": v["settings"]} for v in variants]}}
+    resolver = ToleranceResolver(manifest, VerifyPolicy())
+    check = VERIFY_SLACK * tol
+    for variant in variants:
+        resolved = resolver.resolve(RowInfo(solver_id=variant["id"], run_id="run", solver=variant["solver"],
+                                            problem_kind="qp", is_lp=family != "qp"))
+        assert resolved.tol == pytest.approx(check), variant["id"]
+        for cert_res, verdict in ((0.5 * check, "kept"), (2.0 * check, "demoted")):
+            certificate = {"certificate": "primal_infeasible", "cert_res": cert_res, "cert_tol": 1e-3}
+            got = classify({"status": "primal_infeasible", "kkt": certificate}, tolerance=lambda r=resolved: r.tol)
+            assert got.verdict == verdict, (variant["id"], cert_res)
+
+
+@pytest.mark.parametrize(
+    "solver, settings",
+    [
+        ("scs", {"eps_infeas": 1e-2}),
+        ("clarabel", {"tol_infeas_rel": 1e-2, "tol_infeas_abs": 1e-2}),
+        ("cpo3", {"tol_infeas_rel": 1e-2}),
+        ("qtqp", {"tol_infeas_rel": 1e-2}),
+        ("osqp", {"eps_prim_inf": 1e-2, "eps_dual_inf": 1e-2}),
+        ("proxqp", {"eps_primal_inf": 1e-2, "eps_dual_inf": 1e-2}),
+    ],
+)
+def test_infeasibility_tolerances_do_not_change_the_request(solver, settings):
+    # Solvers measure certificates in units other than kkt.cert_res; a row's
+    # certificates are held to the same tolerance as its solutions.
+    assert _requested(solver, settings).optimality == pytest.approx(DEFAULTS[solver])
+
+
 def test_highs_below_its_residual_defaults_requests_them():
     # make_campaign sets only HiGHS's feasibility tolerances; its residual
     # and optimality tolerances stay at 1e-7.
     campaign = _make_campaign()
     highs = next(v for v in campaign.solver_variants("lp", 1e-8, 300.0) if v["solver"] == "highs")
     assert _requested("highs", highs["settings"]).optimality == pytest.approx(1e-7)
-
-
-@pytest.mark.parametrize(
-    "solver, settings, certificate",
-    [
-        ("scs", {"eps_infeas": 1e-4}, 1e-4),
-        ("clarabel", {"tol_infeas_rel": 1e-4}, 1e-4),
-        ("qtqp", {"tol_infeas_rel": 1e-5}, 1e-5),
-        ("osqp", {"eps_prim_inf": 1e-6, "eps_dual_inf": 1e-5}, 1e-5),
-        ("proxqp", {"eps_primal_inf": 1e-6, "eps_dual_inf": 1e-6}, 1e-6),
-        ("pdlp", {}, 1e-8),
-    ],
-)
-def test_certificate_knobs(solver, settings, certificate):
-    assert _requested(solver, settings).certificate == pytest.approx(certificate)
-
-
-def test_certificate_tolerance_does_not_follow_eps():
-    # SCS's eps sets eps_abs / eps_rel only; its certificates keep eps_infeas.
-    assert _requested("scs", {"eps": 1e-8}).certificate == pytest.approx(1e-7)
 
 
 def test_highs_kkt_tolerance_overrides_every_knob():
@@ -183,7 +207,6 @@ def test_pdlp_parameters_text_is_read():
                            "eps_optimal_primal_residual_absolute: 1e-3 } eps_primal_infeasible: 1e-4 }",
     })
     assert detailed.optimality == pytest.approx(1e-3)
-    assert detailed.certificate == pytest.approx(1e-4)
     # parameters_text is merged last, so it wins over eps
     simple = _requested("pdlp", {"eps": 1e-6, "parameters_text":
                                  "termination_criteria { simple_optimality_criteria { eps_optimal_relative: 1e-4 } }"})
@@ -202,9 +225,11 @@ def test_pdlp_parameters_text_without_ortools_is_unknown(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", no_ortools)
     with pytest.raises(ToleranceUnknown, match="parameters_text"):
-        _requested("pdlp", {"parameters_text": "termination_criteria { eps_primal_infeasible: 1e-4 }"})
-    # a text that cannot change a tolerance does not need OR-Tools
+        _requested("pdlp", {"parameters_text": "termination_criteria { eps_optimal_relative: 1e-4 }"})
+    # a text that cannot change an optimality tolerance does not need OR-Tools
     assert _requested("pdlp", {"eps": 1e-5, "parameters_text": "num_threads: 2"}).optimality == 1e-5
+    infeasibility_only = "termination_criteria { eps_primal_infeasible: 1e-4 }"
+    assert _requested("pdlp", {"eps": 1e-5, "parameters_text": infeasibility_only}).optimality == 1e-5
 
 
 def test_proxqp_duality_gap_check():
@@ -235,6 +260,14 @@ def test_qtqp_legacy_names():
     assert _requested("qtqp", {}, versions={"qtqp": "0.0.7"}).optimality == pytest.approx(1e-8)
 
 
+def test_scs_before_3_needs_its_tolerances_set():
+    # SCS 2.x defaults are not recorded: a row that leaves them unset is unknown.
+    assert _requested("scs", {"eps": 1e-5}, versions={"scs": "2.1.4"}).optimality == pytest.approx(1e-5)
+    with pytest.raises(ToleranceUnknown, match="2.1.4"):
+        _requested("scs", {}, versions={"scs": "2.1.4"})
+    assert _requested("scs", {}, versions={"scs": "3.2.7"}).optimality == pytest.approx(1e-4)
+
+
 def test_mosek_lp_and_qp_knobs():
     settings = {"MSK_DPAR_INTPNT_TOL_PFEAS": 1e-5, "MSK_DPAR_INTPNT_QO_TOL_REL_GAP": 1e-4}
     assert _requested("mosek", settings, is_lp=True).optimality == pytest.approx(1e-5)
@@ -259,12 +292,10 @@ def test_a_tolerance_that_is_not_a_number_is_unknown(value):
         _requested("clarabel", {"tol_feas": value})
 
 
-def test_record_form_has_two_numeric_fields():
+def test_record_form_has_one_numeric_field():
     record = _requested("scs", {"eps": 1e-5}).to_record()
-    assert record["optimality"] == 1e-5 and record["certificate"] == 1e-7
-    assert record["knobs"] == ["eps_abs", "eps_rel"] and record["certificate_knobs"] == ["eps_infeas"]
-    assert record["defaults_used"] == ["eps_infeas"]
-    assert all(not isinstance(value, dict) for value in record.values())
+    assert record == {"optimality": 1e-5, "knobs": ["eps_abs", "eps_rel"], "defaults_used": []}
+    assert _requested("scs", {"eps_abs": 1e-5}).to_record()["defaults_used"] == ["eps_rel"]
 
 
 # --- the defaults are the installed libraries' -------------------------------
@@ -279,8 +310,7 @@ def test_clarabel_defaults_match_the_library():
     from solver_benchmarks.solvers import clarabel_adapter
 
     settings = clarabel.DefaultSettings()
-    for name, value in {**clarabel_adapter.CLARABEL_DEFAULT_TOLERANCES,
-                        **clarabel_adapter.CLARABEL_DEFAULT_CERTIFICATE_TOLERANCES}.items():
+    for name, value in clarabel_adapter.CLARABEL_DEFAULT_TOLERANCES.items():
         assert getattr(settings, name) == pytest.approx(value), name
 
 
@@ -294,8 +324,7 @@ def test_osqp_defaults_match_the_library():
     solver = osqp.OSQP()
     solver.setup(sp.csc_matrix((1, 1)), np.zeros(1), sp.csc_matrix(np.eye(1)), np.zeros(1), np.ones(1),
                  verbose=False)
-    for name, value in {**osqp_adapter.OSQP_DEFAULT_TOLERANCES,
-                        **osqp_adapter.OSQP_DEFAULT_CERTIFICATE_TOLERANCES}.items():
+    for name, value in osqp_adapter.OSQP_DEFAULT_TOLERANCES.items():
         assert getattr(solver.settings, name) == pytest.approx(value), name
 
 
@@ -315,8 +344,6 @@ def test_proxqp_defaults_match_the_library():
     settings = proxsuite.proxqp.Settings()
     assert settings.eps_abs == pytest.approx(proxqp_adapter._PROXQP_DEFAULT_EPS_ABS)
     assert settings.eps_rel == pytest.approx(proxqp_adapter._PROXQP_DEFAULT_EPS_REL)
-    for name, value in proxqp_adapter.PROXQP_DEFAULT_CERTIFICATE_TOLERANCES.items():
-        assert getattr(settings, name) == pytest.approx(value), name
 
 
 def test_highs_defaults_match_the_library():
@@ -339,8 +366,7 @@ def test_pdlp_defaults_match_the_library():
     from solver_benchmarks.solvers import pdlp_adapter
 
     criteria = solvers_pb2.PrimalDualHybridGradientParams().termination_criteria
-    for name, value in {**pdlp_adapter.PDLP_DEFAULT_TOLERANCES,
-                        **pdlp_adapter.PDLP_DEFAULT_CERTIFICATE_TOLERANCES}.items():
+    for name, value in pdlp_adapter.PDLP_DEFAULT_TOLERANCES.items():
         assert getattr(criteria, name) == pytest.approx(value), name
 
 
@@ -353,8 +379,7 @@ def test_qtqp_defaults_match_the_library():
     parameters = inspect.signature(qtqp.QTQP.solve).parameters
     if "tol_feas" not in parameters:
         pytest.skip("qtqp before 0.0.7 has no Clarabel-style tolerances")
-    for name, value in {**qtqp_adapter.QTQP_DEFAULT_TOLERANCES,
-                        **qtqp_adapter.QTQP_DEFAULT_CERTIFICATE_TOLERANCES}.items():
+    for name, value in qtqp_adapter.QTQP_DEFAULT_TOLERANCES.items():
         assert parameters[name].default == pytest.approx(value), name
 
 
@@ -396,7 +421,7 @@ def test_the_worker_records_the_requested_tolerance(tmp_path, repo_root):
     }
     record = run_payload(payload).to_record()
     assert record["metadata"]["requested_tolerance"]["optimality"] == pytest.approx(1e-5)
-    assert record["metadata"]["requested_tolerance"]["certificate"] == pytest.approx(1e-7)
+    assert "certificate" not in record["metadata"]["requested_tolerance"]
 
 
 def test_the_worker_records_why_a_tolerance_is_unknown(tmp_path, repo_root, monkeypatch):

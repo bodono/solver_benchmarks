@@ -55,13 +55,10 @@ MAX_PROTOBUF_BYTES = (1 << 31) - 1
 # 9.15): eps_abs / eps_rel set simple_optimality_criteria's absolute and
 # relative tolerances, both 1e-6 by default.
 PDLP_DEFAULT_TOLERANCES = {"eps_optimal_absolute": 1e-6, "eps_optimal_relative": 1e-6}
-# Its infeasibility tolerances bound a ray's residual over its objective, the
-# units of kkt.cert_res; certificates are held to the looser of the two.
-PDLP_DEFAULT_CERTIFICATE_TOLERANCES = {"eps_primal_infeasible": 1e-8, "eps_dual_infeasible": 1e-8}
-# Words of a parameters_text that can change a termination tolerance; such a
+# Words of a parameters_text that can change an optimality tolerance; such a
 # text is read with OR-Tools when it is installed, and without it the
 # requested tolerance is unknown.
-_PARAMETERS_TEXT_TOLERANCE_WORDS = ("eps_", "optimality_criteria", "infeasible")
+_PARAMETERS_TEXT_TOLERANCE_WORDS = ("eps_optimal", "optimality_criteria")
 
 
 class PDLPSolverAdapter(SolverAdapter):
@@ -95,7 +92,7 @@ class PDLPSolverAdapter(SolverAdapter):
             "eps_optimal_absolute": settings.get("eps_abs"),
             "eps_optimal_relative": settings.get("eps_rel"),
         }
-        return loosest_tolerance(given, PDLP_DEFAULT_TOLERANCES, PDLP_DEFAULT_CERTIFICATE_TOLERANCES)
+        return loosest_tolerance(given, PDLP_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         _import_ortools()
@@ -499,8 +496,7 @@ def _requested_tolerance_from_parameters(parameters) -> RequestedTolerance:
     else:
         # Neither is set: PDLP uses the (deprecated) top-level fields.
         knobs = {name: float(getattr(criteria, name)) for name in PDLP_DEFAULT_TOLERANCES}
-    certificate = {name: float(getattr(criteria, name)) for name in PDLP_DEFAULT_CERTIFICATE_TOLERANCES}
-    return loosest_tolerance({**knobs, **certificate}, knobs, certificate)
+    return loosest_tolerance(knobs, knobs)
 
 
 def _apply_pure_pdlp_defaults(parameters) -> None:

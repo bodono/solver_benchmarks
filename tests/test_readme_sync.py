@@ -121,8 +121,6 @@ def test_solve_times_table_says_which_adapters_record_each_time(field):
 
 
 def _tolerance_text(value) -> str:
-    if value is None:
-        return "none"
     mantissa, exponent = f"{float(value):e}".split("e")
     return f"{mantissa.rstrip('0').rstrip('.')}e{int(exponent)}"
 
@@ -138,7 +136,7 @@ def test_every_solver_has_a_verification_tolerance_row(solver_name):
     assert len(rows) == 1, f"no single verification row for {solver_name}"
     row = rows[0]
     requested = get_solver(solver_name).requested_tolerance({}, problem_kind="qp")
-    for knob in [*requested.knobs, *requested.certificate_knobs]:
+    for knob in requested.knobs:
         assert f"`{knob}`" in row, f"{solver_name} row does not name {knob}"
-    expected = f"`{_tolerance_text(requested.optimality)} / {_tolerance_text(requested.certificate)}`"
+    expected = f"| `{_tolerance_text(requested.optimality)}` |"
     assert expected in row, f"{solver_name} row does not give its default request {expected}"

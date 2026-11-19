@@ -20,14 +20,14 @@ from solver_benchmarks.analysis.verify import (
     VerifyPolicy,
     classify,
     row_info_from_record,
+    verification_header,
     verification_table,
 )
 from solver_benchmarks.cli import main
 
-# SCS at eps 1e-4: solutions are checked at 1e-3, certificates (eps_infeas
-# left at SCS's 1e-7) at 1e-6.
+# SCS at eps 1e-4: solutions and certificates are checked at 1e-3.
 SCS = {"id": "scs_1e-4", "solver": "scs", "settings": {"eps_abs": 1e-4, "eps_rel": 1e-4}}
-TOL, CERT_TOL = 1e-3, 1e-6
+TOL = 1e-3
 
 
 def _kkt(worst=1e-9, **extra):
@@ -77,7 +77,7 @@ def _rows():
         _row("cones", "optimal", _kkt(1e-9, form="cone", primal_cone_res_rel=None, dual_cone_res_rel=None,
                                        unsupported_cones=["cs"])),
         _row("cert_ok", "primal_infeasible", _cert(5e-7), **infeasible),
-        _row("cert_bad", "primal_infeasible", _cert(5e-5), **infeasible),
+        _row("cert_bad", "primal_infeasible", _cert(5e-3), **infeasible),
         _row("cert_up", "primal_infeasible_inaccurate", _cert(1e-7), **infeasible),
         _row("cert_none", "dual_infeasible", None, **infeasible),
         _row("error", "solver_error", None),
@@ -95,7 +95,7 @@ EXPECTED = {
     "cert_ok": ("primal_infeasible", "kept"),
     "cert_bad": ("primal_infeasible_inaccurate", "demoted"),
     "cert_up": ("primal_infeasible", "promoted"),
-    "cert_none": ("dual_infeasible", "unverified_certificate"),
+    "cert_none": ("dual_infeasible_inaccurate", "missing_residuals"),
     "error": ("solver_error", "not_checked"),
 }
 
@@ -115,8 +115,8 @@ def test_load_results_verifies_at_ten_times_the_requested_tolerance(tmp_path):
     assert df.loc["ok", "verify.tol"] == pytest.approx(TOL)
     assert df.loc["ok", "verify.requested_tol"] == pytest.approx(1e-4)
     assert df.loc["ok", "verify.requested_tol_source"] == "manifest"
-    assert df.loc["cert_bad", "verify.cert_tol"] == pytest.approx(CERT_TOL)
-    assert df.loc["cert_bad", "verify.requested_cert_tol"] == pytest.approx(1e-7)
+    assert df.loc["cert_bad", "verify.tol"] == pytest.approx(TOL)  # certificates by the same tolerance
+    assert df.loc["cert_ok", "verify.reason"] == "certificate residual 5.000e-07 <= 1.0e-03"
     assert "5.000e-03" in df.loc["loose", "verify.reason"]
     assert df.loc["error", "verify.tol"] != df.loc["error", "verify.tol"]  # NaN: never needed one
     info = df.attrs["verification"]
@@ -135,15 +135,15 @@ def test_scoring_follows_the_verified_status(tmp_path):
     df = _by_problem(load_results(_write_run(tmp_path / "run", _rows())))
     solved = success_mask(df.reset_index()).set_axis(df.index)
     assert solved["ok"] and solved["promote"] and solved["cones"] and solved["cert_ok"] and solved["cert_up"]
-    assert not (solved["loose"] or solved["bare"] or solved["late"] or solved["cert_bad"])
+    assert not (solved["loose"] or solved["bare"] or solved["late"] or solved["cert_bad"] or solved["cert_none"])
 
 
 def test_a_certificate_passing_its_own_tolerance_succeeds_above_cert_tol(tmp_path):
-    """A certificate verified at its own (here 1e-2) tolerance succeeds even
-    though the solve-time check at kkt.CERT_TOL (1e-3) found it invalid;
-    an unverified frame keeps that check."""
+    """A certificate verified at its row's (here 1e-2) tolerance succeeds
+    even though the solve-time check at kkt.CERT_TOL (1e-3) found it
+    invalid; an unverified frame keeps that check."""
     infeasible = {"metadata": {"expected_status": "infeasible"}}
-    loose_scs = {**SCS, "settings": {**SCS["settings"], "eps_infeas": 1e-3}}
+    loose_scs = {**SCS, "settings": {"eps_abs": 1e-3, "eps_rel": 1e-3}}
     rows = [_row("p", "primal_infeasible", _cert(5e-3), **infeasible)]
     run = _write_run(tmp_path / "run", rows, solvers=(loose_scs,))
     verified = load_results(run)
@@ -154,9 +154,18 @@ def test_a_certificate_passing_its_own_tolerance_succeeds_above_cert_tol(tmp_pat
 
 
 def test_missing_residuals_can_be_tolerated(tmp_path):
-    run = _write_run(tmp_path / "run", [_row("bare", "optimal", None)])
-    df = load_results(run, verify=VerifyPolicy(missing_is_failure=False))
-    assert df.loc[0, "status"] == "optimal" and df.loc[0, "verify.verdict"] == "missing_residuals"
+    infeasible = {"metadata": {"expected_status": "infeasible"}}
+    rows = [_row("bare", "optimal", None), _row("cert_none", "primal_infeasible", None, **infeasible)]
+    run = _write_run(tmp_path / "run", rows)
+    df = _by_problem(load_results(run, verify=VerifyPolicy(missing_is_failure=False)))
+    assert df["status"].to_dict() == {"bare": "optimal", "cert_none": "primal_infeasible"}
+    assert set(df["verify.verdict"]) == {"missing_residuals"}
+    assert "2 claims without residuals or a certificate were kept unchecked" in verification_header(df)
+    table = verification_table(df).iloc[0]
+    assert (table["kept"], table["demoted"], table["no_residuals"], table["unverified"]) == (2, 0, 2, 2)
+    default = _by_problem(load_results(run))
+    assert default["status"].to_dict() == {"bare": "optimal_inaccurate", "cert_none": "primal_infeasible_inaccurate"}
+    assert "counts as unsolved" in verification_header(default)
 
 
 def test_without_promote_limit_stops_are_not_checked(tmp_path):
@@ -169,9 +178,9 @@ def test_fixed_rule_holds_every_row_to_one_tolerance(tmp_path):
     df = _by_problem(load_results(_write_run(tmp_path / "run", _rows()),
                                   verify=VerifyPolicy(rule="fixed", tol=1e-2)))
     assert df.loc["loose", "status"] == "optimal"
-    assert df.loc["cert_bad", "status"] == "primal_infeasible"  # 5e-5 <= 1e-2
+    assert df.loc["cert_bad", "status"] == "primal_infeasible"  # 5e-3 <= 1e-2
     assert set(df["verify.rule"]) == {"fixed"}
-    assert df.loc["ok", "verify.cert_tol"] == pytest.approx(1e-2)
+    assert df.loc["cert_bad", "verify.tol"] == pytest.approx(1e-2)
 
 
 def test_unverified_load_gives_the_reported_statuses(tmp_path):
@@ -196,8 +205,7 @@ def test_unverified_load_of_a_kkt_verify_copy_undoes_it(tmp_path):
 
 
 def test_the_row_record_beats_the_manifest_and_an_override_beats_both(tmp_path):
-    rows = [_row("ok", "optimal", _kkt(5e-4), metadata={"requested_tolerance": {"optimality": 1e-5,
-                                                                                  "certificate": None}})]
+    rows = [_row("ok", "optimal", _kkt(5e-4), metadata={"requested_tolerance": {"optimality": 1e-5}})]
     run = _write_run(tmp_path / "run", rows)
     df = load_results(run)
     assert df.loc[0, "verify.requested_tol_source"] == "row"
@@ -225,7 +233,8 @@ def test_rows_without_residuals_need_no_tolerance(tmp_path):
             _row("none", "primal_infeasible", None)]
     df = _by_problem(load_results(_write_run(tmp_path / "run", rows, manifest=False)))
     assert df.loc["bare", "status"] == "optimal_inaccurate"
-    assert df.loc["none", "verify.verdict"] == "unverified_certificate"
+    assert df.loc["none", "status"] == "primal_infeasible_inaccurate"
+    assert df.loc["none", "verify.verdict"] == "missing_residuals"
 
 
 def test_merged_shards_with_different_settings_resolve_by_run_id(tmp_path):
@@ -253,7 +262,13 @@ def test_an_unregistered_solver_is_unknown(tmp_path):
         load_results(run)
 
 
-@pytest.mark.parametrize("bad", [{"rule": "fixed"}, {"rule": "sometimes"}, {"tol": 1e-3}, {"slack": 0}])
+@pytest.mark.parametrize("bad", [
+    {"rule": "fixed"}, {"rule": "sometimes"}, {"tol": 1e-3}, {"slack": 0},
+    {"rule": "fixed", "tol": 1e-3, "requested_tol": {"a": 1e-4}},
+    {"rule": "fixed", "tol": 1e-3, "tol_from_solver_id": True},
+    {"rule": "fixed", "tol": 1e-3, "slack": 5.0},
+    {"requested_tol": {"a": (1e-4, 1e-7)}},
+])
 def test_bad_policies_are_refused(bad):
     with pytest.raises(VerifyInputError):
         VerifyPolicy(**bad)
@@ -282,7 +297,7 @@ def test_kkt_verify_of_its_own_output_writes_the_same_rows(tmp_path):
 def test_a_kkt_verify_copy_loads_as_its_source_does(tmp_path):
     run = _write_run(tmp_path / "run", _rows())
     kkt_verify(run, tmp_path / "copy")
-    columns = ["status", "status_reported", "objective_value", "verify.verdict", "verify.tol", "verify.cert_tol",
+    columns = ["status", "status_reported", "objective_value", "verify.verdict", "verify.tol",
                "verify.requested_tol", "verify.worst"]
     recorded = load_results(tmp_path / "copy")
     assert recorded.attrs["verification"]["mode"] == "recorded"
@@ -365,22 +380,31 @@ def test_verdicts_agree_between_parquet_jsonl_and_kkt_verify(tmp_path):
 
 
 def test_classify_asks_for_a_tolerance_only_to_compare():
-    def no_tolerance(kind):
-        raise AssertionError(f"asked for the {kind} tolerance")
+    def no_tolerance():
+        raise AssertionError("asked for the tolerance")
 
     assert classify({"status": "optimal", "kkt": {}}, tolerance=no_tolerance).verdict == "missing_residuals"
-    assert classify({"status": "primal_infeasible", "kkt": {}}, tolerance=no_tolerance).verdict == (
-        "unverified_certificate")
+    claim = classify({"status": "primal_infeasible", "kkt": {}}, tolerance=no_tolerance)
+    assert (claim.verdict, claim.status) == ("missing_residuals", "primal_infeasible_inaccurate")
+    kept = classify({"status": "primal_infeasible", "kkt": {}}, tolerance=no_tolerance, missing_is_failure=False)
+    assert (kept.verdict, kept.status) == ("missing_residuals", "primal_infeasible")
     assert classify({"status": "solver_error"}, tolerance=no_tolerance).verdict == "not_checked"
+
+
+def test_a_certificate_on_cones_the_harness_cannot_project_is_kept_unverified():
+    certificate = {"certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": 1e-9, "dual_cone_res": None,
+                   "unsupported_cones": ["cs"]}
+    verdict = classify({"status": "primal_infeasible", "kkt": certificate}, tolerance=lambda: 1e-3)
+    assert (verdict.verdict, verdict.status) == ("unverified_certificate", "primal_infeasible")
 
 
 def test_row_info_reads_what_resolution_needs():
     info = row_info_from_record(_row("p", "optimal", metadata={
         "nnz_p": 3, "runtime": {"solver_package_versions": {"qtqp": "0.0.6"}},
-        "requested_tolerance": {"optimality": 1e-5, "certificate": 1e-6}}))
+        "requested_tolerance": {"optimality": 1e-5}}))
     assert (info.solver_id, info.run_id, info.is_lp) == ("scs_1e-4", "run", False)
     assert info.versions == (("qtqp", "0.0.6"),)
-    assert (info.recorded_optimality, info.recorded_certificate) == (1e-5, 1e-6)
+    assert info.recorded_optimality == 1e-5
 
 
 # --- consumers read verified statuses -------------------------------------------
@@ -391,14 +415,15 @@ def test_tables_count_verified_statuses(tmp_path):
 
     df = load_results(_write_run(tmp_path / "run", _rows()))
     rates = failure_rates(df).set_index("solver_id")
-    # solved: ok, promote and cones; on the infeasible problems cert_ok,
-    # cert_up (promoted) and cert_none (kept unverified)
-    assert rates.loc["scs_1e-4", "success_count"] == 6
+    # solved: ok, promote and cones; on the infeasible problems cert_ok and
+    # cert_up (promoted); cert_none has nothing to check
+    assert rates.loc["scs_1e-4", "success_count"] == 5
     metrics = solver_metrics(df).set_index("solver_id")
-    assert metrics.loc["scs_1e-4", "success_count"] == 6
+    assert metrics.loc["scs_1e-4", "success_count"] == 5
     raw = failure_rates(load_results(tmp_path / "run", verify=False)).set_index("solver_id")
-    # as reported: ok, loose, bare, cones; cert_ok, cert_bad (valid at 1e-3), cert_none
-    assert raw.loc["scs_1e-4", "success_count"] == 7
+    # as reported: ok, loose, bare, cones; cert_ok, cert_none (cert_bad is
+    # invalid by the solve-time check at 1e-3)
+    assert raw.loc["scs_1e-4", "success_count"] == 6
 
 
 def test_plots_draw_verified_statuses(tmp_path, monkeypatch):
@@ -454,10 +479,11 @@ def test_failures_take_the_verification_options(tmp_path, repo_root):
         line = next(line for line in result.output.splitlines() if line.split()[:1] == ["scs_1e-4"])
         return int(line.split()[2])
 
-    assert success() == 6
-    assert success("--unverified") == 7
-    assert success("--verify-tol", "1e-2") == 8  # loose and cert_bad pass; bare still has no residuals
-    assert success("--requested-tol", "scs_1e-4=1e-6/1e-6") == 5  # ok and cert_bad fail at 1e-5
+    assert success() == 5
+    assert success("--unverified") == 6
+    assert success("--verify-tol", "1e-2") == 7  # loose and cert_bad pass; bare and cert_none have nothing to check
+    assert success("--requested-tol", "scs_1e-4=1e-6") == 4  # ok fails at 1e-5
+    assert success("--allow-missing") == 7  # bare and cert_none kept unchecked
 
 
 def test_an_unknown_tolerance_is_a_click_error_with_the_remedies(tmp_path):
@@ -471,12 +497,26 @@ def test_an_unknown_tolerance_is_a_click_error_with_the_remedies(tmp_path):
 
 
 @pytest.mark.parametrize("options", [["--unverified", "--verify-tol", "1e-3"], ["--unverified", "--reverify"],
+                                     ["--unverified", "--allow-missing"],
                                      ["--verify-tol", "1e-3", "--reverify"],
-                                     ["--requested-tol", "nonsense"]])
+                                     ["--verify-tol", "1e-3", "--requested-tol", "scs_1e-4=1e-4"],
+                                     ["--verify-tol", "1e-3", "--tol-from-solver-id"],
+                                     ["--requested-tol", "nonsense"],
+                                     ["--requested-tol", "scs_1e-4=1e-4/1e-7"]])
 def test_conflicting_verification_options_are_usage_errors(tmp_path, options):
     run = _write_run(tmp_path / "run", _rows())
     result = CliRunner().invoke(main, ["summary", str(run), *options])
     assert result.exit_code == 2, result.output
+
+
+@pytest.mark.parametrize("options", [["--slack", "5"], ["--slack", "10"], ["--requested-tol", "scs_1e-4=1e-4"],
+                                     ["--tol-from-solver-id"]])
+def test_kkt_verify_refuses_options_a_fixed_tolerance_would_ignore(tmp_path, options):
+    run = _write_run(tmp_path / "run", _rows())
+    result = CliRunner().invoke(main, ["kkt-verify", str(run), "--tol", "1e-3", *options])
+    assert result.exit_code == 2, result.output
+    assert "would not be used" in result.output
+    assert not (tmp_path / "run_kkt1e-03").exists()
 
 
 def test_kkt_verify_defaults_to_the_requested_rule_and_says_so(tmp_path):
@@ -486,7 +526,7 @@ def test_kkt_verify_defaults_to_the_requested_rule_and_says_so(tmp_path):
     out_dir = tmp_path / "run_verified"
     assert result.output.strip().splitlines()[-1] == str(out_dir)
     line = next(line for line in result.output.splitlines() if line.startswith("scs_1e-4"))
-    assert "promoted=2" in line and "requested=1e-04/1e-07" in line and "check=1e-03/1e-06" in line
+    assert "promoted=2" in line and "requested=1e-04\t" in line and "check=1e-03" in line
     manifest = json.loads((out_dir / "manifest.json").read_text())["derived"]
     assert manifest["rule"] == "requested" and manifest["promote"] is True and manifest["annotates_all_rows"]
     fixed = CliRunner().invoke(main, ["kkt-verify", str(run), "--tol", "1e-3", "--no-promote"])
@@ -519,8 +559,8 @@ def test_report_states_and_tabulates_the_verification(tmp_path, repo_root):
     section = markdown.split("## Verification")[1].split("\n## ")[0]
     assert "requested_tol" in section and "scs_1e-4" in section
     table = pd.read_csv(report / "verification.csv").set_index("solver_id")
-    assert table.loc["scs_1e-4", "promoted"] == 2 and table.loc["scs_1e-4", "unverified"] == 2
-    assert table.loc["scs_1e-4", "demoted"] == 3  # loose, bare (no residuals) and cert_bad
+    assert table.loc["scs_1e-4", "promoted"] == 2 and table.loc["scs_1e-4", "unverified"] == 1  # cones
+    assert table.loc["scs_1e-4", "demoted"] == 4  # loose, bare and cert_none (nothing to check), cert_bad
     changes = pd.read_csv(report / "verification_changes.csv")
     assert ((changes["status_reported"] == "optimal") & (changes["status"] == "optimal_inaccurate")).any()
     counts = pd.read_csv(report / "status_counts.csv").set_index("status")["count"]
@@ -542,3 +582,97 @@ def test_unverified_report_says_so(tmp_path, repo_root):
     markdown = (tmp_path / "report" / "index.md").read_text()
     assert "Statuses as the solvers reported them (not KKT-verified)." in markdown
     assert not (tmp_path / "report" / "verification.csv").exists()
+
+
+# --- every analysis command takes the options and says how it verified ---------
+
+
+def _scs_success(csv: Path, column: str) -> float:
+    table = pd.read_csv(csv)
+    return float(table.loc[table["solver_id"] == "scs_1e-4", column].iloc[0])
+
+
+@pytest.mark.parametrize("command", ["profile", "geomean", "plot", "report"])
+def test_file_writing_commands_print_the_rule_on_stderr(tmp_path, repo_root, command):
+    run = _write_run(tmp_path / "run", _rows())
+    extra = ["--output-dir", str(tmp_path / "out")] if command in ("plot", "report") else []
+    if command in ("geomean", "plot", "report"):
+        extra += ["--max-value", "100"]
+    for options, says in (([], "Statuses are KKT-verified"),
+                          (["--unverified"], "not KKT-verified"),
+                          (["--verify-tol", "1e-2"], "fixed tolerance 0.01")):
+        result = CliRunner().invoke(main, [command, str(run), "--repo-root", str(repo_root), *extra, *options])
+        assert result.exit_code == 0, result.output
+        assert says in result.stderr, (command, options)
+        # stdout keeps only the paths written
+        assert all(Path(line).exists() for line in result.stdout.splitlines()), result.stdout
+
+
+def test_geomean_and_report_count_what_the_options_choose(tmp_path, repo_root):
+    run = _write_run(tmp_path / "run", _rows())
+
+    def geomean_successes(*options):
+        result = CliRunner().invoke(main, ["geomean", str(run), "--repo-root", str(repo_root), "--max-value", "100",
+                                           *options])
+        assert result.exit_code == 0, result.output
+        return _scs_success(Path(result.stdout.strip()), "success_count")
+
+    assert geomean_successes() == 5
+    assert geomean_successes("--unverified") == 6
+    assert geomean_successes("--verify-tol", "1e-2") == 7
+    assert geomean_successes("--allow-missing") == 7
+    report = CliRunner().invoke(main, ["report", str(run), "--repo-root", str(repo_root), "--max-value", "100",
+                                       "--output-dir", str(tmp_path / "report"), "--unverified"])
+    assert report.exit_code == 0, report.output
+    assert "not KKT-verified" in (tmp_path / "report" / "index.md").read_text()
+    assert not (tmp_path / "report" / "verification.csv").exists()
+
+
+def test_profile_counts_verified_statuses(tmp_path, repo_root):
+    run = _write_run(tmp_path / "run", _rows())
+
+    def solved_fraction(*options):
+        result = CliRunner().invoke(main, ["profile", str(run), "--repo-root", str(repo_root), *options])
+        assert result.exit_code == 0, result.output
+        profile = pd.read_csv(Path(result.stdout.strip()))
+        return float(profile["scs_1e-4"].max())
+
+    # over the same planned solves: 5 verified successes against 6 reported
+    assert solved_fraction() / solved_fraction("--unverified") == pytest.approx(5 / 6)
+
+
+# --- what the header admits, and options a copy does not use --------------------
+
+
+def test_the_header_counts_claims_on_cones_it_cannot_project(tmp_path):
+    df = load_results(_write_run(tmp_path / "run", _rows()))
+    header = verification_header(df)
+    assert "1 claim passed every residual the harness can compute but lie on cones it cannot project" in header
+    assert "counts as unsolved" in header
+
+
+def test_a_kkt_verify_copy_warns_about_options_it_does_not_use(tmp_path):
+    run = _write_run(tmp_path / "run", _rows())
+    kkt_verify(run, tmp_path / "copy")
+    df = load_results(tmp_path / "copy", verify=VerifyPolicy(tol_from_solver_id=True, missing_is_failure=False))
+    (warning,) = df.attrs["verification"]["warnings"]
+    assert "--tol-from-solver-id, --allow-missing are not applied" in warning and "--reverify" in warning
+    assert df.attrs["verification"]["mode"] == "recorded"
+    # --reverify applies them, and says the copy was verified otherwise
+    again = load_results(tmp_path / "copy", verify=VerifyPolicy(rule="requested", missing_is_failure=False))
+    (warning,) = again.attrs["verification"]["warnings"]
+    assert "demoting claims without residuals" in warning
+    assert _by_problem(again).loc["cert_none", "status"] == "dual_infeasible"
+
+
+def test_a_merge_warns_about_copies_verified_without_promotion_or_with_allow_missing(tmp_path):
+    a = _write_run(tmp_path / "a", _rows()[:4], run_id="a")
+    kkt_verify(a, tmp_path / "a_plain", promote=False, missing_is_failure=False)
+    merge_runs([tmp_path / "a_plain"], tmp_path / "merged")
+    warnings = load_results(tmp_path / "merged").attrs["verification"]["warnings"]
+    assert len(warnings) == 1
+    assert "without promotion" in warnings[0] and "keeping claims without residuals" in warnings[0]
+    df = _by_problem(load_results(tmp_path / "merged"))
+    assert df.loc["promote", "status"] == "optimal" and df.loc["bare", "status"] == "optimal_inaccurate"
+    same = load_results(tmp_path / "merged", verify=VerifyPolicy(promote=False, missing_is_failure=False))
+    assert same.attrs["verification"]["warnings"] == []

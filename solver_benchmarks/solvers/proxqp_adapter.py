@@ -40,10 +40,6 @@ from .qp_split import (
     split_qp_kkt,
 )
 
-# ProxQP's infeasibility tolerances (checked on proxsuite 0.7.3); the
-# optimality defaults are _PROXQP_DEFAULT_EPS_ABS / _REL below. ProxQP records
-# no certificate the harness can check, so these matter only if one does.
-PROXQP_DEFAULT_CERTIFICATE_TOLERANCES = {"eps_primal_inf": 1e-4, "eps_dual_inf": 1e-4}
 # A stand-in for the proxsuite module: _duality_gap_settings then uses the
 # documented defaults instead of importing ProxSuite.
 _NO_PROXSUITE = SimpleNamespace(proxqp=SimpleNamespace())
@@ -68,7 +64,7 @@ class ProxQPSolverAdapter(SolverAdapter):
             # Filled from eps_abs / eps_rel by _duality_gap_settings when not given.
             knobs.update({"eps_duality_gap_abs": gap["eps_duality_gap_abs"],
                           "eps_duality_gap_rel": gap["eps_duality_gap_rel"]})
-        return loosest_tolerance(settings, knobs, PROXQP_DEFAULT_CERTIFICATE_TOLERANCES)
+        return loosest_tolerance(settings, knobs)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

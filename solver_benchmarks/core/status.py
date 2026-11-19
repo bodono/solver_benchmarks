@@ -45,8 +45,8 @@ EXPECTED_OUTCOMES = (EXPECT_OPTIMAL, EXPECT_INFEASIBLE, EXPECT_UNBOUNDED)
 
 # Only an accurate certificate counts, as only ``optimal`` counts for a
 # solution; the ``*_inaccurate`` and ambiguous ``primal_or_dual_infeasible``
-# statuses carry no certificate the harness can trust, unless
-# ``bench kkt-verify --promote`` checked it and made it accurate.
+# statuses carry no certificate the harness can trust, unless the KKT
+# verification (analysis/verify.py) checked it and promoted it.
 CERTIFICATE_SUCCESS = {
     EXPECT_INFEASIBLE: frozenset({PRIMAL_INFEASIBLE, DUAL_INFEASIBLE}),
     EXPECT_UNBOUNDED: frozenset({DUAL_INFEASIBLE}),
