@@ -33,10 +33,12 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     coerce_tolerance,
     finite_point,
+    loosest_tolerance,
     module_available,
     pop_max_iter,
     pop_threads,
@@ -108,6 +110,14 @@ def _map_status(name: str) -> str:
     return status.SOLVER_ERROR
 
 
+# cuOpt's six optimality tolerances and their default (cuOpt documentation;
+# not checked here: cuOpt needs an NVIDIA GPU, confirm on the cuOpt image).
+CUOPT_TOLERANCE_NAMES = tuple(
+    f"{scale}_{kind}_tolerance" for scale in ("absolute", "relative") for kind in ("primal", "dual", "gap")
+)
+CUOPT_DEFAULT_TOLERANCE = 1e-4
+
+
 class CuOptSolverAdapter(SolverAdapter):
     solver_name = "cuopt"
     supported_problem_kinds = {QP}
@@ -115,6 +125,31 @@ class CuOptSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("cuopt", _import_cuopt)
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        values: dict = {}
+        # The order solve() applies them in: eps sets all six, then eps_abs /
+        # eps_rel their three, then native settings in the order given
+        # (optimality_tolerance sets all six).
+        eps = settings.pop("eps", None)
+        if eps is not None:
+            values.update(dict.fromkeys(CUOPT_TOLERANCE_NAMES, coerce_tolerance("eps", eps)))
+        for alias, scale in (("eps_abs", "absolute"), ("eps_rel", "relative")):
+            value = settings.pop(alias, None)
+            if value is not None:
+                for name in CUOPT_TOLERANCE_NAMES:
+                    if name.startswith(scale):
+                        values[name] = coerce_tolerance(alias, value)
+        for key, value in settings.items():
+            if value is None:
+                continue
+            if key == "optimality_tolerance":
+                values.update(dict.fromkeys(CUOPT_TOLERANCE_NAMES, coerce_tolerance(key, value)))
+            elif key in CUOPT_TOLERANCE_NAMES:
+                values[key] = coerce_tolerance(key, value)
+        return loosest_tolerance(values, dict.fromkeys(CUOPT_TOLERANCE_NAMES, CUOPT_DEFAULT_TOLERANCE))
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         data_model, solver, solver_settings = _import_cuopt()

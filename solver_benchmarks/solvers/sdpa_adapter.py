@@ -56,10 +56,12 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     DEFAULT_THREADS,
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     coerce_int_setting,
     finite_point,
+    loosest_tolerance,
     mark_time_limit_ignored,
     module_available,
     pop_max_iter,
@@ -72,6 +74,12 @@ from .base import (
 )
 from .cone_layout import psd_triangle_to_full
 
+# sdpa-python's defaults (sdpap.param, checked on sdpa-python 0.2.3):
+# epsilonStar bounds the primal and dual feasibility errors, epsilonDash the
+# relative gap. The adapter's own optimality_tolerance is a status rule, which
+# the independent verification supersedes, so it is not a requested tolerance.
+SDPA_DEFAULT_TOLERANCES = {"epsilonStar": 1e-7, "epsilonDash": 1e-7}
+
 
 class SDPASolverAdapter(SolverAdapter):
     solver_name = "sdpa"
@@ -80,6 +88,13 @@ class SDPASolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("sdpap")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        settings.pop("optimality_tolerance", None)
+        options = _sdpa_options(settings, Path("."))
+        return loosest_tolerance(options, SDPA_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

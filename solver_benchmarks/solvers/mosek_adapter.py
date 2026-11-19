@@ -29,10 +29,12 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     EPS_ALIASES,
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     finite_point,
+    loosest_tolerance,
     module_available,
     pop_max_iter,
     pop_threads,
@@ -45,6 +47,20 @@ from .base import (
 )
 from .qp_split import normalize_qp_bounds
 
+# MOSEK's interior-point termination tolerances (documented defaults; not
+# checked here, MOSEK needs a license): the linear ones apply to LPs, the
+# QO ones to QPs. No certificate tolerance of its own is used.
+MOSEK_LP_TOLERANCES = {
+    "MSK_DPAR_INTPNT_TOL_PFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_TOL_DFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_TOL_REL_GAP": 1e-8,
+}
+MOSEK_QP_TOLERANCES = {
+    "MSK_DPAR_INTPNT_QO_TOL_PFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_QO_TOL_DFEAS": 1e-8,
+    "MSK_DPAR_INTPNT_QO_TOL_REL_GAP": 1e-8,
+}
+
 
 class MosekSolverAdapter(SolverAdapter):
     solver_name = "mosek"
@@ -53,6 +69,19 @@ class MosekSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("mosek")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        refuse_settings(settings, EPS_ALIASES, "MOSEK", "set its own tolerances instead")
+        given = {_param_name(key): value for key, value in settings.items()}
+        # A QP whose P is zero is an LP to MOSEK; when that is not known, the
+        # looser of the two sets applies.
+        if is_lp is None:
+            knobs = {**MOSEK_LP_TOLERANCES, **MOSEK_QP_TOLERANCES}
+        else:
+            knobs = MOSEK_LP_TOLERANCES if is_lp else MOSEK_QP_TOLERANCES
+        return loosest_tolerance(given, knobs)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

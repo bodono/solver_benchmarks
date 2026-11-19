@@ -25,10 +25,12 @@ from solver_benchmarks.core.result import SolverResult
 from .base import (
     EPS_ALIASES,
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     finite_point,
+    loosest_tolerance,
     module_available,
     pop_max_iter,
     pop_threads,
@@ -41,6 +43,15 @@ from .base import (
 )
 from .qp_split import normalize_qp_bounds
 
+# CPLEX's documented defaults (dotted parameter paths): simplex feasibility
+# and optimality, and the barrier's convergence tolerance. Not checked here
+# (CPLEX needs a license). No certificate tolerance of its own.
+CPLEX_DEFAULT_TOLERANCES = {
+    "simplex.tolerances.feasibility": 1e-6,
+    "simplex.tolerances.optimality": 1e-6,
+    "barrier.convergetol": 1e-8,
+}
+
 
 class CPLEXSolverAdapter(SolverAdapter):
     solver_name = "cplex"
@@ -49,6 +60,12 @@ class CPLEXSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("cplex")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        refuse_settings(settings, EPS_ALIASES, "CPLEX", "set its own tolerances instead")
+        return loosest_tolerance(settings, CPLEX_DEFAULT_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

@@ -17,9 +17,11 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     finite_point,
+    loosest_tolerance,
     mark_threads_ignored,
     module_available,
     normalize_max_iter,
@@ -32,6 +34,11 @@ from .base import (
 )
 from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 
+# OSQP's defaults (checked on osqp 1.1.3): r <= eps_abs + eps_rel * norms.
+OSQP_DEFAULT_TOLERANCES = {"eps_abs": 1e-3, "eps_rel": 1e-3}
+# Its infeasibility tolerances; certificates are held to the looser of them.
+OSQP_DEFAULT_CERTIFICATE_TOLERANCES = {"eps_prim_inf": 1e-4, "eps_dual_inf": 1e-4}
+
 
 class OSQPSolverAdapter(SolverAdapter):
     solver_name = "osqp"
@@ -40,6 +47,12 @@ class OSQPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("osqp")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_eps_alias(settings)
+        return loosest_tolerance(settings, OSQP_DEFAULT_TOLERANCES, OSQP_DEFAULT_CERTIFICATE_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

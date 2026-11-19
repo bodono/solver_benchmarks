@@ -28,12 +28,15 @@ from solver_benchmarks.core.result import SolverResult
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
+    ToleranceUnknown,
     coerce_int_setting,
     coerce_time_limit,
     finite_point,
+    loosest_tolerance,
     module_available,
     pop_max_iter,
     pop_threads,
@@ -48,6 +51,19 @@ from .qp_split import free_row_mask, normalize_qp_bounds, scatter_rows
 MAX_PROTOBUF_BYTES = (1 << 31) - 1
 
 
+# PDLP's termination tolerances (TerminationCriteria, checked on OR-Tools
+# 9.15): eps_abs / eps_rel set simple_optimality_criteria's absolute and
+# relative tolerances, both 1e-6 by default.
+PDLP_DEFAULT_TOLERANCES = {"eps_optimal_absolute": 1e-6, "eps_optimal_relative": 1e-6}
+# Its infeasibility tolerances bound a ray's residual over its objective, the
+# units of kkt.cert_res; certificates are held to the looser of the two.
+PDLP_DEFAULT_CERTIFICATE_TOLERANCES = {"eps_primal_infeasible": 1e-8, "eps_dual_infeasible": 1e-8}
+# Words of a parameters_text that can change a termination tolerance; such a
+# text is read with OR-Tools when it is installed, and without it the
+# requested tolerance is unknown.
+_PARAMETERS_TEXT_TOLERANCE_WORDS = ("eps_", "optimality_criteria", "infeasible")
+
+
 class PDLPSolverAdapter(SolverAdapter):
     solver_name = "pdlp"
     supported_problem_kinds = {QP, CONE}
@@ -55,6 +71,31 @@ class PDLPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("ortools", _import_ortools)
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        pop_time_limit(settings)
+        settings.pop("solver_time_limit_sec", None)
+        translate_eps_alias(settings)
+        parameters_text = settings.get("parameters_text")
+        if parameters_text:
+            try:
+                from google.protobuf import text_format  # noqa: F401
+                from ortools.pdlp import solvers_pb2  # noqa: F401
+            except IMPORT_ERRORS as exc:
+                if any(word in str(parameters_text) for word in _PARAMETERS_TEXT_TOLERANCE_WORDS):
+                    raise ToleranceUnknown(
+                        "PDLP parameters_text may set a tolerance and OR-Tools, needed to read it, "
+                        f"cannot be imported ({exc})"
+                    ) from exc
+            else:
+                return _requested_tolerance_from_parameters(_pdlp_parameters_from_settings(settings))
+        given = {
+            "eps_optimal_absolute": settings.get("eps_abs"),
+            "eps_optimal_relative": settings.get("eps_rel"),
+        }
+        return loosest_tolerance(given, PDLP_DEFAULT_TOLERANCES, PDLP_DEFAULT_CERTIFICATE_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         _import_ortools()
@@ -442,6 +483,24 @@ def _pdlp_parameters_from_settings(settings: dict[str, Any]):
     except (TypeError, ValueError, text_format.ParseError) as exc:
         raise SolverConfigError(f"Invalid PDLP setting: {exc}") from exc
     return parameters
+
+
+def _requested_tolerance_from_parameters(parameters) -> RequestedTolerance:
+    """The tolerances a PrimalDualHybridGradientParams asks PDLP for."""
+    criteria = parameters.termination_criteria
+    which = criteria.WhichOneof("optimality_criteria")
+    if which == "detailed_optimality_criteria":
+        detailed = criteria.detailed_optimality_criteria
+        names = [field.name for field in detailed.DESCRIPTOR.fields if field.name.startswith("eps_")]
+        knobs = {name: float(getattr(detailed, name)) for name in names}
+    elif which == "simple_optimality_criteria":
+        simple = criteria.simple_optimality_criteria
+        knobs = {name: float(getattr(simple, name)) for name in PDLP_DEFAULT_TOLERANCES}
+    else:
+        # Neither is set: PDLP uses the (deprecated) top-level fields.
+        knobs = {name: float(getattr(criteria, name)) for name in PDLP_DEFAULT_TOLERANCES}
+    certificate = {name: float(getattr(criteria, name)) for name in PDLP_DEFAULT_CERTIFICATE_TOLERANCES}
+    return loosest_tolerance({**knobs, **certificate}, knobs, certificate)
 
 
 def _apply_pure_pdlp_defaults(parameters) -> None:

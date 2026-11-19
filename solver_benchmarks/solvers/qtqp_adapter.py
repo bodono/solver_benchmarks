@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import itertools
 import json
 import numbers
 import time
@@ -20,10 +21,13 @@ from solver_benchmarks.transforms.cones import qp_to_nonnegative_cone
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
+    ToleranceUnknown,
     finite_point,
+    loosest_tolerance,
     mark_threads_ignored,
     mark_time_limit_ignored,
     module_available,
@@ -36,6 +40,14 @@ from .base import (
     translate_tolerance_aliases,
 )
 
+# QTQP 0.0.7+ takes Clarabel-style tolerances; these are the defaults of its
+# solve() signature (checked on qtqp 0.0.7).
+QTQP_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
+QTQP_DEFAULT_CERTIFICATE_TOLERANCES = {"tol_infeas_rel": 1e-8}
+# The first release with those names; earlier ones took atol / rtol, whose
+# defaults are not recorded here.
+QTQP_TOLERANCE_NAMES_SINCE = (0, 0, 7)
+
 
 class QTQPSolverAdapter(SolverAdapter):
     solver_name = "qtqp"
@@ -44,6 +56,26 @@ class QTQPSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("qtqp")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        """As for the other adapters, with the names of the qtqp a row ran:
+        ``versions["qtqp"]`` below 0.0.7 means ``atol`` / ``rtol`` (both must
+        be set, their defaults are not recorded here); a newer or unknown
+        version the Clarabel-style names, which ``atol`` / ``rtol`` supply
+        as the adapter's translation does."""
+        settings = dict(settings or {})
+        version = _version_tuple((versions or {}).get("qtqp"))
+        if version is not None and version < QTQP_TOLERANCE_NAMES_SINCE:
+            _translate_tolerances(settings, {"atol", "rtol"})
+            if settings.get("atol") is None or settings.get("rtol") is None:
+                raise ToleranceUnknown(
+                    f"qtqp {versions['qtqp']} takes atol / rtol, whose defaults are not recorded; "
+                    "the settings give " + ", ".join(f"{k}={settings.get(k)!r}" for k in ("atol", "rtol"))
+                )
+            return loosest_tolerance(settings, {"atol": 0.0, "rtol": 0.0})
+        _translate_tolerances(settings, set(QTQP_DEFAULT_TOLERANCES))
+        return loosest_tolerance(settings, QTQP_DEFAULT_TOLERANCES, QTQP_DEFAULT_CERTIFICATE_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:
@@ -323,6 +355,21 @@ def _translate_tolerances(settings: dict, solve_params: set[str]) -> dict:
     for key in _NEW_TOL_KEYS:
         settings.pop(key, None)
     return translate_tolerance_aliases(settings, ("atol",), ("rtol",))
+
+
+def _version_tuple(version) -> tuple[int, ...] | None:
+    """``(0, 0, 7)`` for "0.0.7" (or "0.0.7.dev1+g123"), None when unknown."""
+    if not isinstance(version, str):
+        return None
+    parts = []
+    for piece in version.split("."):
+        digits = "".join(itertools.takewhile(str.isdigit, piece))
+        if not digits:
+            break
+        parts.append(int(digits))
+        if len(digits) < len(piece):
+            break
+    return tuple(parts) if parts else None
 
 
 def _enum_member(enum_type, value, key: str):

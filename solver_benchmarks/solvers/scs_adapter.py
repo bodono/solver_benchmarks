@@ -44,11 +44,13 @@ from solver_benchmarks.transforms.cones import qp_to_scs_box_cone, unbox_scs_dua
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     coerce_int_setting,
     finite_point,
     is_setting_type_error,
+    loosest_tolerance,
     mark_threads_ignored,
     module_available,
     pop_max_iter,
@@ -147,6 +149,14 @@ def _scs_update_takes_settings(scs_module) -> bool:
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
+# SCS 3.x defaults (scs.h, documented settings): its optimality test is
+# r <= eps_abs + eps_rel * norms on the primal and dual residuals and the gap.
+SCS_DEFAULT_TOLERANCES = {"eps_abs": 1e-4, "eps_rel": 1e-4}
+# Its infeasibility test, ||A'y|| / (-b'y) <= eps_infeas (and the dual
+# analogue), is in the units of the harness's kkt.cert_res.
+SCS_DEFAULT_CERTIFICATE_TOLERANCES = {"eps_infeas": 1e-7}
+
+
 class SCSSolverAdapter(SolverAdapter):
     solver_name = "scs"
     supported_problem_kinds = {QP, CONE}
@@ -154,6 +164,12 @@ class SCSSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("scs")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_settings(settings)
+        return loosest_tolerance(settings, SCS_DEFAULT_TOLERANCES, SCS_DEFAULT_CERTIFICATE_TOLERANCES)
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

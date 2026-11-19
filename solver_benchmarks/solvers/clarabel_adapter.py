@@ -45,11 +45,13 @@ from solver_benchmarks.transforms.psd import (
 
 from .base import (
     IMPORT_ERRORS,
+    RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
     SolverUnavailable,
     coerce_int_setting,
     finite_point,
+    loosest_tolerance,
     mark_threads_ignored,
     module_available,
     normalize_max_iter,
@@ -62,6 +64,13 @@ from .base import (
     translate_tolerance_aliases,
 )
 
+# Clarabel's defaults (DefaultSettings, checked on clarabel 0.11.1): feasibility
+# and absolute and relative gap tolerances.
+CLARABEL_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel": 1e-8}
+# Its certificate test ||A'z|| < -tol_infeas_rel * b'z is in kkt.cert_res units
+# (tol_infeas_abs only requires the objective term to be negative enough).
+CLARABEL_DEFAULT_CERTIFICATE_TOLERANCES = {"tol_infeas_rel": 1e-8}
+
 
 class ClarabelSolverAdapter(SolverAdapter):
     solver_name = "clarabel"
@@ -70,6 +79,14 @@ class ClarabelSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("clarabel")
+
+    @classmethod
+    def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
+        settings = dict(settings or {})
+        translate_settings(settings)
+        return loosest_tolerance(
+            settings, CLARABEL_DEFAULT_TOLERANCES, CLARABEL_DEFAULT_CERTIFICATE_TOLERANCES
+        )
 
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         try:

@@ -6,7 +6,8 @@ import math
 import numbers
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,105 @@ class SolverConfigError(ValueError):
 CONFIG_ERROR_KIND = "config"
 
 
+class ToleranceUnknown(ValueError):
+    """The tolerance a solver's settings request cannot be determined.
+
+    Raised by :meth:`SolverAdapter.requested_tolerance` (for example an
+    adapter that does not define it, a setting it cannot interpret, or a
+    solver version whose defaults are not recorded); the message says why.
+    """
+
+
+@dataclass(frozen=True)
+class RequestedTolerance:
+    """The accuracy a configuration asks a solver for, in the harness's units.
+
+    ``optimality`` is the loosest of the feasibility and gap tolerances the
+    solver is asked to meet, absolute and relative, each knob the settings
+    leave unset at the library's default. A solver that stops on
+    ``r <= abs + rel * N`` has ``r / (1 + N) <= max(abs, rel)``, and the
+    harness's relative residuals are exactly ``r / (1 + norms)``, so a
+    claim measured the harness's way passes at that maximum (up to how the
+    norms differ, which the verification slack absorbs).
+
+    ``certificate`` is the infeasibility tolerance, for solvers whose
+    certificate test divides by the certificate's objective term (the unit of
+    the harness's ``kkt.cert_res``); None means the solver has none and
+    certificates are held to ``optimality``. ``knobs`` and
+    ``certificate_knobs`` map every setting considered to the value used, and
+    ``defaults_used`` names those that took the library default.
+    """
+
+    optimality: float
+    certificate: float | None = None
+    knobs: Mapping[str, float] = field(default_factory=dict)
+    certificate_knobs: Mapping[str, float] = field(default_factory=dict)
+    defaults_used: tuple[str, ...] = ()
+
+    def to_record(self) -> dict[str, Any]:
+        """The form the worker stores as ``metadata.requested_tolerance``.
+
+        Knob names are lists, not a nested mapping, so a results frame gets
+        two numeric columns from it rather than one per solver setting.
+        """
+        return {
+            "optimality": float(self.optimality),
+            "certificate": None if self.certificate is None else float(self.certificate),
+            "knobs": sorted(self.knobs),
+            "certificate_knobs": sorted(self.certificate_knobs),
+            "defaults_used": list(self.defaults_used),
+        }
+
+
+def loosest_tolerance(
+    settings: Mapping[str, Any],
+    defaults: Mapping[str, float],
+    certificate_defaults: Mapping[str, float] | None = None,
+) -> RequestedTolerance:
+    """:class:`RequestedTolerance` from already translated ``settings``.
+
+    ``defaults`` lists the optimality knobs with the library's default for
+    each; ``certificate_defaults`` the infeasibility knobs (None or empty
+    when the solver has none in certificate units). A knob the settings set
+    to null counts as unset. A value that is not a finite number >= 0, or
+    knobs that are all zero, raise :class:`ToleranceUnknown`.
+    """
+    used: list[str] = []
+
+    def collect(names: Mapping[str, float]) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for name, default in names.items():
+            value = settings.get(name)
+            if value is None:
+                value = default
+                used.append(name)
+            if isinstance(value, bool):
+                raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})")
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ToleranceUnknown(f"setting {name!r} is not a number (got {value!r})") from exc
+            if not math.isfinite(number) or number < 0:
+                raise ToleranceUnknown(f"setting {name!r} is not a finite number >= 0 (got {value!r})")
+            values[name] = number
+        return values
+
+    knobs = collect(defaults)
+    if not knobs or max(knobs.values()) <= 0:
+        raise ToleranceUnknown(f"no positive optimality tolerance among {sorted(defaults)}")
+    certificate_knobs = collect(certificate_defaults or {})
+    certificate = max(certificate_knobs.values()) if certificate_knobs else None
+    if certificate is not None and certificate <= 0:
+        raise ToleranceUnknown(f"no positive infeasibility tolerance among {sorted(certificate_knobs)}")
+    return RequestedTolerance(
+        optimality=max(knobs.values()),
+        certificate=certificate,
+        knobs=knobs,
+        certificate_knobs=certificate_knobs,
+        defaults_used=tuple(used),
+    )
+
+
 class SolverAdapter(ABC):
     solver_name: str
     supported_problem_kinds: set[str]
@@ -119,6 +219,32 @@ class SolverAdapter(ABC):
     @classmethod
     def is_available(cls) -> bool:
         return True
+
+    @classmethod
+    def requested_tolerance(
+        cls,
+        settings: Mapping[str, Any] | None,
+        *,
+        problem_kind: str | None = None,
+        is_lp: bool | None = None,
+        versions: Mapping[str, Any] | None = None,
+    ) -> RequestedTolerance:
+        """The tolerance ``settings`` ask this solver for (see :class:`RequestedTolerance`).
+
+        Every adapter defines it by running its own alias translation on a
+        copy of the settings, so the result is what a solve with those
+        settings is asked to meet; it never imports the solver library.
+        ``problem_kind`` (``qp`` / ``cone``), ``is_lp`` (a QP whose ``P``
+        is zero; None when unknown) and ``versions`` (the solver package
+        versions a row recorded) matter only to adapters whose knobs or
+        defaults depend on them. The independent KKT verification (see
+        ``analysis/verify.py``) holds each row to this tolerance times its
+        slack, so an adapter that does not define it raises here rather
+        than leave its rows silently unverifiable.
+        """
+        raise ToleranceUnknown(
+            f"the {getattr(cls, 'solver_name', cls.__name__)} adapter does not define requested_tolerance"
+        )
 
     def supports(self, problem_kind: str) -> bool:
         return problem_kind in self.supported_problem_kinds
