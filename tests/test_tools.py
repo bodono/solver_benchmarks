@@ -998,6 +998,18 @@ def test_a_campaign_solver_without_a_certificate_decision_is_refused(make_campai
         make_campaign.solver_variants("qp", 1e-4, 300.0)
 
 
+@pytest.mark.parametrize("solver, own", [("pdlp", {"parameters_text": "verbosity_level: 1"}),
+                                         ("scs", {"eps_infeas": 1e-7})])
+def test_certificate_settings_never_overwrite_a_variants_own(make_campaign, solver, own):
+    """A variant that sets a certificate key itself (a PDLP variant's own
+    parameters_text, which the certificate criteria would replace) is
+    refused, not silently overwritten."""
+    variant = {"id": f"{solver}_1e-4", "solver": solver, "settings": {"eps_abs": 1e-4, **own}}
+    with pytest.raises(ValueError, match=next(iter(own))):
+        make_campaign.with_certificate_settings(variant, 1e-4)
+    assert variant["settings"] == {"eps_abs": 1e-4, **own}
+
+
 @pytest.mark.parametrize("tol", [1e-4, 1e-6, 5e-5, 1.5e-5])
 def test_make_figures_reads_the_tolerance_tag_of_every_campaign_solver_id(make_campaign, make_figures, tol):
     for family in make_campaign.FAMILIES:
@@ -1274,6 +1286,74 @@ def test_make_figures_verifies_a_swapped_series_of_a_kkt_verify_copy_at_the_figu
     assert verification["figure"].isna().all()
 
 
+def _family_settings_run(run_dir: Path) -> Path:
+    """clarabel_1e-6, shown in the 1e-4 figure, with one row per setting a
+    family's verification can change: a claimed optimum without residuals
+    (--allow-missing), a certificate with cert_res 1e-4 (held to the
+    figure's tolerance like solutions), an iteration-limited stop whose point
+    passes at 1e-3 (promotion), and a claimed optimum with residual 5e-3
+    (fails 10 x 1e-4, passes 100 x 1e-4: the slack)."""
+    infeasible = {"metadata.expected_status": "infeasible"}
+
+    def certificate(cert_res):
+        return {"kkt": {"form": "cone", "certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": cert_res,
+                        "dual_cone_res": 0.0, "cert_res": cert_res, "cert_tol": 1e-3, "valid": True}}
+
+    rows = []
+    for problem in ("bare", "limit", "loose"):
+        rows.append(_sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-4",
+                            "status": status.OPTIMAL, "run_time_seconds": 10.0, **_residuals(1e-9)}))
+    rows.append(_sized({"dataset": "lp", "problem": "cert", "solver_id": "clarabel_1e-4",
+                        "status": status.PRIMAL_INFEASIBLE, "run_time_seconds": 10.0, **certificate(1e-9),
+                        **infeasible}))
+    for problem, row_status, extra in (
+        ("bare", status.OPTIMAL, {}),
+        ("cert", status.PRIMAL_INFEASIBLE, {**certificate(1e-4), **infeasible}),
+        ("limit", status.MAX_ITER_REACHED, _residuals(1e-4)),
+        ("loose", status.OPTIMAL, _residuals(5e-3)),
+    ):
+        rows.append(_sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-6", "status": row_status,
+                            "run_time_seconds": 1.0, **extra}))
+    return _verified_run(run_dir, rows)
+
+
+def test_make_figures_verifies_a_swapped_series_with_the_familys_settings(make_figures, tmp_path, monkeypatch):
+    """A series --use-run takes from another tolerance's run is verified at
+    the figure's tag with the family's own settings: --allow-missing, and a
+    bench kkt-verify copy's recorded slack and promotion; its certificates
+    are held to the figure's tolerance like its solutions."""
+    from solver_benchmarks.analysis.derive import kkt_verify
+
+    run_dir = _family_settings_run(tmp_path / "run")
+
+    def swapped(out, run, *options):
+        summary, verification = _figure_summaries(make_figures, monkeypatch, out, run, *options)
+        row = verification[verification["figure"] == "1e-4"].set_index("solver_id").loc["clarabel_1e-6"]
+        counts = {column: int(row[column]) for column in ("kept", "demoted", "promoted", "no_residuals")}
+        return summary.loc[("1e-4", "clarabel_1e-4")], counts, summary
+
+    # default: the certificate passes 1e-3, the limit stop is promoted, the
+    # bare claim and the 5e-3 point fail
+    shown, counts, summary = swapped(tmp_path / "figs", run_dir)
+    assert shown["success_count"] == 2 and shown["verify_tol"] == "0.001"
+    assert counts == {"kept": 1, "demoted": 2, "promoted": 1, "no_residuals": 1}
+    # in its own 1e-6 figure (1e-5) the certificate and the limit stop fail too
+    assert summary.loc[("1e-6", "clarabel_1e-6"), "success_count"] == 0
+
+    # --allow-missing keeps the claim without residuals
+    shown, counts, _ = swapped(tmp_path / "figs_missing", run_dir, "--allow-missing")
+    assert shown["success_count"] == 3
+    assert counts == {"kept": 2, "demoted": 1, "promoted": 1, "no_residuals": 1}
+
+    # a copy verified at slack 100, without promotion, missing residuals
+    # tolerated: the series is held to 100 x 1e-4 the same way
+    kkt_verify(run_dir, tmp_path / "copy", slack=100.0, promote=False, missing_is_failure=False)
+    shown, counts, _ = swapped(tmp_path / "figs_copy", tmp_path / "copy")
+    assert shown["success_count"] == 3  # bare, cert, loose; the limit stop is not promoted
+    assert shown["verify_tol"] == "0.01" and shown["verify_rule"] == "100 x the figure's tolerance"
+    assert counts == {"kept": 3, "demoted": 0, "promoted": 0, "no_residuals": 1}
+
+
 def test_make_figures_verifies_only_the_rows_it_plots(make_figures, tmp_path, monkeypatch, capsys):
     # Solvers the figures leave out (excluded, or ids without a tolerance
     # tag) are not verified, so their tolerance need not be known.
@@ -1367,3 +1447,24 @@ def test_campaign_solver_settings_are_accepted_by_the_installed_adapters(make_ca
         ran.append(variant["id"])
     if not ran:
         pytest.skip(f"no CPU solver of the {family} campaign is installed")
+
+
+@pytest.mark.parametrize("family", ["qp", "lp", "lpbig"])
+def test_campaign_cuopt_settings_are_accepted_by_the_cuopt_adapter(make_campaign, repo_root, fake_cuopt, tmp_path,
+                                                                     family):
+    # cuOpt needs a GPU, so the test above skips it. The fake, which like
+    # cuOpt refuses a parameter name it does not know, takes every setting
+    # the campaign gives cuOpt, its certificate tolerances included.
+    from solver_benchmarks.datasets import get_dataset
+    from solver_benchmarks.solvers import get_solver
+
+    (variant,) = [v for v in make_campaign.solver_variants(family, 1e-4, 300.0) if v["solver"] == "cuopt"]
+    name = "one_variable_eq" if family == "qp" else "one_variable_lp"
+    problem = get_dataset("synthetic_qp")(repo_root=repo_root).load_problem(name)
+    fake_cuopt.returns("Optimal", x=[1.0], y=[0.0], objective=1.0)
+
+    get_solver("cuopt")(dict(variant["settings"])).solve(problem, tmp_path)
+
+    assert fake_cuopt.optimality_tolerance == 1e-4
+    for knob in make_campaign.CERTIFICATE_KNOBS["cuopt"]:
+        assert fake_cuopt.parameters[knob] == 1e-4, knob

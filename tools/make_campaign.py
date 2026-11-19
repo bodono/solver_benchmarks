@@ -119,6 +119,20 @@ def certificate_settings(solver: str, tol: float) -> dict:
     return dict.fromkeys(knobs, float(tol))
 
 
+def with_certificate_settings(variant: dict, tol: float) -> dict:
+    """``variant`` with its solver's ``certificate_settings`` at ``tol``
+    added to its settings. A variant that sets one of those keys itself (a
+    PDLP variant's own ``parameters_text``) is refused rather than silently
+    overwritten: merge the two by hand."""
+    extra = certificate_settings(variant["solver"], tol)
+    clash = sorted(set(extra) & set(variant["settings"]))
+    if clash:
+        raise ValueError(f"campaign variant {variant['id']} sets {', '.join(clash)} itself, which its "
+                         "certificate settings would overwrite; merge them by hand")
+    variant["settings"].update(extra)
+    return variant
+
+
 def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     """Solver settings at a common nominal tolerance ``tol``.
 
@@ -205,9 +219,7 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
             {"id": f"sdpa_{tag}", "solver": "sdpa",
              "settings": {"eps_abs": t, "eps_rel": t, "time_limit": timeout}, "gpu": False},
         ]
-    for variant in variants:
-        variant["settings"].update(certificate_settings(variant["solver"], t))
-    return variants
+    return [with_certificate_settings(variant, t) for variant in variants]
 
 
 # Instances a solver cannot attempt at all, counted as failures for it. Clarabel
