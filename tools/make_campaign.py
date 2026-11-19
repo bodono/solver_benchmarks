@@ -79,8 +79,11 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     """Solver settings at a common nominal tolerance ``tol``.
 
     Each solver's own tolerance semantics differ, so nothing here is treated
-    as proof of accuracy: solves are re-verified afterwards with
-    ``bench kkt-verify --tol`` on the harness's independent KKT residuals.
+    as proof of accuracy: every analysis of the results (``bench report``,
+    tools/make_figures.py) verifies each solve against the harness's
+    independent KKT residuals at 10 x the tolerance its settings request,
+    which for every variant here except HiGHS below 1e-7 (its residual
+    tolerances stay at their 1e-7 default) is ``tol``.
     """
     t = float(tol)
     tag = tolerance_tag(t)

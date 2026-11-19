@@ -1,13 +1,23 @@
 """Figures for the SCS performance page.
 
-Input: one KKT-verified run directory per family (the output of
-``bench merge`` followed by ``bench kkt-verify --promote``). Output: for each
-family and tolerance, a Dolan-Moré performance profile over all problems and
-over the largest quartile by nonzeros, plus a shifted-geometric-mean bar
-chart, with the SCS series drawn in front.
+Input: one run directory per family, typically the output of ``bench merge``.
+Its statuses are KKT-verified when it is loaded, as every analysis command
+verifies them: each claimed solution and certificate is checked against the
+harness's own KKT residuals at 10 x the tolerance its solver was asked for,
+and inaccurate or limit stops that pass are promoted (a run written by
+``bench kkt-verify`` is used as it recorded its verification). The 1 % late
+rule (``mark_late``) is applied after verification, so a row returned after
+the limit counts as a failure whatever verification made of it.
+``--unverified``, ``--verify-tol``, ``--reverify``, ``--requested-tol`` and
+``--tol-from-solver-id`` choose the verification as for ``bench report``.
+Output: for each family and tolerance, a Dolan-Moré performance profile over
+all problems and over the largest quartile by nonzeros, plus a
+shifted-geometric-mean bar chart, with the SCS series drawn in front;
+``verification_summary.csv`` lists, per family and solver, the tolerances
+its rows were checked at and what verification changed.
 
 Usage:
-  python tools/make_figures.py OUT_DIR qp=results/qp_verified_1e-4 lp=... [--tol-tag 1e-4]
+  python tools/make_figures.py OUT_DIR qp=results/qp_merged lp=... [--tol-tag 1e-4]
 
 A problem that no result row sized (every solver timed out, crashed or
 raised on it) is loaded from its dataset to size it for the largest-quartile
@@ -37,6 +47,14 @@ from matplotlib.ticker import FuncFormatter
 
 from solver_benchmarks.analysis.load import load_results
 from solver_benchmarks.analysis.profiles import performance_profile, shifted_geomean
+from solver_benchmarks.analysis.verify import (
+    VerifyInputError,
+    VerifyPolicy,
+    parse_requested_tol,
+    verification_header,
+    verification_info,
+    verification_table,
+)
 from solver_benchmarks.core.config import manifest_dataset_entries
 from solver_benchmarks.core.problem import QP, cone_dimensions, qp_dimensions
 from solver_benchmarks.datasets import get_dataset
@@ -75,8 +93,8 @@ FAMILY_LIMIT = {"qp": 300.0, "lp": 300.0, "sdp": 900.0, "lpbig": 1800.0, "infeas
 # rescue limit stops as such. What it admits is a row that ends inside the
 # window with a solved status: a solve that converges on the iteration that
 # crosses the limit (solvers check the clock only between iterations), or a
-# limit stop whose point kkt-verify --promote later promotes, e.g. an SCS stop
-# at the limit plus one iteration. The tradeoff: a solver that ignores its
+# limit stop whose point verification promotes, e.g. an SCS stop at the
+# limit plus one iteration. The tradeoff: a solver that ignores its
 # limit is credited the same way, with up to 1 % more time than the limit;
 # the grace is kept that small so this cannot buy a solver much.
 LATE_GRACE = 0.01
@@ -442,6 +460,51 @@ def plot_grid(frames: dict, path: Path) -> None:
     plt.close(fig)
 
 
+def verification_policy(args: argparse.Namespace) -> bool | VerifyPolicy:
+    """``load_results``'s ``verify`` for the verification options (as the CLI's)."""
+    others = args.verify_tol is not None or args.reverify or args.requested_tol or args.tol_from_solver_id
+    if args.unverified and others:
+        sys.exit("--unverified cannot be combined with --verify-tol, --reverify, --requested-tol or "
+                 "--tol-from-solver-id")
+    if args.verify_tol is not None and args.reverify:
+        sys.exit("--verify-tol and --reverify cannot be combined (--verify-tol always re-checks)")
+    if args.unverified:
+        return False
+    try:
+        if args.verify_tol is not None:
+            return VerifyPolicy(rule="fixed", tol=args.verify_tol)
+        return VerifyPolicy(rule="requested" if args.reverify else "auto",
+                            requested_tol=parse_requested_tol(args.requested_tol),
+                            tol_from_solver_id=args.tol_from_solver_id)
+    except VerifyInputError as exc:
+        sys.exit(str(exc))
+
+
+def verify_rule(df: pd.DataFrame) -> str:
+    """How a family's statuses were decided, for geomean_summary.csv."""
+    info = verification_info(df)
+    mode = info.get("mode")
+    if mode == "unverified":
+        return "unverified"
+    rule = str(info.get("rule") or "requested")
+    if rule == "fixed":
+        rule = f"fixed {float(info.get('tol')):g}" if info.get("tol") is not None else "fixed"
+    else:
+        rule = f"{float(info.get('slack') or 10.0):g} x requested"
+    return f"recorded ({rule})" if mode == "recorded" else rule
+
+
+def verify_tols(df: pd.DataFrame) -> dict[str, str]:
+    """The solution tolerance(s) each solver id's rows were checked at."""
+    if "verify.tol" not in df.columns:
+        return {}
+    out = {}
+    for solver_id, values in df.groupby("solver_id")["verify.tol"]:
+        tols = sorted({float(v) for v in values.dropna()})
+        out[str(solver_id)] = ", ".join(f"{v:g}" for v in tols)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir", type=Path)
@@ -462,19 +525,38 @@ def main() -> None:
     ap.add_argument("--no-size-lookup", action="store_true",
                     help="do not load problems that no result row sized; leave them out of the largest "
                          "quartile instead (loading the largest Mittelmann LPs is slow and memory-hungry)")
+    ap.add_argument("--unverified", action="store_true",
+                    help="use the statuses the solvers reported instead of the KKT-verified ones")
+    ap.add_argument("--verify-tol", type=float, default=None,
+                    help="hold every row to this one tolerance instead of 10 x its solver's requested one "
+                         "(1e-3 for the 1e-4 figures reproduces the 3.3.2 docs rule for every solver)")
+    ap.add_argument("--reverify", action="store_true",
+                    help="verify a bench kkt-verify copy again by the default rule instead of as it recorded")
+    ap.add_argument("--requested-tol", action="append", default=[], metavar="SOLVER_ID=TOL[/CERT_TOL]",
+                    help="the tolerance SOLVER_ID was asked for, for runs that do not record it; repeatable")
+    ap.add_argument("--tol-from-solver-id", action="store_true",
+                    help="take a solver's requested tolerance from the tag ending its id when the run gives none")
     args = ap.parse_args()
+    policy = verification_policy(args)
     global NEUTRAL
     NEUTRAL = bool(args.neutral)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     summary = []
+    verification = []
     frames: dict = {}
     failures: list[str] = []
     for pair in args.runs:
         family, run_dir = pair.split("=", 1)
-        df = load_results(run_dir)
+        try:
+            df = load_results(run_dir, verify=policy)
+        except VerifyInputError as exc:
+            failures.append(f"{family}: {exc}")
+            continue
         if df.empty:
             print(f"{family}: no results in {run_dir}")
             continue
+        info = verification_info(df)
+        rule = verify_rule(df)
         drop = FAMILY_DROP_DATASETS.get(family)
         if drop:
             df = df[~df["dataset"].isin(drop)]
@@ -496,10 +578,18 @@ def main() -> None:
         if untagged:
             print(f"warning: {family}: left out solver ids without a tolerance tag: {', '.join(untagged)}",
                   file=sys.stderr)
+        print(f"{family}: {verification_header(info)}")
+        for warning in info.get("warnings") or []:
+            print(f"warning: {family}: {warning}", file=sys.stderr)
+        table = verification_table(df)
+        if not table.empty:
+            print(table.to_string(index=False))
+            verification.append(table.assign(family=family, verify_rule=rule))
         # Sized once per family, over every tolerance's rows, so the quartile
         # is the same set of problems in each tolerance's figures.
         lookup = None if args.no_size_lookup else registry_size_lookup(run_dir, repo_root=args.repo_root)
         sizes = problem_sizes(df, size_lookup=lookup)
+        # After verification: a late row is a failure whatever it was verified as.
         limit = FAMILY_LIMIT.get(family)
         if limit:
             df = mark_late(df, limit)
@@ -560,6 +650,10 @@ def main() -> None:
                     t.insert(0, "family", family)
                     t["label"] = [solver_label(s) for s in t["solver_id"]]
                     t["source_run"] = [source_run.get(base_solver(s), tag) for s in t["solver_id"]]
+                    # Last, so readers that pick columns by name are unaffected.
+                    tols = verify_tols(sub)
+                    t["verify_rule"] = rule
+                    t["verify_tol"] = [tols.get(str(s), "") for s in t["solver_id"]]
                     summary.append(t)
             print(f"{family} {tag}: {n_all} problems, largest quartile {n_big}")
     if args.grid:
@@ -568,6 +662,11 @@ def main() -> None:
     if summary:
         pd.concat(summary).to_csv(args.out_dir / "geomean_summary.csv", index=False)
         print(args.out_dir / "geomean_summary.csv")
+    if verification:
+        table = pd.concat(verification, ignore_index=True)
+        table = table[["family", "verify_rule", *[c for c in table.columns if c not in ("family", "verify_rule")]]]
+        table.to_csv(args.out_dir / "verification_summary.csv", index=False)
+        print(args.out_dir / "verification_summary.csv")
     if failures:
         sys.exit("\n".join(failures))
 

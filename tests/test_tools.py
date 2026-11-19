@@ -1060,6 +1060,114 @@ def test_make_figures_use_run_marks_the_substituted_run(make_figures, tmp_path, 
     assert rows.loc["highs_1e-4", "source_run"] == "1e-4"
 
 
+def _verified_run(run_dir: Path, rows: list[dict]) -> Path:
+    """A raw (unverified) run with a manifest giving each solver's settings."""
+    run_dir.mkdir(parents=True)
+    with (run_dir / "results.jsonl").open("w") as handle:
+        for record in rows:
+            handle.write(json.dumps(record) + "\n")
+    solvers = {
+        "piqp_1e-4": {"solver": "piqp", "settings": {"eps_abs": 1e-4, "eps_rel": 1e-4}},
+        "clarabel_1e-4": {"solver": "clarabel", "settings": {"tol_feas": 1e-4, "tol_gap_abs": 1e-4,
+                                                             "tol_gap_rel": 1e-4}},
+        "clarabel_1e-6": {"solver": "clarabel", "settings": {"tol_feas": 1e-6, "tol_gap_abs": 1e-6,
+                                                             "tol_gap_rel": 1e-6}},
+    }
+    (run_dir / "manifest.json").write_text(json.dumps({"run_id": "run", "config": {
+        "solvers": [{"id": key, **value} for key, value in solvers.items()]}}))
+    return run_dir
+
+
+def _residuals(worst):
+    return {"kkt": {"form": "qp", "primal_res_rel": worst, "dual_res_rel": 1e-12, "duality_gap_rel": 1e-12,
+                    "primal_obj_reported": 1.0}}
+
+
+def test_make_figures_verifies_a_raw_run_before_the_late_rule(make_figures, tmp_path, monkeypatch, capsys):
+    """Statuses are verified at load (10 x each solver's requested tolerance,
+    promotion included) and the 1 % late rule applies after: a limit stop
+    whose point passes counts, unless it came back after the limit."""
+    limit = make_figures.FAMILY_LIMIT["qp"]
+    run_dir = _verified_run(tmp_path / "run", [
+        # claimed optimal, residual 5e-3 > 1e-3: demoted
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "piqp_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0, **_residuals(5e-3)}),
+        _sized({"dataset": "qp", "problem": "b", "solver_id": "piqp_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0, **_residuals(1e-6)}),
+        # a limit stop whose point passes: promoted
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "clarabel_1e-4", "status": status.MAX_ITER_REACHED,
+                "run_time_seconds": 2.0, **_residuals(1e-6)}),
+        # promoted too, but returned 30 s past the limit: late, a failure
+        _sized({"dataset": "qp", "problem": "b", "solver_id": "clarabel_1e-4", "status": status.TIME_LIMIT,
+                "run_time_seconds": limit + 30.0, **_residuals(1e-6)}),
+    ])
+    out_dir = tmp_path / "figs"
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out_dir), f"qp={run_dir}", "--no-size-lookup"])
+
+    make_figures.main()
+
+    assert "Statuses are KKT-verified" in capsys.readouterr().out
+    summary = pd.read_csv(out_dir / "geomean_summary.csv", dtype={"verify_tol": str})
+    rows = summary[summary["subset"] == "all"].set_index("solver_id")
+    assert rows["success_count"].to_dict() == {"piqp_1e-4": 1, "clarabel_1e-4": 1}
+    assert list(summary.columns[-2:]) == ["verify_rule", "verify_tol"]
+    assert set(rows["verify_rule"]) == {"10 x requested"}
+    assert rows.loc["piqp_1e-4", "verify_tol"] == "0.001"
+    verification = pd.read_csv(out_dir / "verification_summary.csv").set_index("solver_id")
+    assert verification.loc["piqp_1e-4", "demoted"] == 1
+    assert verification.loc["clarabel_1e-4", "promoted"] == 2
+    assert set(verification["family"]) == {"qp"}
+
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "raw"), f"qp={run_dir}",
+                                      "--no-size-lookup", "--unverified"])
+    make_figures.main()
+    raw = pd.read_csv(tmp_path / "raw" / "geomean_summary.csv")
+    raw_rows = raw[raw["subset"] == "all"].set_index("solver_id")
+    assert raw_rows["success_count"].to_dict() == {"piqp_1e-4": 2, "clarabel_1e-4": 0}
+    assert set(raw_rows["verify_rule"]) == {"unverified"}
+
+
+def test_make_figures_use_run_keeps_the_swapped_runs_tolerance(make_figures, tmp_path, monkeypatch):
+    # clarabel_1e-6 shown in the 1e-4 figure is checked at its own 1e-5;
+    # --verify-tol 1e-3 holds it to the plot's rule instead.
+    rows = []
+    for problem in ("a", "b"):
+        rows += [
+            _sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-4", "status": status.OPTIMAL,
+                    "run_time_seconds": 10.0, **_residuals(1e-9)}),
+            _sized({"dataset": "lp", "problem": problem, "solver_id": "clarabel_1e-6", "status": status.OPTIMAL,
+                    "run_time_seconds": 1.0, **_residuals(1e-4)}),
+        ]
+    run_dir = _verified_run(tmp_path / "run", rows)
+
+    def solved(*options):
+        out = tmp_path / f"figs{len(options)}"
+        monkeypatch.setattr(sys, "argv", ["make_figures.py", str(out), f"lp={run_dir}", "--tol-tag", "1e-4",
+                                          "--use-run", "clarabel=1e-6", "--no-size-lookup", *options])
+        make_figures.main()
+        summary = pd.read_csv(out / "geomean_summary.csv", dtype={"verify_tol": str})
+        return summary[summary["subset"] == "all"].set_index("solver_id").loc["clarabel_1e-4"]
+
+    own = solved()
+    assert own["success_count"] == 0 and own["verify_tol"] == "1e-05"
+    docs_rule = solved("--verify-tol", "1e-3")
+    assert docs_rule["success_count"] == 2 and docs_rule["verify_rule"] == "fixed 0.001"
+
+
+def test_make_figures_reports_an_unknown_tolerance(make_figures, tmp_path, monkeypatch):
+    run_dir = _write_run(tmp_path / "run", [
+        _sized({"dataset": "qp", "problem": "a", "solver_id": "mine_1e-4", "status": status.OPTIMAL,
+                "run_time_seconds": 1.0, **_residuals(1e-6)}),
+    ])
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "figs"), f"qp={run_dir}", "--no-size-lookup"])
+    with pytest.raises(SystemExit, match="--tol-from-solver-id"):
+        make_figures.main()
+    monkeypatch.setattr(sys, "argv", ["make_figures.py", str(tmp_path / "figs"), f"qp={run_dir}", "--no-size-lookup",
+                                      "--tol-from-solver-id"])
+    make_figures.main()
+    assert (tmp_path / "figs" / "geomean_summary.csv").exists()
+
+
 @pytest.mark.parametrize("family", ["qp", "lp", "sdp", "lpbig", "infeas"])
 def test_campaign_solver_settings_are_accepted_by_the_installed_adapters(make_campaign, repo_root, tmp_path,
                                                                           family):
