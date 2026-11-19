@@ -631,8 +631,11 @@ def main() -> None:
     ap.add_argument("--use-run", action="append", default=[], metavar="SOLVER=TAG",
                     help="show SOLVER from its TAG run in every plot (e.g. clarabel=1e-6); the legend and "
                          "bar labels say so (\"Clarabel (1e-6)\") when TAG differs from the plot's tolerance, "
-                         "and geomean_summary.csv records the run used in its source_run column. Its rows are "
-                         "verified at 10 x the plot's tolerance, like the plot's other series")
+                         "and geomean_summary.csv records the run used in its source_run column. Under the "
+                         "default rule (also --reverify, or a bench kkt-verify copy that used it) its rows are "
+                         "verified again at the family's slack (10, or a copy's recorded --slack) x the plot's "
+                         "tolerance, like the plot's other series; --verify-tol, or a copy at one --tol, holds "
+                         "them to that tolerance, and --unverified checks nothing")
     ap.add_argument("--repo-root", type=Path, default=None,
                     help="repository whose data directories hold the problems, for sizing problems no "
                          "result row recorded dimensions for (default: this checkout)")
