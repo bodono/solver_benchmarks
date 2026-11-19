@@ -100,6 +100,10 @@ class _GurobiModel:
     def setParam(self, key, value):
         if key.startswith("Bogus"):
             raise _GurobiError(f"Unknown parameter: {key!r}")
+        # Gurobi's parameter names are case-insensitive: a later setting
+        # replaces an earlier one spelled differently.
+        for known in [known for known in self.params if known.lower() == key.lower()]:
+            del self.params[known]
         self.params[key] = value
         self.log.append(("setParam", key, value))
 
@@ -126,6 +130,7 @@ class _GurobiModel:
     def optimize(self):
         self.log.append(("optimize", dict(self.params)))
         outcome = self.outcomes.pop(0)
+        time.sleep(outcome.get("sleep", 0.0))
         if "raise" in outcome:
             raise outcome["raise"]
         self.Status = outcome["Status"]
@@ -136,6 +141,8 @@ class _GurobiModel:
     def getAttr(self, attr, objects):
         if attr not in self._values:
             raise _GurobiError(f"Unable to retrieve attribute '{attr}'")
+        if isinstance(self._values[attr], Exception):
+            raise self._values[attr]
         return list(self._values[attr])
 
     def dispose(self):
@@ -288,6 +295,7 @@ class _CplexModel:
 
     def _add_rows(self, lin_expr, senses, rhs, names, **options):
         self.rows = list(zip(senses, rhs, names))
+        self.range_values = options.get("range_values")
 
     def set_results_stream(self, stream):
         pass
@@ -579,6 +587,45 @@ def test_gurobi_does_not_resolve_when_dual_reductions_are_already_off(monkeypatc
     result = _solve("gurobi", _small_qp(), tmp_path, {"DualReductions": 0})
     assert len([entry for entry in log if entry[0] == "optimize"]) == 1
     assert result.status == status.PRIMAL_OR_DUAL_INFEASIBLE
+
+
+@pytest.mark.parametrize("settings", [{"time_limit": 100.0}, {"TimeLimit": 100.0}, {"timelimit": 100.0}],
+                         ids=["alias", "native", "native, any case"])
+def test_gurobi_resolve_gets_the_time_left(monkeypatch, tmp_path, settings):
+    # Gurobi's TimeLimit bounds each optimize(): the re-solve after
+    # INF_OR_UNBD gets what is left of the limit, as CPLEX's does, whether
+    # the limit was given by the alias or by Gurobi's own name, so the run
+    # stays within it instead of reaching twice it.
+    _, log = _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.INF_OR_UNBD, "sleep": 0.05}, {"Status": _GRB.INFEASIBLE}]
+    )
+    result = _solve("gurobi", _small_qp(), tmp_path, settings)
+    limits = [
+        next(value for key, value in entry[1].items() if key.lower() == "timelimit")
+        for entry in log if entry[0] == "optimize"
+    ]
+    assert len(limits) == 2
+    assert limits[0] == 100.0 and 0.0 < limits[1] <= 100.0 - 0.05
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.info["inf_or_unbd_resolved"] is True
+
+
+def test_gurobi_no_time_left_means_no_resolve(monkeypatch, tmp_path):
+    # The first solve used up the time limit: no re-solve runs, and the row
+    # keeps Gurobi's INF_OR_UNBD.
+    _, log = _install_fake_gurobipy(monkeypatch, [{"Status": _GRB.INF_OR_UNBD, "sleep": 0.01}])
+    result = _solve("gurobi", _small_qp(), tmp_path, {"time_limit": 0.005})
+    assert len([entry for entry in log if entry[0] == "optimize"]) == 1
+    assert result.status == status.PRIMAL_OR_DUAL_INFEASIBLE
+    assert "inf_or_unbd_resolved" not in result.info
+
+
+def test_gurobi_resolve_without_a_time_limit_sets_none(monkeypatch, tmp_path):
+    _, log = _install_fake_gurobipy(monkeypatch, [{"Status": _GRB.INF_OR_UNBD}, {"Status": _GRB.UNBOUNDED}])
+    result = _solve("gurobi", _small_qp(), tmp_path)
+    optimizes = [entry[1] for entry in log if entry[0] == "optimize"]
+    assert len(optimizes) == 2 and all("TimeLimit" not in params for params in optimizes)
+    assert result.status == status.DUAL_INFEASIBLE
 
 
 def test_cplex_resolves_infeasible_or_unbounded_without_reductions(monkeypatch, tmp_path):
@@ -875,6 +922,19 @@ def test_gurobi_claim_without_its_certificate_is_not_verified(monkeypatch, tmp_p
     assert _verified(result).verdict == "missing_residuals"
 
 
+def test_gurobi_certificate_read_that_fails_otherwise_keeps_the_claim(monkeypatch, tmp_path):
+    # gurobipy raises AttributeError, not GurobiError, for an unavailable
+    # attribute on some access paths: the claim is already made, so the
+    # error costs the certificate, not the row.
+    _install_fake_gurobipy(
+        monkeypatch, [{"Status": _GRB.INFEASIBLE, "values": {"FarkasDual": AttributeError("no FarkasDual")}}]
+    )
+    result = _solve("gurobi", _cert_lp(), tmp_path)
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.kkt is None
+    assert result.info["certificate_unavailable"] == "no FarkasDual: no FarkasDual"
+
+
 # CPLEX: dual_farkas() gives (y, proof) with y <= 0 on <= rows and >= 0 on >=
 # rows, y'Ax >= y'b valid and proof = y'b - y'Az > 0 (CPXdualfarkas), one
 # value per CPLEX row: a two-sided row is a >= and a <= row (unless
@@ -907,6 +967,44 @@ def test_cplex_records_its_certificate(monkeypatch, tmp_path, make, key, value, 
     else:
         assert solves == 2
         assert result.info["certificate_resolved"] is True
+
+
+def _cert_ranged_upper_lp():
+    # 3 <= x1 + x2 <= 4 (a range row), x1 >= 3, x2 >= 2: the harness's
+    # certificate y = (1, -1, -1) uses the range row's upper bound.
+    return {
+        "P": sp.csc_matrix((2, 2)),
+        "q": np.array([0.0, 0.0]),
+        "A": sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+        "l": np.array([3.0, 3.0, 2.0]),
+        "u": np.array([4.0, np.inf, np.inf]),
+    }
+
+
+# With use_ranged_rows the two-sided row is one CPLEX "R" row (rhs its lower
+# bound, range value its width), whose Farkas multiplier takes either sign:
+# >= 0 (like a >= row) when the proof uses its lower bound, <= 0 (like a <=
+# row) when it uses its upper one. _certificate_record negates it like every
+# other row, which puts it on the bound the harness's support term uses.
+@pytest.mark.parametrize("make, farkas, senses", [
+    # Rows R [3, 4], E 1, L 1: the proof uses the range row's lower bound.
+    (_cert_ranged_lp, [1.0, -1.0, -1.0], ["R", "E", "L"]),
+    # Rows R [3, 4], G 3, G 2: the proof uses the range row's upper bound.
+    (_cert_ranged_upper_lp, [-1.0, 1.0, 1.0], ["R", "G", "G"]),
+], ids=["lower bound", "upper bound"])
+@pytest.mark.parametrize("sign, correct", [(1.0, True), (-1.0, False)], ids=["documented sign", "flipped"])
+def test_cplex_records_its_certificate_with_ranged_rows(monkeypatch, tmp_path, make, farkas, senses, sign, correct):
+    value = ([sign * v for v in farkas], 1.0)
+    models, log = _install_fake_cplex(
+        monkeypatch, [{"status": _CplexStatus.infeasible, "farkas": value}] * (1 if correct else 2)
+    )
+    result = _solve("cplex", make(), tmp_path, {"use_ranged_rows": True})
+    assert [sense for sense, _rhs, _name in models[0].rows] == senses
+    assert models[0].rows[0][1] == 3.0 and models[0].range_values[0] == 1.0
+    assert result.status == status.PRIMAL_INFEASIBLE
+    assert result.info["use_ranged_rows"] is True
+    _assert_verdict(result, status.PRIMAL_INFEASIBLE, correct)
+    assert len([entry for entry in log if entry[0] == "solve"]) == (1 if correct else 2)
 
 
 @pytest.mark.parametrize("make, raw, key, value, method, claim", [

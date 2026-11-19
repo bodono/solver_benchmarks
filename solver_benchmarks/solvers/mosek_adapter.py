@@ -52,7 +52,12 @@ from .base import (
     solver_import_failed,
     threads_or_default,
 )
-from .qp_split import normalize_qp_bounds, qp_certificate_kkt
+from .qp_split import (
+    DUAL_CERTIFICATE_STATUSES,
+    PRIMAL_CERTIFICATE_STATUSES,
+    normalize_qp_bounds,
+    qp_certificate_kkt,
+)
 
 # MOSEK's interior-point termination tolerances (documented defaults; not
 # checked here, MOSEK needs a license): the linear ones apply to LPs, the
@@ -145,7 +150,7 @@ class MosekSolverAdapter(SolverAdapter):
                 )
             elapsed = time.perf_counter() - start
 
-            soltype, kkt_dict = _select_mosek_solution(task, mosek, qp)
+            soltype, kkt_dict, unavailable = _select_mosek_solution(task, mosek, qp)
             raw_status = task.getsolsta(soltype) if task.solutiondef(soltype) else mosek.solsta.unknown
             mapped = _map_mosek_status(raw_status, termination_code, mosek)
             solver_reported_runtime = task.getdouinf(mosek.dinfitem.optimizer_time)
@@ -156,9 +161,8 @@ class MosekSolverAdapter(SolverAdapter):
             has_point = kkt_dict is not None and mapped not in status.ANY_INFEASIBLE
             objective = task.getprimalobj(soltype) if has_point else None
             certificate_info: dict[str, str] = {}
-            if mapped in (status.PRIMAL_INFEASIBLE, status.DUAL_INFEASIBLE) and kkt_dict is None:
-                # The only claim _certificate_kkt does not check.
-                certificate_info["certificate_unavailable"] = "MOSEK's certificate is not finite"
+            if mapped in status.ANY_INFEASIBLE and unavailable is not None:
+                certificate_info["certificate_unavailable"] = unavailable
             return SolverResult(
                 status=mapped,
                 kkt=kkt_dict,
@@ -308,7 +312,9 @@ def _select_mosek_solution(task, mosek, qp):
     """Select the point with the smallest worst relative KKT residual.
 
     A solution that is an infeasibility certificate is taken as it is, with
-    its certificate check (see :func:`_certificate_kkt`).
+    its certificate check (see :func:`_certificate_kkt`). Returns ``(soltype,
+    kkt_record, unavailable)``; ``unavailable`` says why a certificate has no
+    record, and is None otherwise.
     """
     candidates = []
     # min() keeps the first candidate on ties, so prefer the interior point.
@@ -317,7 +323,7 @@ def _select_mosek_solution(task, mosek, qp):
             continue
         mapped = _map_mosek_status(task.getsolsta(soltype), None, mosek)
         if mapped in status.ANY_INFEASIBLE:
-            return soltype, _certificate_kkt(task, soltype, mapped, qp)
+            return (soltype, *_certificate_kkt(task, soltype, mapped, qp))
         x = np.asarray(task.getxx(soltype), dtype=float)
         y = -np.asarray(task.gety(soltype), dtype=float)
         if not finite_point(x, y):
@@ -329,9 +335,9 @@ def _select_mosek_solution(task, mosek, qp):
         worst = worst_relative_residual({"kkt": residuals})
         candidates.append((float("inf") if worst is None else worst, soltype, residuals))
     if not candidates:
-        return mosek.soltype.itr, None
+        return mosek.soltype.itr, None, None
     _, soltype, residuals = min(candidates, key=lambda candidate: candidate[0])
-    return soltype, residuals
+    return soltype, residuals, None
 
 
 def _certificate_kkt(task, soltype, mapped: str, qp):
@@ -346,16 +352,27 @@ def _certificate_kkt(task, soltype, mapped: str, qp):
     infeasibility certificate is the primal solution ``x`` (``c'x < 0``,
     ``Ax`` in the recession cone of the bounds), the harness's ray as it is.
     MOSEK computes both by default, for LPs and QPs alike, so no parameter
-    is needed. Rows with no bound (free) have zero multipliers. A vector
-    that is not finite gives no record (the caller says so on ``info``).
+    is needed. Rows with no bound (free) have zero multipliers. An
+    inaccurate claim (``*_infeasible_inaccurate``) is read the same way.
+
+    Returns ``(kkt_record, unavailable)``. A vector that is not finite, or
+    one MOSEK fails to return, gives no record, and ``unavailable`` says why
+    (the caller puts it on ``info``): the claim is already made, so an error
+    reading its certificate costs the certificate, not the row.
     """
     lower, upper = normalize_qp_bounds(qp["l"], qp["u"])
     farkas = ray = None
-    if mapped == status.PRIMAL_INFEASIBLE:
-        farkas = -np.asarray(task.gety(soltype), dtype=float)
-    elif mapped == status.DUAL_INFEASIBLE:
-        ray = np.asarray(task.getxx(soltype), dtype=float)
-    return qp_certificate_kkt(mapped, qp["P"], qp["q"], qp["A"], lower, upper, farkas=farkas, ray=ray)
+    try:
+        if mapped in PRIMAL_CERTIFICATE_STATUSES:
+            farkas = -np.asarray(task.gety(soltype), dtype=float)
+        elif mapped in DUAL_CERTIFICATE_STATUSES:
+            ray = np.asarray(task.getxx(soltype), dtype=float)
+        else:
+            return None, None  # no certificate is claimed
+    except Exception as exc:
+        return None, f"no certificate from MOSEK: {exc}"
+    record = qp_certificate_kkt(mapped, qp["P"], qp["q"], qp["A"], lower, upper, farkas=farkas, ray=ray)
+    return record, None if record is not None else "MOSEK's certificate is not finite"
 
 
 def _handle_mosek_str_param(task, param: str, value) -> None:

@@ -269,6 +269,105 @@ def test_proxqp_duality_gap_check_can_be_turned_off(tmp_path):
     assert "eps_duality_gap_abs" not in result.info
 
 
+# --- ProxQP: the QP object API --------------------------------------------------
+
+
+def _proxqp_test_qp():
+    # Equality, range and one-sided rows, so that ProxQP gets both blocks.
+    rng = np.random.default_rng(3)
+    m = rng.standard_normal((6, 5))
+    a = rng.standard_normal((5, 5))
+    return {
+        "P": sp.csc_matrix(m.T @ m + 0.1 * np.eye(5)),
+        "q": rng.standard_normal(5),
+        "A": sp.csc_matrix(a),
+        "l": np.array([1.0, -1.0, -np.inf, 0.5, -2.0]),
+        "u": np.array([1.0, 1.0, 2.0, 0.5, np.inf]),
+    }
+
+
+_CAMPAIGN = {"eps_abs": 1e-4, "eps_rel": 1e-4, "max_iter": 1_000_000}
+_GAP = {"check_duality_gap": True, "eps_duality_gap_abs": 1e-4, "eps_duality_gap_rel": 1e-4}
+
+
+@pytest.mark.parametrize("settings, one_shot", [
+    # The adapter's settings, and the one-shot solve keywords they amount to
+    # (the adapter fills the duality-gap test from eps_abs / eps_rel).
+    (_CAMPAIGN, {**_CAMPAIGN, **_GAP}),
+    ({}, {"check_duality_gap": True, "eps_duality_gap_abs": 1e-5, "eps_duality_gap_rel": 1e-5}),
+    ({"check_duality_gap": False}, {}),
+    ({**_CAMPAIGN, "rho": 1e-5, "mu_eq": 1e-2, "mu_in": 1e-1}, {**_CAMPAIGN, **_GAP, "rho": 1e-5, "mu_eq": 1e-2,
+                                                               "mu_in": 1e-1}),
+    ({**_CAMPAIGN, "compute_preconditioner": False}, {**_CAMPAIGN, **_GAP, "compute_preconditioner": False}),
+    ({**_CAMPAIGN, "default_H_eigenvalue_estimate": 1e-3},
+     {**_CAMPAIGN, **_GAP, "default_H_eigenvalue_estimate": 1e-3}),
+    ({**_CAMPAIGN, "primal_infeasibility_solving": True}, {**_CAMPAIGN, **_GAP, "primal_infeasibility_solving": True}),
+    ({"max_iter": 3, "check_duality_gap": False}, {"max_iter": 3}),
+    ({**_CAMPAIGN, "dense": True}, {**_CAMPAIGN, **_GAP}),
+], ids=["campaign", "defaults", "no gap check", "proximal", "no preconditioner", "H eigenvalue",
+        "closest feasible", "max_iter", "dense"])
+def test_proxqp_object_api_solves_as_the_one_shot_solve_did(settings, one_shot, tmp_path):
+    """The adapter builds ProxSuite's QP object instead of calling the
+    one-shot solve; a setting the one-shot solve takes gives the same solve,
+    to the last bit of its iterates' residuals and objective."""
+    proxsuite = pytest.importorskip("proxsuite")
+    from solver_benchmarks.solvers.qp_split import split_qp_for_range_constraints
+
+    qp = _proxqp_test_qp()
+    result = _solve("proxqp", settings, tmp_path, qp)
+    p, q, aeq, b, g, h_l, h_u, _, _ = split_qp_for_range_constraints(qp)
+    if settings.get("dense"):
+        reference = proxsuite.proxqp.dense.solve(p.toarray(), q, aeq.toarray(), b, g.toarray(), h_l, h_u,
+                                                 verbose=False, compute_timings=True, **one_shot)
+    else:
+        reference = proxsuite.proxqp.sparse.solve(sp.csc_matrix(p), q, sp.csc_matrix(aeq), b, sp.csc_matrix(g),
+                                                  h_l, h_u, verbose=False, compute_timings=True, **one_shot)
+    assert result.info["status"] == str(reference.info.status)
+    for key in ("iter", "iter_ext", "objValue", "pri_res", "dua_res", "duality_gap", "rho", "mu_eq", "mu_in"):
+        assert result.info[key] == getattr(reference.info, key), key
+
+
+def test_proxqp_certificate_tolerances_reach_proxsuite(tmp_path):
+    # eps_primal_inf / eps_dual_inf are fields of ProxQP's settings that the
+    # one-shot solve does not take; the QP object takes them. A tighter
+    # eps_primal_inf makes ProxQP iterate longer before it claims
+    # infeasibility on x1 + x2 = 3, 0 <= x1, x2 <= 1.
+    infeasible = {
+        "P": sp.csc_matrix((2, 2)),
+        "q": np.zeros(2),
+        "A": sp.csc_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]),
+        "l": np.array([3.0, 0.0, 0.0]),
+        "u": np.array([3.0, 1.0, 1.0]),
+    }
+    default = _solve("proxqp", {}, tmp_path, infeasible)
+    tight = _solve("proxqp", {"eps_primal_inf": 1e-12, "eps_dual_inf": 1e-12}, tmp_path, infeasible)
+    assert default.status == tight.status == status.PRIMAL_INFEASIBLE
+    assert tight.iterations > default.iterations
+
+
+@pytest.mark.parametrize("settings, name", [
+    ({"eps_primal_inf": -1e-6}, "eps_primal_inf"),
+    ({"eps_dual_inf": float("inf")}, "eps_dual_inf"),
+    ({"max_iter_in": "ten"}, "max_iter_in"),
+    ({"dense": True, "sparse_backend": None}, "sparse_backend"),
+    ({"x": [0.0, 0.0]}, "'x'"),
+])
+def test_proxqp_settings_fields_are_checked_by_name_and_value(settings, name, tmp_path):
+    # Any field of proxqp.Settings is taken; a value of the wrong type or out
+    # of range, a name the backend does not use (sparse_backend with the dense
+    # backend, as the one-shot dense solve refused it) or a one-shot data
+    # argument is a configuration error naming it.
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    with pytest.raises(SolverConfigError, match=name):
+        _solve("proxqp", settings, tmp_path)
+
+
+def test_proxqp_takes_other_settings_fields(tmp_path):
+    result = _solve("proxqp", {"max_iter_in": 100, "frequence_infeasibility_check": 2}, tmp_path)
+    assert result.status == status.OPTIMAL
+
+
 # --- max_iter translation is recorded -------------------------------------------
 
 

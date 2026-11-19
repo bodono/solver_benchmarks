@@ -17,6 +17,13 @@ a name it does not know becomes ``solver_error`` and the name itself is kept
 on ``info["termination"]`` and ``info["raw_status"]``. The Python API has changed across releases, so
 rerun the probe after upgrading cuOpt.
 
+The adapter turns on PDLP's infeasibility detection (cuOpt's
+``infeasibility_detection``, off by cuOpt's default) unless the settings
+give it: off, PDLP never stops on an infeasible problem, which is right only
+for a problem known in advance to be feasible, and a user cannot know that.
+``info["infeasibility_detection"]`` is the value the solve ran with. cuOpt's
+concurrent dual simplex and barrier detect infeasibility either way.
+
 Infeasibility claims carry no certificate: cuOpt's API exposes none. Its
 ``Solution`` has no ray or Farkas getter, and on a PDLP infeasibility stop
 it returns the last (or averaged) iterate, not the iterate difference its
@@ -203,6 +210,9 @@ class CuOptSolverAdapter(SolverAdapter):
             if "iteration_limit" not in settings:
                 settings["iteration_limit"] = max_iter
                 translated["iteration_limit"] = max_iter
+        # On unless configured: see the module docstring. A configured value
+        # is cuOpt's to accept or refuse, like any other setting.
+        settings.setdefault("infeasibility_detection", True)
 
         opts = solver_settings.SolverSettings()
         # ``eps`` sets all six of cuOpt's tolerances; ``eps_abs`` / ``eps_rel``
@@ -245,6 +255,7 @@ class CuOptSolverAdapter(SolverAdapter):
             "termination": term_name,
             # GPU solver: ``threads`` sets only its CPU-side num_cpu_threads.
             "threads": threads,
+            "infeasibility_detection": settings["infeasibility_detection"],
             "solve_time": _maybe_float(solution.get_solve_time()),
             "primal_objective": _maybe_float(solution.get_primal_objective()),
             "dual_objective": _maybe_float(solution.get_dual_objective()),

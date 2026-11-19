@@ -100,7 +100,7 @@ class GurobiSolverAdapter(SolverAdapter):
         try:
             model = grb.Model(f"{problem.dataset_id}/{problem.name}", env=env)
             try:
-                translated, threads, inf_unbd_info = _configure_gurobi(model, self.settings, grb)
+                translated, threads, inf_unbd_info, time_limit = _configure_gurobi(model, self.settings, grb)
 
                 variables = [
                     model.addVar(lb=-grb.GRB.INFINITY, ub=grb.GRB.INFINITY)
@@ -142,7 +142,7 @@ class GurobiSolverAdapter(SolverAdapter):
                 start = time.perf_counter()
                 try:
                     model.optimize()
-                    resolved = _resolve_inf_or_unbd(model, grb, self.settings)
+                    resolved = _resolve_inf_or_unbd(model, grb, self.settings, time_limit, start)
                 except grb.GurobiError as exc:
                     if _is_license_error(exc):
                         raise SolverUnavailable(f"Gurobi license error: {exc}") from exc
@@ -201,20 +201,28 @@ class GurobiSolverAdapter(SolverAdapter):
             env.dispose()
 
 
-def _resolve_inf_or_unbd(model, grb, settings: dict) -> bool:
+def _resolve_inf_or_unbd(model, grb, settings: dict, time_limit: float | None, start: float) -> bool:
     """Tell an infeasible model from an unbounded one after INF_OR_UNBD.
 
     Gurobi's presolve dual reductions can prove only that a model has no
     optimum; its documented remedy is to set DualReductions=0 and
     reoptimize. Without it the row is primal_or_dual_infeasible, which never
-    counts as a certificate. Returns whether the model was re-solved (the
-    elapsed time covers both solves, as HiGHS's internal re-solve does).
+    counts as a certificate. Gurobi's ``TimeLimit`` bounds each
+    ``optimize()``, so the re-solve gets what is left of ``time_limit``
+    (none when nothing is left), as CPLEX's does. Returns whether the model
+    was re-solved (the elapsed time covers both solves, as HiGHS's internal
+    re-solve does).
     """
     if model.Status != grb.GRB.INF_OR_UNBD:
         return False
     for key, value in settings.items():
         if key.lower() == "dualreductions" and int(value) == 0:
             return False  # already off: the answer is final
+    if time_limit is not None:
+        remaining = float(time_limit) - (time.perf_counter() - start)
+        if remaining <= 0.0:
+            return False
+        model.setParam("TimeLimit", remaining)
     model.setParam("DualReductions", 0)
     model.optimize()
     return True
@@ -281,7 +289,10 @@ def _certificate_kkt(model, grb, qp, mapped, variables, constraints, constraint_
     objects = constraints if mapped == status.PRIMAL_INFEASIBLE else variables
     try:
         values = np.asarray(model.getAttr(attribute, objects), dtype=float).reshape(-1)
-    except grb.GurobiError as exc:
+    except Exception as exc:
+        # The claim is already made: whatever goes wrong reading its
+        # certificate (a GurobiError, or the AttributeError gurobipy raises
+        # on some access paths) costs the certificate, not the row.
         return None, f"no {attribute}: {exc}"
     if values.shape != (len(objects),):
         return None, f"{attribute} has {values.size} entries for {len(objects)}"
@@ -296,10 +307,12 @@ def _certificate_kkt(model, grb, qp, mapped, variables, constraints, constraint_
     return record, None if record is not None else f"{attribute} is not finite"
 
 
-def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int, Any]:
+def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int, Any, float | None]:
     """Apply ``settings`` to ``model``; return the aliases it translated, the
-    thread count and the ``InfUnbdInfo`` the solve runs with (1 unless
-    configured), for ``info``.
+    thread count, the ``InfUnbdInfo`` the solve runs with (1 unless
+    configured), for ``info``, and the time limit in seconds (Gurobi's own
+    ``TimeLimit``, in any case, when given, which is applied after and so
+    wins over the ``time_limit`` aliases; None if neither is set).
 
     ``max_iter`` caps both the barrier and the simplex iteration counts
     (unless either is given by its Gurobi name). The ``eps`` aliases are
@@ -354,7 +367,10 @@ def _configure_gurobi(model, settings: dict, grb) -> tuple[dict, int, Any]:
             model.setParam(key, value)
         except grb.GurobiError as exc:
             raise SolverConfigError(f"Invalid Gurobi parameter {key!r}={value!r}: {exc}") from exc
-    return translated, threads, inf_unbd_info
+    native_time_limit = [key for key in settings if key.lower() == "timelimit"]
+    if native_time_limit:
+        time_limit = float(settings[native_time_limit[0]])
+    return translated, threads, inf_unbd_info, time_limit
 
 
 # Gurobi error codes for license failures: no valid license, and a model too

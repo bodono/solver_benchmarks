@@ -123,6 +123,33 @@ def test_options_are_forwarded_to_cuopt_parameters(fake_cuopt, tmp_path: Path):
     assert result.status == status.TIME_LIMIT
 
 
+@pytest.mark.parametrize("settings, expected", [({}, True), ({"infeasibility_detection": False}, False)],
+                         ids=["default", "configured off"])
+def test_pdlp_infeasibility_detection_is_on_unless_configured(fake_cuopt, tmp_path: Path, settings, expected):
+    # cuOpt's PDLP never stops on an infeasible problem with its detection
+    # off (cuOpt's default), which is right only for a problem known in
+    # advance to be feasible: the adapter turns it on, and the row says what
+    # the solve ran with.
+    fake = fake_cuopt.returns("PrimalInfeasible", x=[1.0], y=[1.0], objective=1.0)
+    problem = _problem(np.zeros((1, 1)), [1.0], np.eye(1), [1.0], [10.0])
+
+    result = CuOptSolverAdapter({"verbose": False, **settings}).solve(problem, tmp_path)
+
+    assert fake.parameters["infeasibility_detection"] is expected
+    assert result.info["infeasibility_detection"] is expected
+    assert result.status == status.PRIMAL_INFEASIBLE
+
+
+def test_a_value_cuopt_cannot_read_as_a_bool_is_refused(fake_cuopt, tmp_path: Path):
+    # cuOpt reads a bool parameter from str(value); "yes" is not one it takes.
+    from solver_benchmarks.solvers.base import SolverConfigError
+
+    fake_cuopt.returns("Optimal", x=[1.0], y=[1.0], objective=1.0)
+    problem = _problem(np.zeros((1, 1)), [1.0], np.eye(1), [1.0], [10.0])
+    with pytest.raises(SolverConfigError, match="infeasibility_detection"):
+        CuOptSolverAdapter({"verbose": False, "infeasibility_detection": "yes"}).solve(problem, tmp_path)
+
+
 @pytest.mark.parametrize("alias", ["eps", "eps_abs", "eps_rel"])
 def test_boolean_tolerance_alias_is_refused(fake_cuopt, tmp_path: Path, alias):
     from solver_benchmarks.solvers.base import SolverConfigError

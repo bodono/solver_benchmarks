@@ -654,7 +654,8 @@ def test_mosek_selects_point_by_kkt(itr_x, bas_x, expected):
         getxx=lambda slot: points[slot],
         gety=lambda slot: [0.0, 0.0],
     )
-    selected, residuals = _select_mosek_solution(task, mosek, _small_qp())
+    selected, residuals, unavailable = _select_mosek_solution(task, mosek, _small_qp())
+    assert unavailable is None
     assert selected == getattr(mosek.soltype, expected)
     assert residuals["primal_obj"] == pytest.approx(-1.0)
     assert residuals["dual_res_rel"] == 0.0

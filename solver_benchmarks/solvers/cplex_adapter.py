@@ -467,7 +467,9 @@ def _cplex_certificate(
     proof, primal simplex for a ray), and that solve's certificate is
     recorded as it is, for the verification to judge. The second solve
     costs up to a full solve of the LP without presolve, on infeasibility
-    claims only; it runs within what is left of the time limit. ``info``
+    claims only; it runs within what is left of the time limit (the
+    solver's ``time_limit`` / ``timelimit``; without one it has none, since
+    ``run.timeout_seconds`` is not passed to the solver). ``info``
     says what happened: ``certificate_resolved`` when the model was solved
     again, ``certificate_unavailable`` (the reason) when there is no
     certificate. The claim is already made, so any error on the way leaves
