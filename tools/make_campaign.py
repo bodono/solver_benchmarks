@@ -93,14 +93,13 @@ def tolerance_tag(tol: float) -> str:
 # - piqp 0.6.4: none; it declares infeasibility from eps_abs / eps_rel (set
 #   to the tag) and infeasibility_threshold, a threshold on its proximal-point
 #   residuals, not a certificate tolerance.
-# - proxqp: ProxQP's eps_primal_inf / eps_dual_inf (default 1e-4) exist, but
-#   the one-shot proxqp solve() the adapter calls does not take them.
 # - highs: none; its infeasibility verdicts use its feasibility tolerances.
 # - cvxopt: none of its own; feastol, set to the tag, is also its
 #   certificate test.
 # - sdpa: none.
-# PDLP's are TerminationCriteria fields, set through parameters_text. cuOpt's
-# apply to its PDLP (whose infeasibility detection is off by default).
+# PDLP's are TerminationCriteria fields, set through parameters_text.
+# ProxQP's are fields of its QP object's settings (default 1e-4). cuOpt's
+# apply to its PDLP, whose infeasibility detection solver_variants turns on.
 CERTIFICATE_KNOBS: dict[str, tuple[str, ...]] = {
     "scs": ("eps_infeas",),
     "clarabel": ("tol_infeas_abs", "tol_infeas_rel"),
@@ -109,8 +108,8 @@ CERTIFICATE_KNOBS: dict[str, tuple[str, ...]] = {
     "qtqp": ("tol_infeas_abs", "tol_infeas_rel"),
     "cuopt": ("primal_infeasible_tolerance", "dual_infeasible_tolerance"),
     "pdlp": ("eps_primal_infeasible", "eps_dual_infeasible"),
+    "proxqp": ("eps_primal_inf", "eps_dual_inf"),
     "piqp": (),
-    "proxqp": (),
     "highs": (),
     "cvxopt": (),
     "sdpa": (),
@@ -144,6 +143,19 @@ def with_certificate_settings(variant: dict, tol: float) -> dict:
 
 def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     """Solver settings at a common nominal tolerance ``tol``.
+
+    Every solver runs the same general settings on every problem, and none
+    is told whether a problem is feasible: a user cannot know that in
+    advance, and a solver that knew its problems were feasible could be
+    faster by ignoring infeasibility (SCS could). So a variant's settings
+    are the same in every family it runs in, apart from its time limit
+    (``timeout``, the harness's budget for the family), and the same at
+    every tag apart from the tolerances the tag sets; and every solver keeps
+    its infeasibility detection on everywhere, cuOpt's included, which its
+    default turns off. The family only picks which solvers run, by problem
+    class (ProxQP on QPs, CVXOPT and SDPA on SDPs, ...), never by
+    feasibility: the infeasible LPs run the LP family's solvers with the LP
+    family's settings. tests/test_tools.py checks both.
 
     Each solver's own tolerance semantics differ, so nothing here is treated
     as proof of accuracy: every analysis of the results (``bench report``,
@@ -192,9 +204,17 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
         )
     if family in ("qp", "lp", "lpbig"):
         # NVIDIA cuOpt: GPU PDLP for LP, GPU barrier for QP; the like-for-like GPU comparator.
+        # Its PDLP's infeasibility detection is off by cuOpt's default, which
+        # is right only for a problem known in advance to be feasible; a user
+        # cannot know that, so every solver keeps infeasibility detection on
+        # everywhere, and cuOpt's is turned on in every family (cuOpt's
+        # infeasibility_detection; the adapter's default too). Its dual
+        # simplex and barrier, which run concurrently with PDLP on an LP,
+        # detect infeasibility either way.
         variants.append(
             {"id": f"cuopt_{tag}", "solver": "cuopt",
-             "settings": {"eps": t, "time_limit": timeout}, "gpu": True, "runner": "cuopt"}
+             "settings": {"eps": t, "infeasibility_detection": True, "time_limit": timeout},
+             "gpu": True, "runner": "cuopt"}
         )
     if family in ("qp", "lp", "lpbig"):
         # QTQP (pure-Python interior point): MKL Pardiso and cuDSS backends. Kept for

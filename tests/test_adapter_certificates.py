@@ -338,17 +338,30 @@ def test_proxqp_certificate_is_verified(corrupt, monkeypatch, tmp_path):
     if corrupt is not None:
         import proxsuite
 
-        real = proxsuite.proxqp.sparse.solve
+        real = proxsuite.proxqp.sparse.QP
 
-        def corrupted(*args, **kwargs):
-            result = real(*args, **kwargs)
-            dual = corrupt(np.concatenate([result.y, result.z]))
-            return types.SimpleNamespace(
-                x=result.x, y=dual[:len(result.y)], z=dual[len(result.y):], info=result.info,
-            )
+        class Corrupted:
+            """ProxSuite's QP object, whose results carry a corrupted dual."""
 
-        corrupted.__doc__ = real.__doc__  # the adapter reads the accepted settings from it
-        monkeypatch.setattr(proxsuite.proxqp.sparse, "solve", corrupted)
+            def __init__(self, *args):
+                self._qp = real(*args)
+                self.settings = self._qp.settings
+
+            def init(self, *args, **kwargs):
+                self._qp.init(*args, **kwargs)
+
+            def solve(self):
+                self._qp.solve()
+
+            @property
+            def results(self):
+                result = self._qp.results
+                dual = corrupt(np.concatenate([result.y, result.z]))
+                return types.SimpleNamespace(
+                    x=result.x, y=dual[:len(result.y)], z=dual[len(result.y):], info=result.info,
+                )
+
+        monkeypatch.setattr(proxsuite.proxqp.sparse, "QP", Corrupted)
     result = adapter.solve(_problem(_infeasible_equality_lp()), tmp_path)
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.kkt is not None and result.kkt["certificate"] == status.PRIMAL_INFEASIBLE

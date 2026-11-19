@@ -952,7 +952,8 @@ CAMPAIGN_CERTIFICATE_KNOBS = {
     "qtqp": {"tol_infeas_abs", "tol_infeas_rel"},
     "cuopt": {"primal_infeasible_tolerance", "dual_infeasible_tolerance"},
     "pdlp": {"eps_primal_infeasible", "eps_dual_infeasible"},
-    "piqp": set(), "proxqp": set(), "highs": set(), "cvxopt": set(), "sdpa": set(),
+    "proxqp": {"eps_primal_inf", "eps_dual_inf"},
+    "piqp": set(), "highs": set(), "cvxopt": set(), "sdpa": set(),
 }
 
 
@@ -990,6 +991,70 @@ def test_a_generated_campaign_asks_every_solver_for_certificates_at_its_tag(make
         for knob in knobs:
             assert solver.settings[knob] == shard["tol"], (shard["name"], knob)
     assert seen == set(CAMPAIGN_CERTIFICATE_KNOBS)
+
+
+# The settings a campaign variant gives its solver's time limit, the
+# harness's budget for the family (not a solver setting the rule below
+# constrains).
+CAMPAIGN_TIME_LIMIT_KEYS = {"time_limit", "time_limit_secs", "solver_time_limit_sec"}
+
+
+def _family_timeout(make_campaign, family: str) -> float:
+    return {"sdp": make_campaign.SDP_TIMEOUT, "lpbig": make_campaign.LPBIG_TIMEOUT}.get(
+        family, make_campaign.QP_LP_TIMEOUT)
+
+
+def _general_settings(variant: dict, tol: float, timeout: float) -> dict:
+    """``variant``'s settings with its tolerance tag written ``TAG`` and its
+    time limit ``LIMIT`` (checked to be the family's budget)."""
+    general = {}
+    for key, value in variant["settings"].items():
+        if key in CAMPAIGN_TIME_LIMIT_KEYS:
+            assert value == timeout, (variant["id"], key)
+            value = "LIMIT"
+        elif key == "parameters_text":
+            value = value.replace(repr(float(tol)), "TAG")
+        elif isinstance(value, float) and value == tol:
+            value = "TAG"
+        general[key] = value
+    return general
+
+
+def test_every_campaign_solver_runs_the_same_settings_on_every_problem(make_campaign):
+    """No campaign solver is told whether a problem is feasible (maintainer,
+    2026-11-19): a solver variant's settings are identical in every family
+    and at every tolerance tag, apart from the tag and its time limit, and
+    the infeasible LPs run the LP family's variants as they are."""
+    general: dict[str, dict] = {}
+    for tol in (1e-4, 1e-6, 5e-5, 1e-8):
+        tag = make_campaign.tolerance_tag(tol)
+        for family in make_campaign.FAMILIES:
+            timeout = _family_timeout(make_campaign, family)
+            for variant in make_campaign.solver_variants(family, tol, timeout):
+                assert variant["id"].endswith(f"_{tag}"), variant["id"]
+                base = variant["id"].removesuffix(f"_{tag}")
+                settings = _general_settings(variant, tol, timeout)
+                general.setdefault(base, settings)
+                assert settings == general[base], (base, family, tol)
+        assert make_campaign.solver_variants("infeas", tol, 300.0) == make_campaign.solver_variants("lp", tol, 300.0)
+    assert {"scs_cpu", "clarabel", "osqp", "piqp", "highs", "proxqp", "cuopt", "qtqp_mkl", "cpo3", "pdlp",
+            "cvxopt", "sdpa"} <= set(general)
+
+
+def test_every_campaign_solver_keeps_infeasibility_detection_on(make_campaign):
+    """cuOpt's PDLP detection is off by cuOpt's default: every cuOpt variant
+    turns it on, in every family. No variant of any solver turns a
+    detection switch off."""
+    cuopt = 0
+    for family in make_campaign.FAMILIES:
+        for variant in make_campaign.solver_variants(family, 1e-4, _family_timeout(make_campaign, family)):
+            if variant["solver"] == "cuopt":
+                assert variant["settings"]["infeasibility_detection"] is True, (family, variant["id"])
+                cuopt += 1
+            for key, value in variant["settings"].items():
+                if isinstance(value, bool) and ("infeas" in key or "detect" in key):
+                    assert value is True, (family, variant["id"], key)
+    assert cuopt == sum(1 for family in make_campaign.FAMILIES if family != "sdp")
 
 
 def test_a_campaign_solver_without_a_certificate_decision_is_refused(make_campaign, monkeypatch):
@@ -1468,3 +1533,4 @@ def test_campaign_cuopt_settings_are_accepted_by_the_cuopt_adapter(make_campaign
     assert fake_cuopt.optimality_tolerance == 1e-4
     for knob in make_campaign.CERTIFICATE_KNOBS["cuopt"]:
         assert fake_cuopt.parameters[knob] == 1e-4, knob
+    assert fake_cuopt.parameters["infeasibility_detection"] is True

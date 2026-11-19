@@ -375,6 +375,57 @@ def test_mosek_certificate_that_is_not_finite_says_why(make, solsta, vectors, cl
     assert result.info["certificate_unavailable"] == "MOSEK's certificate is not finite"
 
 
+_INACCURATE = {status.PRIMAL_INFEASIBLE: status.PRIMAL_INFEASIBLE_INACCURATE,
+               status.DUAL_INFEASIBLE: status.DUAL_INFEASIBLE_INACCURATE}
+
+
+@pytest.mark.parametrize("make, solsta, vectors, claim", [
+    (_infeasible_lp, _Solsta.prim_infeas_cer, {"y": (-1.0, np.nan, 0.0, 1.0)}, status.PRIMAL_INFEASIBLE_INACCURATE),
+    (_unbounded_qp, _Solsta.dual_infeas_cer, {"x": (0.0, np.inf)}, status.DUAL_INFEASIBLE_INACCURATE),
+    (_infeasible_lp, _Solsta.prim_infeas_cer, {"y": (-1.0, 1.0, 0.0, 1.0)}, status.PRIMAL_INFEASIBLE_INACCURATE),
+    (_unbounded_qp, _Solsta.dual_infeas_cer, {"x": (0.0, 1.0)}, status.DUAL_INFEASIBLE_INACCURATE),
+], ids=["primal, not finite", "dual, not finite", "primal", "dual"])
+def test_mosek_inaccurate_claim_is_read_like_an_accurate_one(make, solsta, vectors, claim, monkeypatch, tmp_path):
+    # No MOSEK status maps to an inaccurate certificate today; if one ever
+    # does, its certificate is read and checked the same way, and one that is
+    # not finite says why.
+    from solver_benchmarks.solvers import mosek_adapter
+
+    accurate = mosek_adapter._map_mosek_status
+    monkeypatch.setattr(mosek_adapter, "_map_mosek_status",
+                        lambda *args: (lambda mapped: _INACCURATE.get(mapped, mapped))(accurate(*args)))
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, solsta=solsta, **vectors)
+    result = _solve_with(monkeypatch, fake, tmp_path, {}, make())
+    assert result.status == claim
+    finite = all(np.isfinite(value).all() for value in vectors.values())
+    if finite:
+        assert result.kkt is not None and "certificate_unavailable" not in result.info
+    else:
+        assert result.kkt is None
+        assert result.info["certificate_unavailable"] == "MOSEK's certificate is not finite"
+
+
+class _Unreadable:
+    """A solution vector MOSEK fails to return."""
+
+    def __iter__(self):
+        raise RuntimeError("solution not available")
+
+
+@pytest.mark.parametrize("make, solsta, vectors, claim", [
+    (_infeasible_lp, _Solsta.prim_infeas_cer, {"y": _Unreadable()}, status.PRIMAL_INFEASIBLE),
+    (_unbounded_qp, _Solsta.dual_infeas_cer, {"x": _Unreadable()}, status.DUAL_INFEASIBLE),
+])
+def test_mosek_certificate_that_cannot_be_read_keeps_the_claim(make, solsta, vectors, claim, monkeypatch, tmp_path):
+    # The claim is already made: an error reading its certificate costs the
+    # certificate, not the row.
+    fake = _fake_mosek(optimize=lambda: _Rescode.ok, solsta=solsta, **vectors)
+    result = _solve_with(monkeypatch, fake, tmp_path, {}, make())
+    assert result.status == claim
+    assert result.kkt is None
+    assert result.info["certificate_unavailable"] == "no certificate from MOSEK: solution not available"
+
+
 def test_mosek_fake_is_available_and_a_broken_install_is_not(monkeypatch, tmp_path):
     import builtins
 

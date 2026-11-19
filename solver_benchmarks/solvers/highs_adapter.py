@@ -258,7 +258,9 @@ def _highs_certificate(solver, mapped: str, n: int, keep):
     ray). The caller records that time as ``info.certificate_seconds`` and
     counts it in the run time when a certificate is recorded; HiGHS's
     ``time_limit`` covers it, since it bounds all runs of one ``Highs``
-    object. An unbounded QP gets no ray, and nor do NETLIB cplex2, klein1 and
+    object. That is the solver setting: ``run.timeout_seconds`` is not
+    passed to the solver, so without the setting the search has no limit,
+    and a worker killed at the timeout loses the claim with it. An unbounded QP gets no ray, and nor do NETLIB cplex2, klein1 and
     qual (the re-solve ends with status Unknown); with highspy 1.15.1 neither
     does a claim made by interior point or PDLP (``solver: ipm`` / ``pdlp``),
     whose re-solve uses the same algorithm, while 1.16.0 gives one. Those

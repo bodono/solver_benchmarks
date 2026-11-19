@@ -802,6 +802,13 @@ def probe_cuopt() -> str:
             except Exception as e:
                 out.append(f"{getter} failed: {e}")
     out.append("CUOPT_* constants: " + ", ".join(consts)[:900])
+    # The parameters tools/make_campaign.py gives cuOpt besides its optimality
+    # tolerances: a name this version does not know fails every cuOpt row.
+    for name in ("infeasibility_detection", "primal_infeasible_tolerance", "dual_infeasible_tolerance"):
+        try:
+            out.append(f"{name}: accepted, default {ss.get_parameter(name)!r}")
+        except Exception as e:
+            out.append(f"{name}: NOT ACCEPTED ({e})")
     # min 1/2 x'Px + q'x  s.t. l <= A x <= u, with P = diag(2, 4): solution x = -P^{-1} q if interior
     P = sp.csc_matrix(np.diag([2.0, 4.0]))
     q = np.array([-2.0, -4.0])

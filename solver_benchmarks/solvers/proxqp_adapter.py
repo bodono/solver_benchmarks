@@ -1,10 +1,29 @@
-"""ProxQP adapter via ProxSuite."""
+"""ProxQP adapter via ProxSuite.
+
+The adapter builds ProxSuite's QP object (``proxqp.sparse.QP``, or
+``proxqp.dense.QP`` with the dense backend), sets its ``settings``, and calls
+``init`` and ``solve``: the steps ProxSuite's one-shot ``solve`` function
+takes, in the same order and with the same defaults
+(``proxqp/sparse/wrapper.hpp``, ``proxqp/dense/wrapper.hpp`` in proxsuite
+0.7.3), so a setting the one-shot function takes gives the same solve. The
+object also exposes every other field of ``proxqp.Settings``, ProxQP's
+certificate tolerances ``eps_primal_inf`` and ``eps_dual_inf`` among them,
+which the one-shot function does not take.
+
+Settings are the one-shot function's keywords, with their meaning there
+(``rho``, ``mu_eq``, ``mu_in``, ``compute_preconditioner`` and
+``default_H_eigenvalue_estimate`` go to ``init``, the last as its
+``manual_minimal_H_eigenvalue``), and any other field of
+``proxqp.Settings``; ``sparse_backend`` only with the sparse backend. A
+setting given as None is left at ProxQP's default. ``run_time_seconds``
+covers building the QP object, ``init`` and ``solve``, the work the one-shot
+call did.
+"""
 
 from __future__ import annotations
 
 import math
 import numbers
-import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,10 +104,11 @@ class ProxQPSolverAdapter(SolverAdapter):
         normalize_max_iter(settings)
         translated = translate_eps_alias(settings)
         settings.setdefault("compute_timings", True)
-        backend = proxsuite.proxqp.dense if use_dense else proxsuite.proxqp.sparse
-        _check_settings(settings, backend.solve)
+        _check_settings(settings, proxsuite, use_dense)
         _check_setting_values(settings)
         gap_settings = _duality_gap_settings(settings, proxsuite)
+        init_args, qp_settings = _split_settings(settings)
+        _check_setting_types(qp_settings, proxsuite)
         start = time.perf_counter()
         # 1-D float64 vectors and float64 matrices, so that the binding's
         # TypeError ("incompatible function arguments") is about a setting.
@@ -106,10 +126,21 @@ class ProxQPSolverAdapter(SolverAdapter):
             )
         else:
             data = (p, q, aeq, b, g, h_l, h_u)
+        # What ProxSuite's one-shot solve does: build the QP object from the
+        # dimensions, set its settings, init, solve.
+        solver = _new_qp(
+            proxsuite,
+            use_dense,
+            p.shape[0],
+            0 if aeq is None else aeq.shape[0],
+            0 if g is None else g.shape[0],
+        )
+        for key, value in qp_settings.items():
+            setattr(solver.settings, key, value)
         try:
-            result = backend.solve(*data, **settings)
+            solver.init(*data, **init_args)
         except TypeError as exc:
-            if not _settings_refused(backend, settings, use_dense):
+            if not _init_refused(proxsuite, init_args, use_dense):
                 # The settings work on a one-variable problem: the binding
                 # refused this problem's data (e.g. complex entries).
                 return SolverResult(
@@ -117,11 +148,12 @@ class ProxQPSolverAdapter(SolverAdapter):
                     run_time_seconds=time.perf_counter() - start,
                     info={"raw_status": "error", "error": f"TypeError: {exc}", "threads": None},
                 )
-            # The binding refuses a setting of the wrong type (the names were
-            # checked above) before solving.
-            raise SolverConfigError(
-                f"ProxQP rejected a setting value in {sorted(settings)}: {exc}"
-            ) from exc
+            # The binding refuses an init argument of the wrong type (the
+            # names were checked above) before solving.
+            given = sorted(key for key in settings if key in _INIT_ARGUMENTS)
+            raise SolverConfigError(f"ProxQP rejected a setting value in {given}: {exc}") from exc
+        solver.solve()
+        result = solver.results
         elapsed = time.perf_counter() - start
 
         mapped = _map_proxqp_status(result.info.status, proxsuite)
@@ -214,7 +246,8 @@ def _is_integer(value) -> bool:
 _SETTING_RANGES = {
     **{
         key: ("a finite number >= 0", lambda v: _is_number(v) and 0 <= v < math.inf)
-        for key in ("eps_abs", "eps_rel", "eps_duality_gap_abs", "eps_duality_gap_rel")
+        for key in ("eps_abs", "eps_rel", "eps_duality_gap_abs", "eps_duality_gap_rel",
+                    "eps_primal_inf", "eps_dual_inf")
     },
     **{
         key: ("a finite number > 0", lambda v: _is_number(v) and 0 < v < math.inf)
@@ -235,31 +268,80 @@ def _check_setting_values(settings: dict) -> None:
                 )
 
 
-# Positional problem data in ProxQP's ``solve`` signatures, not settings.
-_DATA_ARGUMENTS = {"H", "g", "A", "b", "C", "l", "u", "l_box", "u_box", "x", "y", "z"}
+# The one-shot solve's keywords that it passes to ``init`` rather than to the
+# QP object's settings, as ``init``'s keyword and its value when not given:
+# ``default_H_eigenvalue_estimate`` is ``init``'s ``manual_minimal_H_eigenvalue``,
+# which the one-shot binding always passes (0 by default).
+_INIT_ARGUMENTS = {
+    "compute_preconditioner": ("compute_preconditioner", True),
+    "rho": ("rho", None),
+    "mu_eq": ("mu_eq", None),
+    "mu_in": ("mu_in", None),
+    "default_H_eigenvalue_estimate": ("manual_minimal_H_eigenvalue", 0.0),
+}
 
 
-def _check_settings(settings: dict, solve) -> None:
-    """Raise SolverConfigError naming any setting ProxQP's ``solve`` does not take.
+def _accepted_settings(proxsuite, use_dense: bool) -> set[str]:
+    """The settings the adapter takes: the fields of ``proxqp.Settings`` and
+    the one-shot solve's ``init`` keywords (``sparse_backend`` only with the
+    sparse backend, as the one-shot solves take it)."""
+    fields = {name for name in dir(proxsuite.proxqp.Settings()) if not name.startswith("_")}
+    accepted = fields | set(_INIT_ARGUMENTS)
+    if use_dense:
+        accepted.discard("sparse_backend")
+    return accepted
 
-    The nanobind binding would raise a TypeError that lists every passed
-    keyword without saying which one is wrong. The accepted names are read
-    from the binding's signature docstring (all overloads); if it cannot be
-    parsed, the settings are passed through unchecked.
-    """
-    accepted: set[str] = set()
-    for line in (getattr(solve, "__doc__", None) or "").splitlines():
-        if line.startswith("solve(") and ") ->" in line:
-            inner = line[len("solve(") : line.rindex(") ->")]
-            accepted.update(re.findall(r"(?:^|,\s)(\w+):", inner))
-    accepted -= _DATA_ARGUMENTS
-    if not accepted:
-        return
+
+def _check_settings(settings: dict, proxsuite, use_dense: bool) -> None:
+    """Raise SolverConfigError naming any setting the adapter does not take
+    (:func:`_accepted_settings`); ProxSuite would raise an AttributeError, or
+    a TypeError that lists every keyword without saying which is wrong."""
+    accepted = _accepted_settings(proxsuite, use_dense)
     unknown = sorted(key for key in settings if key not in accepted)
     if unknown:
         raise SolverConfigError(
             f"Unrecognized ProxQP settings {unknown}; accepted: {sorted(accepted)}"
         )
+
+
+def _split_settings(settings: dict) -> tuple[dict, dict]:
+    """``(init_args, qp_settings)``: the keywords for ``QP.init`` (with the
+    one-shot solve's defaults) and the fields to set on ``QP.settings``. A
+    field given as None is left at its default, as the one-shot solve
+    leaves an argument it is given as None."""
+    init_args = {name: default for name, default in _INIT_ARGUMENTS.values()}
+    qp_settings = {}
+    for key, value in settings.items():
+        if key in _INIT_ARGUMENTS:
+            if value is not None:
+                init_args[_INIT_ARGUMENTS[key][0]] = value
+        elif value is not None:
+            qp_settings[key] = value
+    return init_args, qp_settings
+
+
+def _check_setting_types(qp_settings: dict, proxsuite) -> None:
+    """Raise SolverConfigError naming a setting whose value ProxQP's
+    ``Settings`` refuses (a value of the wrong type), before the clock
+    starts: it is set on a scratch ``Settings`` first."""
+    scratch = proxsuite.proxqp.Settings()
+    for key, value in qp_settings.items():
+        try:
+            setattr(scratch, key, value)
+        except TypeError as exc:
+            raise SolverConfigError(
+                f"ProxQP rejected a setting value: {key}={value!r}: {exc}"
+            ) from exc
+
+
+def _new_qp(proxsuite, use_dense: bool, n: int, n_eq: int, n_in: int):
+    """The QP object ProxSuite's one-shot solve builds: ``sparse.QP(n, n_eq,
+    n_in)``, or for the dense backend ``dense.QP(n, n_eq, n_in, false,
+    PrimalDualLDLT)`` (no box constraints, a dense Hessian)."""
+    if use_dense:
+        dense = proxsuite.proxqp.dense
+        return dense.QP(n, n_eq, n_in, False, dense.HessianType.Dense, dense.DenseBackend.PrimalDualLDLT)
+    return proxsuite.proxqp.sparse.QP(n, n_eq, n_in)
 
 
 def _map_proxqp_status(raw_status, proxsuite) -> str:
@@ -329,11 +411,11 @@ def _float_matrix(value):
     return sp.csc_matrix(value, dtype=float)
 
 
-def _settings_refused(backend, settings: dict, use_dense: bool) -> bool:
-    """Whether ProxQP refuses ``settings`` on a one-variable problem too."""
+def _init_refused(proxsuite, init_args: dict, use_dense: bool) -> bool:
+    """Whether ProxQP's ``init`` refuses ``init_args`` on a one-variable problem too."""
     h = np.eye(1) if use_dense else sp.csc_matrix(np.eye(1))
     try:
-        backend.solve(h, np.ones(1), None, None, None, None, None, **settings)
+        _new_qp(proxsuite, use_dense, 1, 0, 0).init(h, np.ones(1), None, None, None, None, None, **init_args)
     except TypeError:
         return True
     except Exception:  # noqa: BLE001 - any other failure says nothing about types

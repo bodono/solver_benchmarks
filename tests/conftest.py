@@ -333,7 +333,17 @@ class FakeCuOpt:
         # cuOpt's cpp/include/cuopt/mathematical_optimization/constants.h).
         "primal_infeasible_tolerance",
         "dual_infeasible_tolerance",
+        # PDLP's infeasibility detection (CUOPT_INFEASIBILITY_DETECTION, a
+        # bool parameter, false by default, in the same file: cuOpt 25.05
+        # to 26.10), which the adapter turns on unless configured.
+        "infeasibility_detection",
     })
+    # cuOpt's bool parameters, and the strings its C++ side accepts for one:
+    # the Python layer passes ``str(value)`` to ``set_parameter_from_string``,
+    # whose ``string_to_bool`` takes these and refuses anything else
+    # (cpp/src/math_optimization/solver_settings.cu, cuOpt 26.08).
+    BOOL_PARAMETERS = frozenset({"infeasibility_detection", "log_to_console"})
+    BOOL_STRINGS = frozenset({"true", "True", "TRUE", "1", "t", "T", "false", "False", "FALSE", "0", "f", "F"})
 
     def __init__(self) -> None:
         import enum
@@ -370,6 +380,8 @@ class FakeCuOpt:
             def set_parameter(self, key, value):
                 if key not in fake.KNOWN_PARAMETERS:
                     raise ValueError(f"Invalid parameter {key}")
+                if key in fake.BOOL_PARAMETERS and str(value) not in fake.BOOL_STRINGS:
+                    raise ValueError(f"Parameter {key} value {value} must be true or false")
                 fake.parameters[key] = value
 
         def solve(model, settings):
