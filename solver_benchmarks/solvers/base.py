@@ -144,8 +144,10 @@ class RequestedTolerance:
     Clarabel's genuine NETLIB certificates (``cert_res`` up to 6e-5) would fail
     at its 1e-8, so none is used. ``tools/make_campaign.py`` instead sets
     each solver's infeasibility knobs to the campaign's tolerance tag
-    (``CERTIFICATE_KNOBS``), so a campaign asks for certificates at the tag
-    its solutions request, and verification checks both at 10 x the tag.
+    (``CERTIFICATE_KNOBS``; SCS's eps_infeas to the tighter of the tag and
+    its 1e-7 default), so a campaign asks for certificates at (for SCS, no
+    looser than) the tag its solutions request, and verification checks both
+    at 10 x the tag.
     ``knobs`` maps every setting considered to the value used, and
     ``defaults_used`` names those that took the library default.
     """

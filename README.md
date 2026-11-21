@@ -1578,9 +1578,11 @@ its certificates at the same tag as its solutions: every variant
 solution knobs (HiGHS below `1e-7` excepted: its residual tolerances stay at
 their `1e-7` default), and sets every infeasibility knob its solver has to the
 tag as well (`CERTIFICATE_KNOBS` there; the last column of the table below),
+except SCS's `eps_infeas`, which is never looser than SCS's default (below);
 and a campaign's solutions and certificates are both verified at ten times
 the tag, the rule of the published 3.3.2 figures. That puts the request and
-the check at the same nominal tolerance, not the same test: each solver still
+the check at the same nominal tolerance (for SCS at tags above `1e-7`, a
+tighter request), not the same test: each solver still
 measures its certificates in its own units (above), and Clarabel's, cpo3's
 and QTQP's `tol_infeas_abs` is not a residual tolerance but the margin a
 certificate's objective term must clear (`b'y < −tol_infeas_abs`), so at the
@@ -1593,18 +1595,27 @@ certificate is always a failure (see [Known outcomes](#known-outcomes)).
 There a knob looser than the solver's default can only end solves early, on
 feasible problems close enough to infeasible to admit an approximate
 certificate. A solver whose certificate test is not gated on `κ/τ`, as
-Clarabel's, cpo3's and QTQP's are, is exposed. SCS's `eps_infeas` default
-is `1e-7`: on the 93 feasible NETLIB LPs at `1e-4` (SCS 3.3.1, a 60 s limit,
-verified statuses) SCS solved 79 with `eps_infeas` at the tag against 83 at
-its default, because `agg3`, `fffff800`, `fit2d` and `israel` ended in
+Clarabel's, cpo3's and QTQP's are, is exposed. SCS's is not gated, and a
+campaign never sets its `eps_infeas` looser than SCS's default: it is the
+tighter of the tag and SCS's default `1e-7` (maintainer decision,
+2026-11-21: "it should be the tighter of the tag and 1e-7"), so
+`1e-7` at the `1e-4` to `1e-6` tags and the tag at `1e-8`, in every family
+(`SCS_EPS_INFEAS_DEFAULT` in `tools/make_campaign.py`). SCS's default does
+not change with `eps_abs` and `eps_rel`, and a certificate threshold looser
+than the default is not how users run SCS. SCS still looks for a
+certificate on every problem, and its certificates are verified at ten
+times the tag like every solver's. The tag would also have cost SCS
+feasible solves: on the 93 feasible NETLIB LPs at `1e-4` (SCS 3.3.1, a 60 s
+limit, verified statuses) SCS solved 79 with `eps_infeas` at the tag against
+83 at its default, because `agg3`, `fffff800`, `fit2d` and `israel` ended in
 certificates instead of solutions, and at `1e-6` it solved 76 against 77
 (`agg3`). On the 138 Maros-Meszaros QPs at `1e-4` it solved 124 against
 131: `AUG2DCQP`, `AUG2DQP`, `HUES-MOD`, `HUESTIS`, `LISWET5`, `QGFRDXPN` and
-`STADAT1` ended in certificates. On the feasible NETLIB LPs at `1e-4`
-Clarabel solved 90 either way, and OSQP's knobs at `1e-4` are its defaults.
-On the 29 infeasible NETLIB LPs at `1e-4` the tag gained SCS one certificate
-(`bgindy`, 24 against 23). PDLP (default `1e-8`), cuOpt, the SDP family and
-the large LPs are not measured. Nor are the knobs the tag sets tighter than
+`STADAT1` ended in certificates. On the 29 infeasible NETLIB LPs at `1e-4`
+the tag gained SCS one certificate (`bgindy`, 24 against 23). On the
+feasible NETLIB LPs at `1e-4` Clarabel solved 90 either way, and OSQP's
+knobs at `1e-4` are its defaults. PDLP (default `1e-8`), cuOpt, the SDP
+family and the large LPs are not measured. Nor are the knobs the tag sets tighter than
 their defaults, which on an infeasible problem can only lose or delay a
 certificate: OSQP's `eps_prim_inf` / `eps_dual_inf` and ProxQP's
 `eps_primal_inf` / `eps_dual_inf` (default `1e-4`) at tags below `1e-4`,
@@ -1643,7 +1654,7 @@ tolerance is otherwise unknown).
 | `piqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-8` | checked on piqp 0.6.4 | none in piqp 0.6.4, which declares infeasibility from `eps_abs`, `eps_rel` (the tag) and `infeasibility_threshold`, a threshold on its proximal-point residuals, not a certificate tolerance |
 | `proxqp` | `eps_abs`, `eps_rel`, and while `check_duality_gap` is on (the adapter's default) `eps_duality_gap_abs`, `eps_duality_gap_rel` (filled from `eps_abs` / `eps_rel`) | `1e-5` | checked on proxsuite 0.7.3 | `eps_primal_inf`, `eps_dual_inf` (default `1e-4`; fields of the settings of the QP object the adapter builds) |
 | `qtqp` | `tol_feas`, `tol_gap_abs`, `tol_gap_rel` (as Clarabel; `atol` / `rtol` supply them; before qtqp 0.0.7 `atol` and `rtol` themselves, which must then both be set) | `1e-8` | checked on qtqp 0.0.7 | `tol_infeas_abs`, `tol_infeas_rel` (default `1e-8`) |
-| `scs` | `eps_abs`, `eps_rel` (`eps` sets both) | `1e-4` | SCS 3.x documentation | `eps_infeas` (default `1e-7`) |
+| `scs` | `eps_abs`, `eps_rel` (`eps` sets both) | `1e-4` | SCS 3.x documentation | `eps_infeas` (default `1e-7`; set to the tighter of the tag and `1e-7`, never looser than the default) |
 | `sdpa` | `epsilonStar`, `epsilonDash` (`eps_abs` / `eps_rel`; the adapter's `optimality_tolerance` is a status rule the verification supersedes) | `1e-7` | checked on sdpa-python 0.2.3 | none |
 
 The requested tolerance of a row comes from, first match wins:
@@ -1946,7 +1957,8 @@ it runs in, apart from its time limit, which is the harness's budget for the
 family (300 s for QPs, LPs and the infeasible LPs, 900 s for SDPs, 1800 s for
 the large LPs), and the same at every tolerance tag apart from the
 tolerances the tag sets (its solution tolerances and its infeasibility knobs,
-see [Independent KKT verification](#independent-kkt-verification)). Every
+SCS's never looser than its default, see
+[Independent KKT verification](#independent-kkt-verification)). Every
 solver keeps its infeasibility detection on everywhere. cuOpt is the one
 campaign solver whose detection is off by its default (its PDLP's
 `infeasibility_detection`): every cuOpt variant turns it on, in every family,
