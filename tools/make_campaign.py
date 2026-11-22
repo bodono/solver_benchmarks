@@ -76,7 +76,8 @@ def tolerance_tag(tol: float) -> str:
 
 
 # The infeasibility (certificate) tolerances of each campaign solver, which
-# solver_variants sets to the variant's tag (approved 2026-11-19).
+# solver_variants sets to the variant's tag (approved 2026-11-19), SCS's
+# excepted: it is never looser than SCS's default (SCS_EPS_INFEAS_DEFAULT).
 # Verification holds a row's certificates to the same 10 x tag as its
 # solutions (README, "The tolerance"), so a campaign asks every solver for
 # certificates at the tag: the request and the check are at the same
@@ -88,7 +89,8 @@ def tolerance_tag(tol: float) -> str:
 # always a failure, so there a knob looser than the solver's default can
 # only end solves early: at 1e-4, SCS (eps_infeas default 1e-7, no
 # kappa/tau gate) solved 4 fewer of the 93 feasible NETLIB LPs and 7 fewer
-# of the 138 Maros-Meszaros QPs (README, "The tolerance").
+# of the 138 Maros-Meszaros QPs with eps_infeas at the tag than at its
+# default (README, "The tolerance").
 # An empty tuple is a solver with no such knob the adapter can set:
 # - piqp 0.6.4: none; it declares infeasibility from eps_abs / eps_rel (set
 #   to the tag) and infeasibility_threshold, a threshold on its proximal-point
@@ -115,16 +117,31 @@ CERTIFICATE_KNOBS: dict[str, tuple[str, ...]] = {
     "sdpa": (),
 }
 
+# SCS's eps_infeas is the tighter of the tag and SCS's default, 1e-7
+# (maintainer decision, 2026-11-21: "it should be the tighter of the tag and
+# 1e-7"): 1e-7 at the 1e-4 to 1e-6 tags and the tag at 1e-8, in every family
+# and on every problem. SCS's default is 1e-7 whatever eps_abs and eps_rel
+# are, and a certificate threshold looser than the default is not how users
+# run SCS; at 1e-4 the tag also cost SCS feasible solves (above). Below
+# 1e-7 the tag tightens it, as it does the other solvers' knobs. SCS still
+# looks for a certificate on every problem (detection stays on), and its
+# certificates are verified at 10 x the tag like every solver's.
+SCS_EPS_INFEAS_DEFAULT = 1e-7
+
 
 def certificate_settings(solver: str, tol: float) -> dict:
     """The settings that ask ``solver`` for certificates at ``tol``
     (``CERTIFICATE_KNOBS``; a solver missing there is a KeyError, so a new
-    campaign solver needs a decision)."""
+    campaign solver needs a decision), SCS at the tighter of ``tol`` and its
+    default (``SCS_EPS_INFEAS_DEFAULT``)."""
     knobs = CERTIFICATE_KNOBS[solver]
+    value = float(tol)
+    if solver == "scs":
+        value = min(value, SCS_EPS_INFEAS_DEFAULT)
     if solver == "pdlp":
-        fields = " ".join(f"{knob}: {float(tol)!r}" for knob in knobs)
+        fields = " ".join(f"{knob}: {value!r}" for knob in knobs)
         return {"parameters_text": f"termination_criteria {{ {fields} }}"}
-    return dict.fromkeys(knobs, float(tol))
+    return dict.fromkeys(knobs, value)
 
 
 def with_certificate_settings(variant: dict, tol: float) -> dict:
@@ -167,7 +184,8 @@ def solver_variants(family: str, tol: float, timeout: float) -> list[dict]:
     solver for certificates at ``tol`` (``certificate_settings``, in every
     family; see ``CERTIFICATE_KNOBS`` for what that costs on feasible
     problems), so the certificates it asks for and the ones verification
-    accepts are at the same nominal tolerance.
+    accepts are at the same nominal tolerance; SCS's are asked for at the
+    tighter of ``tol`` and its 1e-7 default (``SCS_EPS_INFEAS_DEFAULT``).
     """
     t = float(tol)
     tag = tolerance_tag(t)

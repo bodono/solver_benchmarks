@@ -942,7 +942,8 @@ def test_make_campaign_limits_match_the_figures_limits(make_campaign, make_figur
         assert config.timeout_seconds - 60.0 == make_figures.FAMILY_LIMIT[shard["family"]], shard["name"]
 
 
-# The infeasibility knobs a campaign sets to the tag (approved 2026-11-19),
+# The infeasibility knobs a campaign sets to the tag (approved 2026-11-19;
+# SCS's to the tighter of the tag and its 1e-7 default, decided 2026-11-21),
 # and the solvers that have none the adapter can set.
 CAMPAIGN_CERTIFICATE_KNOBS = {
     "scs": {"eps_infeas"},
@@ -972,7 +973,8 @@ def test_a_generated_campaign_asks_every_solver_for_certificates_at_its_tag(make
     """Certificates are verified at 10 x the tag like solutions, so every
     shard's solver is asked for them at the tag: its infeasibility knobs (or,
     for PDLP, the TerminationCriteria fields its parameters_text sets) carry
-    the shard's tolerance, whatever the solver's default."""
+    the shard's tolerance, whatever the solver's default. SCS's eps_infeas
+    is the exception, never looser than its 1e-7 default."""
     out_dir = tmp_path / "campaign"
     families = ",".join(make_campaign.FAMILIES)
     monkeypatch.setattr(sys, "argv", ["make_campaign.py", str(out_dir), "--families", families,
@@ -988,9 +990,40 @@ def test_a_generated_campaign_asks_every_solver_for_certificates_at_its_tag(make
         if solver.solver == "pdlp":
             assert _pdlp_certificate_tolerances(solver.settings) == (shard["tol"],) * 3, shard["name"]
             continue
+        expected = min(shard["tol"], 1e-7) if solver.solver == "scs" else shard["tol"]
         for knob in knobs:
-            assert solver.settings[knob] == shard["tol"], (shard["name"], knob)
+            assert solver.settings[knob] == expected, (shard["name"], knob)
     assert seen == set(CAMPAIGN_CERTIFICATE_KNOBS)
+
+
+# SCS's eps_infeas at each tag: the tighter of the tag and SCS's 1e-7
+# default (maintainer, 2026-11-21: "it should be the tighter of the tag and
+# 1e-7"), written out rather than computed.
+SCS_EPS_INFEAS_AT_TAG = {1e-4: 1e-7, 5e-5: 1e-7, 1e-5: 1e-7, 1e-6: 1e-7, 1e-7: 1e-7, 5e-8: 5e-8, 1e-8: 1e-8}
+
+
+@pytest.mark.parametrize("tol", sorted(SCS_EPS_INFEAS_AT_TAG, reverse=True))
+def test_every_campaign_scs_variant_asks_for_certificates_at_the_tighter_of_tag_and_default(
+        make_campaign, tmp_path, monkeypatch, tol):
+    """Every SCS shard (CPU and cuDSS, every family, feasible and infeasible
+    problems alike) gets eps_infeas = min(tag, 1e-7): SCS's default at the
+    1e-4 to 1e-6 tags, the tag below it; eps_abs and eps_rel stay the tag."""
+    assert make_campaign.SCS_EPS_INFEAS_DEFAULT == 1e-7
+    out_dir = tmp_path / "campaign"
+    families = ",".join(make_campaign.FAMILIES)
+    monkeypatch.setattr(sys, "argv", ["make_campaign.py", str(out_dir), "--families", families, "--tols", repr(tol)])
+    make_campaign.main()
+
+    scs_shards = set()
+    for shard in json.loads((out_dir / "campaign.json").read_text()):
+        (solver,) = load_run_config(shard["config"]).solvers
+        if solver.solver != "scs":
+            continue
+        scs_shards.add((shard["family"], solver.settings.get("linear_solver", "cpu")))
+        assert solver.settings["eps_infeas"] == SCS_EPS_INFEAS_AT_TAG[tol], shard["name"]
+        assert solver.settings["eps_abs"] == solver.settings["eps_rel"] == tol, shard["name"]
+    assert scs_shards == {(family, kind) for family in make_campaign.FAMILIES for kind in ("cpu", "cudss")}
+    assert make_campaign.certificate_settings("scs", tol) == {"eps_infeas": SCS_EPS_INFEAS_AT_TAG[tol]}
 
 
 # The settings a campaign variant gives its solver's time limit, the
@@ -1012,6 +1045,9 @@ def _general_settings(variant: dict, tol: float, timeout: float) -> dict:
         if key in CAMPAIGN_TIME_LIMIT_KEYS:
             assert value == timeout, (variant["id"], key)
             value = "LIMIT"
+        elif variant["solver"] == "scs" and key == "eps_infeas":
+            assert value == min(tol, 1e-7), variant["id"]
+            value = "min(TAG, 1e-7)"
         elif key == "parameters_text":
             value = value.replace(repr(float(tol)), "TAG")
         elif isinstance(value, float) and value == tol:
