@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import bz2
+import http.client
 import io
 import os
 import re
 import shutil
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -292,8 +294,62 @@ def _mps_name(path: Path) -> str | None:
     return None
 
 
+MITTELMANN_BASE_URL = "https://plato.asu.edu/ftp/lptestset"
+MITTELMANN_DOWNLOAD_ATTEMPTS = 3
+MITTELMANN_DOWNLOAD_TIMEOUT = 60
+MITTELMANN_INDEX_TIMEOUT = 30
+MITTELMANN_DOWNLOAD_RETRY_DELAY = 1.0
+
+_MITTELMANN_DOWNLOAD_ERRORS = (
+    urllib.error.HTTPError,
+    urllib.error.URLError,
+    http.client.HTTPException,
+    TimeoutError,
+    OSError,
+)
+
+
+def _is_retryable_download_error(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in {408, 429} or exc.code >= 500
+    return True
+
+
+def _download_mittelmann_url_to_stream(
+    url: str,
+    destination: Any,
+    *,
+    attempts: int | None = None,
+    timeout: int | None = None,
+    retry_delay: float | None = None,
+) -> None:
+    max_attempts = MITTELMANN_DOWNLOAD_ATTEMPTS if attempts is None else attempts
+    if max_attempts < 1:
+        raise ValueError(f"attempts must be at least 1, got {max_attempts}")
+    request_timeout = MITTELMANN_DOWNLOAD_TIMEOUT if timeout is None else timeout
+    delay = MITTELMANN_DOWNLOAD_RETRY_DELAY if retry_delay is None else retry_delay
+    for attempt in range(max_attempts):
+        destination.seek(0)
+        destination.truncate()
+        try:
+            with urllib.request.urlopen(url, timeout=request_timeout) as response:
+                shutil.copyfileobj(response, destination)
+            return
+        except _MITTELMANN_DOWNLOAD_ERRORS as exc:
+            if attempt + 1 >= max_attempts or not _is_retryable_download_error(exc):
+                raise
+            if delay > 0:
+                time.sleep(delay * (2**attempt))
+
+
 def _mittelmann_remote_problem_names() -> list[str]:
-    html = urllib.request.urlopen("https://plato.asu.edu/ftp/lptestset/", timeout=30).read()
+    buffer = io.BytesIO()
+    _download_mittelmann_url_to_stream(
+        f"{MITTELMANN_BASE_URL}/",
+        buffer,
+        timeout=MITTELMANN_INDEX_TIMEOUT,
+    )
+    html = buffer.getvalue()
     names = []
     for match in re.findall(rb'href="([^"]+\.bz2)"', html):
         filename = match.decode("utf-8")
@@ -419,24 +475,25 @@ def _download_mittelmann_problem(name: str, folder: Path) -> None:
         return
     folder.mkdir(parents=True, exist_ok=True)
     candidates = [f"{stem}.mps.bz2", f"{stem}.bz2"]
-    last_error = None
+    errors: list[tuple[str, BaseException]] = []
     # The body and the decompressed file go through anonymous temporary
     # files beside the target, in pieces: instances reach gigabytes, and
     # both copies used to sit in memory at once.
     with tempfile.TemporaryFile(dir=folder) as compressed:
         for filename in candidates:
-            url = f"https://plato.asu.edu/ftp/lptestset/{filename}"
-            compressed.seek(0)
-            compressed.truncate()
+            url = f"{MITTELMANN_BASE_URL}/{filename}"
             try:
-                with urllib.request.urlopen(url, timeout=60) as response:
-                    shutil.copyfileobj(response, compressed)
-            except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-                last_error = exc
+                _download_mittelmann_url_to_stream(url, compressed)
+            except _MITTELMANN_DOWNLOAD_ERRORS as exc:
+                errors.append((filename, exc))
                 continue
             break
         else:
-            raise RuntimeError(f"Could not download Mittelmann problem {name!r}: {last_error}") from last_error
+            last_error = errors[-1][1]
+            details = "; ".join(f"{filename}: {exc}" for filename, exc in errors)
+            raise RuntimeError(
+                f"Could not download Mittelmann problem {name!r}: {details}"
+            ) from last_error
 
         # A successful fetch selects the source. Corruption and local staging
         # failures must not trigger another download or lose their original cause.

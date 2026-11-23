@@ -2,6 +2,7 @@
 
 import bz2
 import errno
+import http.client
 import io
 import urllib.error
 
@@ -24,17 +25,43 @@ def test_prepare_all_rejects_an_empty_index(monkeypatch, tmp_path, index):
 
 
 def test_prepare_all_propagates_index_failure(monkeypatch, tmp_path):
-    def offline(*args, **kwargs):
+    calls = []
+
+    def offline(url, **kwargs):
+        calls.append((url, kwargs.get("timeout")))
         raise urllib.error.URLError("offline")
 
+    monkeypatch.setattr(mps, "MITTELMANN_DOWNLOAD_RETRY_DELAY", 0.0)
     monkeypatch.setattr(mps.urllib.request, "urlopen", offline)
     dataset = mps.MittelmannDataset(data_root=tmp_path)
     with pytest.raises(urllib.error.URLError, match="offline"):
         dataset.prepare_data(all_problems=True)
+    assert len(calls) == mps.MITTELMANN_DOWNLOAD_ATTEMPTS
+    assert calls[0] == (f"{mps.MITTELMANN_BASE_URL}/", mps.MITTELMANN_INDEX_TIMEOUT)
     # Local discovery remains available without the remote index.
     dataset.folder.mkdir()
     (dataset.folder / "staged.mps").touch()
     assert [spec.name for spec in dataset.list_problems()] == ["staged"]
+
+
+def test_prepare_all_retries_transient_index_failure(monkeypatch, tmp_path):
+    calls = []
+    downloads = []
+
+    def flaky_index(url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        return io.BytesIO(b'<a href="qap15.mps.bz2">qap15.mps.bz2</a>')
+
+    monkeypatch.setattr(mps, "MITTELMANN_DOWNLOAD_RETRY_DELAY", 0.0)
+    monkeypatch.setattr(mps.urllib.request, "urlopen", flaky_index)
+    monkeypatch.setattr(mps, "_download_mittelmann_problem", lambda *a: downloads.append(a))
+
+    mps.MittelmannDataset(data_root=tmp_path).prepare_data(all_problems=True)
+
+    assert len(calls) == 2
+    assert downloads == [("qap15", tmp_path / "mittelmann")]
 
 
 def test_default_prepare_keeps_the_smoke_subset(monkeypatch, tmp_path):
@@ -203,16 +230,120 @@ def test_response_read_error_tries_the_next_download_candidate(monkeypatch, tmp_
             return BrokenResponse()
         return io.BytesIO(bz2.compress(body))
 
+    monkeypatch.setattr(mps, "MITTELMANN_DOWNLOAD_RETRY_DELAY", 0.0)
     monkeypatch.setattr(mps.urllib.request, "urlopen", download)
     dataset = mps.MittelmannDataset(data_root=tmp_path)
 
     dataset.prepare_data(["plain"])
 
     assert calls == [
-        "https://plato.asu.edu/ftp/lptestset/plain.mps.bz2",
-        "https://plato.asu.edu/ftp/lptestset/plain.bz2",
+        *([f"{mps.MITTELMANN_BASE_URL}/plain.mps.bz2"] * mps.MITTELMANN_DOWNLOAD_ATTEMPTS),
+        f"{mps.MITTELMANN_BASE_URL}/plain.bz2",
     ]
     assert (dataset.folder / "plain.mps").read_bytes() == body
+
+
+@pytest.mark.parametrize(
+    "transient_error",
+    [
+        urllib.error.URLError(TimeoutError("timed out")),
+        urllib.error.HTTPError(
+            f"{mps.MITTELMANN_BASE_URL}/plain.mps.bz2",
+            503,
+            "Service Unavailable",
+            None,
+            None,
+        ),
+        http.client.IncompleteRead(b"partial"),
+    ],
+)
+def test_download_retries_transient_error_on_primary_candidate(
+    monkeypatch, tmp_path, transient_error
+):
+    body = b"NAME TINY\nROWS\n N COST\nCOLUMNS\n    X COST 1\nRHS\nENDATA\n"
+    calls = []
+    sleeps = []
+
+    def download(url, **kwargs):
+        calls.append((url, kwargs.get("timeout")))
+        if len(calls) < 3:
+            raise transient_error
+        return io.BytesIO(bz2.compress(body))
+
+    monkeypatch.setattr(mps.time, "sleep", sleeps.append)
+    monkeypatch.setattr(mps.urllib.request, "urlopen", download)
+    dataset = mps.MittelmannDataset(data_root=tmp_path)
+
+    dataset.prepare_data(["plain"])
+
+    primary_url = f"{mps.MITTELMANN_BASE_URL}/plain.mps.bz2"
+    assert calls == [(primary_url, mps.MITTELMANN_DOWNLOAD_TIMEOUT)] * 3
+    assert sleeps == [
+        mps.MITTELMANN_DOWNLOAD_RETRY_DELAY,
+        mps.MITTELMANN_DOWNLOAD_RETRY_DELAY * 2,
+    ]
+    assert (dataset.folder / "plain.mps").read_bytes() == body
+
+
+def test_download_retries_mid_stream_read_error_and_truncates_partial_body(monkeypatch, tmp_path):
+    body = b"NAME TINY\nROWS\n N COST\nCOLUMNS\n    X COST 1\nRHS\nENDATA\n"
+    calls = []
+
+    class HalfStream(io.BytesIO):
+        def __init__(self):
+            super().__init__()
+            self._emitted = False
+
+        def read(self, size=-1):
+            if not self._emitted:
+                self._emitted = True
+                return b"not-valid-bz2-prefix"
+            raise TimeoutError("Connection reset mid-transfer")
+
+    def download(url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            return HalfStream()
+        return io.BytesIO(bz2.compress(body))
+
+    monkeypatch.setattr(mps, "MITTELMANN_DOWNLOAD_RETRY_DELAY", 0.0)
+    monkeypatch.setattr(mps.urllib.request, "urlopen", download)
+    dataset = mps.MittelmannDataset(data_root=tmp_path)
+
+    dataset.prepare_data(["plain"])
+
+    assert calls == [f"{mps.MITTELMANN_BASE_URL}/plain.mps.bz2"] * 2
+    assert (dataset.folder / "plain.mps").read_bytes() == body
+
+
+def test_transient_primary_failure_is_not_masked_by_fallback_404(monkeypatch, tmp_path):
+    calls = []
+    sleeps = []
+
+    def download(url, **kwargs):
+        calls.append(url)
+        if url.endswith(".mps.bz2"):
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(mps.time, "sleep", sleeps.append)
+    monkeypatch.setattr(mps.urllib.request, "urlopen", download)
+    dataset = mps.MittelmannDataset(data_root=tmp_path)
+
+    with pytest.raises(RuntimeError, match="Could not download Mittelmann problem 'qap15'") as failure:
+        dataset.prepare_data(["qap15"])
+
+    assert calls == [
+        *([f"{mps.MITTELMANN_BASE_URL}/qap15.mps.bz2"] * mps.MITTELMANN_DOWNLOAD_ATTEMPTS),
+        f"{mps.MITTELMANN_BASE_URL}/qap15.bz2",
+    ]
+    assert len(sleeps) == mps.MITTELMANN_DOWNLOAD_ATTEMPTS - 1
+    message = str(failure.value)
+    assert "qap15.mps.bz2:" in message
+    assert "timed out" in message
+    assert "qap15.bz2:" in message
+    assert "404" in message
+    assert list(dataset.folder.iterdir()) == []
 
 
 def test_network_failures_report_the_last_download_error(monkeypatch, tmp_path):
