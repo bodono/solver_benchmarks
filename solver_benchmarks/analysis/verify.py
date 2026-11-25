@@ -409,7 +409,10 @@ def classify(
     produces none, e.g. HiGHS, Gurobi and CPLEX on an unbounded QP), or whose
     kind needs a proof and whose record predates proofs, cannot be verified
     and is demoted like a solution without residuals
-    (``missing_residuals``), unless ``missing_is_failure`` is False. A
+    (``missing_residuals``), unless ``missing_is_failure`` is False; such a
+    record whose ``cert_res`` exceeds the tolerance is demoted either way
+    (``demoted``), since a residual known to fail is not hidden by the proof
+    being unknown. A
     certificate of a confirmed kind in which nothing fails but the distance
     to a cone the harness cannot project is unknown is kept whatever
     ``missing_is_failure`` says (``unverified_certificate``), as a solution in
@@ -531,7 +534,8 @@ def _judge_certificate(
             reason += "; the record holds a proof of it, so the label or the problem's loader is wrong"
         return _CertificateJudgement(False, reason)
     if proof is True:
-        return _CertificateJudgement(True, f"the certificate is a proof (proof gap {_shown(kkt.get('cert_proof_gap'))})")
+        gap = _proof_gap(kkt)
+        return _CertificateJudgement(True, "the certificate is a proof" + (f" (proof gap {gap})" if gap else ""))
     if kind in status.CONFIRMED_CERTIFICATES.get(expected or "", frozenset()):
         confirmed = f"the known outcome ({expected}) confirms a {kind} certificate"
         if math.isinf(cert):
@@ -556,15 +560,35 @@ def _judge_certificate(
     )
     cones = kkt.get("cert_proof_cones")
     if proof is None and not cones:
+        # A record written before proofs were: the proof is unknown, but a
+        # residual known to fail is not hidden by that (the certificate is
+        # then no certificate at all, the rule before proofs existed).
+        if math.isinf(cert):
+            return _CertificateJudgement(
+                False, f"certificate residual inf (its objective term is not negative); {unconfirmed}"
+            )
+        cert_tol = tolerance()
+        if cert > cert_tol:
+            return _CertificateJudgement(False, f"certificate residual {cert:.3e} > {cert_tol:.1e}; {unconfirmed}")
         return _CertificateJudgement(None, f"{unconfirmed} and the record holds no proof (recorded before proofs were)")
     if proof is None:
         return _CertificateJudgement(
             False, f"{unconfirmed}, and the harness cannot prove a certificate on {_shown(cones)} cones"
         )
-    detail = f"{_shown(kkt.get('cert_proof_open'))} residual entries above their rounding error with nothing to pay for them"
-    if kkt.get("cert_proof_gap") is not None:
-        detail += f", proof gap {_shown(kkt.get('cert_proof_gap'))}"
+    detail = f"{_shown(kkt.get('cert_proof_open'))} residual entries exactly nonzero where nothing pays for them"
+    gap = _proof_gap(kkt)
+    if gap:
+        detail += f", proof gap {gap}"
     return _CertificateJudgement(False, f"{unconfirmed} and the certificate is not a proof ({detail})")
+
+
+def _proof_gap(kkt: dict[str, Any]) -> str:
+    """``kkt.cert_proof_gap`` shown, or "" where the record has none (a dual
+    certificate, or a certificate with an entry that is not finite)."""
+    gap = kkt.get("cert_proof_gap")
+    if isinstance(gap, (int, float)) and not isinstance(gap, bool) and not math.isnan(gap):
+        return _shown(float(gap))
+    return ""
 
 
 def _shown(value: Any) -> str:

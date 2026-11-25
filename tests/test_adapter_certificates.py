@@ -160,9 +160,10 @@ def test_highs_certificate_passes_the_verification(make, claim, tmp_path):
 @pytest.mark.parametrize("make, claim", HIGHS_CLAIMS[:4])
 def test_highs_simplex_ray_is_a_proof_without_a_known_outcome(make, claim, tmp_path):
     """On small problems with integer data HiGHS's simplex ray is exact, so it
-    is accepted with no known outcome at all (kkt.cert_proof). Its NETLIB
-    rays are proofs too with highspy 1.15.1, but at the rounding level, so
-    they are not pinned here."""
+    is accepted with no known outcome at all (kkt.cert_proof). Of its NETLIB
+    rays with highspy 1.15.1, 25 of 49 are proofs; the others leave
+    residuals on free columns that are exactly nonzero, below their rounding
+    error, so they are not pinned here."""
     result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(make()), tmp_path)
     assert result.status == claim
     assert result.kkt["cert_proof"] is True

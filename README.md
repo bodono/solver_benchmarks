@@ -1546,7 +1546,9 @@ count uses is the verified one:
   (`VerifyPolicy(missing_is_failure=False)`) keeps them, counted as
   unverified; in infeasibility-heavy comparisons that favours adapters that
   record no certificate, since a recorded certificate can fail the check and
-  an unrecorded one cannot.
+  an unrecorded one cannot. A record without a proof whose scaled residual
+  `kkt.cert_res` exceeds the row's tolerance is demoted either way: the
+  unknown proof does not hide a residual known to fail.
 - Claims whose only unknown residuals are distances to cones the harness
   cannot project (complex PSD) are kept when everything else passes, and
   counted as unverified. The verification header every command prints says
@@ -1791,37 +1793,67 @@ with an optimum) reach `cert_res` 1.6e-11 (QPLIB 9002), true ones go up to
 about the size of the dual's feasible points.
 
 `kkt.cert_proof` says whether the certificate is a proof: whether the
-inequality it implies contradicts the problem's own data. For a primal
-certificate the residual `r` must be paid for by finite bounds on `x` (the
-bounds the data states in its single-entry rows), however large they are,
-and the contradiction must exceed the rounding error of evaluating it (the
-safe bound of Neumaier and Shcherbina, Math. Program. 99, 2004); a residual
-entry on a variable without the bound its sign needs must be within the
-rounding error of evaluating it. A dual certificate has nothing to pay with,
-so every residual must be within its rounding error and `q'x` must stay
-negative. The check has no tolerance, does not depend on units or on the
-scale of the certificate, and has no solver or iteration in it (two sparse
-products and a few passes over the data in the worker). `kkt.cert_proof_open`
-counts the residual entries nothing pays for, and `kkt.cert_proof_gap` is the
-margin of a primal contradiction relative to the support (MIPLIB mas76's
-false certificates: −2.6e7, its `1e12` bound being far too loose to pay for
-their residual).
+inequality it implies contradicts the problem's own data, read as the exact
+numbers its doubles are. For a primal certificate the residual `r` must be
+paid for by finite bounds on `x` (the bounds the data states in its
+single-entry rows), however large they are, and the contradiction must
+exceed the rounding error of evaluating it (the safe bound of Neumaier and
+Shcherbina, Math. Program. 99, 2004); a residual entry on a variable without
+the bound its sign needs must be exactly zero, or of the sign the bound it
+has allows. A dual certificate has nothing to pay with, so `Px` must vanish
+and `Ax` lie in the recession cone exactly, and `q'x` must be negative beyond
+its rounding error. Where rounding cannot decide the sign of a residual
+entry (it is within its rounding error of zero), the sign is computed in
+exact arithmetic (each double is an integer times a power of two, summed as
+Python integers). So the check accepts no certificate on a feasible problem,
+nor a dual one on a problem whose dual is feasible. It has no tolerance, does
+not depend on units or on the scale of the certificate, and has no solver or
+iteration in it (two sparse products and a few passes over the data in the
+worker, plus the exact sums of the undecided entries). `kkt.cert_proof_open`
+counts the residual entries that are exactly nonzero where nothing pays for
+them, and `kkt.cert_proof_gap` is the margin of a primal contradiction
+relative to the support (MIPLIB mas76's false certificates: −2.6e7, its
+`1e12` bound being far too loose to pay for their residual).
+
+Taking a residual within its rounding error as zero instead (the rule this
+replaced) is not sound. A certificate whose entries span more than `2⁵³`
+leaves exactly nonzero residuals below that error wherever rows imply an
+equality (an equality written as two inequalities, dependent equality rows),
+on data as plain as integers:
+- `a + b ≤ 0`, `−a − b ≤ 0`, `a − b ≤ −1` is feasible (`a = −0.5`,
+  `b = 0.5`), and `y = (1e20, 1e20, 1)` has support −1 and `A'y = (1, −1)`
+  exactly, against a rounding error of about 1e4 on each free column;
+- `min −x₃` subject to `x₁ − x₂ + x₃ ≤ 0`, `x₁ − x₂ = 0` is bounded
+  (`x₃ ≤ 0`), and `x = (1e20, 1e20, 1)` has `q'x = −1` and `Ax = (1, 0)`
+  exactly;
+- `x − y ≥ 1` and `−(1 + 2⁻⁵²)x + y ≥ 1` are feasible (only for
+  `x ≤ −2⁵³`), and `y = (−1, −1)` leaves one unit in the last place on `x`.
+
+Each of these was a proof up to rounding, and none is one exactly. A
+certificate whose residuals cancel exactly is still a proof however wide the
+range of its entries (the first problem with `a − b ≥ 0` added, and the same
+`y` with weight 1 on that row).
+
+A bound of `1e18` or more, which the residuals read as absent
+(`kkt._INF_BOUND`), counts as a bound for the dual proof (a direction must
+respect it: a solver may hold the row to it) and not for the primal one (no
+weight on it, not in the box), so each proof holds whichever way such a bound
+is meant.
 
 Its limits:
-- It is exact up to perturbing each data entry at the level of its own
-  rounding (`2⁻⁵³` relative), so it can accept a certificate on a feasible
-  problem within that perturbation of an infeasible one: `x − y ≥ 1` and
-  `−(1 + 2⁻⁵²)x + y ≥ 1` are feasible (only for `x ≤ −2⁵³`), and `y = (−1, −1)`
-  passes. The same holds for coefficients `0.3` against `0.1 + 0.2`.
 - It covers linear constraints only (QP bounds, zero and nonnegative cones).
   A certificate on any other cone has `kkt.cert_proof` null and its cones
   listed in `kkt.cert_proof_cones`, since a floating-point projection onto a
   second-order, semidefinite, exponential or power cone (or the box cone) is
   not exactly in the cone.
 - Few certificates of non-simplex solvers are proofs: they leave residuals
-  of about 1e-10 on free variables. Regenerated locally on the 29 NETLIB
-  infeasible LPs, 80 of 282 certificates were proofs (41 of HiGHS's 49), and
-  none of the dual certificates of any solver.
+  of about 1e-10 on free variables, and even HiGHS's simplex rays often
+  leave exactly nonzero residuals below their rounding error. Regenerated
+  locally on the 29 NETLIB infeasible LPs, 48 of 282 certificates were
+  proofs (25 of HiGHS's 49; 80 and 41 with residuals within their rounding
+  error taken as zero), and none of the dual certificates of any solver.
+  Those problems are labelled, so all of them are still accepted when their
+  `cert_res` is within the tolerance.
 
 So the verification accepts a certificate when it is a proof, or when the
 problem's known outcome (`status.CONFIRMED_CERTIFICATES`) confirms its kind
@@ -1832,7 +1864,8 @@ when the record holds a proof, which means the label or the problem's loader
 is wrong. On a problem without a known outcome only proofs are accepted, and
 records written before proofs were recorded (archived runs) have no proof to
 check, so their certificates on such problems count as unsolved unless
-`--allow-missing`. The known outcome is the judge's knowledge, not the
+`--allow-missing` (and whatever it says when their `cert_res` fails the
+tolerance). The known outcome is the judge's knowledge, not the
 solver's: every solver runs the same settings on every problem, with
 infeasibility detection on. The labels are only as good as the datasets and
 loaders: NETLIB `cplex2` is labelled infeasible but has points violating

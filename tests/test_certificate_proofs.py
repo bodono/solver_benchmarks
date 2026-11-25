@@ -7,8 +7,10 @@ check). These tests pin both sides of ``kkt.cert_proof`` (true certificates
 pass, false ones fail, for every certificate type) and of the verification
 rule built on it (``verify.classify`` with the problem's known outcome).
 
-The false certificates here miss being proofs by many orders of magnitude, so
-the tests assert verdicts and signs, not tight numbers.
+Most false certificates here miss being proofs by many orders of magnitude,
+so those tests assert verdicts and signs, not tight numbers; the tests of the
+rounding allowances and of residuals zero only to rounding sit at the
+boundary on purpose.
 """
 
 from __future__ import annotations
@@ -167,19 +169,149 @@ def test_noise_on_bounded_variables_is_paid_for_by_their_bounds():
     assert no_bound["cert_proof"] is False and no_bound["cert_proof_open"] == 1
 
 
-def test_the_rounding_level_limit_of_the_proof():
-    """The proof is exact up to perturbing each data entry at the level of its
-    rounding, so it accepts a certificate on a feasible problem that close to
-    an infeasible one. x - y >= 1 and -(1 + 2^-52) x + y >= 1 are feasible
-    (x = -2^54 and y = x - 1 satisfy both exactly), yet y = (-1, -1) leaves
-    a residual of one unit in the last place, within rounding, and passes.
-    The same holds for 0.3 against 0.1 + 0.2. This is the documented limit
-    (README, Certificates), not a bug."""
-    x = Fraction(-(2**54))
-    y = x - 1
-    assert x - y >= 1 and -(1 + Fraction(2) ** -52) * x + y >= 1  # exactly, in rationals
-    assert _primal([[1, -1], [-(1 + 2.0**-52), 1]], [1, 1], [INF, INF], [-1, -1])["cert_proof"] is True
-    assert _primal([[0.3, -1], [-(0.1 + 0.2), 1]], [1, 1], [INF, INF], [-1, -1])["cert_proof"] is True
+def _feasible(A, l, u, x):
+    """Whether ``x`` satisfies ``l <= A x <= u`` exactly, in rationals."""
+    for row, low, high in zip(A, l, u):
+        value = sum(Fraction(a) * Fraction(v) for a, v in zip(row, x))
+        if not (low == -INF or value >= Fraction(low)) or not (high == INF or value <= Fraction(high)):
+            return False
+    return True
+
+
+# --- residuals that are zero only to rounding ------------------------------------
+
+
+def test_a_residual_zero_only_to_rounding_is_not_taken_as_zero():
+    """A certificate whose entries span more than 2^53 leaves a residual that
+    is exactly nonzero but below the rounding error of evaluating it (about
+    1e4 here), wherever rows imply an equality. Taking such a residual as
+    zero accepted these false certificates on feasible problems with integer
+    data; deciding its sign exactly rejects them."""
+    # a + b <= 0 and -a - b <= 0 (together a + b = 0), a - b <= -1: feasible.
+    A = [[1, 1], [-1, -1], [1, -1]]
+    l, u = [-INF] * 3, [0, 0, -1]
+    assert _feasible(A, l, u, [-0.5, 0.5])
+    y = [1e20, 1e20, 1]  # A'y = (1, -1) exactly; the support is -1
+    record = _primal(A, l, u, y)
+    assert record["cert_proof"] is False and record["cert_proof_open"] == 2
+    cone = kkt.cone_primal_infeasibility_cert(sp.csr_matrix(np.array(A, dtype=float)), np.array(u, dtype=float),
+                                              {"l": 3}, np.array(y))
+    assert cone["cert_proof"] is False and cone["cert_proof_open"] == 2
+    # min -x3 with x1 - x2 + x3 <= 0 and x1 - x2 = 0: bounded (x3 <= 0), so
+    # no direction proves it unbounded; (1e20, 1e20, 1) leaves A x = (1, 0).
+    dual = _dual(None, [0, 0, -1], [[1, -1, 1], [1, -1, 0]], [-INF, 0], [0, 0], [1e20, 1e20, 1])
+    assert dual["cert_proof"] is False and dual["cert_proof_open"] == 1
+    # x - y >= 1 and -(1 + 2^-52) x + y >= 1 are feasible (only for x <= -2^53);
+    # y = (-1, -1) leaves one unit in the last place on x. Likewise 0.3
+    # against 0.1 + 0.2.
+    near = [[1, -1], [-(1 + 2.0**-52), 1]]
+    assert _feasible(near, [1, 1], [INF, INF], [-(2**54), -(2**54) - 1])
+    assert _primal(near, [1, 1], [INF, INF], [-1, -1])["cert_proof"] is False
+    decimal = [[0.3, -1], [-(0.1 + 0.2), 1]]
+    assert _feasible(decimal, [1, 1], [INF, INF], [-(2**60), Fraction(0.3) * -(2**60) - 1])
+    assert _primal(decimal, [1, 1], [INF, INF], [-1, -1])["cert_proof"] is False
+
+
+def test_an_exact_certificate_with_a_wide_range_of_entries_is_a_proof():
+    """The other side: exact cancellation that floating point cannot confirm
+    (the residual's rounding error is about 1e4) is a proof."""
+    # The problem above with a - b >= 0 added: infeasible. A'y = 0 exactly.
+    A = [[1, 1], [-1, -1], [1, -1], [-1, 1]]
+    record = _primal(A, [-INF] * 4, [0, 0, -1, 0], [1e20, 1e20, 1, 1])
+    assert record["cert_proof"] is True and record["cert_proof_open"] == 0
+    # With a >= 1 as well, a's residual is exactly zero, not merely within
+    # its interval of about +-1e4 (which, times the bound, would lose the proof).
+    record = _primal(A + [[1, 0]], [-INF] * 4 + [1], [0, 0, -1, 0, INF], [1e20, 1e20, 1, 1, 0])
+    assert record["cert_proof"] is True
+    # min -x3 with x1 - x2 <= 0 and -x1 + x2 <= 0, x3 free: unbounded.
+    dual = _dual(None, [0, 0, -1], [[1, -1, 0], [-1, 1, 0]], [-INF, -INF], [0, 0], [1e20, 1e20, 1])
+    assert dual["cert_proof"] is True
+
+
+def test_exact_signs_match_rational_arithmetic(monkeypatch):
+    """kkt._exact_signs against Fractions, on sums that cancel across the
+    whole exponent range (subnormal to 1e300), in both orientations and with
+    sums split across chunks."""
+    rng = np.random.default_rng(0)
+
+    def rational_signs(M, v, transpose):
+        rows = M.toarray().T if transpose else M.toarray()
+        totals = [sum((Fraction(float(a)) * Fraction(float(b)) for a, b in zip(row, v)), Fraction(0)) for row in rows]
+        return [(total > 0) - (total < 0) for total in totals]
+
+    for chunk in (2**16, 3):
+        monkeypatch.setattr(kkt, "_EXACT_CHUNK", chunk)
+        for trial in range(150):
+            m, n = rng.integers(1, 9, 2)
+            scale = rng.choice([5e-324, 1e-300, 1e-20, 1.0, 1e20, 1e300], size=(m, n))
+            data = rng.integers(-3, 4, (m, n)) * scale * rng.choice([1.0, 0.1, 1 / 3], size=(m, n))
+            data[rng.random((m, n)) < 0.3] = 0.0
+            # Duplicated rows and columns make exact cancellation common.
+            data[-1] = data[0]
+            data[:, -1] = -data[:, 0]
+            M = sp.csr_matrix(data)
+            transpose = bool(trial % 2)
+            v = rng.integers(-3, 4, m if transpose else n) * rng.choice([1e-200, 1.0, 1e16, 1e200], m if transpose else n)
+            wanted = np.flatnonzero(rng.random(n if transpose else m) < 0.8)
+            expected = np.array(rational_signs(M, v, transpose))[wanted]
+            assert list(kkt._exact_signs(M, v, wanted, transpose=transpose)) == list(expected)
+
+
+# --- the proof's own soundness conditions ------------------------------------------
+
+
+def test_the_box_contains_every_feasible_value():
+    # 3x <= 1 bounds x by 1/3, which rounds down (fl(1/3) < 1/3); 10x >= 1
+    # by 1/10, which rounds up. The box must still contain them.
+    lo, hi = kkt._singleton_box(sp.csr_matrix([[3.0], [10.0]]), np.array([-INF, 1.0]), np.array([1.0, INF]))
+    assert Fraction(hi[0]) >= Fraction(1, 3) and Fraction(lo[0]) <= Fraction(1, 10)
+    lo, hi = kkt._singleton_box(sp.csr_matrix([[-3.0], [-10.0]]), np.array([-1.0, -INF]), np.array([INF, -1.0]))
+    assert Fraction(hi[0]) >= Fraction(1, 3) and Fraction(lo[0]) <= Fraction(1, 10)
+
+
+def test_a_contradiction_within_its_rounding_error_is_not_a_proof():
+    """The margin L - sigma must exceed the rounding error of sigma and of L,
+    and be positive: each case here is a proof for any of those allowances
+    dropped (or for a margin of zero accepted)."""
+    A = sp.csr_matrix([[1.0]])
+    lo, hi = np.array([1.0]), np.array([INF])
+
+    def proof(y_hat, sigma, sigma_error):
+        return kkt._primal_proof(A, np.array([y_hat]), sigma, sigma_error, lo, hi)["cert_proof"]
+
+    # r = 0: L is zero, less its allowance of (n + 2) subnormals.
+    least = -3 * np.finfo(float).smallest_subnormal
+    assert proof(0.0, np.nextafter(least, -INF), 0.0) is True
+    assert proof(0.0, least, 0.0) is False  # a margin of exactly zero
+    assert proof(0.0, -1.0, 1.0) is False  # within sigma's rounding error
+    # r = 1 on x >= 1: L = 1 less r's and L's rounding errors (about 1.1e-15).
+    assert proof(1.0, 1.0 - 2e-15, 0.0) is True
+    assert proof(1.0, 1.0 - 8e-16, 0.0) is False  # within L's rounding error
+
+
+def test_weight_the_data_does_not_allow_is_not_used():
+    # x >= 0 and x >= 1 with no upper bounds (feasible): y = (1, 0) puts its
+    # weight on the absent upper bound of the first row, which the support
+    # cannot use; read as a bound of 0 it would contradict x >= 1.
+    assert _primal([[1], [1]], [0, 1], [INF, INF], [1, 0])["cert_proof"] is False
+    # Cone form: x + z <= 5, x <= 1, z <= 1 (feasible), y = (-1, 0, 0) is not
+    # in the dual cone; read as it is, it gives -x - z <= -5 against x, z <= 1.
+    A = sp.csr_matrix([[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
+    record = kkt.cone_primal_infeasibility_cert(A, np.array([5.0, 1.0, 1.0]), {"l": 3}, np.array([-1.0, 0.0, 0.0]))
+    assert record["cert_proof"] is False
+
+
+def test_bounds_of_1e18_or_more_count_for_the_dual_proof_and_not_for_the_primal_one():
+    """The residuals read bounds of kkt._INF_BOUND (1e18) or more as absent;
+    a solver may hold a row to one (HiGHS keeps bounds below 1e20). Each
+    proof takes the reading that is safe for it."""
+    # min -x with x <= 5e18 is bounded: the direction 1 is not a proof.
+    assert _dual(None, [-1], [[1]], [-INF], [5e18], [1])["cert_proof"] is False
+    assert _dual(None, [-1], [[1]], [-INF], [INF], [1])["cert_proof"] is True
+    # x <= 5e18 and x >= 6e18 is infeasible if those are bounds and feasible if
+    # they mean infinity: the primal proof does not use them.
+    assert _primal([[1], [1]], [-INF, 6e18], [5e18, INF], [1, -1])["cert_proof"] is False
+    assert _primal([[1], [1]], [-INF, 6e17], [5e17, INF], [1, -1])["cert_proof"] is True
 
 
 # --- dual (unboundedness) certificates ------------------------------------------
@@ -205,6 +337,11 @@ def test_a_dual_certificate_with_curvature_left_is_not_a_proof():
     assert record["cert_proof"] is False
     unbounded = _dual([[1, 0], [0, 0]], [0, -1], [[0, 1]], [0], [INF], [0, 1])
     assert unbounded["cert_proof"] is True
+    # min x1^2 / 2 - x1 with x2 >= 0: bounded; d = (1, 0) meets the row's
+    # recession cone and has q'd = -1, and only its curvature Pd = (1, 0)
+    # rules it out.
+    curved = _dual([[1, 0], [0, 0]], [-1, 0], [[0, 1]], [0], [INF], [1, 0])
+    assert curved["cert_proof"] is False and curved["cert_proof_open"] == 1
 
 
 def test_a_dual_certificate_with_a_nonnegative_objective_is_not_a_proof():
@@ -279,6 +416,7 @@ P, D = status.PRIMAL_INFEASIBLE, status.DUAL_INFEASIBLE
     (status.EXPECT_OPTIMAL, D, False, "demoted"),
     (status.EXPECT_OPTIMAL, P, True, "demoted"),
     (status.EXPECT_UNBOUNDED, P, False, "demoted"),
+    (status.EXPECT_UNBOUNDED, P, True, "demoted"),
     # Confirmed kinds: the residual decides.
     (status.EXPECT_INFEASIBLE, P, False, "kept"),
     (status.EXPECT_UNBOUNDED, D, False, "kept"),
@@ -328,6 +466,28 @@ def test_a_record_without_a_proof_needs_one_only_where_no_outcome_confirms_it():
     view = {"status": P, "kkt": {"certificate": P, "cert_res": 1e-9, "valid": True}}
     tolerated = classify(view, tolerance=lambda: 1e-3, missing_is_failure=False)
     assert (tolerated.verdict, tolerated.status) == ("missing_residuals", P)
+
+
+@pytest.mark.parametrize("kind, expected", [(P, None), (D, None), (D, status.EXPECT_INFEASIBLE)])
+@pytest.mark.parametrize("cert_res", [0.5, INF])
+def test_a_record_without_a_proof_whose_residual_fails_is_demoted_even_when_missing_is_tolerated(
+    kind, expected, cert_res
+):
+    """Tolerating unverifiable claims keeps a certificate whose proof is
+    unknown, not one whose residual is known to fail (the rule before proofs
+    existed demoted it too)."""
+    record = {"certificate": kind, "cert_res": None if cert_res == INF else cert_res, "valid": False}
+    view = {"status": kind, "kkt": record, "expected_status": expected}
+    for missing_is_failure in (True, False):
+        judged = classify(view, tolerance=lambda: 1e-3, missing_is_failure=missing_is_failure)
+        assert (judged.verdict, judged.status) == ("demoted", f"{kind}_inaccurate"), judged.reason
+        assert "certificate residual" in judged.reason
+        assert ("objective term is not negative" in judged.reason) == (cert_res == INF)
+
+
+def test_the_reason_for_a_dual_proof_has_no_gap():
+    assert _claim(D, 1e-11, True).reason == "the certificate is a proof"
+    assert "proof gap 0.5" in _claim(P, 1e-11, True, cert_proof_gap=0.5).reason
 
 
 def test_a_certificate_on_cones_the_proof_does_not_cover_needs_a_known_outcome():

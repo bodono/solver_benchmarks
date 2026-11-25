@@ -24,20 +24,25 @@ variable changes the verdict. A dual (unboundedness) certificate is the same
 statement about the size of the dual's feasible points.
 
 ``cert_proof`` says whether the certificate is a proof: whether the
-inequality it implies contradicts the problem's own data. The residual
-``r`` must be paid for by finite bounds on ``x`` (the bounds the data states
-directly in its single-entry rows), however large they are (the safe bound of
-Neumaier and Shcherbina, "Safe bounds in linear and mixed-integer
-programming", Math. Program. 99, 2004), except entries no larger than the
-rounding error of evaluating them, and the contradiction must exceed the
-rounding error of evaluating it. A dual certificate has no bounds to pay with:
-every residual must be within its rounding error. The check has no tolerance
-and does not depend on the units of the rows, of ``x`` or of the
-certificate; it is exact up to perturbing each data entry at the level of its
-own rounding (``2⁻⁵³`` relative), and can therefore accept a certificate on a
-feasible problem that is within that perturbation of an infeasible one
-(``x − y ≥ 1`` and ``−(1 + 2⁻⁵²)x + y ≥ 1`` are feasible, but only for
-``x ≤ −2⁵³``).
+inequality it implies contradicts the problem's own data, read as the exact
+numbers its doubles are. The residual ``r`` must be paid for by finite
+bounds on ``x`` (the bounds the data states directly in its single-entry
+rows), however large they are (the safe bound of Neumaier and Shcherbina,
+"Safe bounds in linear and mixed-integer programming", Math. Program. 99,
+2004), and the contradiction must exceed the rounding error of evaluating
+it. A residual entry on a variable without the bound its sign needs must be
+exactly zero (or of the sign the bound it has allows), decided in exact
+arithmetic where rounding cannot decide it. A dual certificate has no
+bounds to pay with: its residuals must vanish exactly, and ``q'x`` must be
+negative beyond its rounding error. The check has no tolerance, does not
+depend on the units of the rows, of ``x`` or of the certificate, and accepts
+no certificate on a feasible problem (or, for a dual one, on a problem whose
+dual is feasible). Allowing residuals within their rounding error instead
+would not be sound: a certificate whose entries span more than 2⁵³ can leave
+an exactly nonzero residual below that error wherever rows imply an
+equality (an equality written as two inequalities, dependent equality
+rows): ``y = (1e20, 1e20, 1)`` on the feasible ``a + b ≤ 0``, ``−a − b ≤
+0``, ``a − b ≤ −1`` leaves ``r = (1, −1)`` against an error of about 1e4.
 It covers linear constraints only (QP bounds, zero and nonnegative cones):
 a certificate on any other cone gets None, since a floating-point projection
 onto a second-order, semidefinite, exponential or power cone does not give a
@@ -87,6 +92,9 @@ _SQRT2 = math.sqrt(2.0)
 # bounds of the proof check (_gamma) do not cover.
 _UNIT_ROUNDOFF = 2.0**-53
 _SUBNORMAL = float(np.finfo(float).smallest_subnormal)
+# Products summed per chunk by the exact sign evaluation of the proof check
+# (_exact_signs): bounds its memory, changes no result.
+_EXACT_CHUNK = 2**16
 
 
 def qp_residuals(
@@ -539,8 +547,8 @@ def _number_or_nan(value) -> float:
 # point contradicts the problem's own data, evaluated so that rounding cannot
 # fake the contradiction. The record says so in ``cert_proof`` (True, False,
 # or None for cones the check does not cover, which ``cert_proof_cones``
-# names), with ``cert_proof_open``, the number of residual entries above
-# their rounding error that nothing pays for, and for a primal certificate
+# names), with ``cert_proof_open``, the number of residual entries that are
+# exactly nonzero where nothing pays for them, and for a primal certificate
 # ``cert_proof_gap``, the margin of the contradiction relative to the
 # certificate's support (negative: no contradiction; MIPLIB mas76's
 # certificates reach -2.6e7, its 1e12 bound being far too loose to pay for
@@ -609,6 +617,85 @@ def _singleton_box(A: sp.csr_matrix, lower: np.ndarray, upper: np.ndarray) -> tu
     return lo, hi
 
 
+def _exact_signs(M: sp.csr_matrix, v: np.ndarray, wanted: np.ndarray, *, transpose: bool) -> np.ndarray:
+    """Signs (−1, 0 or 1) of the exact values of the entries ``wanted`` (an
+    index array) of ``M v``, or of ``M'v`` with ``transpose``, reading every
+    stored double as the exact number it is; NaN for an entry with a
+    product that is not finite.
+
+    A double is an integer times a power of two (``np.frexp``), so each
+    product is one too, and the sum of an entry's products is a Python
+    integer once they are brought to their smallest power of two: Python
+    integers do not round or overflow, so a zero here is exactly zero. Run
+    only where the floating-point value cannot decide the sign (see
+    :func:`_signs`); the entries are taken in chunks of whole sums, which
+    bounds the memory (a sum can take a few thousand bits) and does not
+    change any result.
+    """
+    size = M.shape[1] if transpose else M.shape[0]
+    selected = np.zeros(size, dtype=bool)
+    selected[wanted] = True
+    if transpose:
+        positions = np.flatnonzero(selected[M.indices])
+        target = M.indices[positions]
+        factor = v[np.searchsorted(M.indptr, positions, side="right") - 1]
+    else:
+        positions = np.flatnonzero(np.repeat(selected, np.diff(M.indptr)))
+        target = np.searchsorted(M.indptr, positions, side="right") - 1
+        factor = v[M.indices[positions]]
+    data = M.data[positions]
+    sign = np.zeros(size)
+    unknown = ~(np.isfinite(data) & np.isfinite(factor))
+    sign[target[unknown]] = np.nan
+    keep = ~unknown & (data != 0.0) & (factor != 0.0) & ~np.isnan(sign[target])
+    order = np.argsort(target[keep], kind="stable")
+    target = target[keep][order]
+    data_mantissa, data_exponent = np.frexp(data[keep][order])
+    factor_mantissa, factor_exponent = np.frexp(factor[keep][order])
+    # Both mantissas have at most 53 significant bits, so these are exact
+    # integers; the product of an entry and its factor is their product
+    # times 2 ** exponent (up to a common power of two).
+    data_mantissa = (data_mantissa * 2.0**53).astype(np.int64)
+    factor_mantissa = (factor_mantissa * 2.0**53).astype(np.int64)
+    exponent = data_exponent.astype(np.int64) + factor_exponent.astype(np.int64)
+    starts = np.flatnonzero(np.r_[True, target[1:] != target[:-1]]) if target.size else np.zeros(0, dtype=np.int64)
+    chunk_starts = np.unique(starts[np.searchsorted(starts, np.arange(0, target.size, _EXACT_CHUNK), side="right") - 1])
+    chunk_ends = np.append(chunk_starts[1:], target.size)[:chunk_starts.size]
+    for begin, end in zip(chunk_starts, chunk_ends, strict=True):
+        local = starts[np.searchsorted(starts, begin):np.searchsorted(starts, end)] - begin
+        sizes = np.diff(np.r_[local, end - begin])
+        chunk_exponent = exponent[begin:end]
+        shift = chunk_exponent - np.repeat(np.minimum.reduceat(chunk_exponent, local), sizes)
+        product = data_mantissa[begin:end].astype(object) * factor_mantissa[begin:end].astype(object)
+        totals = np.add.reduceat(np.left_shift(product, shift.astype(object)), local)
+        sign[target[begin + local]] = [(total > 0) - (total < 0) for total in totals]
+    return sign[wanted]
+
+
+def _signs(value: np.ndarray, error: np.ndarray, M: sp.csr_matrix, v: np.ndarray, wanted: np.ndarray, *,
+           transpose: bool) -> np.ndarray:
+    """Signs of the exact values of the entries of ``M v`` (``M'v`` with
+    ``transpose``) where the mask ``wanted`` is set, NaN elsewhere and where
+    the computed ``value`` is not finite.
+
+    ``value ± error`` (rounded outward) brackets the exact value, so where
+    the bracket excludes zero it gives the sign; where it does not, the
+    sign is computed exactly (:func:`_exact_signs`). That is what makes the
+    proof exact rather than exact up to rounding: a residual within its
+    rounding error is not taken as zero unless it is zero.
+    """
+    sign = np.full(value.shape, np.nan)
+    with np.errstate(invalid="ignore", over="ignore"):
+        low = np.nextafter(value - error, -np.inf)
+        high = np.nextafter(value + error, np.inf)
+    known = wanted & np.isfinite(value)
+    sign[known & (low > 0.0)] = 1.0
+    sign[known & (high < 0.0)] = -1.0
+    undecided = known & ~(low > 0.0) & ~(high < 0.0)
+    sign[undecided] = _exact_signs(M, v, np.flatnonzero(undecided), transpose=transpose)
+    return sign
+
+
 def _primal_proof(
     A: sp.csr_matrix, y_hat: np.ndarray, sigma: float, sigma_error: float, lo: np.ndarray, hi: np.ndarray
 ) -> dict[str, Any]:
@@ -623,26 +710,32 @@ def _primal_proof(
     within its rounding error ``e_j``; ``L``, the least value of ``r'x`` over
     the box for any ``r`` within those errors, is evaluated with its own
     rounding error taken off, and ``L > σ + sigma_error`` contradicts the
-    inequality: no feasible point exists. A column whose ``r_j`` needs a
-    bound the box lacks (a lower one for ``r_j > 0``, an upper one for
-    ``r_j < 0``) makes ``L`` unbounded, unless ``|r_j| ≤ e_j``: then the
-    residual is taken as zero, which is where the check is exact only up to
-    rounding of the data. Nothing here depends on the units of rows,
-    columns or certificate.
+    inequality: no feasible point exists. A column whose exact ``r_j`` needs
+    a bound the box lacks (a lower one for ``r_j > 0``, an upper one for
+    ``r_j < 0``) makes ``L`` unbounded: such a column is open. Its sign is
+    decided exactly where rounding cannot decide it (:func:`_signs`), so a
+    residual that is zero only to rounding is not taken as zero: with
+    ``y = (1e20, 1e20, 1)`` on the feasible ``a + b ≤ 0``, ``−a − b ≤ 0``,
+    ``a − b ≤ −1``, ``r = (1, −1)`` exactly, below its rounding error of
+    about 1e4, and the columns are open. Nothing here depends on the units
+    of rows, columns or certificate.
     """
     if not (np.all(np.isfinite(y_hat)) and math.isfinite(sigma) and math.isfinite(sigma_error)):
         return {"cert_proof": False, "cert_proof_gap": float("nan"), "cert_proof_open": 0}
     r = A.T @ y_hat
     column_counts = np.bincount(A.indices, minlength=A.shape[1])
     error = _dot_error(_magnitudes(A).T @ np.abs(y_hat), column_counts)
-    r_lo = np.nextafter(r - error, -np.inf)
-    r_hi = np.nextafter(r + error, np.inf)
     no_lo = ~np.isfinite(lo)
     no_hi = ~np.isfinite(hi)
-    rounding = np.abs(r) <= error
-    r_hi = np.where(rounding & no_lo, np.minimum(r_hi, 0.0), r_hi)
-    r_lo = np.where(rounding & no_hi, np.maximum(r_lo, 0.0), r_lo)
-    open_columns = ((r_hi > 0.0) & no_lo) | ((r_lo < 0.0) & no_hi) | ~np.isfinite(r)
+    sign = _signs(r, error, A, y_hat, no_lo | no_hi, transpose=True)
+    open_columns = (no_lo & ~(sign <= 0.0)) | (no_hi & ~(sign >= 0.0)) | ~np.isfinite(r)
+    with np.errstate(invalid="ignore", over="ignore"):
+        r_lo = np.nextafter(r - error, -np.inf)
+        r_hi = np.nextafter(r + error, np.inf)
+    # Where the exact sign is known, the interval keeps only that side of
+    # zero (and is zero where r_j is exactly zero).
+    r_lo = np.where(sign >= 0.0, np.maximum(r_lo, 0.0), r_lo)
+    r_hi = np.where(sign <= 0.0, np.minimum(r_hi, 0.0), r_hi)
     # Least value of r_j x_j over the residual interval and the box: a
     # corner. A corner on an infinite bound is ignored (on a column that is
     # not open its product is +inf or 0 * inf); an overflowing product of
@@ -735,10 +828,14 @@ def _dual_proof(P, q: np.ndarray, A, x: np.ndarray, not_above: np.ndarray, not_b
     """Whether ``x`` proves the dual infeasible: ``Px = 0``, each ``(Ax)_i ≤ 0``
     where ``not_above`` and ``≥ 0`` where ``not_below``, and ``q'x < 0``.
 
-    The dual's variables have no bounds to pay for a residual, so every
-    residual must be within its rounding error and ``q'x`` must stay negative
-    by more than its own: then ``x`` is an exact certificate for the data
-    with each entry perturbed at the level of its rounding.
+    The dual's variables have no bounds to pay for a residual, so ``Px`` and
+    the recession-cone conditions must hold exactly, their signs decided
+    exactly where rounding cannot decide them (:func:`_signs`; with ``x =
+    (1e20, 1e20, 1)`` on the bounded ``min −x₃`` subject to ``x₁ − x₂ + x₃ ≤
+    0``, ``x₁ − x₂ = 0``, the first row's ``Ax`` is 1 exactly, below its
+    rounding error of about 1e4), and ``q'x`` must stay negative by more
+    than its rounding error. ``cert_proof_open`` counts the entries that
+    fail.
     """
     if not np.all(np.isfinite(x)):
         return {"cert_proof": False, "cert_proof_open": 0}
@@ -751,16 +848,26 @@ def _dual_proof(P, q: np.ndarray, A, x: np.ndarray, not_above: np.ndarray, not_b
     Ax_error = _dot_error(_magnitudes(A) @ magnitude, np.diff(A.indptr))
     qtx = float(q @ x)
     qtx_error = float(_dot_error(float(np.abs(q) @ magnitude), x.size))
-    bad = int(np.count_nonzero(~(np.abs(Px) <= Px_error)))
-    bad += int(np.count_nonzero((not_above & ~(Ax <= Ax_error)) | (not_below & ~(Ax >= -Ax_error))))
+    Px_sign = _signs(Px, Px_error, P, x, np.ones(Px.shape, dtype=bool), transpose=False)
+    Ax_sign = _signs(Ax, Ax_error, A, x, not_above | not_below, transpose=False)
+    bad = int(np.count_nonzero(~(Px_sign == 0.0)))
+    bad += int(np.count_nonzero((not_above & ~(Ax_sign <= 0.0)) | (not_below & ~(Ax_sign >= 0.0))))
     return {"cert_proof": bool(bad == 0 and qtx + qtx_error < 0.0), "cert_proof_open": bad}
 
 
 def _qp_dual_proof(P, q: np.ndarray, A, l: np.ndarray, u: np.ndarray, x: np.ndarray) -> dict[str, Any]:
     """:func:`_dual_proof` for ``l ≤ Ax ≤ u``: ``Ax`` in the recession cone
-    of ``[l, u]``, i.e. ``(Ax)_i ≤ 0`` where ``u_i`` is finite and ``≥ 0``
-    where ``l_i`` is."""
-    return _dual_proof(P, q, A, x, _finite_bounds(u), _finite_bounds(l))
+    of ``[l, u]``, i.e. ``(Ax)_i ≤ 0`` where ``u_i`` is present and ``≥ 0``
+    where ``l_i`` is.
+
+    A bound counts as present unless it is infinite, including one of
+    ``_INF_BOUND`` or more, which the residuals read as absent: a solver may
+    hold the row to it (HiGHS keeps bounds below 1e20), and a direction that
+    leaves a bound of 5e18 behind (``min −x`` subject to ``x ≤ 5e18``) is no
+    proof. The primal proof reads such bounds as absent instead, the safe
+    side for it (it then puts no weight on them and does not use them in
+    the box), so both proofs hold whichever way such a bound is meant."""
+    return _dual_proof(P, q, A, x, u != np.inf, l != -np.inf)
 
 
 def _cone_dual_proof(P, q: np.ndarray, A, cone: dict[str, Any], x: np.ndarray) -> dict[str, Any]:
