@@ -426,7 +426,8 @@ def test_verify_holds_certificates_to_the_tolerance(tmp_path):
                      "cert_res": 1e-4, "valid": True}), **exp},
         # written before cert_res existed: rebuilt from the absolute fields
         {**_row("old", "a", status="dual_infeasible",
-                kkt={"certificate": "dual_infeasible", "qtx": -2.0, "Px_inf": 0.0, "Ax_cone_res": 1e-3}), **exp},
+                kkt={"certificate": "dual_infeasible", "qtx": -2.0, "Px_inf": 0.0, "Ax_cone_res": 1e-3}),
+         "metadata": {"expected_status": "unbounded"}},
         {**_row("none", "a", status="primal_infeasible", kkt=None), **exp},
     ]
     src = _write_run(tmp_path, "src", rows)
@@ -524,7 +525,8 @@ def test_verify_fails_a_certificate_whose_objective_term_is_not_negative(tmp_pat
     # cert_res is inf then, which the results file stores as null.
     kkt = {"certificate": "dual_infeasible", "qtx": 0.5, "Px_inf": 0.0, "Ax_cone_res": 0.0,
            "cert_res": None, "cert_tol": 1e-3, "valid": False}
-    src = _write_run(tmp_path, "src", [_row("p1", "a", status="dual_infeasible", kkt=kkt)])
+    row = {**_row("p1", "a", status="dual_infeasible", kkt=kkt), "metadata": {"expected_status": "unbounded"}}
+    src = _write_run(tmp_path, "src", [row])
     summary = kkt_verify(src, tmp_path / "out", tol=1e-6)
     row = _read_rows(tmp_path / "out")[("p1", "a")]
     assert row["status"] == "dual_infeasible_inaccurate"
@@ -716,7 +718,8 @@ def test_promote_accepts_inaccurate_certificates_that_pass_the_check(tmp_path):
 
     rows = [
         cert_row("p_good", "primal_infeasible_inaccurate", _certificate("primal_infeasible", 1.4e-7)),
-        cert_row("d_good", "dual_infeasible_inaccurate", _certificate("dual_infeasible", 1e-8)),
+        cert_row("d_good", "dual_infeasible_inaccurate", _certificate("dual_infeasible", 1e-8),
+                 metadata={"expected_status": "unbounded"}),
         cert_row("p_bad", "primal_infeasible_inaccurate", _certificate("primal_infeasible", 1e-4)),
         cert_row("p_none", "primal_infeasible_inaccurate", None),
         # the distance to a cone the harness cannot project is unknown
@@ -1033,7 +1036,8 @@ def test_promote_judges_a_limit_row_holding_a_certificate_as_a_certificate(tmp_p
                "cert_res": None, "valid": None, "unsupported_cones": ["cs"]}
     rows = [
         {**_row("p_good", "osqp", status="max_iter_reached", kkt=_certificate("primal_infeasible", 9.17e-8)), **exp},
-        {**_row("d_good", "osqp", status="time_limit", kkt=_certificate("dual_infeasible", 1e-8)), **exp},
+        {**_row("d_good", "osqp", status="time_limit", kkt=_certificate("dual_infeasible", 1e-8)),
+         "metadata": {"expected_status": "unbounded"}},
         {**_row("p_bad", "osqp", status="max_iter_reached", kkt=_certificate("primal_infeasible", 1e-4)), **exp},
         {**_row("p_partial", "osqp", status="max_iter_reached", kkt=partial), **exp},
         {**_row("p_late", "osqp", status="max_iter_reached", kkt=_certificate("primal_infeasible", 1e-9)),

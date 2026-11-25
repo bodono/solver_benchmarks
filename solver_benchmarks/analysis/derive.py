@@ -392,7 +392,8 @@ def kkt_verify(
     report`` and every analysis command apply when they load a run): claimed
     solutions whose relative KKT residuals exceed the row's tolerance become
     ``optimal_inaccurate``, claimed certificates whose scaled residual exceeds
-    it the matching ``*_inaccurate`` status, and with ``promote`` (the
+    it, or that are neither proofs nor of a kind the problem's known outcome
+    confirms, the matching ``*_inaccurate`` status, and with ``promote`` (the
     default) inaccurate, iteration- and time-limited stops whose point or
     certificate passes become accurate, except a row returned after the run's
     time limit. Claimed optima with residuals missing, and claimed
@@ -423,6 +424,10 @@ def kkt_verify(
     An existing ``out_dir`` is replaced only with ``overwrite``, and only if
     it is empty or a derived run.
     """
+    # Imported here: outcomes imports pandas, which the workers that import
+    # this module (the MOSEK adapter) do not need.
+    from solver_benchmarks.analysis.outcomes import record_expected_outcome
+
     src = Path(run_dir)
     out = Path(out_dir)
     policy = VerifyPolicy(
@@ -466,6 +471,7 @@ def kkt_verify(
             "kkt": row.get("kkt") or {},
             "info": info if isinstance(info, dict) else {},
             "objective_value": objective,
+            "expected_status": record_expected_outcome(row),
         }
         resolved = resolver.resolve(row_info_from_record(row))
 

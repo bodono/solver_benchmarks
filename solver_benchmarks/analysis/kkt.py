@@ -6,12 +6,46 @@ solver-reported quantities. Returned dictionaries contain absolute
 residuals under their bare names and the SCS-style normalized variants
 under a ``_rel`` suffix.
 
-Infeasibility certificates are checked the way SCS and Clarabel check them:
-the certificate is scaled so that its objective term (``b'y``, the support
-``u'y⁺ − l'y⁻`` or ``q'x``) equals -1, and every remaining residual of the
-certificate must then be at most a tolerance (``CERT_TOL`` by default).
-``cert_res`` records that largest scaled residual and ``valid`` the verdict;
-``valid`` is None when a cone of the problem cannot be checked.
+Infeasibility certificates are checked twice.
+
+``cert_res`` is the measure SCS and Clarabel use: the certificate is scaled
+so that its objective term (``b'y``, the support ``u'y⁺ − l'y⁻`` or ``q'x``)
+equals -1, and ``cert_res`` is the largest remaining residual; ``valid`` says
+whether it is at most a tolerance (``CERT_TOL`` by default), and is None when
+a cone of the problem cannot be checked. A small ``cert_res`` does not prove
+infeasibility. A primal certificate ``y`` with ``A'y = r`` implies
+``r'x ≤ σ`` (σ its support, here −1) for every feasible ``x``, which excludes
+only the feasible points with ``‖x‖₁ < 1/‖r‖∞``; by LP duality the best
+``cert_res`` any certificate reaches on a feasible problem is exactly
+``1 / min ‖x‖₁`` over its feasible points. So a feasible problem whose
+feasible points are all large (MIPLIB mas76: every one has ``x₁₅₀ > 38,893``,
+so certificates with ``cert_res`` 2.57e-5 exist) passes, and rescaling a
+variable changes the verdict. A dual (unboundedness) certificate is the same
+statement about the size of the dual's feasible points.
+
+``cert_proof`` says whether the certificate is a proof: whether the
+inequality it implies contradicts the problem's own data. The residual
+``r`` must be paid for by finite bounds on ``x`` (the bounds the data states
+directly in its single-entry rows), however large they are (the safe bound of
+Neumaier and Shcherbina, "Safe bounds in linear and mixed-integer
+programming", Math. Program. 99, 2004), except entries no larger than the
+rounding error of evaluating them, and the contradiction must exceed the
+rounding error of evaluating it. A dual certificate has no bounds to pay with:
+every residual must be within its rounding error. The check has no tolerance
+and does not depend on the units of the rows, of ``x`` or of the
+certificate; it is exact up to perturbing each data entry at the level of its
+own rounding (``2⁻⁵³`` relative), and can therefore accept a certificate on a
+feasible problem that is within that perturbation of an infeasible one
+(``x − y ≥ 1`` and ``−(1 + 2⁻⁵²)x + y ≥ 1`` are feasible, but only for
+``x ≤ −2⁵³``).
+It covers linear constraints only (QP bounds, zero and nonnegative cones):
+a certificate on any other cone gets None, since a floating-point projection
+onto a second-order, semidefinite, exponential or power cone does not give a
+point exactly in the cone. Few certificates of non-simplex solvers are proofs
+(they leave residuals of 1e-10 on free variables), so the KKT verification
+(analysis/verify.py) accepts a certificate when it is a proof or when the
+problem's known outcome confirms its kind and ``cert_res`` is within the
+row's tolerance.
 """
 
 from __future__ import annotations
@@ -24,7 +58,7 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
-from solver_benchmarks.core.problem import as_list, cone_items_in_row_order
+from solver_benchmarks.core.problem import as_list, cone_items_in_row_order, cone_row_count
 
 _EPS = 1.0e-16
 # Shortest run of equal-sized second-order cones projected as one batch.
@@ -48,6 +82,11 @@ _INF_BOUND = 1.0e18
 # back on only for statuses read unverified.
 CERT_TOL = 1.0e-3
 _SQRT2 = math.sqrt(2.0)
+# Unit roundoff of IEEE double precision, and the smallest subnormal: the
+# absolute error an underflowing operation can add, which the relative error
+# bounds of the proof check (_gamma) do not cover.
+_UNIT_ROUNDOFF = 2.0**-53
+_SUBNORMAL = float(np.finfo(float).smallest_subnormal)
 
 
 def qp_residuals(
@@ -257,7 +296,8 @@ def cone_primal_infeasibility_cert(
     """Check ``y ∈ K*, A'y = 0, b'y < 0`` for primal infeasibility.
 
     Scaled so that ``b'y = −1``, ``‖A'y‖∞`` and the distance of ``y`` to
-    ``K*`` must be at most ``tol``.
+    ``K*`` must be at most ``tol``. ``cert_proof`` and the fields beside it
+    say whether ``y`` is a proof (see :func:`_primal_proof`).
     """
     y = _as_dense(y)
     A = _as_sparse(A)
@@ -275,6 +315,7 @@ def cone_primal_infeasibility_cert(
         "bty": bty,
         "dual_cone_res": y_cone_res,
         **_certificate_verdict(bty, (_inf_norm(Aty), y_cone_res), tol),
+        **_cone_primal_proof(A, b, cone, y),
     }
     if unsupported:
         out["unsupported_cones"] = sorted(set(unsupported))
@@ -293,7 +334,8 @@ def cone_dual_infeasibility_cert(
     """Check ``Px = 0, Ax ∈ -K, q'x < 0`` for dual infeasibility (unbounded).
 
     Scaled so that ``q'x = −1``, ``‖Px‖∞`` and the distance of ``−Ax`` to
-    ``K`` must be at most ``tol``.
+    ``K`` must be at most ``tol``. ``cert_proof`` and the fields beside it
+    say whether ``x`` is a proof (see :func:`_dual_proof`).
     """
     x = _as_dense(x)
     P = _as_sparse(P)
@@ -313,6 +355,7 @@ def cone_dual_infeasibility_cert(
         "qtx": qtx,
         "primal_cone_res": cone_res,
         **_certificate_verdict(qtx, (_inf_norm(Px), cone_res), tol),
+        **_cone_dual_proof(P, q, A, cone, x),
     }
     if unsupported:
         out["unsupported_cones"] = sorted(set(unsupported))
@@ -334,7 +377,8 @@ def qp_primal_infeasibility_cert(
     ``y_i < 0`` with ``l_i = −∞``), so that weight must vanish:
     ``dual_bound_res`` is its size. ``support`` is computed on the finite
     bounds. Scaled so that the support is −1, ``‖A'y‖∞`` and
-    ``dual_bound_res`` must be at most ``tol``.
+    ``dual_bound_res`` must be at most ``tol``. ``cert_proof`` and the
+    fields beside it say whether ``y`` is a proof (see :func:`_primal_proof`).
     """
     y = _as_dense(y)
     A = _as_sparse(A)
@@ -358,6 +402,7 @@ def qp_primal_infeasibility_cert(
         "support": support,
         "dual_bound_res": dual_bound_res,
         **_certificate_verdict(support, (_inf_norm(Aty), dual_bound_res), tol),
+        **_qp_primal_proof(A, l, u, y),
     }
 
 
@@ -374,7 +419,8 @@ def qp_dual_infeasibility_cert(
     """``Px = 0``, ``q'x < 0`` with ``Ax`` in the recession cone of ``l ≤ · ≤ u``.
 
     Scaled so that ``q'x = −1``, ``‖Px‖∞`` and the distance of ``Ax`` to
-    the recession cone must be at most ``tol``.
+    the recession cone must be at most ``tol``. ``cert_proof`` and the
+    fields beside it say whether ``x`` is a proof (see :func:`_dual_proof`).
     """
     x = _as_dense(x)
     P = _as_sparse(P)
@@ -404,6 +450,7 @@ def qp_dual_infeasibility_cert(
         "Ax_cone_res": _inf_norm(violations),
         "qtx": qtx,
         **_certificate_verdict(qtx, (_inf_norm(Px), _inf_norm(violations)), tol),
+        **_qp_dual_proof(P, q, A, l, u, x),
     }
 
 
@@ -484,6 +531,239 @@ def _number_or_nan(value) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float("nan")
+
+
+# --- proofs ----------------------------------------------------------------------
+#
+# A certificate is a proof when the inequality it implies for every feasible
+# point contradicts the problem's own data, evaluated so that rounding cannot
+# fake the contradiction. The record says so in ``cert_proof`` (True, False,
+# or None for cones the check does not cover, which ``cert_proof_cones``
+# names), with ``cert_proof_open``, the number of residual entries above
+# their rounding error that nothing pays for, and for a primal certificate
+# ``cert_proof_gap``, the margin of the contradiction relative to the
+# certificate's support (negative: no contradiction; MIPLIB mas76's
+# certificates reach -2.6e7, its 1e12 bound being far too loose to pay for
+# their residual).
+
+
+def _gamma(count):
+    """``γ_k = k u / (1 − k u)``: a sum of ``k`` floating-point products is off
+    by at most ``γ_k`` times the sum of their magnitudes (Higham, Accuracy and
+    Stability of Numerical Algorithms, 2nd ed., §3.1). Elementwise for arrays."""
+    count = np.asarray(count, dtype=float)
+    return count * _UNIT_ROUNDOFF / (1.0 - count * _UNIT_ROUNDOFF)
+
+
+def _dot_error(magnitudes, count):
+    """Bound on the rounding error of sums of ``count`` products whose
+    computed sum of magnitudes is ``magnitudes``.
+
+    ``2k + 2`` rather than ``k``: the sum of magnitudes is itself computed in
+    floating point (off by up to ``γ_k``) and the bound is multiplied in it;
+    the subnormal term covers products that underflow. A few units in the
+    last place, no tunable constant.
+    """
+    count = np.asarray(count, dtype=float)
+    return _gamma(2.0 * count + 2.0) * magnitudes + (count + 1.0) * _SUBNORMAL
+
+
+def _proof_matrix(A) -> sp.csr_matrix:
+    """``A`` without explicitly stored zeros, so a row with one nonzero entry
+    is recognized as stating a bound on its variable."""
+    A = _as_sparse(A).copy()
+    A.eliminate_zeros()
+    return A
+
+
+def _singleton_box(A: sp.csr_matrix, lower: np.ndarray, upper: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Bounds on ``x`` stated by the rows of ``A`` with one nonzero entry.
+
+    Row ``i`` with its only entry ``a`` in column ``j`` and ``lower_i ≤ a x_j
+    ≤ upper_i`` (``±inf`` for an absent side) bounds ``x_j``; the bounds of
+    all such rows are intersected per column, and the quotients are rounded
+    outward so the box contains every feasible ``x_j``. Columns without such
+    a row get ``(−inf, inf)``.
+    """
+    n = A.shape[1]
+    lo = np.full(n, -np.inf)
+    hi = np.full(n, np.inf)
+    rows = np.flatnonzero(np.diff(A.indptr) == 1)
+    if rows.size:
+        position = A.indptr[rows]
+        columns = A.indices[position]
+        entry = A.data[position]
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            low = np.where(entry > 0, lower[rows] / entry, upper[rows] / entry)
+            high = np.where(entry > 0, upper[rows] / entry, lower[rows] / entry)
+        np.maximum.at(lo, columns, np.nextafter(np.where(np.isnan(low), -np.inf, low), -np.inf))
+        np.minimum.at(hi, columns, np.nextafter(np.where(np.isnan(high), np.inf, high), np.inf))
+    return lo, hi
+
+
+def _primal_proof(
+    A: sp.csr_matrix, y_hat: np.ndarray, sigma: float, sigma_error: float, lo: np.ndarray, hi: np.ndarray
+) -> dict[str, Any]:
+    """Whether ``r'x ≤ σ`` (``r = A'ŷ``), which every feasible ``x``
+    satisfies, contradicts ``lo ≤ x ≤ hi``, which every feasible ``x`` also
+    satisfies.
+
+    ``ŷ`` is the certificate made exactly dual feasible by the caller, so
+    the inequality holds for every feasible point: QP form ``r'x = ŷ'Ax ≤
+    max_{z ∈ [l, u]} ŷ'z = σ``; cone form ``ŷ ∈ K*`` and ``s = b − Ax ∈ K``
+    give ``ŷ'(b − Ax) ≥ 0``, i.e. ``r'x ≤ b'ŷ = σ``. Each ``r_j`` is known to
+    within its rounding error ``e_j``; ``L``, the least value of ``r'x`` over
+    the box for any ``r`` within those errors, is evaluated with its own
+    rounding error taken off, and ``L > σ + sigma_error`` contradicts the
+    inequality: no feasible point exists. A column whose ``r_j`` needs a
+    bound the box lacks (a lower one for ``r_j > 0``, an upper one for
+    ``r_j < 0``) makes ``L`` unbounded, unless ``|r_j| ≤ e_j``: then the
+    residual is taken as zero, which is where the check is exact only up to
+    rounding of the data. Nothing here depends on the units of rows,
+    columns or certificate.
+    """
+    if not (np.all(np.isfinite(y_hat)) and math.isfinite(sigma) and math.isfinite(sigma_error)):
+        return {"cert_proof": False, "cert_proof_gap": float("nan"), "cert_proof_open": 0}
+    At = A.T.tocsr()
+    r = At @ y_hat
+    error = _dot_error(abs(At) @ np.abs(y_hat), np.diff(At.indptr))
+    r_lo = np.nextafter(r - error, -np.inf)
+    r_hi = np.nextafter(r + error, np.inf)
+    no_lo = ~np.isfinite(lo)
+    no_hi = ~np.isfinite(hi)
+    rounding = np.abs(r) <= error
+    r_hi = np.where(rounding & no_lo, np.minimum(r_hi, 0.0), r_hi)
+    r_lo = np.where(rounding & no_hi, np.maximum(r_lo, 0.0), r_lo)
+    open_columns = ((r_hi > 0.0) & no_lo) | ((r_lo < 0.0) & no_hi) | ~np.isfinite(r)
+    # Least value of r_j x_j over the residual interval and the box: a
+    # corner. A corner on an infinite bound is ignored (on a column that is
+    # not open its product is +inf or 0 * inf); an overflowing product of
+    # finite numbers is kept, so -inf there makes L unbounded.
+    corners = []
+    with np.errstate(invalid="ignore", over="ignore"):
+        for end in (r_lo, r_hi):
+            for bound in (lo, hi):
+                corners.append(np.where(np.isfinite(bound), end * bound, np.inf))
+    term = np.min(corners, axis=0)
+    term = np.where(open_columns | (term == np.inf), 0.0, term)
+    n = term.size
+    with np.errstate(over="ignore", invalid="ignore"):
+        least = float(term.sum()) - float(_dot_error(float(np.abs(term).sum()), n + 1))
+    margin = least - (sigma + sigma_error)
+    n_open = int(open_columns.sum())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        gap = margin / abs(sigma) if sigma != 0.0 else (math.copysign(math.inf, margin) if margin else 0.0)
+    return {
+        "cert_proof": bool(n_open == 0 and margin > 0.0),
+        "cert_proof_gap": float(gap),
+        "cert_proof_open": n_open,
+    }
+
+
+def _qp_primal_proof(A, l: np.ndarray, u: np.ndarray, y: np.ndarray) -> dict[str, Any]:
+    """:func:`_primal_proof` for ``l ≤ Ax ≤ u``: ``ŷ`` is ``y`` without its
+    weight on absent bounds (``y_i > 0`` needs ``u_i``, ``y_i < 0`` needs
+    ``l_i``) and ``σ = u'ŷ⁺ − l'ŷ⁻`` over the finite bounds."""
+    finite_l = _finite_bounds(l)
+    finite_u = _finite_bounds(u)
+    if not np.all(np.isfinite(y)):
+        return {"cert_proof": False, "cert_proof_gap": float("nan"), "cert_proof_open": 0}
+    y_hat = np.where(((y > 0) & ~finite_u) | ((y < 0) & ~finite_l), 0.0, y)
+    upper = np.where(finite_u, u, 0.0)
+    lower = np.where(finite_l, l, 0.0)
+    y_pos = np.maximum(y_hat, 0.0)
+    y_neg = np.maximum(-y_hat, 0.0)
+    sigma = float(upper @ y_pos) - float(lower @ y_neg)
+    sigma_error = float(_dot_error(float(np.abs(upper) @ y_pos + np.abs(lower) @ y_neg), 2 * y.size + 1))
+    A = _proof_matrix(A)
+    lo, hi = _singleton_box(A, np.where(finite_l, l, -np.inf), np.where(finite_u, u, np.inf))
+    return _primal_proof(A, y_hat, sigma, sigma_error, lo, hi)
+
+
+def _linear_rows(cone: dict[str, Any] | None, m: int) -> tuple[np.ndarray, list[str]]:
+    """Mask of the nonnegative-cone rows, and the names of the cones that are
+    not linear (zero or nonnegative) and take rows; the second is empty when
+    the proof check covers the problem."""
+    nonneg = np.zeros(m, dtype=bool)
+    others: list[str] = []
+    if cone is None:
+        return nonneg, ["unknown"]
+    row = 0
+    for name, value in cone_items_in_row_order(cone):
+        if name in ("f", "z", "l"):
+            if name == "l":
+                nonneg[row:row + int(value)] = True
+            row += int(value)
+        elif cone_row_count({name: value}) != 0:
+            # Any other cone that takes rows (a box takes none when empty),
+            # and keys that cannot be sized.
+            others.append("box" if name in ("bl", "bu") else str(name))
+    if not others and row != m:
+        others.append("rows")
+    return nonneg, sorted(set(others))
+
+
+def _cone_primal_proof(A, b: np.ndarray, cone: dict[str, Any], y: np.ndarray) -> dict[str, Any]:
+    """:func:`_primal_proof` for ``Ax + s = b, s ∈ K`` with ``K`` a product of
+    zero and nonnegative cones: ``ŷ`` is ``y`` with its negative entries on
+    nonnegative rows zeroed (exactly in ``K*``) and ``σ = b'ŷ``. Other cones
+    get ``cert_proof`` None (see the module docstring)."""
+    nonneg, others = _linear_rows(cone, b.size)
+    if others:
+        return {"cert_proof": None, "cert_proof_cones": others}
+    if not np.all(np.isfinite(y)):
+        return {"cert_proof": False, "cert_proof_gap": float("nan"), "cert_proof_open": 0}
+    y_hat = np.where(nonneg, np.maximum(y, 0.0), y)
+    sigma = float(b @ y_hat)
+    sigma_error = float(_dot_error(float(np.abs(b) @ np.abs(y_hat)), b.size))
+    A = _proof_matrix(A)
+    # A single-entry row a x_j + s_i = b_i states a x_j = b_i (zero cone) or
+    # a x_j <= b_i (nonnegative cone).
+    lo, hi = _singleton_box(A, np.where(nonneg, -np.inf, b), b)
+    return _primal_proof(A, y_hat, sigma, sigma_error, lo, hi)
+
+
+def _dual_proof(P, q: np.ndarray, A, x: np.ndarray, not_above: np.ndarray, not_below: np.ndarray) -> dict[str, Any]:
+    """Whether ``x`` proves the dual infeasible: ``Px = 0``, each ``(Ax)_i ≤ 0``
+    where ``not_above`` and ``≥ 0`` where ``not_below``, and ``q'x < 0``.
+
+    The dual's variables have no bounds to pay for a residual, so every
+    residual must be within its rounding error and ``q'x`` must stay negative
+    by more than its own: then ``x`` is an exact certificate for the data
+    with each entry perturbed at the level of its rounding.
+    """
+    if not np.all(np.isfinite(x)):
+        return {"cert_proof": False, "cert_proof_open": 0}
+    P = _as_sparse(P)
+    A = _as_sparse(A)
+    magnitude = np.abs(x)
+    Px = P @ x
+    Ax = A @ x
+    Px_error = _dot_error(abs(P) @ magnitude, np.diff(P.indptr))
+    Ax_error = _dot_error(abs(A) @ magnitude, np.diff(A.indptr))
+    qtx = float(q @ x)
+    qtx_error = float(_dot_error(float(np.abs(q) @ magnitude), x.size))
+    bad = int(np.count_nonzero(~(np.abs(Px) <= Px_error)))
+    bad += int(np.count_nonzero((not_above & ~(Ax <= Ax_error)) | (not_below & ~(Ax >= -Ax_error))))
+    return {"cert_proof": bool(bad == 0 and qtx + qtx_error < 0.0), "cert_proof_open": bad}
+
+
+def _qp_dual_proof(P, q: np.ndarray, A, l: np.ndarray, u: np.ndarray, x: np.ndarray) -> dict[str, Any]:
+    """:func:`_dual_proof` for ``l ≤ Ax ≤ u``: ``Ax`` in the recession cone
+    of ``[l, u]``, i.e. ``(Ax)_i ≤ 0`` where ``u_i`` is finite and ``≥ 0``
+    where ``l_i`` is."""
+    return _dual_proof(P, q, A, x, _finite_bounds(u), _finite_bounds(l))
+
+
+def _cone_dual_proof(P, q: np.ndarray, A, cone: dict[str, Any], x: np.ndarray) -> dict[str, Any]:
+    """:func:`_dual_proof` for ``−Ax ∈ K``, ``K`` a product of zero and
+    nonnegative cones: ``Ax = 0`` on zero rows, ``Ax ≤ 0`` on nonnegative
+    ones. Other cones get ``cert_proof`` None."""
+    m = _as_sparse(A).shape[0]
+    nonneg, others = _linear_rows(cone, m)
+    if others:
+        return {"cert_proof": None, "cert_proof_cones": others}
+    return _dual_proof(P, q, A, x, np.ones(m, dtype=bool), ~nonneg)
 
 
 def _project_cones(

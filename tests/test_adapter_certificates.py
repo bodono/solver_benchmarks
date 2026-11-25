@@ -96,9 +96,19 @@ def _adapter(name: str, settings: dict):
 BUG_TOL = CERT_TOL
 
 
+# Every problem here is infeasible or unbounded by construction (the NETLIB
+# ones are labelled infeasible), of the kind each test asserts the solver
+# claims before verifying it. The verification is told that known outcome, as
+# it is for a labelled dataset, so a certificate of a non-simplex solver (not
+# a proof, see kkt.cert_proof) is held to BUG_TOL.
+KNOWN_OUTCOME = {status.PRIMAL_INFEASIBLE: status.EXPECT_INFEASIBLE, status.DUAL_INFEASIBLE: status.EXPECT_UNBOUNDED}
+
+
 def _verdict(result):
-    """The verification of ``result`` at ``BUG_TOL``."""
-    return classify({"status": result.status, "kkt": result.kkt}, tolerance=lambda: BUG_TOL)
+    """The verification of ``result`` at ``BUG_TOL``, on a problem whose known
+    outcome is the kind it claims."""
+    view = {"status": result.status, "kkt": result.kkt, "expected_status": KNOWN_OUTCOME.get(result.status)}
+    return classify(view, tolerance=lambda: BUG_TOL)
 
 
 def _flip(values):
@@ -140,10 +150,24 @@ def test_highs_certificate_passes_the_verification(make, claim, tmp_path):
     result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(make()), tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
+    assert "cert_proof" in result.kkt
     verdict = _verdict(result)
     assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
     assert result.info["certificate_seconds"] >= 0.0
     assert "certificate_unavailable" not in result.info
+
+
+@pytest.mark.parametrize("make, claim", HIGHS_CLAIMS[:4])
+def test_highs_simplex_ray_is_a_proof_without_a_known_outcome(make, claim, tmp_path):
+    """On small problems with integer data HiGHS's simplex ray is exact, so it
+    is accepted with no known outcome at all (kkt.cert_proof). Its NETLIB
+    rays are proofs too with highspy 1.15.1, but at the rounding level, so
+    they are not pinned here."""
+    result = _adapter("highs", HIGHS_SETTINGS).solve(_problem(make()), tmp_path)
+    assert result.status == claim
+    assert result.kkt["cert_proof"] is True
+    verdict = classify({"status": result.status, "kkt": result.kkt}, tolerance=lambda: BUG_TOL)
+    assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
 
 
 @pytest.mark.parametrize("corrupt", CORRUPTIONS.values(), ids=CORRUPTIONS.keys())
@@ -318,6 +342,7 @@ def test_piqp_certificate_is_verified(make, claim, corrupt, monkeypatch, tmp_pat
     result = adapter.solve(_problem(make()), tmp_path)
     assert result.status == claim
     assert result.kkt is not None and result.kkt["certificate"] == claim
+    assert "cert_proof" in result.kkt
     verdict = _verdict(result)
     if corrupt is None:
         assert (verdict.verdict, verdict.status) == ("kept", claim), verdict.reason
@@ -365,6 +390,7 @@ def test_proxqp_certificate_is_verified(corrupt, monkeypatch, tmp_path):
     result = adapter.solve(_problem(_infeasible_equality_lp()), tmp_path)
     assert result.status == status.PRIMAL_INFEASIBLE
     assert result.kkt is not None and result.kkt["certificate"] == status.PRIMAL_INFEASIBLE
+    assert "cert_proof" in result.kkt
     verdict = _verdict(result)
     if corrupt is None:
         assert (verdict.verdict, verdict.status) == ("kept", status.PRIMAL_INFEASIBLE), verdict.reason

@@ -119,7 +119,9 @@ def test_load_results_verifies_at_ten_times_the_requested_tolerance(tmp_path):
     assert df.loc["ok", "verify.requested_tol"] == pytest.approx(1e-4)
     assert df.loc["ok", "verify.requested_tol_source"] == "manifest"
     assert df.loc["cert_bad", "verify.tol"] == pytest.approx(TOL)  # certificates by the same tolerance
-    assert df.loc["cert_ok", "verify.reason"] == "certificate residual 5.000e-07 <= 1.0e-03"
+    assert df.loc["cert_ok", "verify.reason"] == (
+        "certificate residual 5.000e-07 <= 1.0e-03; the known outcome (infeasible) confirms a primal_infeasible certificate"
+    )
     assert "5.000e-03" in df.loc["loose", "verify.reason"]
     assert df.loc["error", "verify.tol"] != df.loc["error", "verify.tol"]  # NaN: never needed one
     info = df.attrs["verification"]
@@ -465,7 +467,8 @@ def test_classify_asks_for_a_tolerance_only_to_compare():
 def test_a_certificate_on_cones_the_harness_cannot_project_is_kept_unverified():
     certificate = {"certificate": "primal_infeasible", "bty": -1.0, "Aty_inf": 1e-9, "dual_cone_res": None,
                    "unsupported_cones": ["cs"]}
-    verdict = classify({"status": "primal_infeasible", "kkt": certificate}, tolerance=lambda: 1e-3)
+    view = {"status": "primal_infeasible", "kkt": certificate, "expected_status": "infeasible"}
+    verdict = classify(view, tolerance=lambda: 1e-3)
     assert (verdict.verdict, verdict.status) == ("unverified_certificate", "primal_infeasible")
 
 

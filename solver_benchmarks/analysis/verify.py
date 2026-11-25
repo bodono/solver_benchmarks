@@ -4,9 +4,10 @@ Every solve records KKT residuals that the harness computed itself from the
 returned point or certificate and the problem data (``analysis/kkt.py``).
 Verification holds each row's claim to them: a claimed solution must have
 relative residuals at or below a tolerance, a claimed infeasibility
-certificate a scaled certificate residual at or below one, and (with
-promotion) an inaccurate, iteration- or time-limited stop whose point passes
-becomes ``optimal``. :func:`classify` is the one definition of that rule; the
+certificate must be a proof or be of a kind the problem's known outcome
+confirms with a scaled certificate residual at or below the tolerance, and
+(with promotion) an inaccurate, iteration- or time-limited stop whose point
+passes becomes ``optimal``. :func:`classify` is the one definition of that rule; the
 loader (``load_results``, verified by default) and ``bench kkt-verify`` both
 call it.
 
@@ -371,9 +372,12 @@ def classify(
     """Decide a row's verified status from its reported one.
 
     ``view`` is the row as ``{"status": <reported status>, "kkt": {...},
-    "info": {...}, "objective_value": ...}``. ``tolerance()`` gives the row's
-    tolerance, for solutions and certificates alike; it is asked only when a
-    residual is compared with it, so a row without residuals never needs one.
+    "info": {...}, "objective_value": ..., "expected_status": ...}``, the
+    last being the problem's known outcome (``status.EXPECTED_OUTCOMES``, as
+    ``outcomes.expected_outcomes`` gives it; absent or None where unknown).
+    ``tolerance()`` gives the row's tolerance, for solutions and certificates
+    alike; it is asked only when a residual is compared with it, so a row
+    without residuals never needs one.
 
     A claimed solution (``optimal``) keeps its status only if the worst of
     ``fields`` (relative residuals computed by the harness from the returned
@@ -386,19 +390,30 @@ def classify(
     (``kkt.unsupported_cones``) is kept when the rest pass
     (``unverified_cones``).
 
-    Infeasibility certificates (``primal_infeasible``, ``dual_infeasible``)
-    are held to the same tolerance: their largest residual once scaled so
-    that the certificate's objective term is −1 (``kkt.cert_res``, rebuilt
-    for older records) must be at or below it, or the row becomes the
-    matching ``*_inaccurate`` status. A claim whose adapter recorded no
-    certificate (cuOpt never does, its API exposing none; the others not
-    when the solver produces none, e.g. HiGHS, Gurobi and CPLEX on an
-    unbounded QP) cannot be verified and is demoted like a solution without
-    residuals (``missing_residuals``), unless ``missing_is_failure`` is
-    False. A certificate in which nothing fails but the distance to a cone
-    the harness cannot project is unknown is kept whatever
-    ``missing_is_failure`` says (``unverified_certificate``),
-    as a solution in that case is.
+    An infeasibility certificate (``primal_infeasible``, ``dual_infeasible``)
+    is accepted when it is a proof (``kkt.cert_proof``: the inequality it
+    implies contradicts the problem's own data, see ``analysis/kkt.py``), or
+    when the problem's known outcome confirms its kind
+    (``status.CONFIRMED_CERTIFICATES``) and its largest residual once scaled
+    so that its objective term is −1 (``kkt.cert_res``, rebuilt for older
+    records) is at or below the tolerance; it is never accepted when the
+    known outcome rules its kind out (``status.RULED_OUT_CERTIFICATES``: any
+    certificate on a problem with an optimal solution, a primal one on an
+    unbounded problem), and a proof there is reported as contradicting the
+    label. A small ``cert_res`` alone is not accepted: it says only that no
+    feasible point is small in the problem's units, and false certificates
+    reach 1e-11 on feasible problems with large feasible points. A
+    certificate that is not accepted makes the row the matching
+    ``*_inaccurate`` status. A claim whose adapter recorded no certificate
+    (cuOpt never does, its API exposing none; the others not when the solver
+    produces none, e.g. HiGHS, Gurobi and CPLEX on an unbounded QP), or whose
+    kind needs a proof and whose record predates proofs, cannot be verified
+    and is demoted like a solution without residuals
+    (``missing_residuals``), unless ``missing_is_failure`` is False. A
+    certificate of a confirmed kind in which nothing fails but the distance
+    to a cone the harness cannot project is unknown is kept whatever
+    ``missing_is_failure`` says (``unverified_certificate``), as a solution in
+    that case is.
 
     With ``promote``, the converse also applies: a solve reported as
     inaccurate, iteration-limited or time-limited whose returned point passes
@@ -407,7 +422,7 @@ def classify(
     one only for a solution), it takes the point's objective that the worker
     recorded as ``kkt.primal_obj_reported``. Likewise a
     ``primal_infeasible_inaccurate`` / ``dual_infeasible_inaccurate`` row
-    whose certificate is fully checked and passes becomes accurate, and so
+    whose certificate is fully checked and accepted becomes accurate, and so
     does an iteration- or time-limited row whose record holds such a
     certificate instead of a point (OSQP records its inaccurate certificates
     so); a missing or partly checked certificate is never promoted. A row
@@ -416,17 +431,20 @@ def classify(
     """
     reported = view.get("status")
     kkt = view.get("kkt") or {}
+    expected = view.get("expected_status")
+    expected = str(expected) if expected in status.EXPECTED_OUTCOMES else None
     if promote and (reported in PROMOTABLE or reported in CERTIFICATE_PROMOTION):
-        return _classify_promotable(view, kkt, str(reported), tolerance, fields)
+        return _classify_promotable(view, kkt, str(reported), tolerance, fields, expected)
     if reported in CERTIFICATE_DEMOTION:
-        return _classify_certificate(kkt, str(reported), tolerance, missing_is_failure)
+        return _classify_certificate(kkt, str(reported), tolerance, missing_is_failure, expected)
     if reported in status.SOLUTION_PRESENT:
         return _classify_solution(view, kkt, str(reported), tolerance, missing_is_failure, fields)
     return Verdict("not_checked", str(reported) if reported is not None else reported)
 
 
 def _classify_promotable(
-    view: dict[str, Any], kkt: dict[str, Any], reported: str, tolerance: Tolerance, fields: tuple[str, ...]
+    view: dict[str, Any], kkt: dict[str, Any], reported: str, tolerance: Tolerance, fields: tuple[str, ...],
+    expected: str | None,
 ) -> Verdict:
     if returned_after_time_limit(view):
         return Verdict("over_time_limit", reported, reason="returned after the time limit; not promoted")
@@ -451,12 +469,10 @@ def _classify_promotable(
                 "kept", reported, reason=f"not promoted: the record holds a {kkt.get('certificate')} certificate",
                 **base,
             )
-        cert_tol = tolerance()
-        if cert <= cert_tol:
-            return Verdict("promoted", target, reason=f"certificate residual {cert:.3e} <= {cert_tol:.1e}", **base)
-        return Verdict(
-            "kept", reported, reason=f"not promoted: certificate residual {cert:.3e} > {cert_tol:.1e}", **base
-        )
+        judged = _judge_certificate(kkt, target, expected, tolerance, cert, complete)
+        if judged.accepted is True:
+            return Verdict("promoted", target, reason=judged.reason, **base)
+        return Verdict("kept", reported, reason=f"not promoted: {judged.reason}", **base)
     check = check_residuals(view, fields)
     base = {"fields": tuple(check.checked), "worst": check.worst, "worst_field": check.worst_field}
     if check.worst is None:
@@ -487,43 +503,95 @@ def _classify_promotable(
     )
 
 
+@dataclass
+class _CertificateJudgement:
+    """Whether a recorded certificate is accepted (None: it cannot be
+    verified, a missing record; ``complete`` False with ``accepted`` True:
+    nothing fails but a cone distance is unknown), and why."""
+
+    accepted: bool | None
+    reason: str
+    complete: bool = True
+
+
+def _judge_certificate(
+    kkt: dict[str, Any], kind: str, expected: str | None, tolerance: Tolerance, cert: float | None, complete: bool
+) -> _CertificateJudgement:
+    """The rule for a recorded certificate of ``kind`` on a problem whose
+    known outcome is ``expected`` (see :func:`classify`). ``cert`` and
+    ``complete`` are :func:`kkt.certificate_check` of the record."""
+    if cert is None:
+        return _CertificateJudgement(None, "no certificate recorded")
+    proof = kkt.get("cert_proof")
+    if kind in status.RULED_OUT_CERTIFICATES.get(expected or "", frozenset()):
+        reason = f"the known outcome ({expected}) rules out a {kind} certificate"
+        if proof is True:
+            reason += "; the record holds a proof of it, so the label or the problem's loader is wrong"
+        return _CertificateJudgement(False, reason)
+    if proof is True:
+        return _CertificateJudgement(True, f"the certificate is a proof (proof gap {_shown(kkt.get('cert_proof_gap'))})")
+    if kind in status.CONFIRMED_CERTIFICATES.get(expected or "", frozenset()):
+        confirmed = f"the known outcome ({expected}) confirms a {kind} certificate"
+        if math.isinf(cert):
+            return _CertificateJudgement(False, "certificate residual inf (its objective term is not negative)")
+        cert_tol = tolerance()
+        if cert > cert_tol:
+            unknown = "" if complete else " (some residuals unknown)"
+            return _CertificateJudgement(False, f"certificate residual {cert:.3e} > {cert_tol:.1e}{unknown}")
+        if not complete:
+            # Nothing fails, but the distance to a cone the harness cannot
+            # project is unknown; kept, like an optimal row with such cones.
+            cones = kkt.get("unsupported_cones")
+            unknown = f"unsupported cones {sorted(cones)}" if cones else "some residuals unknown"
+            return _CertificateJudgement(
+                True, f"certificate not fully checked ({unknown}); known residuals <= {cert_tol:.1e}; {confirmed}",
+                complete=False,
+            )
+        return _CertificateJudgement(True, f"certificate residual {cert:.3e} <= {cert_tol:.1e}; {confirmed}")
+    unconfirmed = (
+        f"no known outcome confirms a {kind} certificate" if expected is None
+        else f"the known outcome ({expected}) does not confirm a {kind} certificate"
+    )
+    cones = kkt.get("cert_proof_cones")
+    if proof is None and not cones:
+        return _CertificateJudgement(None, f"{unconfirmed} and the record holds no proof (recorded before proofs were)")
+    if proof is None:
+        return _CertificateJudgement(
+            False, f"{unconfirmed}, and the harness cannot prove a certificate on {_shown(cones)} cones"
+        )
+    detail = f"{_shown(kkt.get('cert_proof_open'))} residual entries above their rounding error with nothing to pay for them"
+    if kkt.get("cert_proof_gap") is not None:
+        detail += f", proof gap {_shown(kkt.get('cert_proof_gap'))}"
+    return _CertificateJudgement(False, f"{unconfirmed} and the certificate is not a proof ({detail})")
+
+
+def _shown(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.3g}"
+    if isinstance(value, (list, tuple)):
+        return "/".join(str(item) for item in value)
+    return str(value)
+
+
 def _classify_certificate(
-    kkt: dict[str, Any], reported: str, tolerance: Tolerance, missing_is_failure: bool
+    kkt: dict[str, Any], reported: str, tolerance: Tolerance, missing_is_failure: bool, expected: str | None
 ) -> Verdict:
     cert, complete = certificate_check(kkt)
     base: dict[str, Any] = {
         "fields": ("cert_res",), "worst": cert, "worst_field": None if cert is None else "cert_res",
     }
-    if cert is None:
-        # The adapter recorded no certificate (cuOpt never does): the claim
-        # cannot be verified, so it is not a verified success.
+    judged = _judge_certificate(kkt, reported, expected, tolerance, cert, complete)
+    if judged.accepted is None:
+        # No certificate recorded (cuOpt never records one), or none the
+        # rule can use: the claim cannot be verified, so it is not a
+        # verified success.
         new_status = CERTIFICATE_DEMOTION[reported] if missing_is_failure else reported
-        return Verdict("missing_residuals", new_status, reason="no certificate recorded", **base)
-    if math.isinf(cert):
-        return Verdict(
-            "demoted",
-            CERTIFICATE_DEMOTION[reported],
-            reason="certificate residual inf (its objective term is not negative)",
-            **base,
-        )
-    cert_tol = tolerance()
-    if cert > cert_tol:
-        reason = f"certificate residual {cert:.3e} > {cert_tol:.1e}"
-        if not complete:
-            reason += " (some residuals unknown)"
-        return Verdict("demoted", CERTIFICATE_DEMOTION[reported], reason=reason, **base)
-    if not complete:
-        # Nothing fails, but the distance to a cone the harness cannot project
-        # is unknown; kept, like an optimal row with such cones.
-        cones = kkt.get("unsupported_cones")
-        unknown = f"unsupported cones {sorted(cones)}" if cones else "some residuals unknown"
-        return Verdict(
-            "unverified_certificate",
-            reported,
-            reason=f"certificate not fully checked ({unknown}); known residuals <= {cert_tol:.1e}",
-            **base,
-        )
-    return Verdict("kept", reported, reason=f"certificate residual {cert:.3e} <= {cert_tol:.1e}", **base)
+        return Verdict("missing_residuals", new_status, reason=judged.reason, **base)
+    if not judged.accepted:
+        return Verdict("demoted", CERTIFICATE_DEMOTION[reported], reason=judged.reason, **base)
+    if not judged.complete:
+        return Verdict("unverified_certificate", reported, reason=judged.reason, **base)
+    return Verdict("kept", reported, reason=judged.reason, **base)
 
 
 def _classify_solution(
@@ -893,7 +961,10 @@ class _FrameRows:
     """Row views and :class:`RowInfo` of a results frame, built on demand."""
 
     def __init__(self, df: pd.DataFrame, statuses: pd.Series, objective: pd.Series) -> None:
+        from solver_benchmarks.analysis.outcomes import expected_outcomes
+
         self.kkt_columns = [(name[4:], df[name].to_numpy(dtype=object)) for name in df.columns if name.startswith("kkt.")]
+        self.expected = expected_outcomes(df).to_numpy(dtype=object)
         self.info = {key: _column_values(df, name) for key, name in _INFO_COLUMNS.items()}
         self.statuses = statuses.to_numpy(dtype=object)
         self.objective = objective.to_numpy(dtype=object)
@@ -922,6 +993,8 @@ class _FrameRows:
                 # distances with a cone-form record.
                 if name == "cert_res" and raw.get("cert_tol") is not None:
                     pass
+                elif name == "cert_proof" and raw.get("cert_proof_cones") is not None:
+                    pass
                 elif name in _CONE_DISTANCES and cone_present:
                     pass
                 else:
@@ -934,6 +1007,7 @@ class _FrameRows:
             "kkt": kkt,
             "info": {key: value for key, value in info.items() if value is not None},
             "objective_value": objective,
+            "expected_status": self.expected[i],
         }
 
     def row_info(self, i: int) -> RowInfo:

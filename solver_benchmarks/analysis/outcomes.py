@@ -29,8 +29,9 @@ import numpy as np
 import pandas as pd
 
 from solver_benchmarks.core import status
-from solver_benchmarks.datasets.dimacs import DIMACS_INFEASIBLE
-from solver_benchmarks.datasets.sdplib import SDPLIB_INFEASIBLE
+from solver_benchmarks.datasets.dimacs import DIMACS_OUTCOMES
+from solver_benchmarks.datasets.mps import NETLIB_INFEASIBLE_OUTCOMES
+from solver_benchmarks.datasets.sdplib import SDPLIB_OUTCOMES
 
 EXPECTED_COLUMN = "metadata.expected_status"
 # Set on every row load_results verified (see analysis/verify.py).
@@ -53,15 +54,39 @@ def _inferred_outcome(dataset: object, problem: object, source: object) -> str |
     """
     path = source.replace("\\", "/") if isinstance(source, str) else ""
     if "/netlib_data/infeasible/" in path:
-        return status.EXPECT_INFEASIBLE
+        return NETLIB_INFEASIBLE_OUTCOMES.get(str(problem), status.EXPECT_INFEASIBLE)
     if "/liu_pataki_data/" in path or dataset == "liu_pataki":
         # Every instance is infeasible or weakly infeasible by construction.
         return status.EXPECT_INFEASIBLE
-    if ("/sdplib_data/" in path or dataset == "sdplib") and problem in SDPLIB_INFEASIBLE:
-        return status.EXPECT_INFEASIBLE
-    if ("/dimacs_data/" in path or dataset == "dimacs") and problem in DIMACS_INFEASIBLE:
-        return status.EXPECT_INFEASIBLE
+    if ("/sdplib_data/" in path or dataset == "sdplib") and problem in SDPLIB_OUTCOMES:
+        return SDPLIB_OUTCOMES[str(problem)]
+    if ("/dimacs_data/" in path or dataset == "dimacs") and problem in DIMACS_OUTCOMES:
+        return DIMACS_OUTCOMES[str(problem)]
     return None
+
+
+# Outcomes more specific than "infeasible", which rows recorded before the
+# datasets stated the kind of an infeasible problem's infeasibility carry
+# instead; the kind the dataset states replaces it.
+_KINDS = frozenset({status.EXPECT_UNBOUNDED, status.EXPECT_PRIMAL_AND_DUAL_INFEASIBLE})
+
+
+def record_expected_outcome(record: dict) -> str | None:
+    """Known outcome of one results.jsonl record (None where unknown).
+
+    The per-record form of :func:`expected_outcomes`, for code that walks
+    records instead of a frame (``derive.kkt_verify``).
+    """
+    metadata = record.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    recorded = metadata.get("expected_status")
+    inferred = _inferred_outcome(record.get("dataset"), record.get("problem"), metadata.get("source"))
+    if recorded in status.EXPECTED_OUTCOMES:
+        if recorded == status.EXPECT_INFEASIBLE and inferred in _KINDS:
+            return inferred
+        return str(recorded)
+    return inferred
 
 
 def expected_outcomes(results: pd.DataFrame) -> pd.Series:
@@ -98,18 +123,16 @@ def with_expected_outcomes(results: pd.DataFrame) -> pd.DataFrame:
 def _compute_expected_outcomes(results: pd.DataFrame) -> pd.Series:
     """Derive the expected outcomes of ``results``, without ``OUTCOME_COLUMN``.
 
-    The vectorized form of a recorded ``metadata.expected_status`` where it
-    is valid and :func:`_inferred_outcome` everywhere else.
+    The vectorized form of :func:`record_expected_outcome`: a recorded
+    ``metadata.expected_status`` where it is valid (made specific where it
+    says "infeasible" for a problem whose kind the dataset now states) and
+    :func:`_inferred_outcome` everywhere else.
     """
     recorded = _column(results, EXPECTED_COLUMN).astype(object)
     known = recorded.isin(list(status.EXPECTED_OUTCOMES)).to_numpy(dtype=bool)
-    out = pd.Series(np.where(known, recorded.to_numpy(), None), index=results.index, dtype=object)
-    if known.all():
-        return out
-    rows = results.loc[~known]
-    dataset = _column(rows, "dataset")
-    problem = _column(rows, "problem")
-    path = _string_values(_column(rows, "metadata.source")).str.replace("\\", "/", regex=False)
+    dataset = _column(results, "dataset")
+    problem = _column(results, "problem")
+    path = _string_values(_column(results, "metadata.source")).str.replace("\\", "/", regex=False)
 
     def in_path(text: str) -> np.ndarray:
         return path.str.contains(text, regex=False).fillna(False).to_numpy(dtype=bool)
@@ -117,20 +140,26 @@ def _compute_expected_outcomes(results: pd.DataFrame) -> pd.Series:
     def dataset_is(name: str) -> np.ndarray:
         return dataset.isin([name]).to_numpy(dtype=bool)
 
-    def problem_in(names) -> np.ndarray:
-        return problem.isin(list(names)).to_numpy(dtype=bool)
+    def outcome_of(table: dict) -> np.ndarray:
+        return problem.map(lambda name: table.get(name) if isinstance(name, str) else None).to_numpy(dtype=object)
 
-    infeasible = (
-        in_path("/netlib_data/infeasible/")
-        | in_path("/liu_pataki_data/")
-        | dataset_is("liu_pataki")
-        | ((in_path("/sdplib_data/") | dataset_is("sdplib")) & problem_in(SDPLIB_INFEASIBLE))
-        | ((in_path("/dimacs_data/") | dataset_is("dimacs")) & problem_in(DIMACS_INFEASIBLE))
-    )
-    inferred = np.full(len(rows), None, dtype=object)
-    inferred[infeasible] = status.EXPECT_INFEASIBLE
-    out.iloc[np.flatnonzero(~known)] = inferred
-    return out
+    netlib_infeasible = in_path("/netlib_data/infeasible/")
+    sdplib = in_path("/sdplib_data/") | dataset_is("sdplib")
+    dimacs = in_path("/dimacs_data/") | dataset_is("dimacs")
+    # Assigned in the reverse of _inferred_outcome's order, so that where
+    # several apply the one it checks first is the one left.
+    inferred = np.full(len(results), None, dtype=object)
+    for mask, table in ((dimacs, DIMACS_OUTCOMES), (sdplib, SDPLIB_OUTCOMES)):
+        kinds = outcome_of(table)
+        inferred[mask & pd.notna(kinds)] = kinds[mask & pd.notna(kinds)]
+    inferred[in_path("/liu_pataki_data/") | dataset_is("liu_pataki")] = status.EXPECT_INFEASIBLE
+    netlib = outcome_of(NETLIB_INFEASIBLE_OUTCOMES)
+    inferred[netlib_infeasible] = np.where(pd.notna(netlib), netlib, status.EXPECT_INFEASIBLE)[netlib_infeasible]
+    values = recorded.to_numpy(dtype=object)
+    out = np.where(known, values, inferred)
+    specific = known & (values == status.EXPECT_INFEASIBLE) & pd.Series(inferred).isin(list(_KINDS)).to_numpy()
+    out[specific] = inferred[specific]
+    return pd.Series(out, index=results.index, dtype=object)
 
 
 def _string_values(values: pd.Series) -> pd.Series:

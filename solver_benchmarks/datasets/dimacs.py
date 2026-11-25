@@ -30,6 +30,12 @@ DIMACS_DEFAULT_SUBSET = ("nb", "filter48_socp", "qssp30")
 # SeDuMi dual) has an improving ray, so it has no optimal pair and only a
 # certificate solves it. The other instances have published optima.
 DIMACS_INFEASIBLE = ("filtinf1",)
+# The kind of each one's infeasibility, as posed here. filtinf1 is unbounded:
+# its right-hand side is zero, so x = 0 is feasible, and the library states
+# that its SeDuMi primal, the dual of the posed problem, is infeasible. So a
+# dual-infeasibility certificate is the correct answer and a
+# primal-infeasibility one is false (see status.CONFIRMED_CERTIFICATES).
+DIMACS_OUTCOMES = {"filtinf1": status.EXPECT_UNBOUNDED}
 
 
 class DIMACSDataset(Dataset):
@@ -78,8 +84,8 @@ class DIMACSDataset(Dataset):
                         "format": "mat",
                         **size,
                         **(
-                            {"expected_status": status.EXPECT_INFEASIBLE}
-                            if name in DIMACS_INFEASIBLE
+                            {"expected_status": DIMACS_OUTCOMES[name]}
+                            if name in DIMACS_OUTCOMES
                             else {}
                         ),
                     },
