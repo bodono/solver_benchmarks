@@ -570,10 +570,18 @@ def _dot_error(magnitudes, count):
 
 def _proof_matrix(A) -> sp.csr_matrix:
     """``A`` without explicitly stored zeros, so a row with one nonzero entry
-    is recognized as stating a bound on its variable."""
-    A = _as_sparse(A).copy()
-    A.eliminate_zeros()
+    is recognized as stating a bound on its variable (copied only if it has
+    any: the check runs in the worker, on problems of any size)."""
+    A = _as_sparse(A)
+    if np.any(A.data == 0):
+        A = A.copy()
+        A.eliminate_zeros()
     return A
+
+
+def _magnitudes(M: sp.csr_matrix) -> sp.csr_matrix:
+    """``|M|``, sharing ``M``'s index arrays."""
+    return sp.csr_matrix((np.abs(M.data), M.indices, M.indptr), shape=M.shape)
 
 
 def _singleton_box(A: sp.csr_matrix, lower: np.ndarray, upper: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -624,9 +632,9 @@ def _primal_proof(
     """
     if not (np.all(np.isfinite(y_hat)) and math.isfinite(sigma) and math.isfinite(sigma_error)):
         return {"cert_proof": False, "cert_proof_gap": float("nan"), "cert_proof_open": 0}
-    At = A.T.tocsr()
-    r = At @ y_hat
-    error = _dot_error(abs(At) @ np.abs(y_hat), np.diff(At.indptr))
+    r = A.T @ y_hat
+    column_counts = np.bincount(A.indices, minlength=A.shape[1])
+    error = _dot_error(_magnitudes(A).T @ np.abs(y_hat), column_counts)
     r_lo = np.nextafter(r - error, -np.inf)
     r_hi = np.nextafter(r + error, np.inf)
     no_lo = ~np.isfinite(lo)
@@ -739,8 +747,8 @@ def _dual_proof(P, q: np.ndarray, A, x: np.ndarray, not_above: np.ndarray, not_b
     magnitude = np.abs(x)
     Px = P @ x
     Ax = A @ x
-    Px_error = _dot_error(abs(P) @ magnitude, np.diff(P.indptr))
-    Ax_error = _dot_error(abs(A) @ magnitude, np.diff(A.indptr))
+    Px_error = _dot_error(_magnitudes(P) @ magnitude, np.diff(P.indptr))
+    Ax_error = _dot_error(_magnitudes(A) @ magnitude, np.diff(A.indptr))
     qtx = float(q @ x)
     qtx_error = float(_dot_error(float(np.abs(q) @ magnitude), x.size))
     bad = int(np.count_nonzero(~(np.abs(Px) <= Px_error)))
