@@ -379,10 +379,11 @@ def test_results_from_before_the_corrected_conversion_are_not_resumed():
 @pytest.mark.slow
 @pytest.mark.timeout(900)
 def test_filtinf1_posed_problem_has_an_improving_ray(tmp_path):
-    """Why filtinf1 is recorded as infeasible: there is a direction d with
-    -A d in K and q'd = -1, so the problem posed here (the SeDuMi dual) has
-    no optimum, and the SeDuMi primal no feasible point. filter48_socp, its
-    feasible sibling, has no such direction.
+    """Why filtinf1 is recorded as unbounded (primal feasible, as its
+    right-hand side is zero, and dual infeasible): there is a direction d
+    with -A d in K and q'd = -1, so the problem posed here (the SeDuMi dual)
+    has no optimum, and the SeDuMi primal no feasible point. filter48_socp,
+    its feasible sibling, has no such direction.
 
     The check solves for the direction (tens of seconds each). A stored
     direction cannot replace the solve: filtinf1 is only weakly infeasible,

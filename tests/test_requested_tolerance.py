@@ -153,8 +153,11 @@ def test_campaign_solutions_and_certificates_are_verified_at_ten_times_the_tag(f
                                             problem_kind="qp", is_lp=family != "qp"))
         assert resolved.tol == pytest.approx(check), variant["id"]
         for cert_res, verdict in ((0.5 * check, "kept"), (2.0 * check, "demoted")):
+            # On a problem known to be infeasible (a certificate needs that,
+            # or a proof, to be held to the tolerance at all).
             certificate = {"certificate": "primal_infeasible", "cert_res": cert_res, "cert_tol": 1e-3}
-            got = classify({"status": "primal_infeasible", "kkt": certificate}, tolerance=lambda r=resolved: r.tol)
+            view = {"status": "primal_infeasible", "kkt": certificate, "expected_status": "infeasible"}
+            got = classify(view, tolerance=lambda r=resolved: r.tol)
             assert got.verdict == verdict, (variant["id"], cert_res)
 
 

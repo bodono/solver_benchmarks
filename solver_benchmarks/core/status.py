@@ -34,20 +34,42 @@ ANY_INFEASIBLE = {
 # Problems without one are assumed to have an optimal solution, so success for
 # them is unchanged: the status must be in the caller's success set.
 EXPECT_OPTIMAL = "optimal"
-# Primal infeasible. Either certificate counts: a valid dual-infeasibility
-# certificate also proves no optimal pair exists, and some infeasible
-# problems (e.g. NETLIB cplex1) are primal and dual infeasible at once.
+# Primal infeasible; whether the dual is feasible is not stated.
 EXPECT_INFEASIBLE = "infeasible"
-# Primal feasible but unbounded: only a dual-infeasibility certificate is
-# correct, since no valid primal-infeasibility certificate can exist.
+# Primal feasible and dual infeasible, so no optimal pair exists and a
+# dual-infeasibility certificate is the answer. The objective is unbounded
+# below unless the dual is only weakly infeasible (DIMACS filtinf1).
 EXPECT_UNBOUNDED = "unbounded"
-EXPECTED_OUTCOMES = (EXPECT_OPTIMAL, EXPECT_INFEASIBLE, EXPECT_UNBOUNDED)
+# Primal and dual infeasible at once (NETLIB cplex1).
+EXPECT_PRIMAL_AND_DUAL_INFEASIBLE = "primal_and_dual_infeasible"
+EXPECTED_OUTCOMES = (EXPECT_OPTIMAL, EXPECT_INFEASIBLE, EXPECT_UNBOUNDED, EXPECT_PRIMAL_AND_DUAL_INFEASIBLE)
 
-# Only an accurate certificate counts, as only ``optimal`` counts for a
-# solution; the ``*_inaccurate`` and ambiguous ``primal_or_dual_infeasible``
-# statuses carry no certificate the harness can trust, unless the KKT
-# verification (analysis/verify.py) checked it and promoted it.
+# What a known outcome says about each kind of infeasibility certificate, for
+# the KKT verification (analysis/verify.py). A certificate of a kind the
+# outcome confirms is accepted when its residual (kkt.cert_res) is within the
+# row's tolerance. A certificate of a kind the outcome rules out is false and
+# never accepted. Any other certificate (every one on a problem without a
+# known outcome, and a dual-infeasibility certificate on a problem known only
+# to be primal infeasible) is accepted only when it is a proof (kkt.cert_proof).
+CONFIRMED_CERTIFICATES = {
+    EXPECT_INFEASIBLE: frozenset({PRIMAL_INFEASIBLE}),
+    EXPECT_UNBOUNDED: frozenset({DUAL_INFEASIBLE}),
+    EXPECT_PRIMAL_AND_DUAL_INFEASIBLE: frozenset({PRIMAL_INFEASIBLE, DUAL_INFEASIBLE}),
+}
+RULED_OUT_CERTIFICATES = {
+    EXPECT_OPTIMAL: frozenset({PRIMAL_INFEASIBLE, DUAL_INFEASIBLE}),
+    EXPECT_UNBOUNDED: frozenset({PRIMAL_INFEASIBLE}),
+}
+
+# Which certificate statuses solve a problem of each known outcome. Only an
+# accurate certificate counts, as only ``optimal`` counts for a solution; the
+# ``*_inaccurate`` and ambiguous ``primal_or_dual_infeasible`` statuses carry
+# no certificate the harness can trust, unless the KKT verification checked
+# it and promoted it. On a primal-infeasible problem a dual-infeasibility
+# certificate counts too: verification accepts one there only as a proof,
+# and a valid one shows that no optimal pair exists.
 CERTIFICATE_SUCCESS = {
     EXPECT_INFEASIBLE: frozenset({PRIMAL_INFEASIBLE, DUAL_INFEASIBLE}),
     EXPECT_UNBOUNDED: frozenset({DUAL_INFEASIBLE}),
+    EXPECT_PRIMAL_AND_DUAL_INFEASIBLE: frozenset({PRIMAL_INFEASIBLE, DUAL_INFEASIBLE}),
 }

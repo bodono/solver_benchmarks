@@ -136,13 +136,15 @@ def test_archived_rows_infer_outcome_from_dataset_and_source():
     )
     assert expected_outcomes(frame).tolist() == [
         status.EXPECT_INFEASIBLE,
-        status.EXPECT_INFEASIBLE,
+        # cplex1 is dual infeasible too (NETLIB_INFEASIBLE_OUTCOMES)
+        status.EXPECT_PRIMAL_AND_DUAL_INFEASIBLE,
         None,
         None,
         status.EXPECT_INFEASIBLE,
         None,
         status.EXPECT_INFEASIBLE,
-        status.EXPECT_INFEASIBLE,
+        # infd1 is unbounded as posed (SDPLIB_OUTCOMES)
+        status.EXPECT_UNBOUNDED,
         status.EXPECT_INFEASIBLE,
     ]
 
@@ -251,7 +253,7 @@ def test_sdplib_records_expected_outcome(tmp_path):
     assert got == {
         "arch0": status.EXPECT_OPTIMAL,
         "infp1": status.EXPECT_INFEASIBLE,
-        "infd2": status.EXPECT_INFEASIBLE,
+        "infd2": status.EXPECT_UNBOUNDED,
     }
 
 
@@ -297,10 +299,12 @@ def test_cactus_plot_counts_only_correct_outcomes(tmp_path, monkeypatch):
     assert seen == [[("A", "feasible"), ("A", "infeasible"), ("B", "feasible")]]
 
 
-def test_dimacs_records_filtinf1_as_infeasible(tmp_path):
+def test_dimacs_records_filtinf1_as_unbounded(tmp_path):
     """filtinf1, the infeasible variant of filter48_socp in the DIMACS
     library, was scored as solvable: an "optimal" counted as a success and
-    a certificate as a failure."""
+    a certificate as a failure. As posed it is unbounded (its dual, the
+    SeDuMi primal, is the infeasible side), so only a dual-infeasibility
+    certificate solves it."""
     from solver_benchmarks.datasets.dimacs import DIMACSDataset
 
     folder = tmp_path / "dimacs_data"
@@ -308,7 +312,7 @@ def test_dimacs_records_filtinf1_as_infeasible(tmp_path):
     for name in ("filtinf1", "filter48_socp"):
         (folder / f"{name}.mat.gz").write_bytes(b"")
     got = {s.name: s.metadata.get("expected_status") for s in DIMACSDataset(data_root=tmp_path).list_problems()}
-    assert got == {"filtinf1": status.EXPECT_INFEASIBLE, "filter48_socp": None}
+    assert got == {"filtinf1": status.EXPECT_UNBOUNDED, "filter48_socp": None}
 
     archived = _frame(
         [
@@ -317,18 +321,18 @@ def test_dimacs_records_filtinf1_as_infeasible(tmp_path):
             {"dataset": "dimacs", "problem": "filter48_socp", "metadata.source": "filter48_socp.mat.gz"},
         ]
     )
-    assert expected_outcomes(archived).tolist() == [status.EXPECT_INFEASIBLE, status.EXPECT_INFEASIBLE, None]
+    assert expected_outcomes(archived).tolist() == [status.EXPECT_UNBOUNDED, status.EXPECT_UNBOUNDED, None]
 
 
 def _row_by_row_outcomes(frame):
-    """The per-row definition the vectorized ``expected_outcomes`` must match."""
-    from solver_benchmarks.analysis.outcomes import _inferred_outcome
+    """The per-record definition the vectorized ``expected_outcomes`` must match."""
+    from solver_benchmarks.analysis.outcomes import record_expected_outcome
 
     def column(name):
         return frame[name] if name in frame else [None] * len(frame)
 
     return [
-        rec if isinstance(rec, str) and rec in status.EXPECTED_OUTCOMES else _inferred_outcome(ds, prob, src)
+        record_expected_outcome({"dataset": ds, "problem": prob, "metadata": {"source": src, "expected_status": rec}})
         for rec, ds, prob, src in zip(column("metadata.expected_status"), column("dataset"),
                                       column("problem"), column("metadata.source"))
     ]
@@ -341,9 +345,9 @@ def _every_outcome_branch():
         "/r/problem_classes/dimacs_data/x.mat", "/r/liu_pataki_data/x.mat", None, float("nan"), 3,
     ]
     datasets = ["netlib", "liu_pataki", "sdplib", "dimacs", "mm", None, float("nan")]
-    problems = ["infd1", "filtinf1", "afiro", "control1", None, float("nan")]
+    problems = ["infd1", "infp1", "filtinf1", "cplex1", "afiro", "control1", None, float("nan")]
     recorded = [None, float("nan"), status.EXPECT_OPTIMAL, status.EXPECT_INFEASIBLE, status.EXPECT_UNBOUNDED,
-                "bogus", 1]
+                status.EXPECT_PRIMAL_AND_DUAL_INFEASIBLE, "bogus", 1]
     rows = [
         {"dataset": d, "problem": p, "metadata.source": s, "metadata.expected_status": r}
         for d in datasets for p in problems for s in sources for r in recorded
@@ -381,9 +385,9 @@ def test_attached_outcomes_stay_correct_when_rows_change():
     assert success_mask(part).tolist() == success_mask(frame.iloc[::7].assign(status=status.OPTIMAL)).tolist()
     # rows added later (planned solves never attempted) are scored on demand
     small = pd.DataFrame([{"dataset": "sdplib", "problem": "infd1", "solver_id": "s",
-                           "status": status.PRIMAL_INFEASIBLE}])
+                           "status": status.DUAL_INFEASIBLE}])
     expected = pd.DataFrame([{"dataset": "sdplib", "problem": p, "solver_id": s}
                              for p in ("infd1", "infd2") for s in ("s", "t")])
     padded = complete_results(with_expected_outcomes(small), expected=expected)
-    assert expected_outcomes(padded).tolist() == [status.EXPECT_INFEASIBLE] * 4
+    assert expected_outcomes(padded).tolist() == [status.EXPECT_UNBOUNDED] * 4
     assert success_mask(padded).tolist() == [True, False, False, False]

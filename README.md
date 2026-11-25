@@ -1325,7 +1325,7 @@ Run and analysis commands:
 | `bench plot RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default run dir, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Write PNG plots, over KKT-verified statuses, for Dolan-More profile, cactus plot, pairwise scatter, performance-ratio heatmap, shifted geomean, status heatmap, failure rates, three KKT-residual plots (per-solver boxplot, problem-by-solver heatmap, and KKT-accuracy profile), a setup-vs-solve time breakdown (`setup_solve_breakdown.png`), and a difficulty-scaling plot of the metric by problem size (`difficulty_scaling_<metric>.png`). |
 | `bench report RUN_DIR` | `--metric FIELD` default `run_time_seconds`, `--output-dir PATH` default `RUN_DIR/report`, `--max-value VALUE` optional, `--repo-root PATH`, `--data-root PATH`, `--unverified`, `--verify-tol VALUE`, `--reverify`, `--allow-missing`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id` | Write a complete report directory containing CSV tables, PNG plots, and a generated Markdown report, all over KKT-verified statuses; the report opens with how they were verified (`verification.csv`, `verification_changes.csv`). |
 | `bench merge OUT_DIR RUN_DIRS...` | `--overwrite` default false | Concatenate the results of run directories sharded across machines (for example one solver or dataset per run) into a new run directory `OUT_DIR` for analysis. Rows are kept as they are, except a `worker_error` or `solver_unavailable` skip row that a later row of the same run id, solve and resume signature replaced (an input whose resume is running or was killed). Duplicate `(dataset, problem, solver_id)` keys across the inputs are counted and reported, not resolved, and a warning lists problems that the inputs posed with different numbers of rows. The merged manifest unions the inputs' datasets and solvers and keeps each input's selection and manifest (each row's settings are those of the input whose run id it carries), so `summary`, `missing` and `report` treat the merged directory like one run. A warning says when the inputs were verified differently (some by `bench kkt-verify`, or at different tolerances); the merged run is verified again from the rows' reported statuses when it is analysed. `OUT_DIR` must not exist unless `--overwrite` is given, and must not overlap an input. `--overwrite` replaces only an empty directory or a run written by `bench merge` / `bench kkt-verify` (its manifest has `derived`); a base run directory, a file or a directory of other files is refused. |
-| `bench kkt-verify RUN_DIR` | `--tol VALUE` optional, `--slack VALUE` default `10`, `--output-dir PATH` default `RUN_DIR_verified` (`RUN_DIR_kkt<tol>` with `--tol`) next to `RUN_DIR`, `--allow-missing` default false, `--promote` / `--no-promote` default `--promote`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id`, `--overwrite` default false | Write a copy of the run with KKT-verified statuses, by the rule every analysis command applies when it reads a run (see [Independent KKT verification](#independent-kkt-verification)): every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed the row's tolerance becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose scaled certificate residual exceeds it the matching `*_inaccurate` status. The tolerance is `--slack` times the tolerance the solver's settings requested, for solutions and certificates alike; `--tol` holds every row to one value instead (and refuses `--slack`, `--requested-tol` and `--tol-from-solver-id`, which it would not use). `--requested-tol` and `--tol-from-solver-id` supply requested tolerances the run does not record; without one where it is needed nothing is written and the command says which solvers lack one. Claimed optima with residuals missing, and infeasibility claims whose adapter recorded no certificate (cuOpt never records one, its API exposing none; HiGHS, Gurobi and CPLEX do not when the solver produces none, as for an unbounded QP, see [Supported Solvers](#supported-solvers); PIQP, ProxQP, SDPA and MOSEK do not when the solver returns no finite certificate), cannot be verified and are demoted unless `--allow-missing`. With `--allow-missing`, infeasibility-heavy comparisons favour adapters that record no certificate: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. Claims whose only unknown residuals are distances to cones the harness cannot project (complex PSD) are kept whatever `--allow-missing` says, with a warning that counts them by solver. `--promote` (the default; `--no-promote` turns it off) turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, and `primal_infeasible_inaccurate` / `dual_infeasible_inaccurate` rows whose certificate is fully checked and passes into `primal_infeasible` / `dual_infeasible`, as it does an iteration- or time-limited row whose record holds such a certificate instead of a point (OSQP's inaccurate certificates) (never when the certificate is missing or only partly checked), except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. A row promoted to `optimal` without an `objective_value` (adapters report one only for a solution) takes the objective of its returned point, which the worker records as `kkt.primal_obj_reported` (constant term and maximisation applied, as for `objective_value`); `metadata.kkt_verify.objective_from` says so. Every checked row gets `metadata.kkt_verify` (its verdict, rule, tolerance, slack, promotion and `--allow-missing` setting, worst residual, reason and `original_status`), and every row is judged from the status it was reported with, so verifying a verified run under the same rule writes the same rows (a copy of a copy written before this version recorded the status of the step before as `original_status`, and starts from it). Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, the over-time-limit count where there is one, and the requested and checked tolerances (`requested=1e-04`, `check=1e-03`). Both commands refuse an existing output directory unless `--overwrite`, which replaces only an empty directory or an earlier derived run, never a base run or other files; a source directory with neither `results.jsonl` nor `manifest.json`; and a `manifest.json` that is not valid JSON. |
+| `bench kkt-verify RUN_DIR` | `--tol VALUE` optional, `--slack VALUE` default `10`, `--output-dir PATH` default `RUN_DIR_verified` (`RUN_DIR_kkt<tol>` with `--tol`) next to `RUN_DIR`, `--allow-missing` default false, `--promote` / `--no-promote` default `--promote`, `--requested-tol SOLVER_ID=TOL` (repeatable), `--tol-from-solver-id`, `--overwrite` default false | Write a copy of the run with KKT-verified statuses, by the rule every analysis command applies when it reads a run (see [Independent KKT verification](#independent-kkt-verification)): every claimed optimum whose relative KKT residuals (cone distances and absent-bound multipliers included) exceed the row's tolerance becomes `optimal_inaccurate`, and every `primal_infeasible` / `dual_infeasible` whose certificate is not accepted (neither a proof nor of a kind the problem's known outcome confirms with its scaled certificate residual within the tolerance, see [Certificates](#certificates)) the matching `*_inaccurate` status. The tolerance is `--slack` times the tolerance the solver's settings requested, for solutions and certificates alike; `--tol` holds every row to one value instead (and refuses `--slack`, `--requested-tol` and `--tol-from-solver-id`, which it would not use). `--requested-tol` and `--tol-from-solver-id` supply requested tolerances the run does not record; without one where it is needed nothing is written and the command says which solvers lack one. Claimed optima with residuals missing, and infeasibility claims whose adapter recorded no certificate (cuOpt never records one, its API exposing none; HiGHS, Gurobi and CPLEX do not when the solver produces none, as for an unbounded QP, see [Supported Solvers](#supported-solvers); PIQP, ProxQP, SDPA and MOSEK do not when the solver returns no finite certificate), cannot be verified and are demoted unless `--allow-missing`. With `--allow-missing`, infeasibility-heavy comparisons favour adapters that record no certificate: a recorded certificate can fail the check (Clarabel's genuine NETLIB certificates reach 6e-5), an unrecorded one cannot. Claims whose only unknown residuals are distances to cones the harness cannot project (complex PSD) are kept whatever `--allow-missing` says, with a warning that counts them by solver. `--promote` (the default; `--no-promote` turns it off) turns inaccurate, iteration- or time-limited solves whose point passes into `optimal`, and `primal_infeasible_inaccurate` / `dual_infeasible_inaccurate` rows whose certificate is fully checked and passes into `primal_infeasible` / `dual_infeasible`, as it does an iteration- or time-limited row whose record holds such a certificate instead of a point (OSQP's inaccurate certificates) (never when the certificate is missing or only partly checked), except a result returned after the run's time limit, which keeps its status and is counted as `over_time_limit`. The runner marks every such result with `info.exceeded_time_limit`; in runs recorded before that marker, only a conclusion recorded as `time_limit` (with `info.status_before_timeout`) is recognised, and an iteration- or time-limited stop returned after the limit is still promoted. A solver stopped by its own time limit returns slightly after it, so when that limit equals `timeout_seconds` its time-limit stops are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. A row promoted to `optimal` without an `objective_value` (adapters report one only for a solution) takes the objective of its returned point, which the worker records as `kkt.primal_obj_reported` (constant term and maximisation applied, as for `objective_value`); `metadata.kkt_verify.objective_from` says so. Every checked row gets `metadata.kkt_verify` (its verdict, rule, tolerance, slack, promotion and `--allow-missing` setting, worst residual, reason and `original_status`), and every row is judged from the status it was reported with, so verifying a verified run under the same rule writes the same rows (a copy of a copy written before this version recorded the status of the step before as `original_status`, and starts from it). Unparseable lines (a torn last line) are skipped by both commands, and the output directory is replaced only once complete. The command prints kept, demoted, promoted and no-residual counts per solver, the over-time-limit count where there is one, and the requested and checked tolerances (`requested=1e-04`, `check=1e-03`). Both commands refuse an existing output directory unless `--overwrite`, which replaces only an empty directory or an earlier derived run, never a base run or other files; a source directory with neither `results.jsonl` nor `manifest.json`; and a `manifest.json` that is not valid JSON. |
 
 Common metrics for `profile` and `geomean` are `run_time_seconds`,
 `solve_time_seconds`, `setup_time_seconds`, and `iterations`, depending on what
@@ -1521,10 +1521,13 @@ count uses is the verified one:
   or below the row's tolerance; otherwise it becomes `optimal_inaccurate`. A
   claimed solution without complete residuals is demoted too.
 - A claimed certificate (`primal_infeasible`, `dual_infeasible`) stays only if
-  its scaled certificate residual `kkt.cert_res` (the certificate scaled so
-  that its objective term is −1, see [Known outcomes](#known-outcomes)) is at
-  or below the row's tolerance, the same as for its solutions; otherwise it
-  becomes the matching `*_inaccurate` status.
+  it is a proof (`kkt.cert_proof`, see [Certificates](#certificates)), or if
+  the problem's known outcome confirms its kind and its scaled certificate
+  residual `kkt.cert_res` (the certificate scaled so that its objective term
+  is −1) is at or below the row's tolerance, the same as for its solutions.
+  A certificate the known outcome rules out (any certificate on a problem
+  with an optimal solution, a primal one on an unbounded problem) never
+  stays. Otherwise it becomes the matching `*_inaccurate` status.
 - An inaccurate, iteration-limited or time-limited stop whose point passes
   becomes `optimal` (taking the point's objective, `kkt.primal_obj_reported`,
   when it has none), and an inaccurate certificate, or a limit stop that
@@ -1533,16 +1536,19 @@ count uses is the verified one:
   never promoted, and `tools/make_figures.py` applies its 1 % late rule after
   verification.
 - A claim with nothing to check counts as unsolved, since it cannot be
-  verified: a claimed solution without complete residuals, and a claimed
+  verified: a claimed solution without complete residuals, a claimed
   certificate the adapter did not record (cuOpt never records one, its API
   exposing none; HiGHS, Gurobi and CPLEX do not when the solver produces
   none, as for an unbounded QP, see [Supported Solvers](#supported-solvers);
   PIQP, ProxQP, SDPA and MOSEK do not when the solver returns no finite
-  certificate). `--allow-missing`
+  certificate), and a certificate that needs a proof in a record written
+  before proofs were recorded. `--allow-missing`
   (`VerifyPolicy(missing_is_failure=False)`) keeps them, counted as
   unverified; in infeasibility-heavy comparisons that favours adapters that
   record no certificate, since a recorded certificate can fail the check and
-  an unrecorded one cannot.
+  an unrecorded one cannot. A record without a proof whose scaled residual
+  `kkt.cert_res` exceeds the row's tolerance is demoted either way: the
+  unknown proof does not hide a residual known to fail.
 - Claims whose only unknown residuals are distances to cones the harness
   cannot project (complex PSD) are kept when everything else passes, and
   counted as unverified. The verification header every command prints says
@@ -1732,38 +1738,142 @@ scoring uses it only for statuses read with `--unverified`.
 ### Known outcomes
 
 Datasets that know a problem's outcome record it as
-`metadata.expected_status`: `optimal`, `infeasible` or `unbounded`. Every
-success count, failure table, profile, geomean and plot scores rows against
-it (runs recorded before this field existed are scored the same way, with the
-outcome inferred from the dataset id, problem name and source path):
+`metadata.expected_status`: `optimal`, `infeasible` (primal infeasible),
+`unbounded` (primal feasible, dual infeasible) or
+`primal_and_dual_infeasible`. Every success count, failure table, profile,
+geomean and plot scores rows against it, and the [independent KKT
+verification](#independent-kkt-verification) uses it to judge certificates
+(see [Certificates](#certificates)). Runs recorded before this field existed
+are scored the same way, with the outcome inferred from the dataset id,
+problem name and source path; rows that record `infeasible` for a problem
+whose kind is now stated more precisely (NETLIB `cplex1`, SDPLIB `infd1` and
+`infd2`, DIMACS `filtinf1`) take the precise one.
 
-- `infeasible` (NETLIB `subset: infeasible`, all of Liu-Pataki, SDPLIB
-  `infd1`/`infd2`/`infp1`/`infp2`, DIMACS `filtinf1`, DC OPF cases labelled
-  infeasible): solved
-  only by `primal_infeasible` or `dual_infeasible`. Either certificate proves
-  no optimal pair exists, and some instances (NETLIB `cplex1`) are primal and
-  dual infeasible at once. Weakly infeasible Liu-Pataki instances are held to
-  the same rule.
-- `unbounded`: solved only by `dual_infeasible`.
+- `infeasible` (NETLIB `subset: infeasible` but `cplex1`, all of Liu-Pataki,
+  SDPLIB `infp1`/`infp2`, DC OPF cases labelled infeasible): solved only by
+  `primal_infeasible`, or by `dual_infeasible` verified as a proof (which
+  shows that no optimal pair exists). Weakly infeasible Liu-Pataki instances
+  are held to the same rule.
+- `unbounded` (SDPLIB `infd1`/`infd2` and DIMACS `filtinf1` as posed: each
+  has a feasible point, and the collection states that it has no optimal
+  pair): solved only by `dual_infeasible`.
+- `primal_and_dual_infeasible` (NETLIB `cplex1`): solved by either
+  certificate.
 - `optimal`, or no recorded outcome: solved only by a success status
   (`optimal` by default).
 
 So a claimed optimum on an infeasible problem is a failure, and so is a
 certificate on a solvable one. Inaccurate certificates (unless verification
-found them passing and promoted them) and the ambiguous
+accepted them and promoted them) and the ambiguous
 `primal_or_dual_infeasible` never count, as `optimal_inaccurate` never counts.
-Every certificate is checked by the [independent KKT
-verification](#independent-kkt-verification), which scales it so that its
-objective term (`b'y`, the support `u'y⁺ − l'y⁻` of the bounds, or `q'x`) is
-−1 and then requires its residuals (`kkt.cert_res`, the largest of `A'y` with
-the distance of `y` to the dual cone or the weight `y` puts on absent bounds,
-or `Px` with the distance of `−Ax` to the cone) to be at most the row's
-tolerance; a certificate that fails becomes `*_inaccurate`.
 Statuses read with `--unverified` fall back on the check recorded at solve
 time: there a certificate with `kkt.valid` false (a residual above
 `kkt.CERT_TOL`, `1e-3`, which only rejects what is clearly not a certificate)
-is a failure. Records written before `kkt.cert_res` existed have their scaled
-residuals rebuilt from the recorded absolute ones by the verification.
+is a failure.
+
+### Certificates
+
+A certificate's scaled residual `kkt.cert_res` is the measure SCS and
+Clarabel stop on: the certificate is scaled so that its objective term
+(`b'y`, the support `u'y⁺ − l'y⁻` of the bounds, or `q'x`) is −1, and
+`cert_res` is the largest remaining residual (`A'y` with the distance of `y`
+to the dual cone or the weight `y` puts on absent bounds, or `Px` with the
+distance of `−Ax` to the cone). A small `cert_res` does not prove
+infeasibility. A primal certificate implies `r'x ≤ −1` (with `r = A'y`) for
+every feasible `x`, which only excludes feasible points with
+`‖x‖₁ < 1/‖r‖∞`; by LP duality the smallest `cert_res` any certificate
+reaches on a feasible problem is `1 / min ‖x‖₁` over its feasible points. So
+a feasible problem whose feasible points are all large has certificates that
+pass any tolerance a campaign uses, and the verdict depends on the units of
+the variables. Measured on stored results: false certificates (on problems
+with an optimum) reach `cert_res` 1.6e-11 (QPLIB 9002), true ones go up to
+8.8e-4, and on MIPLIB mas76 single-precision SCS returns certificates at
+2.57e-5, the best a certificate can do there since every feasible point has
+`x₁₅₀ > 38,893`. A dual (unboundedness) certificate is the same statement
+about the size of the dual's feasible points.
+
+`kkt.cert_proof` says whether the certificate is a proof: whether the
+inequality it implies contradicts the problem's own data, read as the exact
+numbers its doubles are. For a primal certificate the residual `r` must be
+paid for by finite bounds on `x` (the bounds the data states in its
+single-entry rows), however large they are, and the contradiction must
+exceed the rounding error of evaluating it (the safe bound of Neumaier and
+Shcherbina, Math. Program. 99, 2004); a residual entry on a variable without
+the bound its sign needs must be exactly zero, or of the sign the bound it
+has allows. A dual certificate has nothing to pay with, so `Px` must vanish
+and `Ax` lie in the recession cone exactly, and `q'x` must be negative beyond
+its rounding error. Where rounding cannot decide the sign of a residual
+entry (it is within its rounding error of zero), the sign is computed in
+exact arithmetic (each double is an integer times a power of two, summed as
+Python integers). So the check accepts no certificate on a feasible problem,
+nor a dual one on a problem whose dual is feasible. It has no tolerance, does
+not depend on units or on the scale of the certificate, and has no solver or
+iteration in it (two sparse products and a few passes over the data in the
+worker, plus the exact sums of the undecided entries). `kkt.cert_proof_open`
+counts the residual entries that are exactly nonzero where nothing pays for
+them, and `kkt.cert_proof_gap` is the margin of a primal contradiction
+relative to the support (MIPLIB mas76's false certificates: −2.6e7, its
+`1e12` bound being far too loose to pay for their residual).
+
+Taking a residual within its rounding error as zero instead (the rule this
+replaced) is not sound. A certificate whose entries span more than `2⁵³`
+leaves exactly nonzero residuals below that error wherever rows imply an
+equality (an equality written as two inequalities, dependent equality rows),
+on data as plain as integers:
+- `a + b ≤ 0`, `−a − b ≤ 0`, `a − b ≤ −1` is feasible (`a = −0.5`,
+  `b = 0.5`), and `y = (1e20, 1e20, 1)` has support −1 and `A'y = (1, −1)`
+  exactly, against a rounding error of about 1e4 on each free column;
+- `min −x₃` subject to `x₁ − x₂ + x₃ ≤ 0`, `x₁ − x₂ = 0` is bounded
+  (`x₃ ≤ 0`), and `x = (1e20, 1e20, 1)` has `q'x = −1` and `Ax = (1, 0)`
+  exactly;
+- `x − y ≥ 1` and `−(1 + 2⁻⁵²)x + y ≥ 1` are feasible (only for
+  `x ≤ −2⁵³`), and `y = (−1, −1)` leaves one unit in the last place on `x`.
+
+Each of these was a proof up to rounding, and none is one exactly. A
+certificate whose residuals cancel exactly is still a proof however wide the
+range of its entries (the first problem with `a − b ≥ 0` added, and the same
+`y` with weight 1 on that row).
+
+A bound of `1e18` or more, which the residuals read as absent
+(`kkt._INF_BOUND`), counts as a bound for the dual proof (a direction must
+respect it: a solver may hold the row to it) and not for the primal one (no
+weight on it, not in the box), so each proof holds whichever way such a bound
+is meant.
+
+Its limits:
+- It covers linear constraints only (QP bounds, zero and nonnegative cones).
+  A certificate on any other cone has `kkt.cert_proof` null and its cones
+  listed in `kkt.cert_proof_cones`, since a floating-point projection onto a
+  second-order, semidefinite, exponential or power cone (or the box cone) is
+  not exactly in the cone.
+- Few certificates of non-simplex solvers are proofs: they leave residuals
+  of about 1e-10 on free variables, and even HiGHS's simplex rays often
+  leave exactly nonzero residuals below their rounding error. Regenerated
+  locally on the 29 NETLIB infeasible LPs, 48 of 282 certificates were
+  proofs (25 of HiGHS's 49; 80 and 41 with residuals within their rounding
+  error taken as zero), and none of the dual certificates of any solver.
+  Those problems are labelled, so all of them are still accepted when their
+  `cert_res` is within the tolerance.
+
+So the verification accepts a certificate when it is a proof, or when the
+problem's known outcome (`status.CONFIRMED_CERTIFICATES`) confirms its kind
+and `cert_res` is within the row's tolerance (a solver's usable answer to a
+question whose answer is known); it never accepts one the known outcome rules
+out (`status.RULED_OUT_CERTIFICATES`), and says so in `verify.reason`, noting
+when the record holds a proof, which means the label or the problem's loader
+is wrong. On a problem without a known outcome only proofs are accepted, and
+records written before proofs were recorded (archived runs) have no proof to
+check, so their certificates on such problems count as unsolved unless
+`--allow-missing` (and whatever it says when their `cert_res` fails the
+tolerance). The known outcome is the judge's knowledge, not the
+solver's: every solver runs the same settings on every problem, with
+infeasibility detection on. The labels are only as good as the datasets and
+loaders: NETLIB `cplex2` is labelled infeasible but has points violating
+its rows by about 1e-8. Code that checks certificates of a labelled problem
+outside a run passes the outcome to `verify.classify` as the view's
+`expected_status`. Records written before `kkt.cert_res` existed have their
+scaled residuals rebuilt from the recorded absolute ones by the
+verification.
 
 Generate shifted geometric means:
 

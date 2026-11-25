@@ -64,6 +64,8 @@ class MPSLPDataset(Dataset):
         ]
 
     def _problem_spec(self, name: str, path: Path, size: dict, expected: dict) -> ProblemSpec:
+        if name in self.outcome_by_problem and "expected_status" in expected:
+            expected = {**expected, "expected_status": self.outcome_by_problem[name]}
         return ProblemSpec(
             dataset_id=self.dataset_id,
             name=name,
@@ -79,6 +81,11 @@ class MPSLPDataset(Dataset):
 
     def expected_metadata(self) -> dict:
         """Known outcome shared by every problem of this collection, if any."""
+        return {}
+
+    @property
+    def outcome_by_problem(self) -> dict[str, str]:
+        """Problems whose known outcome differs from the collection's."""
         return {}
 
     def _problem_from_its_files(self, name: str) -> ProblemSpec | None:
@@ -135,6 +142,11 @@ class MPSLPDataset(Dataset):
 
 
 NETLIB_SUBSETS = ("feasible", "infeasible")
+# The NETLIB infeasible LPs are primal infeasible; cplex1 is dual infeasible
+# too. Both kinds have certificates that pass the harness's proof check
+# (kkt.cert_proof): HiGHS's Farkas ray, and a recession direction d with
+# q'd = -1000 (min q'd over directions of the feasible rows with |d_j| <= 1).
+NETLIB_INFEASIBLE_OUTCOMES = {"cplex1": status.EXPECT_PRIMAL_AND_DUAL_INFEASIBLE}
 
 
 class NetlibDataset(MPSLPDataset):
@@ -168,6 +180,10 @@ class NetlibDataset(MPSLPDataset):
         if self.folder.name == "feasible":
             return {"expected_status": status.EXPECT_OPTIMAL}
         return {}
+
+    @property
+    def outcome_by_problem(self) -> dict[str, str]:
+        return NETLIB_INFEASIBLE_OUTCOMES if self.folder.name == "infeasible" else {}
 
 
 class KenningtonDataset(MPSLPDataset):

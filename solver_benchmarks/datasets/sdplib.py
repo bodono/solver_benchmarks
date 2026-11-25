@@ -24,6 +24,21 @@ SDPLIB_DEFAULT_SUBSET = ("arch0", "control1", "theta1")
 # infeasibility detection, not solve time, so they form their own subset, as
 # the NETLIB infeasible LPs do.
 SDPLIB_INFEASIBLE = ("infd1", "infd2", "infp1", "infp2")
+# The kind of each one's infeasibility, as posed here (the SDPA primal,
+# ``min c'x  s.t.  sum_i F_i x_i - F_0 PSD``). infp1 and infp2 are primal
+# infeasible: the largest least eigenvalue of ``sum_i F_i x_i - F_0`` over all
+# x is -6.59 and -6.92 (an independent SCS solve of the posed data, to 1e-9).
+# infd1 and infd2 are unbounded: x exists with that matrix's least eigenvalue
+# 3.18 and 2.59 (above its rounding error bound, 1e-11, so strictly
+# feasible), and SDPLIB states that they have no optimal pair, so their dual
+# is infeasible. Which certificate kinds each outcome confirms or rules out
+# is status.CONFIRMED_CERTIFICATES and status.RULED_OUT_CERTIFICATES.
+SDPLIB_OUTCOMES = {
+    "infd1": status.EXPECT_UNBOUNDED,
+    "infd2": status.EXPECT_UNBOUNDED,
+    "infp1": status.EXPECT_INFEASIBLE,
+    "infp2": status.EXPECT_INFEASIBLE,
+}
 SDPLIB_SUBSETS = ("feasible", "infeasible", "all")
 # How a problem read from the converted archive is posed. ``declared``: with
 # the block structure of the original SDPLIB file, which the converted file
@@ -258,7 +273,7 @@ def _original_stem(path: Path) -> str | None:
 
 def _with_expected(spec: ProblemSpec) -> ProblemSpec:
     """Record the known outcome: the four infeasible instances have no optimal
-    pair (either kind of certificate is accepted, so the SDPA-to-cone sign
-    convention does not matter); every other SDPLIB instance is solvable."""
-    outcome = status.EXPECT_INFEASIBLE if spec.name in SDPLIB_INFEASIBLE else status.EXPECT_OPTIMAL
+    pair, each of the kind ``SDPLIB_OUTCOMES`` gives; every other SDPLIB
+    instance is solvable."""
+    outcome = SDPLIB_OUTCOMES.get(spec.name, status.EXPECT_OPTIMAL)
     return replace(spec, metadata={**spec.metadata, "expected_status": outcome})
