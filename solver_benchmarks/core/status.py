@@ -36,7 +36,9 @@ ANY_INFEASIBLE = {
 EXPECT_OPTIMAL = "optimal"
 # Primal infeasible; whether the dual is feasible is not stated.
 EXPECT_INFEASIBLE = "infeasible"
-# Primal feasible and dual infeasible: the objective is unbounded below.
+# Primal feasible and dual infeasible, so no optimal pair exists and a
+# dual-infeasibility certificate is the answer. The objective is unbounded
+# below unless the dual is only weakly infeasible (DIMACS filtinf1).
 EXPECT_UNBOUNDED = "unbounded"
 # Primal and dual infeasible at once (NETLIB cplex1).
 EXPECT_PRIMAL_AND_DUAL_INFEASIBLE = "primal_and_dual_infeasible"
