@@ -522,6 +522,8 @@ def _judge_certificate(
     ``complete`` are :func:`kkt.certificate_check` of the record."""
     if cert is None:
         return _CertificateJudgement(None, "no certificate recorded")
+    if kkt.get("certificate") != kind:
+        return _CertificateJudgement(False, f"the record holds a {kkt.get('certificate')} certificate, not a {kind} one")
     proof = kkt.get("cert_proof")
     if kind in status.RULED_OUT_CERTIFICATES.get(expected or "", frozenset()):
         reason = f"the known outcome ({expected}) rules out a {kind} certificate"

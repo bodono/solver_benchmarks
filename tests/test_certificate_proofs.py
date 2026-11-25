@@ -306,6 +306,12 @@ def test_a_confirmed_kind_still_needs_its_residual_within_the_tolerance():
     assert _claim(P, 5e-3, True, status.EXPECT_INFEASIBLE).verdict == "kept"
 
 
+def test_a_certificate_of_the_other_kind_does_not_support_a_claim():
+    judged = _claim(D, 1e-11, True, status.EXPECT_PRIMAL_AND_DUAL_INFEASIBLE, reported=P)
+    assert (judged.verdict, judged.status) == ("demoted", status.PRIMAL_INFEASIBLE_INACCURATE)
+    assert "holds a dual_infeasible certificate" in judged.reason
+
+
 def test_a_proof_the_known_outcome_rules_out_is_reported():
     judged = _claim(P, 1e-11, True, status.EXPECT_OPTIMAL)
     assert judged.verdict == "demoted"
