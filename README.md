@@ -660,9 +660,11 @@ CONT-050 38.8 ms, most of it in setup). It grows with the problem, so no fixed
 tiny problem can pay it; it looks like the process's first use of memory of
 that size (the heap and MKL's buffers, which a second solve reuses), which
 costs more in Modal's gVisor sandbox than natively, but that is not confirmed.
-Both versions pay it alike; only a warm-up with the real problem itself (an
-untimed solve before the timed one) would remove it, and the harness does not
-do that. No status, iteration count or objective of a CPU solve
+Both versions pay it in proportion to their setup time (in milliseconds 3.4.0,
+whose warm setup on these QPs is about twice as long, pays up to about twice as
+much), so version ratios are roughly unbiased; only a warm-up with the real
+problem itself (an untimed solve before the timed one) would remove it, and the
+harness does not do that. No status, iteration count or objective of a CPU solve
 changed, bit for bit (80 pairs on the Mac, 30 on the GB10, 28 on Modal), and no
 KKT-verified status changed because of the warm-up; cuDSS's iteration counts
 vary from run to run with and without it. The warm-up itself takes about 21 ms
