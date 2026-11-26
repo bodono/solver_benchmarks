@@ -129,7 +129,7 @@ def warm_up(modules: Sequence[str]) -> dict[str, Any]:
         began = time.perf_counter()
         driver.create_context()
         record["cuda_context_seconds"] = time.perf_counter() - began
-    except (OSError, AttributeError, WarmupError) as exc:
+    except Exception as exc:  # OSError: no driver; WarmupError: a CUDA error
         notes.append(f"no CUDA context created: {type(exc).__name__}: {exc}")
 
     if record["cuda_context_seconds"] is not None and driver is not None:
@@ -143,7 +143,7 @@ def warm_up(modules: Sequence[str]) -> dict[str, Any]:
         for path in libraries:
             try:
                 warm_cublas(driver, path)
-            except (OSError, AttributeError, WarmupError) as exc:
+            except Exception as exc:  # recorded; the solve runs as it would have without it
                 notes.append(f"cuBLAS {path} not warmed: {type(exc).__name__}: {exc}")
             else:
                 record["cublas_libraries"].append(path)
