@@ -107,8 +107,12 @@ def run_payload(payload: dict) -> ProblemResult:
         try:
             solver_result = solver.solve(problem, artifacts_dir)
         finally:
-            # Modules the solve imported itself, inside its timed region:
-            # what the warm-up did not load (empty when it loaded everything).
+            # Modules first imported during the adapter's whole ``solve`` call
+            # (its timed region and its own post-processing): what the
+            # warm-up did not load, empty when it loaded everything. With the
+            # warm-up off it also lists what adapters import before their
+            # timers (the solver's package), so there it is not a list of
+            # what was timed.
             warmup_record["imported_during_solve"] = warmup.imported_since(before_solve)
         objective = _reported_objective(problem, solver_result.objective_value)
         _write_trace_if_needed(artifacts_dir, solver_result.trace)

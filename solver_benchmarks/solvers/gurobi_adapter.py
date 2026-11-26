@@ -61,9 +61,11 @@ from .qp_split import normalize_qp_bounds, qp_certificate_kkt
 # (Gurobi needs a license).
 GUROBI_DEFAULT_TOLERANCES = {"FeasibilityTol": 1e-6, "OptimalityTol": 1e-6, "BarConvTol": 1e-8}
 
-# Gurobi parameters that name a file it writes, lower-cased; the warm-up's
-# tiny solve leaves them out.
-GUROBI_OUTPUT_FILE_PARAMETERS = frozenset({"logfile", "resultfile", "solfiles"})
+# Gurobi parameters that name a file it writes, or switch writing one on
+# (Record: a recording file in the working directory), lower-cased; the
+# warm-up's tiny solve leaves them out. Not checked here (Gurobi needs a
+# license).
+GUROBI_OUTPUT_FILE_PARAMETERS = frozenset({"logfile", "resultfile", "solfiles", "record"})
 
 
 class GurobiSolverAdapter(SolverAdapter):

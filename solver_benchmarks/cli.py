@@ -36,6 +36,7 @@ from solver_benchmarks.analysis.verify import (
     verification_info,
     verification_table,
 )
+from solver_benchmarks.analysis.warmup_check import warmup_warnings
 from solver_benchmarks.core.config import (
     DatasetConfig,
     close_names,
@@ -493,6 +494,9 @@ def _load_verified(run_dir: Path, verify: bool | VerifyPolicy, *, header: str = 
         info = verification_info(df)
         click.echo(verification_header(info), err=header == "stderr")
         for warning in info.get("warnings") or []:
+            click.echo(f"warning: {warning}", err=True)
+        # Timed rows that were not warmed up (README, "Warm-up"): never an error.
+        for warning in warmup_warnings(df):
             click.echo(f"warning: {warning}", err=True)
     return df
 

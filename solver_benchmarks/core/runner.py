@@ -19,7 +19,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -198,6 +198,9 @@ def _run_benchmark(
         if run_dir is not None and config.resume
         else None
     )
+    if run_dir is not None and config.resume:
+        # Before ResultStore.create rewrites the manifest with this config.
+        refuse_to_change_warmup(run_dir, config, previous_manifest)
     available_solver_ids = {
         solver_config.id
         for solver_config in config.solvers
@@ -1144,6 +1147,8 @@ class _ProgressReporter:
         self.started_at = time.monotonic()
         self.last_result: ProblemResult | None = None
         self._final_emitted = False
+        # Timed rows of this run per warm-up category (warmup.timing_category).
+        self.warmup_counts: Counter[str] = Counter()
 
     def emit_plan(self) -> None:
         fields = {
@@ -1167,12 +1172,21 @@ class _ProgressReporter:
     def record_result(self, result: ProblemResult) -> None:
         self.completed_this_run += 1
         self.last_result = result
+        if _is_timed(result):
+            self.warmup_counts[warmup.timing_category((result.metadata or {}).get("warmup"))] += 1
         self._emit_progress_snapshot("benchmark_progress")
 
     def emit_final(self) -> None:
         if self._final_emitted:
             return
         self._final_emitted = True
+        # A warning, never a failure: the rows stand, and say why they are
+        # cold. Before benchmark_complete, which stays the run's last event.
+        message = warmup.not_warmed_warning(self.warmup_counts)
+        if message is not None:
+            message = f"In this run, {message}"
+            self.store.append_event("warning", message, warmup_counts=dict(self.warmup_counts))
+            _emit_progress(self.stream_output, f"warning: {message}")
         self._emit_progress_snapshot(
             "benchmark_complete",
             print_terminal=self.completed_this_run == 0,
@@ -1441,6 +1455,17 @@ def _run_one(
         error=error,
         artifact_dir=str(artifacts_dir),
         metadata=metadata_with_warmup(),
+    )
+
+
+def _is_timed(result: ProblemResult) -> bool:
+    """A row with a time from a solve (not a skip, nor a worker that left none)."""
+    seconds = result.run_time_seconds
+    return (
+        result.status != status.SKIPPED_UNSUPPORTED
+        and isinstance(seconds, (int, float))
+        and not isinstance(seconds, bool)
+        and math.isfinite(seconds)
     )
 
 
@@ -2174,6 +2199,56 @@ def refuse_to_rerun_into(run_dir: str | Path, config: RunConfig) -> None:
                     "again next to its earlier result. Set `resume: true` to resume "
                     "the run, or use a new --run-dir."
                 )
+
+
+def refuse_to_change_warmup(
+    run_dir: str | Path, config: RunConfig, previous_manifest: dict | None
+) -> None:
+    """Raise if ``run_dir`` has rows recorded with the other ``run.warmup``.
+
+    A resume keeps the rows already recorded, and ``run.warmup`` is not in
+    the resume signature (like ``parallelism``, it changes what the times
+    include, not the solve), so resuming with the switch changed would mix
+    rows timed with and without the warm-up, which time different things.
+    The setting the rows were recorded with is the previous manifest's (one
+    written before the warm-up existed has no ``warmup``: its rows are cold)
+    and each row's ``metadata.warmup.enabled``; a row without a warm-up
+    record (a skip, a worker that ended before the warm-up) says nothing.
+    """
+    results_path = Path(run_dir) / "results.jsonl"
+    if not results_path.exists():
+        return
+    recorded: set[bool] = set()
+    has_rows = False
+    with results_path.open() as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            has_rows = True
+            metadata = record.get("metadata")
+            row_warmup = metadata.get("warmup") if isinstance(metadata, dict) else None
+            if isinstance(row_warmup, dict) and isinstance(row_warmup.get("enabled"), bool):
+                recorded.add(row_warmup["enabled"])
+    if not has_rows:
+        return
+    manifest_config = (previous_manifest or {}).get("config")
+    if isinstance(manifest_config, dict):
+        recorded.add(bool(manifest_config.get("warmup", False)))
+    other = recorded - {config.warmup}
+    if other:
+        raise RuntimeError(
+            f"Run directory {Path(run_dir).resolve()} has results recorded with run.warmup: "
+            f"{str(other.pop()).lower()}"
+            + (" (its manifest predates the warm-up)" if isinstance(manifest_config, dict)
+               and "warmup" not in manifest_config else "")
+            + f", and this run has run.warmup: {str(config.warmup).lower()}. Resuming would put rows "
+            "timed with and without the warm-up in one run, which time different things. Resume "
+            "with the same run.warmup, or use a new --run-dir."
+        )
 
 
 def _already_done(

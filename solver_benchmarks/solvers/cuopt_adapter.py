@@ -139,6 +139,12 @@ CUOPT_TOLERANCE_NAMES = tuple(
     f"{scale}_{kind}_tolerance" for scale in ("absolute", "relative") for kind in ("primal", "dual", "gap")
 )
 CUOPT_DEFAULT_TOLERANCE = 1e-4
+# cuOpt parameters that name a file it writes (its log, its solution, the
+# problem as it read it; ``solve`` passes every unknown setting to
+# ``set_parameter``, so these reach cuOpt as given); the warm-up's tiny solve
+# leaves them out, as it does every file setting. Taken from cuOpt's
+# documented parameter names, not checked here (cuOpt needs a GPU host).
+CUOPT_OUTPUT_FILE_PARAMETERS = frozenset({"log_file", "solution_file", "user_problem_file"})
 
 
 class CuOptSolverAdapter(SolverAdapter):
@@ -154,6 +160,13 @@ class CuOptSolverAdapter(SolverAdapter):
         """cuOpt always runs on the GPU; its solver module loads libcuopt.
         The others are the modules ``solve`` imports (``_import_cuopt``)."""
         return WarmupModules(modules=self.solver_modules, gpu=True)
+
+    def warmup_settings(self) -> dict:
+        """As the base, without the parameters that make cuOpt write files."""
+        return {
+            key: value for key, value in super().warmup_settings().items()
+            if key not in CUOPT_OUTPUT_FILE_PARAMETERS
+        }
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

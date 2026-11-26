@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -140,6 +142,22 @@ def test_the_tiny_problem_follows_the_structure_not_the_values():
     assert first.cone["cone"]["p"] == [0.5, -0.5]
 
 
+@pytest.mark.parametrize("has_p", [False, True])
+def test_the_tiny_qp_follows_the_structure_not_the_values(has_p):
+    first = _qp_problem(has_p, seed=1)
+    second = _qp_problem(has_p, seed=2)
+    second.qp["q"] = -np.abs(second.qp["q"])  # every sign of the data flipped one way
+    first.qp["q"] = np.abs(first.qp["q"])
+    second.qp["l"], second.qp["u"] = -np.full(3, np.inf), np.full(3, 7.0)
+
+    tiny_first, tiny_second = warmup.tiny_problem(first), warmup.tiny_problem(second)
+
+    for key in ("q", "l", "u"):
+        np.testing.assert_array_equal(tiny_first.qp[key], tiny_second.qp[key])
+    for key in ("A", "P"):
+        assert (tiny_first.qp[key] != tiny_second.qp[key]).nnz == 0
+
+
 def test_empty_blocks_are_left_out_and_unknown_cones_are_refused():
     tiny = warmup.tiny_cone({"z": 0, "l": 2, "q": [], "s": [], "p": []})
     assert tiny["cone"] == {"l": 2}
@@ -259,6 +277,8 @@ def test_run_imports_the_modules_then_solves_the_tiny_problem_with_the_solves_se
     (call,) = fake.calls
     assert call[0] == "warmup"
     assert call[1] == {"threads": 4, "eps_abs": 1e-6, "verbose": False}  # only output changes
+    # The timed solve's own settings are untouched.
+    assert solver.settings == {"threads": 4, "eps_abs": 1e-6, "verbose": True}
     assert record["complete"] is True and record["notes"] == []
     assert record["modules"] == ["json"] and record["import_seconds"] >= 0
     assert record["gpu"] is False and record["gpu_seconds"] is None
@@ -364,6 +384,69 @@ def test_state_file_reading_is_forgiving(tmp_path):
     assert warmup.finished_seconds(path) == 0.25
 
 
+def test_the_state_file_names_the_part_that_is_running(fake, tmp_path, monkeypatch):
+    """What a worker killed in each part leaves for the runner: the state
+    the runner reads (``runner._warmup_failure``) is "running" and the part,
+    written before the part starts, and "done" only once all have run."""
+    state = tmp_path / warmup.STATE_FILE
+    seen: dict[str, object] = {}
+
+    class Watching(fake):
+        def warmup_modules(self):
+            seen["imports"] = warmup.read_state(state)
+            return WarmupModules(modules=("json",), gpu=True)
+
+        def solve(self, problem, artifacts_dir):
+            seen["tiny_solve"] = warmup.read_state(state)
+            return super().solve(problem, artifacts_dir)
+
+    def gpu_part(modules):
+        seen["gpu"] = warmup.read_state(state)
+        return {"seconds": 0.0, "cuda_context_seconds": 0.0, "cublas_libraries": [], "cublas_seconds": None,
+                "notes": []}
+
+    monkeypatch.setattr(warmup.gpu_warmup, "warm_up", gpu_part)
+    monkeypatch.setattr(warmup.gpu_warmup, "mapped_libraries", lambda prefix: [])
+
+    record = warmup.run(Watching({}), _lp(), state)
+
+    assert seen == {
+        "imports": {"state": warmup.RUNNING, "part": "imports"},
+        "gpu": {"state": warmup.RUNNING, "part": "gpu"},
+        "tiny_solve": {"state": warmup.RUNNING, "part": "tiny_solve"},
+    }
+    assert record["complete"] is True
+    assert warmup.read_state(state)["state"] == warmup.DONE
+
+
+def test_a_tiny_problem_that_cannot_be_built_never_fails_the_run(fake, monkeypatch):
+    def broken(problem):
+        raise KeyError("A")
+
+    monkeypatch.setattr(warmup, "tiny_problem", broken)
+
+    record = warmup.run(fake({}), _lp())
+
+    assert record["complete"] is False and fake.calls == []
+    assert record["notes"] == ["no tiny problem: KeyError: 'A'"]
+
+
+def test_what_the_tiny_solve_kept_of_stdout_still_works_after_it(fake, tmp_path, capfd):
+    """A module that keeps the ``sys.stdout`` it saw in the tiny solve writes
+    to the null device afterwards, never to a closed file."""
+    kept = []
+
+    class Keeping(fake):
+        def solve(self, problem, artifacts_dir):
+            kept.append(sys.stdout)
+            return super().solve(problem, artifacts_dir)
+
+    warmup.run(Keeping({}), _lp())
+
+    print("from the tiny solve's stdout, later", file=kept[0], flush=True)
+    assert "later" not in capfd.readouterr().out
+
+
 # --- the worker ----------------------------------------------------------------
 
 
@@ -390,6 +473,20 @@ def test_the_worker_warms_up_before_the_timed_solve_and_records_it(fake, repo_ro
     assert record["run_time_seconds"] < tiny_seconds  # the timer excludes the warm-up
     assert warmup_record["imported_during_solve"] == []
     assert record["status"] == status.OPTIMAL
+    # The runner's view of it: the state file in the solve's artifacts directory.
+    state = warmup.read_state(tmp_path / "artifacts" / warmup.STATE_FILE)
+    assert state["state"] == warmup.DONE and state["record"]["complete"] is True
+
+
+def test_the_timed_solve_gets_the_settings_as_configured(fake, repo_root, tmp_path):
+    payload = _payload(repo_root, tmp_path, warmup=True)
+    payload["solver"]["settings"] = {"verbose": True, "threads": 2}
+
+    run_payload(payload)
+
+    tiny, real = fake.calls
+    assert (tiny[0], tiny[1]) == ("warmup", {"verbose": False, "threads": 2})
+    assert (real[0], real[1]) == ("synthetic_qp", {"verbose": True, "threads": 2})
 
 
 def test_the_warm_up_is_on_when_the_payload_does_not_say(fake, repo_root, tmp_path):
@@ -622,6 +719,266 @@ def test_the_timeout_is_extended_by_the_finished_warm_up(tmp_path, repo_root):
     assert killed.timed_out and killed.extra_seconds == 0.0
 
 
+# --- the runner with real workers ------------------------------------------------------
+
+# An adapter that dies (SIGSEGV) or hangs in the warm-up's tiny solve and
+# solves the real problem at once, registered in every worker by a
+# sitecustomize on PYTHONPATH (as test_worker_lifecycle.py's solvers are).
+_CRASHY = textwrap.dedent(
+    """
+    import os, signal, time
+    from solver_benchmarks.core.result import SolverResult
+    from solver_benchmarks.solvers import registry
+    from solver_benchmarks.solvers.base import SolverAdapter, loosest_tolerance
+
+    class Crashy(SolverAdapter):
+        solver_name = "warmup_crashy"
+        supported_problem_kinds = {"qp", "cone"}
+
+        @classmethod
+        def requested_tolerance(cls, settings, **kwargs):
+            return loosest_tolerance({}, {"eps": 1e-4})
+
+        def solve(self, problem, artifacts_dir):
+            if problem.dataset_id == "warmup":
+                if self.settings["mode"] == "segv":
+                    os.kill(os.getpid(), signal.SIGSEGV)
+                time.sleep(600)
+            return SolverResult(
+                status="optimal", objective_value=0.0, iterations=1, run_time_seconds=0.001,
+                info={"settings": dict(self.settings)},
+            )
+
+    registry.SOLVERS["warmup_crashy"] = Crashy
+    """
+)
+
+
+@pytest.fixture
+def crashy(tmp_path, monkeypatch):
+    """Register ``warmup_crashy`` here and in every worker this test starts."""
+    import importlib.util
+
+    site = tmp_path / "crashy_site"
+    site.mkdir()
+    (site / "bench_warmup_crashy.py").write_text(_CRASHY)
+    (site / "sitecustomize.py").write_text(
+        "import os\nif os.environ.get('BENCH_TEST_WARMUP_CRASHY'):\n    import bench_warmup_crashy\n"
+    )
+    monkeypatch.setitem(SOLVERS, "warmup_crashy", None)
+    spec = importlib.util.spec_from_file_location("bench_warmup_crashy_parent", site / "bench_warmup_crashy.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(SOLVERS, "warmup_crashy", module.Crashy)
+    path = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv("PYTHONPATH", str(site) + (os.pathsep + path if path else ""))
+    monkeypatch.setenv("BENCH_TEST_WARMUP_CRASHY", "1")
+
+
+def _run_crashy(tmp_path, mode: str, timeout: float):
+    from solver_benchmarks.core.runner import run_benchmark
+
+    config = parse_run_config({
+        "run": {"dataset": "synthetic_qp", "include": ["one_variable_lp"], "timeout_seconds": timeout},
+        "solvers": [{"id": "crashy", "solver": "warmup_crashy", "settings": {"mode": mode}}],
+    })
+    store = run_benchmark(config, run_dir=tmp_path / "run")
+    rows = [json.loads(line) for line in store.results_jsonl_path.read_text().splitlines() if line.strip()]
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines() if line.strip()]
+    return rows, events
+
+
+def _assert_rerun_cold(rows, events, failure: str):
+    (row,) = rows
+    assert row["status"] == status.OPTIMAL
+    record = row["metadata"]["warmup"]
+    assert record["enabled"] is True and record["complete"] is False
+    assert record["rerun_without_warmup"] is True
+    assert record["notes"][0].startswith(failure), record["notes"]
+    assert row["info"]["settings"] == {"mode": row["info"]["settings"]["mode"]}  # as configured
+    artifacts = Path(row["artifact_dir"])
+    assert (artifacts / "stdout.warmup_failure.log").exists()
+    assert (artifacts / "stderr.warmup_failure.log").exists()
+    # The run says, at its end, that the row is cold.
+    (warning,) = [event for event in events if "not fully warmed" in event["message"]]
+    assert warning["level"] == "warning" and warning["warmup_counts"] == {warmup.RERUN_COLD: 1}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no SIGSEGV by os.kill")
+def test_a_real_worker_killed_in_the_tiny_solve_is_run_again_cold(crashy, tmp_path):
+    """The real worker, state file and _run_subprocess: a segfault in the
+    tiny solve gives the solve's row, re-run without the warm-up."""
+    rows, events = _run_crashy(tmp_path, "segv", timeout=60)
+
+    _assert_rerun_cold(rows, events, "the worker ended in the warm-up (tiny_solve): Worker killed by SIGSEGV")
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(600)
+def test_a_real_worker_hung_in_the_tiny_solve_is_run_again_cold(crashy, tmp_path):
+    """As above for a hang: killed at the worker's deadline (the time limit
+    plus the 5 s minimum grace), then re-run without the warm-up."""
+    began = time.monotonic()
+    rows, events = _run_crashy(tmp_path, "hang", timeout=1)
+
+    _assert_rerun_cold(rows, events, "the worker was still in the warm-up (tiny_solve) at its timeout")
+    assert time.monotonic() - began >= 6.0
+
+
+# --- not fully warmed rows: the runner's and the analysis's warnings, and resume -----
+
+
+def test_timing_categories_and_the_warning():
+    assert warmup.timing_category(None) == warmup.NO_RECORD
+    assert warmup.timing_category({"enabled": True, "complete": True}) == warmup.WARMED
+    assert warmup.timing_category(warmup.off_record()) == warmup.COLD_BY_REQUEST
+    assert warmup.timing_category(warmup.rerun_record("x")) == warmup.RERUN_COLD
+    assert warmup.timing_category({"enabled": True, "complete": False}) == warmup.INCOMPLETE
+
+    assert warmup.not_warmed_warning({warmup.WARMED: 4}) is None
+    assert warmup.not_warmed_warning({}) is None
+    message = warmup.not_warmed_warning({warmup.WARMED: 4, warmup.NO_RECORD: 2, warmup.COLD_BY_REQUEST: 1})
+    assert message.startswith("3 of 7 timed rows were not fully warmed up before their timed region (")
+    assert "1 recorded with run.warmup: false" in message and "2 with no warm-up record" in message
+    assert "the other 4 are warmed, so these rows mix the two" in message
+    assert "mix" not in warmup.not_warmed_warning({warmup.COLD_BY_REQUEST: 3})
+
+
+def _row(name: str, warmup_record, *, run_time=0.5, row_status=status.OPTIMAL) -> dict:
+    metadata = {} if warmup_record is None else {"warmup": warmup_record}
+    return {
+        "run_id": "r", "dataset": "synthetic_qp", "problem": name, "problem_kind": QP, "solver_id": "fake",
+        "solver": "warmup_fake", "status": row_status, "objective_value": 0.0, "iterations": 1,
+        "run_time_seconds": run_time, "metadata": metadata,
+    }
+
+
+def test_the_analysis_counts_timed_rows_that_were_not_fully_warmed():
+    import pandas as pd
+
+    from solver_benchmarks.analysis.warmup_check import warmup_counts, warmup_warnings
+
+    rows = [
+        _row("a", {"enabled": True, "complete": True, "notes": []}),
+        _row("b", {"enabled": True, "complete": True, "notes": []}),
+        _row("c", warmup.off_record()),
+        _row("d", warmup.rerun_record("killed")),
+        _row("e", {"enabled": True, "complete": False, "notes": ["no tiny problem"]}),
+        _row("f", None),
+        _row("g", None, run_time=None, row_status=status.WORKER_ERROR),  # no time: not counted
+        _row("h", None, run_time=0.0, row_status=status.SKIPPED_UNSUPPORTED),  # a skip: not counted
+    ]
+    frame = pd.json_normalize(rows)
+
+    assert warmup_counts(frame) == {
+        warmup.WARMED: 2, warmup.COLD_BY_REQUEST: 1, warmup.RERUN_COLD: 1, warmup.INCOMPLETE: 1,
+        warmup.NO_RECORD: 1,
+    }
+    (message,) = warmup_warnings(frame)
+    assert message.startswith("4 of 6 timed rows were not fully warmed up")
+    assert warmup_warnings(pd.json_normalize(rows[:2])) == []
+    # Rows recorded before the warm-up existed have no metadata.warmup columns at all.
+    assert warmup_counts(pd.json_normalize([_row("x", None)])) == {warmup.NO_RECORD: 1}
+
+
+def test_the_report_and_the_cli_say_whether_rows_were_warmed(tmp_path):
+    from click.testing import CliRunner
+
+    from solver_benchmarks.analysis.markdown_report import _render_warmup_block
+    from solver_benchmarks.cli import main
+    from solver_benchmarks.core.storage import read_results_jsonl
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    rows = [_row("a", {"enabled": True, "complete": True, "notes": []}), _row("b", warmup.off_record())]
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    block = _render_warmup_block(read_results_jsonl(run_dir / "results.jsonl"))
+    assert block[0] == "## Warm-up" and block[2].startswith("Warning: 1 of 2 timed rows were not fully warmed")
+    warmed = read_results_jsonl(run_dir / "results.jsonl").iloc[:1]
+    assert _render_warmup_block(warmed)[2] == (
+        "All 1 timed rows were warmed up before their timed region (`metadata.warmup.complete`)."
+    )
+
+    result = CliRunner().invoke(main, ["summary", str(run_dir), "--unverified"])
+    assert result.exit_code == 0, result.output
+    assert "warning: 1 of 2 timed rows were not fully warmed up" in result.output
+
+
+def _resume_dir(tmp_path, *, manifest_config: dict | None, rows: list[dict]) -> Path:
+    run_dir = tmp_path / "old_run"
+    run_dir.mkdir()
+    if manifest_config is not None:
+        (run_dir / "manifest.json").write_text(json.dumps({"run_id": "old", "config": manifest_config}))
+    (run_dir / "results.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return run_dir
+
+
+@pytest.mark.parametrize(
+    "manifest_config, rows, refused_with, allowed_with",
+    [
+        # A manifest from before the warm-up existed: its rows are cold.
+        ({"name": "old"}, [_row("a", None)], True, False),
+        ({"name": "old", "warmup": True}, [_row("a", {"enabled": True, "complete": True})], False, True),
+        ({"name": "old", "warmup": False}, [_row("a", warmup.off_record())], True, False),
+        # No manifest: the rows' records decide; rows without one say nothing.
+        (None, [_row("a", warmup.off_record())], True, False),
+        (None, [_row("a", None)], None, None),
+    ],
+)
+def test_a_resume_may_not_change_the_warm_up_switch(tmp_path, manifest_config, rows, refused_with, allowed_with):
+    from solver_benchmarks.core.runner import refuse_to_change_warmup
+
+    run_dir = _resume_dir(tmp_path, manifest_config=manifest_config, rows=rows)
+    manifest = json.loads((run_dir / "manifest.json").read_text()) if manifest_config is not None else None
+    if refused_with is None:
+        for value in (True, False):
+            refuse_to_change_warmup(run_dir, _config(warmup=value, resume=True), manifest)
+        return
+    with pytest.raises(RuntimeError, match=f"recorded with run.warmup: {str(allowed_with).lower()}"):
+        refuse_to_change_warmup(run_dir, _config(warmup=refused_with, resume=True), manifest)
+    refuse_to_change_warmup(run_dir, _config(warmup=allowed_with, resume=True), manifest)
+
+
+def test_a_refused_resume_leaves_the_run_directory_as_it_was(fake, tmp_path, repo_root):
+    from solver_benchmarks.core.runner import run_benchmark
+
+    run_dir = _resume_dir(tmp_path, manifest_config={"name": "old", "warmup": False}, rows=[
+        _row("one_variable_lp", warmup.off_record()),
+    ])
+    before = {path.name: path.read_bytes() for path in run_dir.iterdir()}
+    config = parse_run_config({
+        "run": {"dataset": "synthetic_qp", "resume": True},
+        "solvers": [{"id": "fake", "solver": "warmup_fake"}],
+    })
+
+    with pytest.raises(RuntimeError, match="Resume with the same run.warmup, or use a new --run-dir"):
+        run_benchmark(config, run_dir=run_dir, repo_root=repo_root)
+
+    after = {path.name: path.read_bytes() for path in run_dir.iterdir() if path.name != ".bench.lock"}
+    assert after == before  # the manifest was not rewritten with the refused setting
+
+
+def test_the_progress_reporter_warns_at_the_end_about_cold_rows(tmp_path, capsys):
+    from solver_benchmarks.core.runner import _ProgressReporter
+    from solver_benchmarks.core.storage import ResultStore
+
+    store = ResultStore.create(_config(), run_dir=tmp_path / "run")
+    progress = _ProgressReporter(
+        store=store, stream_output=True, total_expected=3, already_complete=0, skipped_during_planning=0,
+        queued=3, parallelism=1,
+    )
+    for name, record in (("a", {"enabled": True, "complete": True}), ("b", None), ("c", warmup.off_record())):
+        progress.record_result(ProblemResult(**_row(name, record)))
+    progress.emit_final()
+
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    (warning,) = [event for event in events if event["level"] == "warning"]
+    assert warning["message"].startswith("In this run, 2 of 3 timed rows were not fully warmed up")
+    assert warning["warmup_counts"] == {warmup.WARMED: 1, warmup.NO_RECORD: 1, warmup.COLD_BY_REQUEST: 1}
+    assert "[bench] warning: In this run, 2 of 3" in capsys.readouterr().err
+
+
 # --- the run config ----------------------------------------------------------------
 
 
@@ -659,11 +1016,38 @@ def test_scs_warm_up_settings_write_no_file_of_the_run():
     }
 
 
-def test_highs_and_gurobi_warm_up_settings_drop_their_output_files():
-    highs = get_solver("highs")({"log_file": "h.log", "write_solution_to_file": True, "threads": 2})
+def test_highs_gurobi_and_cuopt_warm_up_settings_drop_their_file_settings():
+    highs = get_solver("highs")({
+        "log_file": "h.log", "write_solution_to_file": True, "write_basis_file": "b.bas",
+        "write_presolved_model_file": "p.mps", "write_iis_model_file": "i.lp", "read_basis_file": "in.bas",
+        "threads": 2,
+    })
     assert highs.warmup_settings() == {"threads": 2, "verbose": False}
-    gurobi = get_solver("gurobi")({"LogFile": "g.log", "resultfile": "x.sol", "Method": 2})
+    gurobi = get_solver("gurobi")({"LogFile": "g.log", "resultfile": "x.sol", "Record": 1, "Method": 2})
     assert gurobi.warmup_settings() == {"Method": 2, "verbose": False}
+    cuopt = get_solver("cuopt")({"log_file": "c.log", "solution_file": "c.sol", "user_problem_file": "c.mps",
+                                 "pdlp_solver_mode": 2})
+    assert cuopt.warmup_settings() == {"pdlp_solver_mode": 2, "verbose": False}
+
+
+def test_highs_keeps_its_thread_pool_while_the_thread_count_stays(monkeypatch):
+    """The real solve reuses the pool the tiny solve created (same settings),
+    so the pool's creation is not timed; another count resets it."""
+    from solver_benchmarks.solvers import highs_adapter
+
+    resets = []
+
+    class FakeHighs:
+        @staticmethod
+        def resetGlobalScheduler(blocking):
+            resets.append(blocking)
+
+    monkeypatch.setattr(highs_adapter, "_POOL_THREADS", None)
+    for threads in (4, 4, 1, 1, 0, 4):
+        highs_adapter._reset_pool_if_resized(FakeHighs(), threads)
+
+    assert len(resets) == 4  # the first solve, then each change of count
+    assert all(resets)
 
 
 @pytest.mark.parametrize("name", list_solvers())

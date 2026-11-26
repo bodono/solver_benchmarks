@@ -27,38 +27,45 @@ times every solve the way such a session's later solves see it.
 
 The tiny problem has the real problem's form (``qp`` or ``cone``), the same
 kind of objective (a ``P`` with entries, an all-zero ``P``, or none) and one
-small block of every cone type the real problem has, so the tiny solve runs
-the real solve's code paths: whatever the solver imports, loads or
-initialises at its first solve of that form happens here. It is built from
-the structure alone (the form, whether ``P`` has stored entries, the cone
-keys, the signs of the power cone exponents), never from the data's values,
-and it is feasible and bounded with a unique optimum.
+small block of every cone type the real problem has, so the tiny solve goes
+through the code the real solve goes through for that form whatever its
+data: the solver's imports, the libraries it loads and the first run of its
+own code. It is built from the structure alone (the form, whether ``P`` has
+stored entries, the cone keys, the signs of the power cone exponents), never
+from the data's values, and it is feasible and bounded with a unique
+optimum. It does not take the paths a solver chooses from the data: a
+presolve can solve it outright (HiGHS 1.15.1 reduces the tiny LP to an empty
+problem and ends the tiny QP after 0 QP iterations, so its simplex, IPX and
+QP solver first run inside the timed region; MOSEK, Gurobi, CPLEX and
+cuOpt presolve too, not measured), and paths chosen by size are not taken
+(see "What stays in the timed region" below).
 
-Measured with these steps run by a measurement script around the worker
-(2026-11-26, harness a3091dcb, 5 fresh processes per arm, the second solve
-of a problem in one process as the warm floor): on a Mac
-(Apple Silicon, 14 solver configurations, 80 problem pairs) every one-time
-cost above noise was an import inside the timed call (QTQP's backend 52 to
-55 ms, Clarabel's ``scipy.linalg`` on SDPs 35 ms, CVXOPT's ``conelp``
-modules 2.4 to 7.4 ms, SCS's backend module 0.8 to 1.7 ms), and the imports
-plus the tiny solve left -2.3 to +1.3 ms against the warm floor on the pairs
-whose run-to-run noise was small. On an NVIDIA GB10 (SCS only): CPU backends
-0.4 to 1.1 ms cold, 0.0 to 0.8 ms left after the tiny solve; cuDSS 317 to
-358 ms cold, 32 to 48 ms left after the GPU warm-up alone, -2.8 to +7.9 ms
-after the tiny solve too; GPU indirect 286 to 424 ms cold, -1.7 to +13.1 ms
-left on the problems whose GPU CG runs did not vary from run to run. The
-tiny solve itself took 0.7 to 20 ms on the CPU, 15 to 24 ms (GPU indirect)
-and 42 to 57 ms (cuDSS). No status, iteration count or objective of a CPU
-solve changed (bit for bit), and no KKT-verified status changed anywhere.
+Measured through the worker (2026-11-26, 5 fresh processes per arm; the
+residual is against the warm floor, the second solve of a problem in one
+process; the README's "Warm-up" section has the tables). What the warm-up
+removes from ``run_time_seconds``: QTQP's backend import 55 ms and
+Clarabel's ``scipy.linalg`` on SDPs 33 to 36 ms (Mac), SCS's backend module
+1.2 to 2.1 ms (Mac) and 1.4 to 4.1 ms (MKL, x86 on Modal), cuDSS 0.37 s
+(A100) and 0.32 s (GB10), GPU CG 0.29 to 0.42 s (GB10). What it leaves
+against the warm floor: -0.6 to +0.8 ms on the CPU (Mac and GB10, every pair
+with small run-to-run noise), under 5 ms for cuDSS on the GB10. The warm-up
+itself takes about 21 ms per row on the CPU and 0.43 to 0.49 s on a GPU,
+outside the timed region. No status, iteration count or objective of a CPU
+solve changed (bit for bit, Mac, GB10 and Modal), and no KKT-verified
+status changed because of it.
 
 What stays in the timed region: work that depends on the problem's size or
-takes a path the tiny problem does not (a backend chosen by size, threaded
-code entered only for large blocks, MKL Pardiso's threading, cuBLAS kernels
-of other shapes), first touch of the problem's own memory, per-object
-set-up that every solve repeats (the solver's own handles; HiGHS's thread
-pool, which the adapter resets before each solve; MOSEK's licence checkout,
-which a new environment repeats), and, for GPU iterative solvers, run-to-run
-variation that is larger than any of this.
+values, or takes a path the tiny problem does not: a presolve that solves
+the tiny problem (above), a backend or a threaded path chosen by size
+(LAPACK's blocked eigensolver and its level-3 BLAS for PSD blocks larger
+than the tiny order-3 block, which takes the unblocked path; an OpenMP or
+MKL thread team that only such code starts; MKL Pardiso's threaded
+factorization of large matrices), cuBLAS kernels of other shapes and
+types, CUDA kernels loaded lazily at their first launch; first touch of the
+problem's own memory; per-object set-up that every solve repeats (the
+solver's own handles; HiGHS's thread pool when the thread count changes;
+MOSEK's licence checkout, which a new environment repeats); and, for GPU
+iterative solvers, run-to-run variation that is larger than any of this.
 
 The warm-up never fails a run. An exception in any part (a module that does
 not import, no CUDA device, a cone the tiny problem cannot build, a tiny
@@ -70,6 +77,11 @@ module's state file (``STATE_FILE``), and when the worker ended before the
 warm-up finished it runs the solve again in a new worker without the
 warm-up; that row records why. The warm-up's time is not in
 ``run_time_seconds``, and the runner adds it to the worker's timeout.
+
+A row's ``metadata.warmup`` says whether its timed region was warmed
+(``timing_category``); the runner, at the end of a run, and the analysis
+commands warn about timed rows that were not, since their times are not
+comparable with warmed rows' (``not_warmed_warning``).
 """
 
 from __future__ import annotations
@@ -85,7 +97,7 @@ import tempfile
 import time
 from collections.abc import Collection, Iterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import numpy as np
 import scipy.sparse as sp
@@ -457,6 +469,9 @@ def _tiny_solve(solver: Any, problem: ProblemData, record: dict[str, Any], notes
     except TinyProblemUnsupported as exc:
         notes.append(f"no tiny problem: {exc}")
         return False
+    except Exception as exc:  # a structure tiny_problem did not expect: still never fail the run
+        notes.append(f"no tiny problem: {type(exc).__name__}: {exc}")
+        return False
     record["tiny_problem"] = describe(tiny)
     began = time.perf_counter()
     before = set(sys.modules.copy())
@@ -498,6 +513,53 @@ def rerun_record(failure: str) -> dict[str, Any]:
     """``metadata.warmup`` of a row the runner ran again without the warm-up,
     because the first worker ended (``failure`` says how) before it finished."""
     return {"enabled": True, "complete": False, "rerun_without_warmup": True, "notes": [failure]}
+
+
+# What a row's ``metadata.warmup`` says about its timed region
+# (``timing_category``), for the warnings about rows that were not warmed.
+WARMED = "warmed"  # every part ran and the tiny problem was solved
+COLD_BY_REQUEST = "off"  # run.warmup: false
+RERUN_COLD = "rerun"  # run again without the warm-up after a worker ended inside it
+INCOMPLETE = "incomplete"  # a part did not run or did not succeed (the notes say which)
+NO_RECORD = "no_record"  # recorded before the warm-up existed, or its worker ended before it
+_NOT_WARMED = {
+    COLD_BY_REQUEST: "recorded with run.warmup: false",
+    RERUN_COLD: "run again without the warm-up after a worker ended inside it",
+    INCOMPLETE: "with an incomplete warm-up (metadata.warmup.notes say which part)",
+    NO_RECORD: "with no warm-up record (recorded before the warm-up existed, or the worker ended before it)",
+}
+
+
+def timing_category(record: Any) -> str:
+    """The category above of a row whose ``metadata.warmup`` is ``record``
+    (None or absent: ``NO_RECORD``)."""
+    if not isinstance(record, Mapping):
+        return NO_RECORD
+    if record.get("rerun_without_warmup"):
+        return RERUN_COLD
+    if record.get("enabled") is False:
+        return COLD_BY_REQUEST
+    if record.get("complete") is True:
+        return WARMED
+    return INCOMPLETE
+
+
+def not_warmed_warning(counts: Mapping[str, int]) -> str | None:
+    """The warning about timed rows that were not fully warmed, from the
+    number of timed rows per ``timing_category``; None when every one was."""
+    total = sum(counts.values())
+    warmed = counts.get(WARMED, 0)
+    if total == warmed:
+        return None
+    parts = [f"{counts[category]} {text}" for category, text in _NOT_WARMED.items() if counts.get(category)]
+    message = (
+        f"{total - warmed} of {total} timed rows were not fully warmed up before their timed region "
+        f"({'; '.join(parts)}): their run times can include a process's one-time costs (imports, "
+        "library loading, thread pools, a GPU's context and kernels), which warmed rows leave out"
+    )
+    if warmed:
+        message += f"; the other {warmed} are warmed, so these rows mix the two and their times are not comparable"
+    return message + "."
 
 
 def write_state(path: Path | None, state: dict[str, Any]) -> None:
@@ -543,6 +605,21 @@ def finished_seconds(path: Path) -> float | None:
     return max(0.0, float(seconds))
 
 
+# The null device the tiny solve's standard output goes to, opened once per
+# process and never closed: anything that keeps the ``sys.stdout`` it saw
+# during the tiny solve (a module first imported there, a logging handler
+# created at a solver's first run) then writes to the null device later,
+# never to a closed file.
+_NULL_STDOUT: TextIO | None = None
+
+
+def _null_stdout() -> TextIO:
+    global _NULL_STDOUT
+    if _NULL_STDOUT is None:
+        _NULL_STDOUT = open(os.devnull, "w")  # noqa: SIM115 - kept open for the process
+    return _NULL_STDOUT
+
+
 @contextlib.contextmanager
 def _stdout_to_null() -> Iterator[None]:
     """Send standard output to the null device, so the tiny solve adds
@@ -556,7 +633,8 @@ def _stdout_to_null() -> Iterator[None]:
     except (AttributeError, OSError, ValueError):
         pass
     _flush_c_stdio()
-    with open(os.devnull, "w") as null_text, contextlib.redirect_stdout(null_text):
+    null_text = _null_stdout()
+    with contextlib.redirect_stdout(null_text):
         try:
             saved = os.dup(1)
         except OSError:

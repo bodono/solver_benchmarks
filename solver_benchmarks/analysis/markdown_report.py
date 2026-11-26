@@ -50,6 +50,7 @@ from solver_benchmarks.analysis.verify import (
     verification_info,
     verification_table,
 )
+from solver_benchmarks.analysis.warmup_check import warmup_counts, warmup_warnings
 from solver_benchmarks.core.config import manifest_dataset_entries
 
 PLOT_IMAGE_WIDTH = 680
@@ -337,6 +338,7 @@ def _render_markdown_report(
     lines: list[str] = []
     lines.extend(_render_summary_block(dataset_entries, results, tables, metric, manifest=manifest))
     lines.extend(_render_verification_block(results, tables))
+    lines.extend(_render_warmup_block(results))
     lines.extend(
         _render_scope_block(
             run_dir=run_dir,
@@ -418,6 +420,22 @@ def _render_verification_block(results: pd.DataFrame, tables: dict[str, pd.DataF
     if info.get("mode") == "unverified" and lines[-2:] == ["No rows for this section.", ""]:
         lines = lines[:-2]
     return lines
+
+
+def _render_warmup_block(results: pd.DataFrame) -> list[str]:
+    """Whether the timed rows were warmed up before their timed region
+    (README, "Warm-up"); nothing when the run has no timed rows."""
+    counts = warmup_counts(results)
+    total = sum(counts.values())
+    if not total:
+        return []
+    warnings = warmup_warnings(results)
+    text = (
+        f"Warning: {warnings[0]}"
+        if warnings
+        else f"All {total} timed rows were warmed up before their timed region (`metadata.warmup.complete`)."
+    )
+    return ["## Warm-up", "", text, ""]
 
 
 def _render_scope_block(

@@ -71,12 +71,27 @@ HIGHS_SOLVER_TOLERANCES = {
 # feasibility and optimality (KKT) measures" (HiGHS's option description).
 HIGHS_DEFAULT_KKT_TOLERANCE = 1e-7
 
-# HiGHS options that name a file it writes, or switch writing one on (all off
-# or empty by default, checked on highspy 1.15); the warm-up's tiny solve
-# leaves them out.
+# HiGHS options that name a file it writes or reads, or switch writing one on
+# (all off or empty by default; the options of highspy 1.15.1 whose names
+# say so); the warm-up's tiny solve leaves them out: it must write none of
+# the run's files, and a basis or solution read for the real problem does
+# not fit the tiny one.
 HIGHS_OUTPUT_FILE_OPTIONS = frozenset(
-    {"log_file", "solution_file", "write_solution_to_file", "write_model_file", "write_model_to_file"}
+    {
+        "log_file", "solution_file", "write_solution_to_file", "write_model_file", "write_model_to_file",
+        "write_presolved_model_file", "write_presolved_model_to_file", "write_basis_file",
+        "write_iis_model_file", "mip_improving_solution_file", "read_basis_file", "read_solution_file",
+    }
 )
+
+# The thread count of this process's HiGHS thread pool: the ``threads`` of
+# the last solve here (None before the first). HiGHS keeps one pool per
+# process, sized by the run that creates it; ``solve`` resets it only when a
+# solve asks for another count, so the real solve reuses the pool that the
+# warm-up's tiny solve created with the same settings (core/warmup.py), as
+# a long-lived session's later solves do, and the pool's creation stays out
+# of the timed region.
+_POOL_THREADS: int | None = None
 
 
 class HighsSolverAdapter(SolverAdapter):
@@ -126,15 +141,7 @@ class HighsSolverAdapter(SolverAdapter):
         solver = highspy.Highs()
         settings = settings_with_defaults(self.settings)
         threads, translated = _configure_highs(solver, settings)
-        reset_scheduler = getattr(type(solver), "resetGlobalScheduler", None)
-        if reset_scheduler is not None:
-            # HiGHS keeps one thread pool per process, sized by the first
-            # run; a later run asking for another size fails, and threads 0
-            # would reuse whatever pool an earlier run left. The runner
-            # starts a fresh worker per solve, so this only matters for
-            # in-process use, and resetting a pool that does not exist yet
-            # costs nothing.
-            reset_scheduler(True)
+        _reset_pool_if_resized(solver, threads)
         inf = solver.getInfinity()
 
         start = time.perf_counter()
@@ -315,6 +322,23 @@ _ITERATION_LIMIT_OPTIONS = (
     "qp_iteration_limit",
     "pdlp_iteration_limit",
 )
+
+
+def _reset_pool_if_resized(solver, threads: int) -> None:
+    """Reset HiGHS's per-process thread pool when ``threads`` differs from
+    the count it was last used with in this process (``_POOL_THREADS``).
+
+    HiGHS keeps one thread pool per process, sized by the first run; a later
+    run asking for another size fails, and threads 0 would reuse whatever
+    pool an earlier run left, so a solve with another count resets it
+    (resetting a pool that does not exist yet costs nothing). A solve with
+    the same count keeps it. Decided by the thread setting alone.
+    """
+    global _POOL_THREADS
+    reset_scheduler = getattr(type(solver), "resetGlobalScheduler", None)
+    if reset_scheduler is not None and threads != _POOL_THREADS:
+        reset_scheduler(True)
+    _POOL_THREADS = threads
 
 
 def _configure_highs(solver, settings: dict) -> tuple[int, dict]:
