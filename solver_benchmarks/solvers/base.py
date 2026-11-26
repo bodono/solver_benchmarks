@@ -253,6 +253,19 @@ class SolverAdapter(ABC):
     def supports(self, problem_kind: str) -> bool:
         return problem_kind in self.supported_problem_kinds
 
+    def gpu_modules(self) -> tuple[str, ...]:
+        """The modules through which a solve with these settings runs on a GPU.
+
+        Empty (the default) for a solve on the CPU. When it is not empty the
+        worker imports them and warms the GPU (``core/gpu_warmup.py``: the
+        CUDA context and cuBLAS's kernel loading) before calling ``solve``,
+        so that one-time per-process loading stays out of
+        ``run_time_seconds``. Name the modules the solver's GPU backend
+        imports; it must not raise (a setting the solver will refuse gives
+        the CPU answer, and ``solve`` reports it).
+        """
+        return ()
+
     @abstractmethod
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:
         raise NotImplementedError

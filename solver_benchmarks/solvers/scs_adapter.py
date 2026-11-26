@@ -155,6 +155,11 @@ def _scs_update_takes_settings(scs_module) -> bool:
 # r <= eps_abs + eps_rel * norms on the primal and dual residuals and the gap.
 SCS_DEFAULT_TOLERANCES = {"eps_abs": 1e-4, "eps_rel": 1e-4}
 
+# The extension module scs-python imports, inside scs.SCS, for each GPU
+# linear_solver (the same names from 3.3.0, which introduced the setting).
+# The worker imports it and warms the GPU before the timed region.
+SCS_GPU_MODULES = {"cudss": "scs._scs_cudss", "gpu_indirect": "scs._scs_gpu"}
+
 
 class SCSSolverAdapter(SolverAdapter):
     solver_name = "scs"
@@ -163,6 +168,14 @@ class SCSSolverAdapter(SolverAdapter):
     @classmethod
     def is_available(cls) -> bool:
         return module_available("scs")
+
+    def gpu_modules(self) -> tuple[str, ...]:
+        """scs-python's module for ``linear_solver`` cudss or gpu_indirect (a
+        name or ``scs.LinearSolver`` member); empty for the CPU solvers."""
+        value = self.settings.get("linear_solver")
+        value = getattr(value, "value", value)
+        module = SCS_GPU_MODULES.get(value) if isinstance(value, str) else None
+        return (module,) if module else ()
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

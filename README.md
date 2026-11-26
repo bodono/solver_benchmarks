@@ -574,6 +574,55 @@ that in mind, or use `run_time_seconds`. What each adapter records:
 | `scs` | `solve_time` | `setup_time` |
 | `sdpa` | sdpa-python's `sdpa` time | not reported |
 
+### GPU warm-up
+
+A solve whose settings select a GPU (SCS with `linear_solver: cudss` or
+`gpu_indirect`, cuOpt, QTQP with `linear_solver: cudss` or `cupy_dense`) has
+the GPU warmed up before its timed region. Every solve runs in a worker
+process of its own, so without it the `run_time_seconds` of a GPU row would
+include costs that a process pays once, whatever it then solves: loading the
+solver's GPU module and the CUDA libraries it links (scs-python imports its
+cuDSS and GPU modules inside `scs.SCS`), creating the CUDA context (0.245 s on
+an NVIDIA GB10 with CUDA 13), and cuBLAS loading its matrix-product kernels at
+the first `gemm` or `gemv` of the process (cuBLAS 13 runs both through
+cuBLASLt: 0.128 s on the GB10, whatever the problem size). A Python session
+that solves many problems pays these once, and the warm-up times every GPU
+solve as such a session's later solves see it.
+
+Before the adapter's `solve`, the worker imports the modules the adapter
+names (`SolverAdapter.gpu_modules`), creates the primary CUDA context of
+device 0 through the driver API (`libcuda.so.1`), and, for each cuBLAS
+library the solver's modules loaded (read from `/proc/self/maps`), runs one
+`gemm` and one `gemv` of each kind on 10 x 10 operands, on a handle and a
+buffer of its own that it then frees. It loads no cuBLAS of its own, so it
+never takes the place of a copy a solver bundles (cuOpt bundles its CUDA
+libraries).
+
+Each GPU row records the warm-up in `metadata.gpu_warmup` (the columns
+`metadata.gpu_warmup.*` of the results frame): `seconds`, the whole warm-up,
+which is not in `run_time_seconds`; `modules` and `import_seconds`;
+`cuda_context_seconds`; `cublas_libraries` (the paths warmed) and
+`cublas_seconds`; and `notes`, one line for each part that did not run and
+why (no CUDA driver or device, a module that does not import, no cuBLAS
+loaded, a CUDA error). The warm-up never fails a run: a part that cannot run
+is skipped and the solve runs as it would have without it. CPU rows have no
+such record.
+
+What stays in the timed region: a library that a solver loads only during
+its solve (a cuBLAS loaded then is not warmed, and the notes say that none
+was found), a cuBLAS linked statically into a solver, kernels that other
+libraries load at their first use (cuDSS's own; cuSPARSE's first transpose,
+21.7 ms on the GB10), cuBLAS kernels of other shapes and types, and the
+solver's own handles and memory. The context and the loaded kernels hold
+some GPU memory during the solve that a solver making no `gemm` or `gemv`
+call would not have held.
+
+Comparing with runs recorded before the warm-up: the `run_time_seconds` of
+their GPU rows (and SCS's `setup_time_seconds`, which covers its first CUDA
+calls) include the module loading, the CUDA context and, for a solver whose
+solve calls `gemm` or `gemv`, cuBLAS's kernel loading. A GPU row recorded
+with the warm-up has `metadata.gpu_warmup`.
+
 ## Configuration Files
 
 Runs are driven by JSON or YAML. YAML requires `PyYAML`, which is included in the
@@ -1105,6 +1154,7 @@ Every result row records metadata under `metadata.runtime`:
 | `metadata.runtime.thread_env` | The solve subprocess's `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` (`null` when not set); see `threads` under [Shared Solver Settings](#shared-solver-settings). |
 | `metadata.environment_id` | Optional user-supplied environment label. |
 | `metadata.environment_metadata` | Optional user-supplied metadata, usually pinned solver versions or environment notes. |
+| `metadata.gpu_warmup` | GPU rows only: what the warm-up before the timed region did and how long it took (`seconds`, `cuda_context_seconds`, `cublas_seconds`, `notes`, ...); see [GPU warm-up](#gpu-warm-up). |
 
 Manual workflow:
 
@@ -2299,6 +2349,7 @@ Adapter expectations:
 - Return `SOLVER_ERROR` with the message on `info["error"]` (and the elapsed time) when the solver itself fails on a problem by raising, e.g. on a non-convex `P`, crossed bounds or data it refuses; an exception escaping `solve` is recorded as a harness `worker_error` and re-run on resume, so catch only the solver's own exception types. Keep raising for configuration errors: `SolverConfigError` (from `solver_benchmarks.solvers.base`; the runner stops that solver id on it, for the whole run) for unknown settings and out-of-range or wrong-typed values, including a bad value the solver reports as a status or raises from the same call as its failures on the problem (check those values before the solve), and `SolverUnavailable` for a missing backend or a license failure.
 - Pass a NaN-free point to the KKT helpers: `finite_point` returns False for a missing or non-finite vector, and the record is then `None`.
 - Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
+- A solver that runs on a GPU (with some or all settings) defines `gpu_modules()`, returning for its settings the modules its GPU backend imports (empty on the CPU; it must not raise). The worker then warms the GPU up before `solve` (see [GPU warm-up](#gpu-warm-up)), so its `run_time_seconds`, like the other GPU solvers', leaves out the per-process loading.
 - Reject unknown setting names with a `SolverConfigError` naming them, and translate the shared aliases (`eps` / `eps_abs` / `eps_rel` with `translate_tolerance_aliases`, `max_iter` with `pop_max_iter`, `time_limit*` with `pop_time_limit`, `threads` with `pop_threads`) where the solver has an equivalent, recording what was inserted in `info["settings_translated"]`, or mark them ignored. A solver with a thread setting runs on `threads_or_default(threads)` (one thread unless configured) and records it on `info["threads"]`; set `info["threads"] = None` where the adapter cannot set it.
 - Define the classmethod `requested_tolerance(settings, *, problem_kind, is_lp, versions)`: run the adapter's own alias translation on a copy of the settings and return `loosest_tolerance(settings, {knob: library default, ...})` (see `solver_benchmarks/solvers/base.py`), listing the solver's feasibility and gap tolerances (not its infeasibility tolerances, which no adapter uses). The [independent KKT verification](#independent-kkt-verification) holds every row of the solver, solutions and certificates alike, to ten times it; the base class raises, so an adapter without it leaves its rows unverifiable (and a test fails). Add its row to the adapter table there. If the solver joins `tools/make_campaign.py`, add its infeasibility knobs to `CERTIFICATE_KNOBS` (an empty tuple, with the reason, when it has none the adapter can set) and to the last column of that row; `solver_variants` refuses a solver without an entry.
 - Put solver-specific scalar metadata in `info`.

@@ -141,6 +141,10 @@ class CuOptSolverAdapter(SolverAdapter):
     def is_available(cls) -> bool:
         return module_available("cuopt", _import_cuopt)
 
+    def gpu_modules(self) -> tuple[str, ...]:
+        """cuOpt always runs on the GPU; its solver module loads libcuopt."""
+        return ("cuopt.linear_programming.solver",)
+
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:
         settings = dict(settings or {})

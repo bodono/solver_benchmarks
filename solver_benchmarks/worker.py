@@ -11,7 +11,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from solver_benchmarks.core import status
+from solver_benchmarks.core import gpu_warmup, status
 from solver_benchmarks.core.atomic import atomic_write_text
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.parent_watch import watch_parent
@@ -88,6 +88,7 @@ def _limit_memory(limit_mb: int) -> None:
 def run_payload(payload: dict) -> ProblemResult:
     artifacts_dir = Path(payload["artifacts_dir"])
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    warmup: dict | None = None
     try:
         dataset_cls = get_dataset(payload.get("dataset_name", payload["dataset"]))
         dataset = dataset_cls(
@@ -98,6 +99,14 @@ def run_payload(payload: dict) -> ProblemResult:
         solver_config = payload["solver"]
         solver_cls = get_solver(solver_config["solver"])
         solver = solver_cls(solver_config.get("settings", {}))
+        # A GPU solve gets the per-process loading (its modules, the CUDA
+        # context, cuBLAS's kernels) done here, before the adapter's timed
+        # region; the record says what ran and how long it took. A solver
+        # object without gpu_modules (not a SolverAdapter) runs on the CPU,
+        # the SolverAdapter default.
+        gpu_modules: tuple[str, ...] = getattr(solver, "gpu_modules", tuple)()
+        if gpu_modules:
+            warmup = gpu_warmup.warm_up(gpu_modules)
         solver_result = solver.solve(problem, artifacts_dir)
         objective = _reported_objective(problem, solver_result.objective_value)
         _write_trace_if_needed(artifacts_dir, solver_result.trace)
@@ -116,6 +125,8 @@ def run_payload(payload: dict) -> ProblemResult:
         }
         if payload.get("resume_signature") is not None:
             metadata["resume_signature"] = payload["resume_signature"]
+        if warmup is not None:
+            metadata["gpu_warmup"] = warmup
         error = None
         if solver_result.status == status.SKIPPED_UNSUPPORTED:
             error = str(solver_result.info.get("reason", "Unsupported solve"))
@@ -156,6 +167,8 @@ def run_payload(payload: dict) -> ProblemResult:
         }
         if payload.get("resume_signature") is not None:
             metadata["resume_signature"] = payload["resume_signature"]
+        if warmup is not None:
+            metadata["gpu_warmup"] = warmup
         if isinstance(exc, SolverConfigError):
             metadata["error_kind"] = CONFIG_ERROR_KIND
         return ProblemResult(
