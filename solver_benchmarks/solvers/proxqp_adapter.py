@@ -67,6 +67,7 @@ _NO_PROXSUITE = SimpleNamespace(proxqp=SimpleNamespace())
 class ProxQPSolverAdapter(SolverAdapter):
     solver_name = "proxqp"
     supported_problem_kinds = {QP}
+    solver_modules = ("proxsuite",)
 
     @classmethod
     def is_available(cls) -> bool:

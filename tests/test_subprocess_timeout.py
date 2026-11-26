@@ -345,7 +345,8 @@ def _timeout_run(monkeypatch, tmp_path: Path, repo_root: Path, *, timeout, worke
 
     seen = {}
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None,
+             extra_time=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         seen["timeout"] = timeout
         seen["settings"] = payload["solver"]["settings"]

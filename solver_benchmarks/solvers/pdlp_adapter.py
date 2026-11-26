@@ -64,6 +64,12 @@ _PARAMETERS_TEXT_TOLERANCE_WORDS = ("eps_optimal", "optimality_criteria")
 class PDLPSolverAdapter(SolverAdapter):
     solver_name = "pdlp"
     supported_problem_kinds = {QP, CONE}
+    solver_modules = (
+        "google.protobuf.text_format",
+        "ortools.linear_solver.linear_solver_pb2",
+        "ortools.pdlp.solve_log_pb2",
+        "ortools.pdlp.solvers_pb2",
+    )
 
     @classmethod
     def is_available(cls) -> bool:

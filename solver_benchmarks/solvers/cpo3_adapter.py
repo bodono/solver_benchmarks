@@ -119,6 +119,7 @@ CPO3_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel":
 class Cpo3SolverAdapter(SolverAdapter):
     solver_name = "cpo3"
     supported_problem_kinds = {QP, CONE}
+    solver_modules = ("cpo3",)
 
     @classmethod
     def is_available(cls) -> bool:

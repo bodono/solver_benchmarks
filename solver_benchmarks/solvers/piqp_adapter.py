@@ -45,6 +45,7 @@ PIQP_DEFAULT_GAP_TOLERANCES = {"eps_duality_gap_abs": 1e-8, "eps_duality_gap_rel
 class PIQPSolverAdapter(SolverAdapter):
     solver_name = "piqp"
     supported_problem_kinds = {QP}
+    solver_modules = ("piqp",)
 
     @classmethod
     def is_available(cls) -> bool:

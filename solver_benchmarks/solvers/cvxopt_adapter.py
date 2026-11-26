@@ -129,6 +129,7 @@ CVXOPT_DEFAULT_TOLERANCES = {"abstol": 1e-7, "reltol": 1e-6, "feastol": 1e-7}
 class CVXOPTSolverAdapter(SolverAdapter):
     solver_name = "cvxopt"
     supported_problem_kinds = {QP, CONE}
+    solver_modules = ("cvxopt", "cvxopt.solvers")
 
     @classmethod
     def is_available(cls) -> bool:

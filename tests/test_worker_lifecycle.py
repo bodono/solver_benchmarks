@@ -170,6 +170,8 @@ _SITECUSTOMIZE = textwrap.dedent(
             supported_problem_kinds = {"qp", "cone"}
 
             def solve(self, problem, artifacts_dir):
+                if problem.dataset_id == "warmup":  # the worker's warm-up (core/warmup.py)
+                    return SolverResult(status="optimal", run_time_seconds=0.0)
                 lock_dir = Path(self.settings["lock_dir"])
                 fd = os.open(lock_dir / f"{problem.name}.lock", os.O_CREAT | os.O_RDWR)
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -638,7 +640,8 @@ def test_the_runner_hands_the_worker_thread_caps(
         monkeypatch.setenv(name, value)
     handed = []
 
-    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def fake(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None,
+             extra_time=None):
         handed.append(dict(env or {}))
         return SimpleNamespace(returncode=-15, timed_out=True, stderr="")
 

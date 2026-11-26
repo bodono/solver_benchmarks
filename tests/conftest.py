@@ -219,6 +219,13 @@ class FakeWorker:
         values = {**self.outcome, **self.outcomes.get(payload["problem"], {}), **fields}
         values.setdefault("objective_value", 0.0 if values["status"] == "optimal" else None)
         values.setdefault("iterations", 1)
+        # As the real worker records its warm-up (core/warmup.py): warmed, or
+        # off when the run switched it off.
+        values.setdefault("metadata", {
+            "warmup": {"enabled": True, "complete": True, "notes": []}
+            if payload.get("warmup", True)
+            else {"enabled": False, "complete": False, "notes": []}
+        })
         record = ProblemResult(
             run_id=payload["run_id"],
             dataset=payload["dataset"],

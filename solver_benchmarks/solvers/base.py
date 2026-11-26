@@ -213,6 +213,29 @@ def version_tuple(version: Any) -> tuple[int, ...] | None:
     return tuple(parts) if parts else None
 
 
+@dataclass(frozen=True)
+class WarmupModules:
+    """What the worker loads before a solve's timed region.
+
+    ``modules`` are the modules the adapter's ``solve`` imports for these
+    settings: the solver's package, and the backend module a setting names
+    (SCS's ``linear_solver``, for one). The worker imports them first, so
+    their import, and the shared libraries they load, are not timed. A
+    module the solver imports by itself during its first solve (a backend
+    it picks at run time, a lazy import) need not be listed: the warm-up's
+    tiny solve imports it, and the row records it in
+    ``metadata.warmup.tiny_solve_imported``.
+
+    ``gpu`` says the solve runs on a GPU: the worker then also creates the
+    CUDA context and warms the cuBLAS that ``modules`` loaded
+    (``core/gpu_warmup.py``), so ``modules`` must name the modules that load
+    the solver's CUDA libraries.
+    """
+
+    modules: tuple[str, ...] = ()
+    gpu: bool = False
+
+
 class SolverAdapter(ABC):
     solver_name: str
     supported_problem_kinds: set[str]
@@ -252,6 +275,37 @@ class SolverAdapter(ABC):
 
     def supports(self, problem_kind: str) -> bool:
         return problem_kind in self.supported_problem_kinds
+
+    # The modules every solve through this adapter imports: the solver's
+    # package (and its submodules the adapter imports itself). The default
+    # ``warmup_modules`` returns them; an adapter whose modules depend on
+    # its settings overrides that method instead.
+    solver_modules: tuple[str, ...] = ()
+
+    def warmup_modules(self) -> WarmupModules:
+        """What the worker imports before a solve with these settings, and
+        whether it warms a GPU (see :class:`WarmupModules` and
+        ``core/warmup.py``).
+
+        The default is ``solver_modules`` on the CPU. An adapter overrides it
+        when its settings choose a backend module, or a GPU. It must not
+        raise: a setting the solver will refuse gives the default answer,
+        and ``solve`` reports the refusal.
+        """
+        return WarmupModules(modules=tuple(self.solver_modules))
+
+    def warmup_settings(self) -> dict[str, Any]:
+        """The settings of the warm-up's tiny solve: these settings, quiet.
+
+        Everything that chooses what the solver runs (threads, linear solver,
+        precision, device, tolerances, limits) stays as configured, so the
+        tiny solve takes the code paths the real solve takes. Only output
+        changes: ``verbose`` is off, and an adapter whose settings can name
+        files to write overrides this to leave those out (the tiny solve
+        runs with an ``artifacts_dir`` of its own, so files the adapter
+        writes there are discarded). It must not raise.
+        """
+        return {**self.settings, "verbose": False}
 
     @abstractmethod
     def solve(self, problem: ProblemData, artifacts_dir: Path) -> SolverResult:

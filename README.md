@@ -543,7 +543,8 @@ run:
 ### Solve Times
 
 Every result has `run_time_seconds`, the wall-clock time the adapter measures
-around the solver's calls (problem loading excluded); for an infeasibility
+around the solver's calls (problem loading and the [warm-up](#warm-up)
+excluded); for an infeasibility
 claim that includes the calls that produce the certificate it is checked on,
 which for HiGHS and CPLEX can be a second solve (an attempt that gives no
 certificate is not counted; both record the attempt as
@@ -573,6 +574,202 @@ that in mind, or use `run_time_seconds`. What each adapter records:
 | `qtqp` | not reported | not reported |
 | `scs` | `solve_time` | `setup_time` |
 | `sdpa` | sdpa-python's `sdpa` time | not reported |
+
+### Warm-up
+
+Every solve runs in a worker process of its own, so without a warm-up its
+`run_time_seconds` would include costs that a process pays once, whatever it
+then solves: Python imports of the solver's modules and backends (scs-python
+imports its MKL, cuDSS or GPU module inside `scs.SCS`; QTQP imports its
+linear-solver backend inside its first solve; Clarabel imports `scipy.linalg`
+at its first PSD cone), loading shared libraries, a BLAS's dispatch and thread
+pools, the CUDA context and cuBLAS's kernels, and the first run of the solver's
+own code. A Python session that solves many problems pays these once. The
+worker therefore warms up before the adapter's timed region, for every solver,
+on the CPU and on a GPU, and every solve is timed as such a session's later
+solves see it. `run.warmup: false` turns it off, for measuring what it removes.
+
+The warm-up (`solver_benchmarks/core/warmup.py`) runs in the worker after the
+problem is loaded and before the adapter's `solve`:
+
+1. **Imports.** It imports the modules the adapter names for the solve's
+   settings (`SolverAdapter.warmup_modules`): the solver's package and the
+   backend module a setting names (SCS's `linear_solver: mkl` gives
+   `scs._scs_mkl`, `cudss` gives `scs._scs_cudss`). For SCS's `auto` the
+   harness does not guess scs-python's choice (on Linux `_scs_mkl` when it
+   imports, else `_scs_direct`); the tiny solve imports the module it picks.
+2. **GPU.** For a solve whose settings select a GPU (SCS with `linear_solver:
+   cudss` or `gpu_indirect`, cuOpt, QTQP with `linear_solver: cudss` or
+   `cupy_dense`), it creates the primary CUDA context of device 0 through the
+   driver API (`libcuda.so.1`) and, for each cuBLAS library the solver's
+   modules loaded (read from `/proc/self/maps`), runs one double-precision
+   `gemm` and one `gemv` of each kind on 10 x 10 operands, on a handle and a
+   buffer of its own that it then frees. It loads no cuBLAS of its own, so it
+   never takes the place of a copy a solver bundles (cuOpt bundles its CUDA
+   libraries).
+3. **Tiny solve.** It solves a tiny problem through the same adapter and
+   `solve`, with the solve's own settings (threads, linear solver, precision,
+   device, tolerances, time and iteration limits) except output: `verbose` is
+   off, settings that name files are left out (SCS's `write_data_filename`;
+   HiGHS's, Gurobi's and cuOpt's log, solution, model and basis files; SCS's
+   `log_csv_filename` still logs, into a directory of its own), the solve's
+   artifacts directory is a temporary one that is then deleted, and standard
+   output goes to the null device. Its result is discarded. The tiny problem
+   has the real problem's form (QP or cone), the same kind of objective (a `P`
+   with entries, an all-zero `P`, or none) and one small block of every cone
+   type the real problem has (a second-order cone of 4, a PSD block of order 3,
+   a box of width 1, one primal and one dual power cone as the problem has
+   them, ...), so the tiny solve goes through the code the real solve goes
+   through for that form whatever its data: the solver's imports, the
+   libraries it loads and the first run of its own code. It is built from the
+   structure alone (form, whether `P` has stored entries, cone keys, the signs
+   of the power cone exponents), never from the data's values or the
+   problem's feasibility, and it is feasible and bounded with a unique
+   optimum. It does not take the paths a solver picks from the data's size or
+   values, such as a presolve that solves it outright (see what stays in the
+   timed region below).
+
+Measured on 2026-11-26 through the worker, each arm in fresh processes (5 per
+problem), with the warm-up off, on, and as the warm floor: the second solve of
+the same problem in one process, which is what a long-lived session's later
+solves see. "Removed" is the median `run_time_seconds` without the warm-up
+minus with it; "left" is with it minus the warm floor:
+
+| Host, solver | Removed from `run_time_seconds` | Left against the warm floor |
+|---|---|---|
+| Mac (Apple Silicon), QTQP (Accelerate backend) | 54 to 56 ms: its backend import | -0.5 to +2.3 ms (every pair; none had noise under 2 ms) |
+| Mac, Clarabel on SDPs | 33 to 36 ms: `scipy.linalg`, imported at its first PSD cone | 0.0 to 0.6 ms |
+| Mac, CVXOPT | about 5 ms: `conelp`'s module imports | -0.1 ms (its one low-noise pair) |
+| Mac, SCS `cpu_indirect` / `accelerate` / `cpu_dense` | 1.3 to 1.9 ms (medians): the backend module | -0.6 to +0.7 ms |
+| Mac, OSQP, HiGHS, PIQP, ProxQP, ECOS, SDPA, PDLP, SCS `auto` | within noise of 0 (their adapters import the package before the timer) | within noise of 0 |
+| NVIDIA GB10, SCS CPU backends (NVPL) | 0.3 to 0.7 ms (medians) | 0.0 to 0.8 ms |
+| NVIDIA GB10, SCS `cudss` | 301 to 366 ms: the CUDA context, the module import and cuDSS's own first use | -0.7 to +4.2 ms |
+| NVIDIA GB10, SCS `gpu_indirect` | 287 to 421 ms on the problems whose GPU CG runs do not vary from run to run | -0.7 to +3.2 ms on 4 of them |
+| Modal, AMD Milan, SCS `auto` (MKL, 4 threads), 3.3.2 and 3.4.0 | 1.4 to 4.1 ms where the run-to-run noise is under 2 ms | +0.4 to +2.6 ms where the noise is under 2 ms; median over 9 problems +4.0 ms (3.3.2) and +9.2 ms (3.4.0), up to +25 ms on medium QPs (below) |
+| Modal, A100, SCS `cudss`, 3.3.2 and 3.4.0 | 0.35 to 0.43 s (`setup_time_seconds` from about 0.3 s to 16 ms) | -10 to +26 ms where the noise is under 30 ms; median over 9 problems +0.3 ms (3.3.2) and +5.2 ms (3.4.0) |
+
+"Left" covers the pairs whose run-to-run noise is small (under 2 ms on the
+CPU, under 30 ms with cuDSS); GPU iterative solvers vary more than this from run
+to run. On Modal the warm-up leaves more than on the Mac and the GB10: the
+second solve of a problem in one process was faster than the warmed first solve
+on the medium and large problems, mostly in SCS's setup, by 12.6 and 13.0 ms on
+Maros-Meszaros CVXQP1_M (3.3.2 and 3.4.0, 12 to 13% of its run time) and 12.1
+and 25.3 ms on CONT-050 (13 to 16%), with MKL on four threads. It is not the
+thread team: with one thread (3.4.0) it was as large (CVXQP1_M 20.3 ms,
+CONT-050 38.8 ms, most of it in setup). It grows with the problem, so no fixed
+tiny problem can pay it; it looks like the process's first use of memory of
+that size (the heap and MKL's buffers, which a second solve reuses), which
+costs more in Modal's gVisor sandbox than natively, but that is not confirmed.
+Both versions pay it in proportion to their setup time (in milliseconds 3.4.0,
+whose warm setup on these QPs is about twice as long, pays up to about twice as
+much), so version ratios are roughly unbiased; only a warm-up with the real
+problem itself (an untimed solve before the timed one) would remove it, and the
+harness does not do that. No status, iteration count or objective of a CPU solve
+changed, bit for bit (80 pairs on the Mac, 30 on the GB10, 28 on Modal), and no
+KKT-verified status changed because of the warm-up; cuDSS's iteration counts
+vary from run to run with and without it. The warm-up itself takes about 21 ms
+per row on the CPU and 0.43 to 0.49 s on a GPU, outside the timed region; most
+of it is time the solve no longer spends, so the container time a row adds is
+about +0.01 to +0.02 s on the CPU and +0.10 to +0.12 s with cuDSS. Not measured:
+MOSEK, Gurobi, CPLEX, cpo3, cuOpt and QTQP's GPU backends, GPU CG on an A100,
+and solvers other than SCS on x86 and on ARM Linux.
+
+What stays in the timed region, and why:
+
+- paths the solver picks from the data, which the tiny problem does not take:
+  - presolve: HiGHS 1.15.1 reduces the tiny LP to an empty problem and ends the
+    tiny QP after 0 QP iterations, so the first run of its simplex, IPX or QP
+    solver is timed (HiGHS's whole cold cost on the Mac was 0.1 ms, median); MOSEK, Gurobi, CPLEX and cuOpt presolve too (not measured;
+    for cuOpt that could leave GPU kernels to load inside the timed region);
+  - size: LAPACK's blocked eigensolver and its level-3 BLAS for PSD blocks
+    larger than the tiny order-3 block (which takes the unblocked path), a
+    thread team that only such code starts, MKL Pardiso's threaded
+    factorization of large matrices, cuBLAS kernels of other shapes and types,
+    CUDA kernels loaded lazily at their first launch, and a library a solver
+    loads only for large problems (`metadata.warmup.imported_during_solve`
+    lists any module the solve imported itself);
+- first touch of the problem's own memory, and the process's first use of
+  memory of the problem's size (above: up to 16% of `run_time_seconds`
+  on medium QPs on Modal, within 0.8 ms on the Mac and the GB10);
+- set-up that every solve repeats by design: the solver's own handles and
+  factorizations, and MOSEK's licence checkout (the adapter makes a new
+  environment per solve; not measured, as no MOSEK licence was available).
+  HiGHS keeps its thread pool from the tiny solve: the adapter resets it only
+  when the thread count changes (measured on the Mac at 4 threads, the pool
+  that the reset recreated cost under 0.4 ms);
+- for GPU iterative solvers, run-to-run variation (cuSPARSE, cuDSS) that is
+  larger than any of this on some problems.
+
+The warm-up never fails a run. A part that cannot run (a module that does not
+import, no CUDA driver or device, a CUDA error, a cone the tiny problem cannot
+mirror, a tiny solve that raises or does not solve) is recorded in
+`metadata.warmup.notes`, `metadata.warmup.complete` is false, and the solve
+runs as it would have without that part. A warm-up that kills its worker (a
+segfault) or is still running at the worker's deadline (a hang) is caught by
+the runner: the worker writes its progress to `warmup.json` in the solve's
+artifacts directory, and when the worker ended inside the warm-up the runner
+runs the solve again in a new worker without it. That row is recorded cold and
+says why (`metadata.warmup.rerun_without_warmup`, and in `notes` how and in
+which part the first worker ended; that worker's output is kept as
+`stdout.warmup_failure.log` and `stderr.warmup_failure.log`); if the second
+worker fails too, the `worker_error` row names both. A hang costs the worker's
+whole timeout before the second worker starts. The deadline can also fall in
+the warm-up when loading the problem took the whole time limit and grace, in
+which case the solve would have had no time either. The warm-up's time is not
+in `run_time_seconds`, and it does not count against the worker's timeout:
+once it has finished, the runner adds its duration to the deadline.
+
+Rows that were not fully warmed are named, never dropped. At the end of a run
+the runner logs a warning (in `events.jsonl` and on the terminal) that counts
+the run's timed rows that were not fully warmed and why: recorded with
+`run.warmup: false`, re-run without the warm-up after a crash or hang in it, an
+incomplete warm-up, or no warm-up record (rows recorded before the warm-up
+existed, or a worker that ended before it). Every command that loads results
+(`bench summary`, `failures`, `profile`, `geomean`, `plot`, `report`) prints the
+same warning for the rows it loads, saying when they mix warmed and cold rows,
+and `bench report` has a Warm-up section. Resume does not solve such rows
+again.
+
+Each row records the warm-up in `metadata.warmup` (the columns
+`metadata.warmup.*` of the results frame):
+
+| Field | Meaning |
+|---|---|
+| `enabled` | `run.warmup` of the run (`false`: the row is cold by request). |
+| `complete` | Every part ran and the tiny problem was solved: the row is fully warmed. |
+| `seconds` | The whole warm-up, outside `run_time_seconds`. |
+| `modules`, `import_seconds` | The modules imported first, and how long that took. |
+| `gpu`, `gpu_seconds`, `cuda_context_seconds`, `cublas_libraries`, `cublas_seconds` | The GPU part: whether it ran, its time, the context's, the cuBLAS libraries warmed and their time (null or empty for a CPU solve). |
+| `tiny_problem` | The tiny problem's `kind`, `n`, `m`, `p` (`none`, `zero` or `nonzero`) and, for a cone problem, `cone`. |
+| `tiny_status`, `tiny_iterations`, `tiny_run_time_seconds`, `tiny_solve_seconds` | The tiny solve's status as the adapter reported it (not KKT-verified), iterations, the adapter's timer and the whole call. |
+| `tiny_solve_imported` | Modules the tiny solve imported for the first time (one name per new package): what was moved out of the timed region beyond `modules`, such as the backend SCS's `auto` picked. |
+| `imported_during_solve` | Modules first imported during the adapter's whole `solve` call (its timed region and its post-processing); empty when the warm-up loaded everything. Recorded with the warm-up off too, where it also lists the packages adapters import before their timers, so there it is not a list of what was timed. |
+| `rerun_without_warmup` | Present (true) on a row the runner solved again without the warm-up because the first worker ended inside it. |
+| `notes` | One line for each part that did not run or did not succeed, and why. |
+
+This record replaces `metadata.gpu_warmup` of the GPU-only warm-up that came
+before it; its fields (`cuda_context_seconds`, `cublas_libraries`,
+`cublas_seconds`, `notes`) keep their names, its `seconds` is `gpu_seconds`,
+and its `modules` and `import_seconds` are now this record's, for every solve.
+
+Comparability: rows recorded before the warm-up existed (or with `run.warmup:
+false`) include these one-time costs in `run_time_seconds`, and SCS's
+`setup_time_seconds` of a GPU row includes its first CUDA calls; rows recorded
+with it do not. On Modal, the first cold row of each fresh container also
+carried the container's first read of the solver's libraries: 727 ms of
+`run_time_seconds` in the one fresh-container cold shard measured, against
+22 ms for the first row of a warmed shard, whose warm-up took that read. The
+two time different things and must not be mixed: compare versions or solvers
+only within runs made with the warm-up, and do not combine new rows with
+archived ones (for instance the archived rows of other solvers on the docs
+benchmark pages) without re-running those. A row has
+`metadata.warmup.complete` true exactly when it was fully warmed. A resume
+with `run.warmup` changed is refused: when the run directory's manifest or rows
+were recorded with the other setting (a manifest written before the warm-up
+existed counts as `false`), `bench run` stops before solving or rewriting
+anything; resume with the same setting, or use a new run directory. The switch
+is not part of the resume signature (like `run.parallelism`, it changes what
+the times include, not the solve).
 
 ## Configuration Files
 
@@ -637,9 +834,10 @@ as YAML 1.2 and JSON read them:
 | `run.parallelism` | Number of concurrent subprocess solves. |
 | `run.resume` | If true, completed `(dataset, problem, solver_id)` triples whose solve settings match the config are not rerun (see [Running Benchmarks](#running-benchmarks)). If false, `bench run --run-dir` refuses a directory that already has results for the config's datasets and solvers. |
 | `run.max_worker_error_retries` | Maximum retries of a compatible `worker_error` result across resumes; default 2, 0 disables retries. Increase it to retry again after fixing a persistent failure. |
-| `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s) is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout` and its objective moved to `info.objective_before_timeout`. Every result returned after the limit, whatever its status, carries `info.exceeded_time_limit`, and the KKT verification never promotes it. A solver stopped by its own time limit returns slightly after that limit, so when its limit equals `timeout_seconds` its time-limit stops are over the limit and are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. |
+| `run.timeout_seconds` | Default time limit per solve, in seconds; `0` or unset means none. The runner enforces it; it is not passed to the solver (set the solver's own time-limit setting for that). A worker still running after the limit plus a grace for start-up and problem loading (equal to the limit, at least 5 s and at most 30 s), plus the time its [warm-up](#warm-up) took, is killed, and the solve is recorded as `time_limit` with `run_time_seconds` equal to the limit. A solve that returns an optimal, inaccurate or infeasibility status after the limit is recorded as `time_limit` too, with the solver's status kept in `info.status_before_timeout` and its objective moved to `info.objective_before_timeout`. Every result returned after the limit, whatever its status, carries `info.exceeded_time_limit`, and the KKT verification never promotes it. A solver stopped by its own time limit returns slightly after that limit, so when its limit equals `timeout_seconds` its time-limit stops are over the limit and are never promoted; set the solver's limit below `timeout_seconds` if those points should be eligible. |
 | `run.auto_prepare_data` | If true, prepare the missing requested data before listing and solving: the problems `include` names, else those `dataset_options.subset` names (for the datasets whose subset takes problem names), else the dataset's small default subset. Problems already present are not requested again, and a failed preparation stops the run with an error naming the dataset. The details are under [Supported Datasets](#supported-datasets). |
 | `run.fail_on_unsupported` | If true, an unsupported solver/problem combination fails the run instead of being recorded as `skipped_unsupported`: a problem kind the solver does not take, a problem the adapter reports it cannot take (the row is written, then the run stops), and a solver that is not installed (the run stops before solving anything). See [Supported Solvers](#supported-solvers). Default false. |
+| `run.warmup` | If true (the default), each worker warms up before the solve's timed region: it imports the solver's modules, warms the GPU for a GPU solve and solves a tiny problem of the same form with the same settings, so `run_time_seconds` leaves out the one-time cost of a process's first solve (see [Warm-up](#warm-up)). Set it to false only to measure that cost; rows recorded without it are not comparable with rows recorded with it. Recorded in each row as `metadata.warmup.enabled`; a resume with it changed is refused. |
 | `run.worker_memory_limit_mb` | Optional cap, in MiB, on the data segment of each solve's worker process (`RLIMIT_DATA`, set in the worker before it loads the problem). On Linux this covers heap and anonymous `mmap` allocations, and the libraries a solver loads count against it too. macOS largely ignores the limit, and on Windows, which has no `resource` module, every solve fails when it is set. A solve that exceeds the limit is normally recorded as `worker_error` (a solver that catches the failed allocation itself may report its own error status instead), so set the limit well above the largest problem's needs. Integer >= 1; unset or null means no limit. |
 | `solvers[].id` | Unique label for this solver variant. Used in output paths, so two ids may not differ only in letter case. |
 | `solvers[].solver` | Solver adapter ID, e.g. `scs`, `qtqp`, `pdlp`. |
@@ -1105,6 +1303,7 @@ Every result row records metadata under `metadata.runtime`:
 | `metadata.runtime.thread_env` | The solve subprocess's `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` (`null` when not set); see `threads` under [Shared Solver Settings](#shared-solver-settings). |
 | `metadata.environment_id` | Optional user-supplied environment label. |
 | `metadata.environment_metadata` | Optional user-supplied metadata, usually pinned solver versions or environment notes. |
+| `metadata.warmup` | What the warm-up before the timed region did and how long it took (`enabled`, `complete`, `seconds`, the tiny solve's status, the GPU part's times, `imported_during_solve`, `notes`, ...); see [Warm-up](#warm-up). It replaces `metadata.gpu_warmup`. |
 
 Manual workflow:
 
@@ -1369,6 +1568,7 @@ results/netlib_feasible_example_2026-04-26_14-03-27_UTC/
           payload.json
           stdout.log
           stderr.log
+          warmup.json
           worker_result.json
           result.json
           trace.jsonl
@@ -1393,6 +1593,8 @@ Files:
 | `payload.json` | Exact payload passed to the subprocess worker. |
 | `stdout.log` | Everything emitted to subprocess stdout during a solve. |
 | `stderr.log` | Everything emitted to subprocess stderr during a solve. |
+| `warmup.json` | The worker's [warm-up](#warm-up) progress (`running` and the part, then `done` and its record), which the runner reads when a worker ends without a result. Absent with `run.warmup: false`, and on a row solved again without the warm-up (the first worker's file is removed when the second starts; the row's `metadata.warmup.notes` say where it ended). |
+| `stdout.warmup_failure.log` / `stderr.warmup_failure.log` | Only when a worker ended inside its warm-up: that worker's output, kept before the solve runs again without the warm-up. |
 | `worker_result.json` | Raw worker output before aggregation. |
 | `result.json` | Per-solve result record matching `results.jsonl`. |
 | `trace.jsonl` | Iteration trace when the solver adapter exposes one. |
@@ -2299,6 +2501,8 @@ Adapter expectations:
 - Return `SOLVER_ERROR` with the message on `info["error"]` (and the elapsed time) when the solver itself fails on a problem by raising, e.g. on a non-convex `P`, crossed bounds or data it refuses; an exception escaping `solve` is recorded as a harness `worker_error` and re-run on resume, so catch only the solver's own exception types. Keep raising for configuration errors: `SolverConfigError` (from `solver_benchmarks.solvers.base`; the runner stops that solver id on it, for the whole run) for unknown settings and out-of-range or wrong-typed values, including a bad value the solver reports as a status or raises from the same call as its failures on the problem (check those values before the solve), and `SolverUnavailable` for a missing backend or a license failure.
 - Pass a NaN-free point to the KKT helpers: `finite_point` returns False for a missing or non-finite vector, and the record is then `None`.
 - Time what other adapters time: the solver's setup and solve, not harness-only work such as statistics collection.
+- Declare what the [warm-up](#warm-up) imports before the timed region. Set the class attribute `solver_modules` to the modules every solve imports (the solver's package, e.g. `solver_modules = ("my_solver",)`). If a setting chooses a backend module or a GPU, override `warmup_modules()` to return `WarmupModules(modules=..., gpu=...)` (from `solver_benchmarks.solvers.base`) for the instance's settings: the backend's module, and `gpu=True` with the modules that load the solver's CUDA libraries for a solve on a GPU (the worker then creates the CUDA context and warms the cuBLAS they loaded). It must not raise; a setting the solver will refuse gives the default answer. Modules the solver imports on its own at its first solve need not be listed: the warm-up's tiny solve imports them.
+- The warm-up then solves a tiny problem of the real one's form and cone types through your `solve`, with `warmup_settings()`: by default the instance's settings with `verbose: false`. If a setting can name a file the solver writes, override `warmup_settings()` to leave it out (as the SCS, HiGHS, Gurobi and cuOpt adapters do; a file the solver reads for the real problem, such as a starting basis, does not fit the tiny one either), so the tiny solve never writes where the run keeps its files. Supporting the tiny problem needs nothing more: it is a valid problem of the same form, so a `solve` that handles the real problem handles it, and one that skips a cone type skips both (the row then notes that the warm-up was incomplete). `tests/test_warmup.py` solves every tiny problem with every installed solver.
 - Reject unknown setting names with a `SolverConfigError` naming them, and translate the shared aliases (`eps` / `eps_abs` / `eps_rel` with `translate_tolerance_aliases`, `max_iter` with `pop_max_iter`, `time_limit*` with `pop_time_limit`, `threads` with `pop_threads`) where the solver has an equivalent, recording what was inserted in `info["settings_translated"]`, or mark them ignored. A solver with a thread setting runs on `threads_or_default(threads)` (one thread unless configured) and records it on `info["threads"]`; set `info["threads"] = None` where the adapter cannot set it.
 - Define the classmethod `requested_tolerance(settings, *, problem_kind, is_lp, versions)`: run the adapter's own alias translation on a copy of the settings and return `loosest_tolerance(settings, {knob: library default, ...})` (see `solver_benchmarks/solvers/base.py`), listing the solver's feasibility and gap tolerances (not its infeasibility tolerances, which no adapter uses). The [independent KKT verification](#independent-kkt-verification) holds every row of the solver, solutions and certificates alike, to ten times it; the base class raises, so an adapter without it leaves its rows unverifiable (and a test fails). Add its row to the adapter table there. If the solver joins `tools/make_campaign.py`, add its infeasibility knobs to `CERTIFICATE_KNOBS` (an empty tuple, with the reason, when it has none the adapter can set) and to the last column of that row; `solver_variants` refuses a solver without an entry.
 - Put solver-specific scalar metadata in `info`.

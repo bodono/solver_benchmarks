@@ -25,6 +25,7 @@ from .base import (
     SolverConfigError,
     SolverUnavailable,
     ToleranceUnknown,
+    WarmupModules,
     finite_point,
     loosest_tolerance,
     mark_threads_ignored,
@@ -46,15 +47,39 @@ QTQP_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel":
 # The first release with those names; earlier ones took atol / rtol, whose
 # defaults are not recorded here.
 QTQP_TOLERANCE_NAMES_SINCE = (0, 0, 7)
+# QTQP's GPU linear solvers and the modules they import when built (checked
+# on qtqp main, 2026-11); the worker imports them and warms the GPU before
+# the timed region (core/warmup.py).
+QTQP_GPU_MODULES = {
+    "cudss": ("cupy", "cupyx.scipy.sparse", "nvmath"),
+    "cupy_dense": ("cupy", "cupyx.scipy.linalg"),
+}
 
 
 class QTQPSolverAdapter(SolverAdapter):
     solver_name = "qtqp"
     supported_problem_kinds = {QP}
+    solver_modules = ("qtqp",)
 
     @classmethod
     def is_available(cls) -> bool:
         return module_available("qtqp")
+
+    def warmup_modules(self) -> WarmupModules:
+        """``qtqp``, and for its GPU linear solvers the modules they import
+        when they are built (``qtqp/solvers_gpu.py``: CuDssSolver,
+        CupyDenseSolver), on a GPU. A CPU backend's module (macldlt,
+        pymklpardiso, qdldl, ...) is imported when QTQP builds it, so the
+        tiny solve imports it, and AUTO's choice for the tiny problem. QTQP
+        main (2026-11, not 0.0.7) has AUTO pick a dense route from the data
+        (A at least 90% dense with m >= n, or A and P both that dense), which
+        the tiny QP does not take, so that route's first use stays timed.
+        ``linear_solver`` is a member name in any case, as
+        ``_normalize_settings`` reads it, or a member."""
+        value = self.settings.get("linear_solver")
+        name = getattr(value, "name", value)
+        gpu_modules = QTQP_GPU_MODULES.get(name.strip().lower(), ()) if isinstance(name, str) else ()
+        return WarmupModules(modules=(*self.solver_modules, *gpu_modules), gpu=bool(gpu_modules))
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

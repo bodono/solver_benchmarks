@@ -84,6 +84,7 @@ SDPA_DEFAULT_TOLERANCES = {"epsilonStar": 1e-7, "epsilonDash": 1e-7}
 class SDPASolverAdapter(SolverAdapter):
     solver_name = "sdpa"
     supported_problem_kinds = {CONE}
+    solver_modules = ("sdpap",)
 
     @classmethod
     def is_available(cls) -> bool:

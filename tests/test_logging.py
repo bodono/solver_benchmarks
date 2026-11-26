@@ -322,6 +322,7 @@ def test_run_one_captures_subprocess_stdout_and_stderr(monkeypatch, tmp_path: Pa
         stderr_path,
         stream_output,
         env=None,
+        extra_time=None,
     ):
         payload_path = Path(cmd[-1])
         payload = json.loads(payload_path.read_text())
