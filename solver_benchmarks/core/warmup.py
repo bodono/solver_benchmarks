@@ -48,7 +48,12 @@ Clarabel's ``scipy.linalg`` on SDPs 33 to 36 ms (Mac), SCS's backend module
 1.2 to 2.1 ms (Mac) and 1.4 to 4.1 ms (MKL, x86 on Modal), cuDSS 0.37 s
 (A100) and 0.32 s (GB10), GPU CG 0.29 to 0.42 s (GB10). What it leaves
 against the warm floor: -0.6 to +0.8 ms on the CPU (Mac and GB10, every pair
-with small run-to-run noise), under 5 ms for cuDSS on the GB10. The warm-up
+with small run-to-run noise), under 5 ms for cuDSS on the GB10; on Modal
+(x86, MKL) +0.4 to +2.6 ms on the low-noise problems, but up to 13 to 25 ms
+(12 to 16% of the run time) on medium QPs, mostly in SCS's setup and as large
+with one thread as with four: a cost that grows with the problem (most
+likely the process's first use of memory of that size), which no fixed tiny
+problem can pay. The warm-up
 itself takes about 21 ms per row on the CPU and 0.43 to 0.49 s on a GPU,
 outside the timed region. No status, iteration count or objective of a CPU
 solve changed (bit for bit, Mac, GB10 and Modal), and no KKT-verified
@@ -62,7 +67,8 @@ than the tiny order-3 block, which takes the unblocked path; an OpenMP or
 MKL thread team that only such code starts; MKL Pardiso's threaded
 factorization of large matrices), cuBLAS kernels of other shapes and
 types, CUDA kernels loaded lazily at their first launch; first touch of the
-problem's own memory; per-object set-up that every solve repeats (the
+problem's own memory and the process's first use of memory of the problem's
+size (above); per-object set-up that every solve repeats (the
 solver's own handles; HiGHS's thread pool when the thread count changes;
 MOSEK's licence checkout, which a new environment repeats); and, for GPU
 iterative solvers, run-to-run variation that is larger than any of this.

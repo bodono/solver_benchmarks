@@ -70,9 +70,12 @@ class QTQPSolverAdapter(SolverAdapter):
         when they are built (``qtqp/solvers_gpu.py``: CuDssSolver,
         CupyDenseSolver), on a GPU. A CPU backend's module (macldlt,
         pymklpardiso, qdldl, ...) is imported when QTQP builds it, so the
-        tiny solve imports it, AUTO's choice included. ``linear_solver`` is
-        a member name in any case, as ``_normalize_settings`` reads it, or a
-        member."""
+        tiny solve imports it, and AUTO's choice for the tiny problem. QTQP
+        main (2026-11, not 0.0.7) has AUTO pick a dense route from the data
+        (A at least 90% dense with m >= n, or A and P both that dense), which
+        the tiny QP does not take, so that route's first use stays timed.
+        ``linear_solver`` is a member name in any case, as
+        ``_normalize_settings`` reads it, or a member."""
         value = self.settings.get("linear_solver")
         name = getattr(value, "name", value)
         gpu_modules = QTQP_GPU_MODULES.get(name.strip().lower(), ()) if isinstance(name, str) else ()
