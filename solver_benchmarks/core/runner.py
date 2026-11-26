@@ -26,7 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from solver_benchmarks.core import status
+from solver_benchmarks.core import status, warmup
 from solver_benchmarks.core.config import (
     DatasetConfig,
     RunConfig,
@@ -1287,9 +1287,9 @@ def _run_one(
         "environment_metadata": environment_metadata or {},
         "resume_signature": resume_signature,
         "memory_limit_mb": config.worker_memory_limit_mb,
+        "warmup": config.warmup,
     }
     payload_path = artifacts_dir / "payload.json"
-    atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
     # Distinguish "no timeout configured" (None) from "explicitly disabled"
     # (0). A solver-level None means "fall back to the run-level setting";
     # any other numeric value (including 0, which means no limit) takes
@@ -1310,18 +1310,71 @@ def _run_one(
     cmd = [
         sys.executable, "-P", "-m", "solver_benchmarks.worker", "--payload", str(payload_path)
     ]
-    _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
-    completed = _run_subprocess(
-        cmd,
-        cwd=repo_root,
-        timeout=subprocess_timeout,
-        stdout_path=artifacts_dir / "stdout.log",
-        stderr_path=artifacts_dir / "stderr.log",
-        stream_output=stream_solver_output,
-        env=worker_thread_environ(solver_config.settings),
+    # The worker's warm-up (core/warmup.py) reports its progress here. Its
+    # time does not count against the timeout: once it has finished, the
+    # runner adds it to the deadline.
+    warmup_state = artifacts_dir / warmup.STATE_FILE
+
+    def launch():
+        atomic_write_text(payload_path, json.dumps(payload, indent=2, default=str))
+        warmup_state.unlink(missing_ok=True)
+        _emit_progress(stream_output, f"starting {problem.name} with {solver_config.id}")
+        return _run_subprocess(
+            cmd,
+            cwd=repo_root,
+            timeout=subprocess_timeout,
+            stdout_path=artifacts_dir / "stdout.log",
+            stderr_path=artifacts_dir / "stderr.log",
+            stream_output=stream_solver_output,
+            env=worker_thread_environ(solver_config.settings),
+            extra_time=lambda: warmup.finished_seconds(warmup_state),
+        )
+
+    worker_result_path = artifacts_dir / "worker_result.json"
+    completed = launch()
+    warmup_failure = (
+        _warmup_failure(completed, warmup_state, worker_result_path) if config.warmup else None
     )
+    if warmup_failure is not None and not _WORKERS.aborting():
+        # The worker ended inside its warm-up, so the solve never ran: run it
+        # again in a new worker without the warm-up (a row recorded cold, and
+        # saying why), rather than lose it or record the warm-up's failure as
+        # the solver's.
+        _emit_progress(
+            stream_output,
+            f"warm-up failed {problem.name} with {solver_config.id}: {warmup_failure}; "
+            "running the solve again without it",
+        )
+        payload = {**payload, "warmup_failure": warmup_failure}
+        for log in ("stdout", "stderr"):
+            # Keep the first worker's output: it shows how the warm-up failed.
+            try:
+                (artifacts_dir / f"{log}.log").replace(artifacts_dir / f"{log}.warmup_failure.log")
+            except OSError:
+                pass
+        completed = launch()
+
+    def metadata_with_warmup() -> dict:
+        """A row the runner records itself keeps the warm-up's record."""
+        metadata = _metadata_with_environment(
+            problem,
+            solver_config,
+            environment_id=environment_id,
+            environment_metadata=environment_metadata,
+            resume_signature=resume_signature,
+        )
+        state = warmup.read_state(warmup_state)
+        if warmup_failure is not None:
+            metadata["warmup"] = warmup.rerun_record(warmup_failure)
+        elif state is not None and state.get("state") == warmup.DONE:
+            metadata["warmup"] = state.get("record")
+        elif not config.warmup:
+            metadata["warmup"] = warmup.off_record()
+        return metadata
+
     if completed.timed_out:
         _emit_progress(stream_output, f"timeout {problem.name} with {solver_config.id}")
+        extra = getattr(completed, "extra_seconds", 0.0)
         return ProblemResult(
             run_id=store.run_id,
             dataset=dataset_config.id,
@@ -1334,23 +1387,17 @@ def _run_one(
             iterations=None,
             run_time_seconds=time_limit,
             error=(
-                f"Worker killed after {subprocess_timeout:g} s: timeout_seconds="
+                f"Worker killed after {subprocess_timeout + extra:g} s: timeout_seconds="
                 f"{time_limit:g} plus {subprocess_timeout - time_limit:g} s grace "
                 "for start-up and loading"
+                + (f" plus the warm-up's {extra:g} s" if extra else "")
                 if subprocess_timeout is not None and time_limit is not None
                 else "Worker killed after the subprocess timeout"
             ),
             artifact_dir=str(artifacts_dir),
-            metadata=_metadata_with_environment(
-                problem,
-                solver_config,
-                environment_id=environment_id,
-                environment_metadata=environment_metadata,
-                resume_signature=resume_signature,
-            ),
+            metadata=metadata_with_warmup(),
         )
 
-    worker_result_path = artifacts_dir / "worker_result.json"
     if completed.returncode == 0 and worker_result_path.exists():
         result = _load_worker_result(
             worker_result_path,
@@ -1377,6 +1424,9 @@ def _run_one(
             stream_output,
             f"worker error {problem.name} with {solver_config.id}: exit {completed.returncode}",
         )
+    error = _worker_exit_message(completed.returncode, completed.stderr)
+    if warmup_failure is not None:
+        error = f"{error} (a first worker ended in the warm-up: {warmup_failure})"
     return ProblemResult(
         run_id=store.run_id,
         dataset=dataset_config.id,
@@ -1388,15 +1438,29 @@ def _run_one(
         objective_value=None,
         iterations=None,
         run_time_seconds=None,
-        error=_worker_exit_message(completed.returncode, completed.stderr),
+        error=error,
         artifact_dir=str(artifacts_dir),
-        metadata=_metadata_with_environment(
-            problem,
-            solver_config,
-            environment_id=environment_id,
-            environment_metadata=environment_metadata,
-            resume_signature=resume_signature,
-        ),
+        metadata=metadata_with_warmup(),
+    )
+
+
+def _warmup_failure(completed, warmup_state: Path, worker_result_path: Path) -> str | None:
+    """How a worker that ended without a result ended inside its warm-up;
+    None when it has a result, or ended before or after the warm-up.
+
+    The worker's state file (core/warmup.py) says whether the warm-up was
+    still running and in which part.
+    """
+    if not completed.timed_out and completed.returncode == 0 and worker_result_path.exists():
+        return None
+    state = warmup.read_state(warmup_state)
+    if state is None or state.get("state") != warmup.RUNNING:
+        return None
+    part = state.get("part") or "warm-up"
+    if completed.timed_out:
+        return f"the worker was still in the warm-up ({part}) at its timeout and was killed"
+    return f"the worker ended in the warm-up ({part}): " + _worker_exit_message(
+        completed.returncode, completed.stderr
     )
 
 
@@ -1807,10 +1871,14 @@ def _run_subprocess(
     stderr_path: Path,
     stream_output: bool,
     env: Mapping[str, str] | None = None,
+    extra_time: Callable[[], float | None] | None = None,
 ):
     """Run one worker in its own process group, teeing its output to the logs.
 
     ``env`` adds variables to the worker's environment (the thread caps).
+    ``extra_time``, called once when ``timeout`` runs out, gives seconds the
+    worker may run on (the time its warm-up took, which is not the solve's);
+    None or 0 for none. The result's ``extra_seconds`` is what was added.
     The worker also gets the harness's import roots on PYTHONPATH and a
     private temporary directory as TMPDIR / TEMP / TMP, which is removed
     with everything in it once the worker's process group is gone, however
@@ -1891,8 +1959,15 @@ def _run_subprocess(
         for thread in threads:
             thread.start()
         timed_out = False
+        extra_seconds = 0.0
         try:
-            returncode = process.wait(timeout=timeout)
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                extra_seconds = (extra_time() if extra_time is not None else None) or 0.0
+                if not extra_seconds > 0:
+                    raise
+                returncode = process.wait(timeout=extra_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
             returncode = _terminate_process(process)
@@ -1929,6 +2004,7 @@ def _run_subprocess(
         returncode=returncode,
         stderr="".join(stderr_tail),
         timed_out=timed_out,
+        extra_seconds=extra_seconds,
     )
 
 

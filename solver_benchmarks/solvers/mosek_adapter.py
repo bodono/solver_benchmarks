@@ -77,6 +77,7 @@ MOSEK_QP_TOLERANCES = {
 class MosekSolverAdapter(SolverAdapter):
     solver_name = "mosek"
     supported_problem_kinds = {QP}
+    solver_modules = ("mosek",)
 
     @classmethod
     def is_available(cls) -> bool:

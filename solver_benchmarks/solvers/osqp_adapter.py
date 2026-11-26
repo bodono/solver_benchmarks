@@ -41,6 +41,7 @@ OSQP_DEFAULT_TOLERANCES = {"eps_abs": 1e-3, "eps_rel": 1e-3}
 class OSQPSolverAdapter(SolverAdapter):
     solver_name = "osqp"
     supported_problem_kinds = {QP}
+    solver_modules = ("osqp",)
 
     @classmethod
     def is_available(cls) -> bool:

@@ -51,6 +51,7 @@ from .base import (
     RequestedTolerance,
     SolverAdapter,
     SolverConfigError,
+    WarmupModules,
     coerce_tolerance,
     finite_point,
     loosest_tolerance,
@@ -63,6 +64,13 @@ from .base import (
     solver_import_failed,
 )
 from .qp_split import normalize_qp_bounds
+
+# What _import_cuopt imports, the modules every cuOpt solve goes through.
+CUOPT_MODULES = (
+    "cuopt.linear_programming.solver",
+    "cuopt.linear_programming.data_model",
+    "cuopt.linear_programming.solver_settings",
+)
 
 
 def _import_cuopt():
@@ -136,14 +144,16 @@ CUOPT_DEFAULT_TOLERANCE = 1e-4
 class CuOptSolverAdapter(SolverAdapter):
     solver_name = "cuopt"
     supported_problem_kinds = {QP}
+    solver_modules = CUOPT_MODULES
 
     @classmethod
     def is_available(cls) -> bool:
         return module_available("cuopt", _import_cuopt)
 
-    def gpu_modules(self) -> tuple[str, ...]:
-        """cuOpt always runs on the GPU; its solver module loads libcuopt."""
-        return ("cuopt.linear_programming.solver",)
+    def warmup_modules(self) -> WarmupModules:
+        """cuOpt always runs on the GPU; its solver module loads libcuopt.
+        The others are the modules ``solve`` imports (``_import_cuopt``)."""
+        return WarmupModules(modules=self.solver_modules, gpu=True)
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

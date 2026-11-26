@@ -15,8 +15,10 @@ a process pays once whatever it then solves:
 
 A Python session that solves many problems pays these once, so the
 benchmark times every GPU solve the way such a session's later solves see
-it. ``warm_up`` runs in the worker, before the adapter's ``solve``, for
-every solver whose settings select a GPU (``SolverAdapter.gpu_modules``):
+it. ``warm_up`` is the GPU part of the worker's warm-up (``core/warmup.py``),
+which runs it before the adapter's ``solve`` for every solver whose settings
+select a GPU (``SolverAdapter.warmup_modules``), once it has imported the
+solver's modules itself (so it passes no modules here):
 
 1. it imports the modules the adapter names, so their libraries are loaded;
 2. it creates the primary CUDA context of device 0 through the driver API
@@ -56,7 +58,7 @@ still took 6 to 9 ms longer than a second solve for the GPU indirect solver
 and 34 to 36 ms longer for cuDSS. The tradeoff: the context and the loaded
 kernels hold GPU memory during the solve that a solver making no ``gemm``
 or ``gemv`` call would not have held, and runs recorded before the warm-up
-are slower by these costs (see the README's "Solve Times").
+are slower by these costs (see the README's "Warm-up").
 
 The warm-up never fails a run. A part that cannot run (no CUDA driver, no
 device, a module that does not import, a CUDA error) is skipped with the

@@ -71,14 +71,29 @@ HIGHS_SOLVER_TOLERANCES = {
 # feasibility and optimality (KKT) measures" (HiGHS's option description).
 HIGHS_DEFAULT_KKT_TOLERANCE = 1e-7
 
+# HiGHS options that name a file it writes, or switch writing one on (all off
+# or empty by default, checked on highspy 1.15); the warm-up's tiny solve
+# leaves them out.
+HIGHS_OUTPUT_FILE_OPTIONS = frozenset(
+    {"log_file", "solution_file", "write_solution_to_file", "write_model_file", "write_model_to_file"}
+)
+
 
 class HighsSolverAdapter(SolverAdapter):
     solver_name = "highs"
     supported_problem_kinds = {QP}
+    solver_modules = ("highspy",)
 
     @classmethod
     def is_available(cls) -> bool:
         return module_available("highspy")
+
+    def warmup_settings(self) -> dict:
+        """As the base, without the options that make HiGHS write files."""
+        return {
+            key: value for key, value in super().warmup_settings().items()
+            if key not in HIGHS_OUTPUT_FILE_OPTIONS
+        }
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

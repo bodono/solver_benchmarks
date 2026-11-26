@@ -48,6 +48,7 @@ from .base import (
     SolverAdapter,
     SolverConfigError,
     ToleranceUnknown,
+    WarmupModules,
     coerce_int_setting,
     finite_point,
     is_setting_type_error,
@@ -155,27 +156,61 @@ def _scs_update_takes_settings(scs_module) -> bool:
 # r <= eps_abs + eps_rel * norms on the primal and dual residuals and the gap.
 SCS_DEFAULT_TOLERANCES = {"eps_abs": 1e-4, "eps_rel": 1e-4}
 
-# The extension module scs-python imports, inside scs.SCS, for each GPU
-# linear_solver (the same names from 3.3.0, which introduced the setting).
-# The worker imports it and warms the GPU before the timed region.
-SCS_GPU_MODULES = {"cudss": "scs._scs_cudss", "gpu_indirect": "scs._scs_gpu"}
+# The extension module scs-python imports, inside scs.SCS, for each
+# linear_solver that names one (scs/py/__init__.py, _SOLVER_DISPATCH: the same
+# names from 3.3.0, which introduced the setting, through 3.4.0). qdldl is
+# _scs_direct, which `import scs` loads. auto is left out: scs-python picks
+# its module when scs.SCS runs (on Linux _scs_mkl when it imports, else
+# _scs_direct; _scs_direct on macOS), so the warm-up's tiny solve imports
+# the one it picks rather than the harness guessing.
+SCS_BACKEND_MODULES = {
+    "qdldl": "scs._scs_direct",
+    "cpu_indirect": "scs._scs_indirect",
+    "mkl": "scs._scs_mkl",
+    "accelerate": "scs._scs_accelerate",
+    "cpu_dense": "scs._scs_dense",
+    "gpu_indirect": "scs._scs_gpu",
+    "cudss": "scs._scs_cudss",
+}
+# The linear solvers that run on a GPU; the worker warms the GPU for them.
+SCS_GPU_LINEAR_SOLVERS = frozenset({"gpu_indirect", "cudss"})
+# Settings that name a file SCS writes; the warm-up's tiny solve leaves them
+# out (log_csv_filename is kept, as True, so its logging code still runs,
+# into the tiny solve's own artifacts directory).
+SCS_OUTPUT_FILE_SETTINGS = ("write_data_filename",)
 
 
 class SCSSolverAdapter(SolverAdapter):
     solver_name = "scs"
     supported_problem_kinds = {QP, CONE}
+    solver_modules = ("scs",)
 
     @classmethod
     def is_available(cls) -> bool:
         return module_available("scs")
 
-    def gpu_modules(self) -> tuple[str, ...]:
-        """scs-python's module for ``linear_solver`` cudss or gpu_indirect (a
-        name or ``scs.LinearSolver`` member); empty for the CPU solvers."""
+    def warmup_modules(self) -> WarmupModules:
+        """``scs`` and scs-python's module for ``linear_solver`` (a name or
+        ``scs.LinearSolver`` member), on a GPU for cudss and gpu_indirect.
+        For auto (or no setting) only ``scs``: the tiny solve imports the
+        module scs-python picks."""
         value = self.settings.get("linear_solver")
         value = getattr(value, "value", value)
-        module = SCS_GPU_MODULES.get(value) if isinstance(value, str) else None
-        return (module,) if module else ()
+        name = value if isinstance(value, str) else None
+        module = SCS_BACKEND_MODULES.get(name) if name else None
+        return WarmupModules(
+            modules=self.solver_modules + ((module,) if module else ()),
+            gpu=name in SCS_GPU_LINEAR_SOLVERS,
+        )
+
+    def warmup_settings(self) -> dict:
+        settings = {
+            key: value for key, value in super().warmup_settings().items()
+            if key not in SCS_OUTPUT_FILE_SETTINGS
+        }
+        if settings.get("log_csv_filename"):
+            settings["log_csv_filename"] = True
+        return settings
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

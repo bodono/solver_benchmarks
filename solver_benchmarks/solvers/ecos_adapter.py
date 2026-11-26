@@ -117,6 +117,7 @@ ECOS_DEFAULT_TOLERANCES = {"feastol": 1e-8, "abstol": 1e-8, "reltol": 1e-8}
 class ECOSSolverAdapter(SolverAdapter):
     solver_name = "ecos"
     supported_problem_kinds = {QP, CONE}
+    solver_modules = ("ecos",)
 
     @classmethod
     def is_available(cls) -> bool:

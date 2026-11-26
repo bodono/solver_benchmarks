@@ -25,6 +25,7 @@ from .base import (
     SolverConfigError,
     SolverUnavailable,
     ToleranceUnknown,
+    WarmupModules,
     finite_point,
     loosest_tolerance,
     mark_threads_ignored,
@@ -48,7 +49,7 @@ QTQP_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_rel":
 QTQP_TOLERANCE_NAMES_SINCE = (0, 0, 7)
 # QTQP's GPU linear solvers and the modules they import when built (checked
 # on qtqp main, 2026-11); the worker imports them and warms the GPU before
-# the timed region.
+# the timed region (core/warmup.py).
 QTQP_GPU_MODULES = {
     "cudss": ("cupy", "cupyx.scipy.sparse", "nvmath"),
     "cupy_dense": ("cupy", "cupyx.scipy.linalg"),
@@ -58,19 +59,24 @@ QTQP_GPU_MODULES = {
 class QTQPSolverAdapter(SolverAdapter):
     solver_name = "qtqp"
     supported_problem_kinds = {QP}
+    solver_modules = ("qtqp",)
 
     @classmethod
     def is_available(cls) -> bool:
         return module_available("qtqp")
 
-    def gpu_modules(self) -> tuple[str, ...]:
-        """The modules QTQP's GPU linear solvers import when they are built
-        (``qtqp/solvers_gpu.py``: CuDssSolver, CupyDenseSolver); empty for
-        the CPU ones. ``linear_solver`` is a member name in any case, as
-        ``_normalize_settings`` reads it, or a member."""
+    def warmup_modules(self) -> WarmupModules:
+        """``qtqp``, and for its GPU linear solvers the modules they import
+        when they are built (``qtqp/solvers_gpu.py``: CuDssSolver,
+        CupyDenseSolver), on a GPU. A CPU backend's module (macldlt,
+        pymklpardiso, qdldl, ...) is imported when QTQP builds it, so the
+        tiny solve imports it, AUTO's choice included. ``linear_solver`` is
+        a member name in any case, as ``_normalize_settings`` reads it, or a
+        member."""
         value = self.settings.get("linear_solver")
         name = getattr(value, "name", value)
-        return QTQP_GPU_MODULES.get(name.strip().lower(), ()) if isinstance(name, str) else ()
+        gpu_modules = QTQP_GPU_MODULES.get(name.strip().lower(), ()) if isinstance(name, str) else ()
+        return WarmupModules(modules=(*self.solver_modules, *gpu_modules), gpu=bool(gpu_modules))
 
     @classmethod
     def requested_tolerance(cls, settings, *, problem_kind=None, is_lp=None, versions=None) -> RequestedTolerance:

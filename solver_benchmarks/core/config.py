@@ -39,6 +39,7 @@ _RUN_KEYS = frozenset(
         "timeout_seconds",
         "fail_on_unsupported",
         "auto_prepare_data",
+        "warmup",
     }
 )
 # Run keys may also sit at the top level, as in a manifest's config, which
@@ -94,6 +95,11 @@ class RunConfig:
     auto_prepare_data: bool = False
     max_worker_error_retries: int = 2
     worker_memory_limit_mb: int | None = None
+    # Warm up each worker before the solve's timed region (core/warmup.py).
+    # Off only to measure what the warm-up removes: rows recorded without it
+    # time each solver's one-time loading too. Like parallelism, it changes
+    # what the timings include, not the solve, so it is not in config_hash.
+    warmup: bool = True
 
     @property
     def dataset(self) -> str:
@@ -180,6 +186,7 @@ class RunConfig:
             "timeout_seconds": self.timeout_seconds,
             "fail_on_unsupported": self.fail_on_unsupported,
             "auto_prepare_data": self.auto_prepare_data,
+            "warmup": self.warmup,
             "config_hash": self.config_hash,
             "solvers": [
                 {
@@ -282,6 +289,7 @@ def parse_run_config(raw: dict[str, Any]) -> RunConfig:
             run.get("auto_prepare_data", raw.get("auto_prepare_data", False)),
             "run.auto_prepare_data",
         ),
+        warmup=_validate_bool(run.get("warmup", raw.get("warmup", True)), "run.warmup"),
     )
 
 

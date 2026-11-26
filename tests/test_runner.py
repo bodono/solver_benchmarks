@@ -269,7 +269,8 @@ def test_resume_retries_worker_errors_without_duplicate_rows_or_lost_artifacts(
 
     calls: dict[str, int] = {}
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None,
+             extra_time=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         name = payload["problem"]
         calls[name] = calls.get(name, 0) + 1
@@ -362,7 +363,8 @@ def test_resume_planning_skip_preserves_pending_worker_error(
     calls = []
     fail = True
 
-    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None,
+             extra_time=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         calls.append(payload["problem"])
         stdout_path.write_text("attempt diagnostic")
@@ -1617,7 +1619,8 @@ def test_the_progress_line_of_a_solver_error_names_its_reason(
 
     reason = "cvxopt.conelp raised ValueError: Rank(A) < p\n" + "x" * 400
 
-    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None):
+    def fake_run_subprocess(cmd, *, cwd, timeout, stdout_path, stderr_path, stream_output, env=None,
+             extra_time=None):
         payload = json.loads(Path(cmd[-1]).read_text())
         stdout_path.write_text("")
         stderr_path.write_text("")

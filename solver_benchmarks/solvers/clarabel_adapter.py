@@ -72,6 +72,7 @@ CLARABEL_DEFAULT_TOLERANCES = {"tol_feas": 1e-8, "tol_gap_abs": 1e-8, "tol_gap_r
 class ClarabelSolverAdapter(SolverAdapter):
     solver_name = "clarabel"
     supported_problem_kinds = {QP, CONE}
+    solver_modules = ("clarabel",)
 
     @classmethod
     def is_available(cls) -> bool:

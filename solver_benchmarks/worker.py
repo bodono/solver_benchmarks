@@ -11,7 +11,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from solver_benchmarks.core import gpu_warmup, status
+from solver_benchmarks.core import status, warmup
 from solver_benchmarks.core.atomic import atomic_write_text
 from solver_benchmarks.core.environment import runtime_metadata
 from solver_benchmarks.core.parent_watch import watch_parent
@@ -88,7 +88,7 @@ def _limit_memory(limit_mb: int) -> None:
 def run_payload(payload: dict) -> ProblemResult:
     artifacts_dir = Path(payload["artifacts_dir"])
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    warmup: dict | None = None
+    warmup_record: dict | None = None
     try:
         dataset_cls = get_dataset(payload.get("dataset_name", payload["dataset"]))
         dataset = dataset_cls(
@@ -99,15 +99,17 @@ def run_payload(payload: dict) -> ProblemResult:
         solver_config = payload["solver"]
         solver_cls = get_solver(solver_config["solver"])
         solver = solver_cls(solver_config.get("settings", {}))
-        # A GPU solve gets the per-process loading (its modules, the CUDA
-        # context, cuBLAS's kernels) done here, before the adapter's timed
-        # region; the record says what ran and how long it took. A solver
-        # object without gpu_modules (not a SolverAdapter) runs on the CPU,
-        # the SolverAdapter default.
-        gpu_modules: tuple[str, ...] = getattr(solver, "gpu_modules", tuple)()
-        if gpu_modules:
-            warmup = gpu_warmup.warm_up(gpu_modules)
-        solver_result = solver.solve(problem, artifacts_dir)
+        # The per-process loading (imports, libraries, a GPU's context and
+        # kernels, the solver's first run) is done here, before the adapter's
+        # timed region: see core/warmup.py. The record says what ran.
+        warmup_record = _warm_up(payload, solver, problem, artifacts_dir)
+        before_solve = set(sys.modules.copy())
+        try:
+            solver_result = solver.solve(problem, artifacts_dir)
+        finally:
+            # Modules the solve imported itself, inside its timed region:
+            # what the warm-up did not load (empty when it loaded everything).
+            warmup_record["imported_during_solve"] = warmup.imported_since(before_solve)
         objective = _reported_objective(problem, solver_result.objective_value)
         _write_trace_if_needed(artifacts_dir, solver_result.trace)
         dimensions = _problem_dimensions(problem)
@@ -125,8 +127,7 @@ def run_payload(payload: dict) -> ProblemResult:
         }
         if payload.get("resume_signature") is not None:
             metadata["resume_signature"] = payload["resume_signature"]
-        if warmup is not None:
-            metadata["gpu_warmup"] = warmup
+        metadata["warmup"] = warmup_record
         error = None
         if solver_result.status == status.SKIPPED_UNSUPPORTED:
             error = str(solver_result.info.get("reason", "Unsupported solve"))
@@ -167,8 +168,8 @@ def run_payload(payload: dict) -> ProblemResult:
         }
         if payload.get("resume_signature") is not None:
             metadata["resume_signature"] = payload["resume_signature"]
-        if warmup is not None:
-            metadata["gpu_warmup"] = warmup
+        if warmup_record is not None:
+            metadata["warmup"] = warmup_record
         if isinstance(exc, SolverConfigError):
             metadata["error_kind"] = CONFIG_ERROR_KIND
         return ProblemResult(
@@ -186,6 +187,19 @@ def run_payload(payload: dict) -> ProblemResult:
             artifact_dir=str(artifacts_dir),
             metadata=metadata,
         )
+
+
+def _warm_up(payload: dict, solver, problem, artifacts_dir: Path) -> dict:
+    """``metadata.warmup`` for this solve, after running the warm-up unless
+    the run switched it off (``run.warmup``, the payload's ``warmup``) or the
+    runner is running the solve again because a first worker ended in it
+    (``warmup_failure``: how)."""
+    failure = payload.get("warmup_failure")
+    if failure:
+        return warmup.rerun_record(str(failure))
+    if not payload.get("warmup", True):
+        return warmup.off_record()
+    return warmup.run(solver, problem, artifacts_dir / warmup.STATE_FILE)
 
 
 def _requested_tolerance(solver_cls, settings, problem_kind, dimensions, runtime) -> dict:

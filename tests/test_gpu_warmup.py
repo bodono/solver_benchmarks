@@ -1,4 +1,5 @@
-"""The GPU warm-up before a GPU solver's timed region (core/gpu_warmup.py).
+"""The GPU part of the warm-up before a solve's timed region (core/gpu_warmup.py,
+run by core/warmup.py for a solve whose settings select a GPU).
 
 The CUDA driver and cuBLAS are replaced by fakes that record their calls, so
 these tests run without a GPU; the real libraries are exercised by hand on a
@@ -16,7 +17,7 @@ from solver_benchmarks.core import gpu_warmup, status
 from solver_benchmarks.core.problem import QP
 from solver_benchmarks.core.result import SolverResult
 from solver_benchmarks.solvers import get_solver, list_solvers
-from solver_benchmarks.solvers.base import SolverAdapter
+from solver_benchmarks.solvers.base import SolverAdapter, WarmupModules
 from solver_benchmarks.solvers.registry import SOLVERS
 from solver_benchmarks.worker import run_payload
 
@@ -242,13 +243,16 @@ def test_mapped_libraries_reads_each_cublas_once_and_skips_cublaslt_and_deleted_
     assert gpu_warmup.mapped_libraries("libcublas.so", tmp_path / "missing") == []
 
 
-# The worker: the warm-up runs before the adapter's solve, outside its timer.
+# The worker: the GPU part of the warm-up (core/warmup.py) runs before the
+# adapter's solve, outside its timer, after the modules are imported and
+# before the tiny solve.
 
 class _Recorder(SolverAdapter):
     solver_name = "warmup_probe"
     supported_problem_kinds = {QP}
     events: list = []
     modules: tuple[str, ...] = ()
+    gpu = False
     raise_in_solve = False
 
     @classmethod
@@ -257,12 +261,12 @@ class _Recorder(SolverAdapter):
 
         return loosest_tolerance({}, {"eps": 1e-4})
 
-    def gpu_modules(self):
-        return self.modules
+    def warmup_modules(self):
+        return WarmupModules(modules=self.modules, gpu=self.gpu)
 
     def solve(self, problem, artifacts_dir: Path) -> SolverResult:
         start = time.perf_counter()
-        self.events.append("solve")
+        self.events.append("tiny solve" if problem.dataset_id == "warmup" else "solve")
         if self.raise_in_solve:
             raise RuntimeError("solver crashed")
         return SolverResult(status=status.OPTIMAL, objective_value=0.0, iterations=1,
@@ -287,41 +291,48 @@ def probe(monkeypatch, fake_gpu):
 
 
 def test_the_worker_warms_up_a_gpu_solve_before_its_timed_region(probe, fake_gpu, repo_root, tmp_path):
-    probe.modules = ("json",)
+    probe.modules, probe.gpu = ("json",), True
     fake_gpu.delay = CONTEXT_SECONDS
 
     record = run_payload(_payload(repo_root, tmp_path)).to_record()
 
-    assert fake_gpu.events == CONTEXT_CALLS + CUBLAS_CALLS + ["solve"]
-    warmup = record["metadata"]["gpu_warmup"]
-    assert warmup["modules"] == ["json"] and warmup["cublas_libraries"] == [CUBLAS]
-    assert warmup["seconds"] >= warmup["cuda_context_seconds"] >= CONTEXT_SECONDS
+    # The context and cuBLAS first, then the tiny solve, then the real one.
+    assert fake_gpu.events == CONTEXT_CALLS + CUBLAS_CALLS + ["tiny solve", "solve"]
+    warmup = record["metadata"]["warmup"]
+    assert warmup["modules"] == ["json"] and warmup["gpu"] is True
+    assert warmup["cublas_libraries"] == [CUBLAS] and warmup["complete"] is True
+    assert warmup["seconds"] >= warmup["gpu_seconds"] >= warmup["cuda_context_seconds"] >= CONTEXT_SECONDS
     # The adapter's timer starts after the warm-up.
     assert record["run_time_seconds"] < CONTEXT_SECONDS
     assert record["status"] == status.OPTIMAL
 
 
-def test_the_worker_does_not_warm_up_a_cpu_solve(probe, fake_gpu, repo_root, tmp_path, monkeypatch):
+def test_the_worker_does_not_warm_a_gpu_for_a_cpu_solve(probe, fake_gpu, repo_root, tmp_path, monkeypatch):
     def not_called(modules):
-        raise AssertionError("warm_up called for a CPU solve")
+        raise AssertionError("gpu_warmup.warm_up called for a CPU solve")
 
     monkeypatch.setattr(gpu_warmup, "warm_up", not_called)
 
     record = run_payload(_payload(repo_root, tmp_path)).to_record()
 
-    assert fake_gpu.events == ["solve"]
-    assert "gpu_warmup" not in record["metadata"]
+    assert fake_gpu.events == ["tiny solve", "solve"]
+    warmup = record["metadata"]["warmup"]
+    assert warmup["gpu"] is False and warmup["cuda_context_seconds"] is None and warmup["complete"] is True
     assert record["status"] == status.OPTIMAL
 
 
 def test_a_worker_error_row_keeps_the_warm_up_record(probe, fake_gpu, repo_root, tmp_path):
-    probe.modules = ("json",)
+    probe.modules, probe.gpu = ("json",), True
     probe.raise_in_solve = True
 
     record = run_payload(_payload(repo_root, tmp_path)).to_record()
 
     assert record["status"] == status.WORKER_ERROR
-    assert record["metadata"]["gpu_warmup"]["cublas_libraries"] == [CUBLAS]
+    warmup = record["metadata"]["warmup"]
+    assert warmup["cublas_libraries"] == [CUBLAS]
+    # The tiny solve raised too: a note, not a failure of the run.
+    assert warmup["complete"] is False
+    assert warmup["notes"] == ["tiny solve raised RuntimeError: solver crashed"]
 
 
 def test_the_worker_runs_a_gpu_solve_without_a_gpu(probe, repo_root, tmp_path, monkeypatch):
@@ -329,16 +340,42 @@ def test_the_worker_runs_a_gpu_solve_without_a_gpu(probe, repo_root, tmp_path, m
         raise OSError(f"{name}: cannot open shared object file")
 
     monkeypatch.setattr(gpu_warmup, "open_library", no_driver)
-    probe.modules = ("json",)
+    probe.modules, probe.gpu = ("json",), True
 
     record = run_payload(_payload(repo_root, tmp_path)).to_record()
 
     assert record["status"] == status.OPTIMAL
-    assert record["metadata"]["gpu_warmup"]["cuda_context_seconds"] is None
-    assert "no CUDA context created" in record["metadata"]["gpu_warmup"]["notes"][0]
+    warmup = record["metadata"]["warmup"]
+    assert warmup["cuda_context_seconds"] is None and warmup["complete"] is False
+    assert "no CUDA context created" in warmup["notes"][0]
+    assert warmup["tiny_status"] == status.OPTIMAL  # the tiny solve still ran
 
 
-# Which adapters warm up: those whose settings select a GPU.
+def test_a_cublas_that_is_mapped_but_not_warmed_leaves_the_row_not_fully_warmed(
+    probe, fake_gpu, repo_root, tmp_path
+):
+    probe.modules, probe.gpu = ("json",), True
+    fake_gpu.cublas_fail = "gemm"
+
+    warmup = run_payload(_payload(repo_root, tmp_path)).to_record()["metadata"]["warmup"]
+
+    assert warmup["cuda_context_seconds"] is not None and warmup["cublas_libraries"] == []
+    assert warmup["complete"] is False
+    assert warmup["notes"][0].startswith(f"cuBLAS {CUBLAS} not warmed")
+
+
+def test_no_cublas_loaded_is_a_note_but_the_row_is_fully_warmed(probe, fake_gpu, repo_root, tmp_path):
+    # SCS 3.3.2's cuDSS module links no cuBLAS: there is none to warm.
+    probe.modules, probe.gpu = ("json",), True
+    fake_gpu.maps.write_text(_maps_line("/usr/lib/libc.so.6"))
+
+    warmup = run_payload(_payload(repo_root, tmp_path)).to_record()["metadata"]["warmup"]
+
+    assert warmup["complete"] is True and warmup["cublas_libraries"] == []
+    assert warmup["notes"][0].startswith("no cuBLAS library is loaded")
+
+
+# Which adapters warm a GPU: those whose settings select one.
 
 class _Member:
     def __init__(self, name, value):
@@ -346,21 +383,25 @@ class _Member:
 
 
 @pytest.mark.parametrize(
-    "settings, modules",
+    "settings, modules, gpu",
     [
-        ({"linear_solver": "cudss"}, ("scs._scs_cudss",)),
-        ({"linear_solver": "gpu_indirect"}, ("scs._scs_gpu",)),
-        ({"linear_solver": _Member("CUDSS", "cudss")}, ("scs._scs_cudss",)),
-        ({}, ()),
-        ({"linear_solver": None}, ()),
-        ({"linear_solver": "auto"}, ()),
-        ({"linear_solver": "mkl"}, ()),
-        ({"linear_solver": "cpu_indirect"}, ()),
-        ({"linear_solver": 3}, ()),
+        ({"linear_solver": "cudss"}, ("scs", "scs._scs_cudss"), True),
+        ({"linear_solver": "gpu_indirect"}, ("scs", "scs._scs_gpu"), True),
+        ({"linear_solver": _Member("CUDSS", "cudss")}, ("scs", "scs._scs_cudss"), True),
+        ({}, ("scs",), False),
+        ({"linear_solver": None}, ("scs",), False),
+        ({"linear_solver": "auto"}, ("scs",), False),
+        ({"linear_solver": "mkl"}, ("scs", "scs._scs_mkl"), False),
+        ({"linear_solver": "qdldl"}, ("scs", "scs._scs_direct"), False),
+        ({"linear_solver": "cpu_indirect"}, ("scs", "scs._scs_indirect"), False),
+        ({"linear_solver": "accelerate"}, ("scs", "scs._scs_accelerate"), False),
+        ({"linear_solver": "cpu_dense"}, ("scs", "scs._scs_dense"), False),
+        ({"linear_solver": 3}, ("scs",), False),
+        ({"linear_solver": ["cudss"]}, ("scs",), False),
     ],
 )
-def test_scs_warms_up_its_gpu_linear_solvers(settings, modules):
-    assert get_solver("scs")(settings).gpu_modules() == modules
+def test_scs_names_the_module_of_its_linear_solver(settings, modules, gpu):
+    assert get_solver("scs")(settings).warmup_modules() == WarmupModules(modules=modules, gpu=gpu)
 
 
 @pytest.mark.parametrize(
@@ -375,13 +416,17 @@ def test_scs_warms_up_its_gpu_linear_solvers(settings, modules):
     ],
 )
 def test_qtqp_warms_up_its_gpu_linear_solvers(settings, modules):
-    assert get_solver("qtqp")(settings).gpu_modules() == modules
+    plan = get_solver("qtqp")(settings).warmup_modules()
+    assert plan == WarmupModules(modules=("qtqp", *modules), gpu=bool(modules))
 
 
-def test_cuopt_always_warms_up():
-    assert get_solver("cuopt")({}).gpu_modules() == ("cuopt.linear_programming.solver",)
+def test_cuopt_always_warms_up_the_gpu():
+    plan = get_solver("cuopt")({}).warmup_modules()
+    assert plan.gpu is True and plan.modules[0] == "cuopt.linear_programming.solver"
 
 
 @pytest.mark.parametrize("name", [name for name in list_solvers() if name != "cuopt"])
 def test_other_solvers_at_default_settings_run_on_the_cpu(name):
-    assert get_solver(name)({}).gpu_modules() == ()
+    plan = get_solver(name)({}).warmup_modules()
+    assert plan.gpu is False
+    assert plan.modules  # every adapter names its solver's package

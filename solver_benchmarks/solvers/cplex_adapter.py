@@ -67,6 +67,7 @@ CPLEX_DEFAULT_TOLERANCES = {
 class CPLEXSolverAdapter(SolverAdapter):
     solver_name = "cplex"
     supported_problem_kinds = {QP}
+    solver_modules = ("cplex",)
 
     @classmethod
     def is_available(cls) -> bool:
