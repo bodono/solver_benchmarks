@@ -593,10 +593,18 @@ Before the adapter's `solve`, the worker imports the modules the adapter
 names (`SolverAdapter.gpu_modules`), creates the primary CUDA context of
 device 0 through the driver API (`libcuda.so.1`), and, for each cuBLAS
 library the solver's modules loaded (read from `/proc/self/maps`), runs one
-`gemm` and one `gemv` of each kind on 10 x 10 operands, on a handle and a
-buffer of its own that it then frees. It loads no cuBLAS of its own, so it
-never takes the place of a copy a solver bundles (cuOpt bundles its CUDA
-libraries).
+double-precision `gemm` and one `gemv` of each kind on 10 x 10 operands, on a
+handle and a buffer of its own that it then frees. It loads no cuBLAS of its
+own, so it never takes the place of a copy a solver bundles (cuOpt bundles
+its CUDA libraries).
+
+Measured through the worker on the GB10 (SCS eeef3109, Maros-Meszaros DUAL3,
+HS118 and QAFIRO, 5 fresh processes each, 2026-11-26): the warm-up took
+0.42 s (context 0.24 s, cuBLAS 0.13 s, import 0.04 s), and
+`run_time_seconds` fell by 0.41 s for `linear_solver: gpu_indirect` (0.46 to
+0.50 s down to 0.04 to 0.09 s) and by 0.29 s for `cudss` (0.34 s down to
+0.05 s), whose solve makes no `gemm` or `gemv` call and so never paid
+cuBLAS's load. Iteration counts were the same with and without it.
 
 Each GPU row records the warm-up in `metadata.gpu_warmup` (the columns
 `metadata.gpu_warmup.*` of the results frame): `seconds`, the whole warm-up,
@@ -611,9 +619,13 @@ such record.
 What stays in the timed region: a library that a solver loads only during
 its solve (a cuBLAS loaded then is not warmed, and the notes say that none
 was found), a cuBLAS linked statically into a solver, kernels that other
-libraries load at their first use (cuDSS's own; cuSPARSE's first transpose,
-21.7 ms on the GB10), cuBLAS kernels of other shapes and types, and the
-solver's own handles and memory. The context and the loaded kernels hold
+libraries load at their first use (cuDSS's own; cuSPARSE's first transpose
+in an SCS build that transposes A on the GPU, 21.7 ms on the GB10), cuBLAS
+kernels of other shapes and types (the first single-precision `gemm` after
+the warm-up still took 137 ms on the GB10), and the solver's own handles and
+memory. In the measurement above the first solve of a process still took 6
+to 9 ms longer than a second solve in the same process with `gpu_indirect`
+and 34 to 36 ms longer with `cudss`. The context and the loaded kernels hold
 some GPU memory during the solve that a solver making no `gemm` or `gemv`
 call would not have held.
 

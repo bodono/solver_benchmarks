@@ -29,20 +29,31 @@ every solver whose settings select a GPU (``SolverAdapter.gpu_modules``):
    allocated. These are the calls of the 2026-11-26 measurement, where
    they took the GPU indirect solver's extra cost on the first solve of a
    process from 160 ms to 28 ms (32 ms for a build of the solver that
-   makes no such call).
+   makes no such call). They are double precision, as the benchmarked
+   solvers are: the first single-precision ``gemm`` after them still took
+   137 ms on the GB10, as long as in a process without them.
 
 The warm-up never loads a cuBLAS of its own: a copy loaded first by name
 could take the place of a solver's own (cuOpt bundles its CUDA libraries)
 and change what the solver runs. It uses only ``ctypes`` and the libraries
 the solver already depends on.
 
+Measured through the worker on the GB10 (SCS eeef3109, tiny Maros-Meszaros
+QPs, 5 fresh processes each): the warm-up took 0.42 s, of which the context
+0.24 s, cuBLAS 0.13 s and the import 0.04 s; ``run_time_seconds`` fell by
+0.41 s for the GPU indirect solver and by 0.29 s for cuDSS, whose solve
+makes no ``gemm`` or ``gemv`` call and so never paid cuBLAS's load.
+
 What stays in the timed region: a library a solver loads only during its
 solve (a cuBLAS loaded then is not mapped at step 3, which the record's
 notes say), a cuBLAS linked statically into a solver, kernels that other
 libraries load at their first use (cuDSS's own; cuSPARSE's first
-``csr2csc``, 21.7 ms on the GB10), cuBLAS kernels for other shapes and
-types (10 to 15 ms at sizes of a few thousand on the GB10), and the
-solver's own handles and memory. The tradeoff: the context and the loaded
+``csr2csc`` in an SCS build that transposes A on the GPU, 21.7 ms on the
+GB10), cuBLAS kernels of other shapes (10 to 15 ms at sizes of a few
+thousand on the GB10) and types, and the solver's own handles and memory.
+In the measurement above the first solve of a process, after the warm-up,
+still took 6 to 9 ms longer than a second solve for the GPU indirect solver
+and 34 to 36 ms longer for cuDSS. The tradeoff: the context and the loaded
 kernels hold GPU memory during the solve that a solver making no ``gemm``
 or ``gemv`` call would not have held, and runs recorded before the warm-up
 are slower by these costs (see the README's "Solve Times").
